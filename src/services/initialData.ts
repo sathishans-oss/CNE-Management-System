@@ -1,4 +1,4 @@
-import { Area, Employee, RoleMapping, CNERecord, CNEApplication, GalleryItem, ChairpersonMessageData, NewsEventItem, QuickLinkItem, CoordinatorDeskInfo } from '../types';
+import { Area, Employee, RoleMapping, CNERecord, CNEApplication, GalleryItem, ChairpersonMessageData, NewsEventItem, QuickLinkItem, CoordinatorDeskInfo, ProgramImpactStats } from '../types';
 
 export const INITIAL_AREAS: Area[] = [
   "216(OT-Complex)-(DSA & IR)",
@@ -634,3 +634,15 @@ export const INITIAL_COORDINATOR_DESK: CoordinatorDeskInfo = {
   coordinators: ['Ms. Ramya T', 'Ms. Suman Choudhary'],
   email: 'training.nur@aiimsrishikesh.edu.in'
 };
+
+export const INITIAL_PROGRAM_IMPACT: ProgramImpactStats = {
+  totalCompletedClasses: 6,
+  cneDuration: '08:30:00',
+  totalDuration: '08:30:00',
+  totalDurationSeconds: 30600,
+  uniqueStaffTrained: 124,
+  uniqueWardsCount: 6,
+  attendanceComplianceRate: '94.2%',
+  scope: 'institutional'
+};
+

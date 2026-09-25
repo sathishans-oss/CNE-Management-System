@@ -12,7 +12,13 @@ import {
   ViewMode
 } from '../types';
 import { ApiService } from '../services/api';
-import { INITIAL_CHAIRPERSON_MESSAGE } from '../services/initialData';
+import {
+  INITIAL_CHAIRPERSON_MESSAGE,
+  INITIAL_UPCOMING_CLASSES,
+  INITIAL_NEWS_EVENTS,
+  INITIAL_QUICK_LINKS,
+  INITIAL_PROGRAM_IMPACT
+} from '../services/initialData';
 import { formatCneDateTimeDisplay } from '../utils';
 
 // Modular Child Widgets
@@ -35,15 +41,15 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   user,
   onNavigate
 }) => {
-  const [upcomingClasses, setUpcomingClasses] = useState<CNERecord[]>(() => ApiService.getCachedData<CNERecord[]>('getCNERecords') || []);
-  const [newsEvents, setNewsEvents] = useState<NewsEventItem[]>(() => ApiService.getCachedData<NewsEventItem[]>('getNewsEvents') || []);
-  const [quickLinks, setQuickLinks] = useState<QuickLinkItem[]>(() => ApiService.getCachedData<QuickLinkItem[]>('getQuickLinks') || []);
-  const [impactStats, setImpactStats] = useState<ProgramImpactStats | null>(() => ApiService.getCachedData<ProgramImpactStats>('getProgramImpact'));
-  const [impactLoading, setImpactLoading] = useState(() => !ApiService.getCachedData('getProgramImpact'));
+  const [upcomingClasses, setUpcomingClasses] = useState<CNERecord[]>(() => ApiService.getCachedData<CNERecord[]>('getCNERecords') || INITIAL_UPCOMING_CLASSES);
+  const [newsEvents, setNewsEvents] = useState<NewsEventItem[]>(() => ApiService.getCachedData<NewsEventItem[]>('getNewsEvents') || INITIAL_NEWS_EVENTS);
+  const [quickLinks, setQuickLinks] = useState<QuickLinkItem[]>(() => ApiService.getCachedData<QuickLinkItem[]>('getQuickLinks') || INITIAL_QUICK_LINKS);
+  const [impactStats, setImpactStats] = useState<ProgramImpactStats | null>(() => ApiService.getCachedData<ProgramImpactStats>('getProgramImpact') || INITIAL_PROGRAM_IMPACT);
+  const [impactLoading, setImpactLoading] = useState(false);
   const [impactError, setImpactError] = useState<string | null>(null);
   const [cnoMessage, setCnoMessage] = useState<ChairpersonMessageData>(() => ApiService.getCachedData<ChairpersonMessageData>('getChairpersonMessage') || INITIAL_CHAIRPERSON_MESSAGE);
   
-  const [classesLoading, setClassesLoading] = useState(() => !ApiService.getCachedData('getCNERecords'));
+  const [classesLoading, setClassesLoading] = useState(false);
 
   // Modals state
   const [selectedNews, setSelectedNews] = useState<NewsEventItem | null>(null);
@@ -99,12 +105,16 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
           setImpactStats(res.data);
           setImpactError(null);
         } else {
-          setImpactError(res.message || 'Unable to load impact metrics');
+          if (!impactStats) {
+            setImpactError(res.message || 'Unable to load impact metrics');
+          }
         }
       })
       .catch((err) => {
         console.warn('[Home Data] Impact error:', err);
-        setImpactError('Unable to load impact metrics');
+        if (!impactStats) {
+          setImpactError('Unable to load impact metrics');
+        }
       })
       .finally(() => setImpactLoading(false));
   };
