@@ -1,0 +1,166 @@
+import React, { useState } from 'react';
+import { ViewMode, SessionUser } from './types';
+import { ApiService } from './services/api';
+import { ToastProvider, useToast } from './components/Toast';
+import { Navbar } from './components/Navbar';
+import { TopToolbar } from './components/TopToolbar';
+import { CneHomePage } from './components/CneHomePage';
+import { LoginModal } from './components/LoginModal';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
+import { ForgotPasswordModal } from './components/ForgotPasswordModal';
+import { MyCNE } from './components/MyCNE';
+import { CNECalendar } from './components/CNECalendar';
+import { CNESchedule } from './components/CNESchedule';
+import { LearningResourcesPage } from './components/cne/LearningResourcesPage';
+import { Gallery } from './components/Gallery';
+import { AdminAreas } from './components/AdminAreas';
+import { AdminRoles } from './components/AdminRoles';
+import { AdminReports } from './components/AdminReports';
+import { AdminContent } from './components/AdminContent';
+
+const AppContent: React.FC = () => {
+  const [user, setUser] = useState<SessionUser | null>(() => ApiService.getSessionUser());
+  const [activeView, setActiveView] = useState<ViewMode>('dashboard');
+
+  // Modals state
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
+
+  const { success, info } = useToast();
+
+  const handleLoginSuccess = (loggedInUser: SessionUser) => {
+    setUser(loggedInUser);
+    setIsLoginOpen(false);
+    success(`Welcome, ${loggedInUser.name}`, 'Authentication Successful');
+  };
+
+  const handleLogout = () => {
+    ApiService.logout();
+    setUser(null);
+    setIsLoginOpen(false);
+    setActiveView('dashboard');
+    info('You have been signed out.', 'Session Ended');
+  };
+
+  const handleNavigate = (view: ViewMode) => {
+    // If not logged in and attempting to access staff/admin protected views, prompt login
+    if (!user || !user.employeeId) {
+      if (['my-cne', 'admin-areas', 'admin-roles', 'admin-content', 'admin-reports'].includes(view)) {
+        info('Please log in with your Employee ID to access this section.', 'Authentication Required');
+        setIsLoginOpen(true);
+        return;
+      }
+    }
+    setActiveView(view);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-100 flex flex-col font-sans text-slate-900 antialiased selection:bg-emerald-500 selection:text-white">
+      {/* Top Fixed Navigation Bar */}
+      <Navbar
+        user={user}
+        onOpenLogin={() => setIsLoginOpen(true)}
+        onChangePasswordClick={() => setIsChangePasswordOpen(true)}
+        onLogout={handleLogout}
+      />
+
+      {/* Persistent Static Top Toolbar for Primary Navigation (Authenticated Users Only) */}
+      {user && user.employeeId && (
+        <TopToolbar
+          user={user}
+          activeView={activeView}
+          onSelectView={handleNavigate}
+        />
+      )}
+
+      <div className="flex-1 w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-12">
+        {/* Main Content Area */}
+        <main className="w-full">
+          {(!user || !user.employeeId || activeView === 'dashboard') && (
+            <CneHomePage
+              user={user}
+              onNavigate={handleNavigate}
+            />
+          )}
+
+          {user && user.employeeId && activeView === 'my-cne' && (
+            <MyCNE user={user} />
+          )}
+
+          {user && user.employeeId && activeView === 'calendar' && <CNECalendar />}
+
+          {user && user.employeeId && activeView === 'upcoming' && (
+            <CNESchedule user={user} />
+          )}
+
+          {user && user.employeeId && activeView === 'learning-resources' && (
+            <LearningResourcesPage user={user} />
+          )}
+
+          {user && user.employeeId && activeView === 'gallery' && <Gallery user={user} />}
+
+          {/* Admin Protected Views */}
+          {activeView === 'admin-areas' && user?.role === 'ADMIN' && (
+            <AdminAreas user={user} />
+          )}
+
+          {activeView === 'admin-roles' && user?.role === 'ADMIN' && (
+            <AdminRoles user={user} />
+          )}
+
+          {activeView === 'admin-content' && user?.role === 'ADMIN' && (
+            <AdminContent user={user} />
+          )}
+
+          {activeView === 'admin-reports' && user?.role === 'ADMIN' && (
+            <AdminReports user={user} />
+          )}
+        </main>
+      </div>
+
+      {/* Footer */}
+      <footer className="bg-white border-t border-slate-200 py-6 text-center text-xs text-slate-500 mt-auto">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2">
+          <span>© 2026 Nursing Informatics | Nursing Services | AIIMS Rishikesh</span>
+          <span>Continuing Nursing Education (CNE) Portal</span>
+        </div>
+      </footer>
+
+      {/* Global Modals */}
+      <LoginModal
+        isOpen={isLoginOpen}
+        onClose={() => setIsLoginOpen(false)}
+        onLoginSuccess={handleLoginSuccess}
+        onOpenForgotPassword={() => {
+          setIsLoginOpen(false);
+          setIsForgotPasswordOpen(true);
+        }}
+      />
+
+      <ChangePasswordModal
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
+        user={user}
+      />
+
+      <ForgotPasswordModal
+        isOpen={isForgotPasswordOpen}
+        onClose={() => setIsForgotPasswordOpen(false)}
+        onBackToLogin={() => {
+          setIsForgotPasswordOpen(false);
+          setIsLoginOpen(true);
+        }}
+      />
+    </div>
+  );
+};
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
+  );
+}
