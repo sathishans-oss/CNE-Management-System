@@ -343,11 +343,38 @@ runTest('Gemini architecture (Apps Script caller, Script Properties, no client s
     "Frontend ApiService.generateCNEQuestions must route through Apps Script action 'generateCNEQuestions'"
   );
   assert.ok(
-    apiTs.includes("executeAction<CNEQuestion[]>('generateAiQuestions'"),
-    "Frontend ApiService.generateAiQuestions must route through Apps Script action 'generateAiQuestions'"
+    !apiTs.includes("executeAction<CNEQuestion[]>('generateAiQuestions'"),
+    "Frontend ApiService must NOT expose obsolete generateAiQuestions"
+  );
+  assert.ok(
+    !apiTs.includes("static async generateAiQuestions") &&
+    !apiTs.includes("static async reserveAiQuota") &&
+    !apiTs.includes("static async commitAiQuota") &&
+    !apiTs.includes("static async releaseAiQuota"),
+    "Obsolete frontend AI methods (generateAiQuestions, reserveAiQuota, commitAiQuota, releaseAiQuota) must be removed from api.ts"
   );
 
-  // 2. Frontend does not call /api/ai/generate-questions
+  // 2. Apps Script router exposes only generateCNEQuestions and getAiQuota; obsolete router actions removed
+  const codeGsRouterMatch = codeGs.match(/switch\s*\(\s*action\s*\)\s*\{([\s\S]*?)\n\s*default:/);
+  assert.ok(codeGsRouterMatch, "Code.gs must have switch(action) router");
+  const routerBody = codeGsRouterMatch[1];
+  assert.ok(routerBody.includes("case 'generateCNEQuestions':"), "Router must include generateCNEQuestions");
+  assert.ok(routerBody.includes("case 'getAiQuota':"), "Router must include getAiQuota");
+  assert.ok(!routerBody.includes("case 'generateAiQuestions':"), "Router must NOT expose obsolete generateAiQuestions");
+  assert.ok(!routerBody.includes("case 'reserveAiQuota':"), "Router must NOT expose obsolete reserveAiQuota");
+  assert.ok(!routerBody.includes("case 'commitAiQuota':"), "Router must NOT expose obsolete commitAiQuota");
+  assert.ok(!routerBody.includes("case 'releaseAiQuota':"), "Router must NOT expose obsolete releaseAiQuota");
+  assert.ok(!routerBody.includes("case 'validateAiQuotaReservation':"), "Router must NOT expose obsolete validateAiQuotaReservation");
+
+  // 3. Internal quota and generation helpers remain intact
+  assert.ok(codeGs.includes("function handleReserveAiQuota("), "Internal handleReserveAiQuota helper must remain intact");
+  assert.ok(codeGs.includes("function handleCommitAiQuota("), "Internal handleCommitAiQuota helper must remain intact");
+  assert.ok(codeGs.includes("function handleReleaseAiQuota("), "Internal handleReleaseAiQuota helper must remain intact");
+  assert.ok(codeGs.includes("function handleValidateAiQuotaReservation("), "Internal handleValidateAiQuotaReservation helper must remain intact");
+  assert.ok(codeGs.includes("function generateAiQuestionsInternal("), "Internal generateAiQuestionsInternal helper must exist");
+  assert.ok(codeGs.includes("function handleGenerateCNEQuestions("), "handleGenerateCNEQuestions must exist");
+
+  // 4. Frontend does not call /api/ai/generate-questions
   const frontendFiles = getFilesRecursively('src');
   for (const file of frontendFiles) {
     if (file.includes('googleAppsScript.ts')) continue;
@@ -358,7 +385,7 @@ runTest('Gemini architecture (Apps Script caller, Script Properties, no client s
     );
   }
 
-  // 3. No active Cloudflare Gemini function exists
+  // 5. No active Cloudflare Gemini function exists
   const hasCloudflareFunctions = fs.existsSync('functions') || fs.existsSync('worker') || fs.existsSync('workers');
   assert.strictEqual(
     hasCloudflareFunctions,
@@ -366,7 +393,7 @@ runTest('Gemini architecture (Apps Script caller, Script Properties, no client s
     'No Cloudflare Functions or Workers directory should exist for Gemini generation'
   );
 
-  // 4. Gemini API key is not referenced in browser/client source
+  // 6. Gemini API key is not referenced in browser/client source
   for (const file of frontendFiles) {
     if (file.includes('googleAppsScript.ts')) continue;
     const content = fs.readFileSync(file, 'utf8');
@@ -380,27 +407,37 @@ runTest('Gemini architecture (Apps Script caller, Script Properties, no client s
     );
   }
 
-  // 5. Apps Script contains the active Gemini caller
+  // 7. Apps Script contains the only active production Gemini caller
   assert.ok(
     codeGs.includes("generativelanguage.googleapis.com"),
     "Code.gs must contain the active Gemini API endpoint caller"
   );
   assert.ok(
-    codeGs.includes("function generateCNEQuestions(") || codeGs.includes("generateCNEQuestions"),
-    "Code.gs must contain CNE question generation logic"
+    codeGs.includes("UrlFetchApp.fetch("),
+    "Code.gs must call Gemini via UrlFetchApp.fetch"
   );
 
-  // 6. Apps Script reads Gemini configuration from Script Properties
+  // 8. Apps Script reads Gemini configuration from Script Properties
   assert.ok(
     codeGs.includes("props.getProperty('GEMINI_API_KEY')"),
     "Code.gs must read GEMINI_API_KEY from Script Properties"
   );
 
-  // 7. Exactly one production Gemini implementation
+  // 9. @google/genai is removed from package.json
+  const pkgContent = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  const hasGenAi = (pkgContent.dependencies && pkgContent.dependencies['@google/genai']) ||
+                   (pkgContent.devDependencies && pkgContent.devDependencies['@google/genai']);
+  assert.ok(!hasGenAi, "@google/genai must not be present in package.json");
+
+  // 10. Exactly one production Gemini implementation - server.ts is retained strictly for local/preview hosting
   const serverTs = fs.readFileSync('server.ts', 'utf8');
   assert.ok(
     !serverTs.includes('generateContent') && !serverTs.includes('genai'),
     "server.ts must not implement a secondary/redundant Gemini caller"
+  );
+  assert.ok(
+    !serverTs.includes('SpreadsheetApp') && !serverTs.includes('handleLogin') && !serverTs.includes('handleGetCNE'),
+    "server.ts must contain no CNE backend or Google Sheets logic"
   );
 });
 

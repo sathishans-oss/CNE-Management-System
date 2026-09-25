@@ -19,7 +19,6 @@
     "verify:integration": "node scripts/verify-system-integration.js"
   },
   "dependencies": {
-    "@google/genai": "^2.21.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "express": "^5.2.1",

@@ -53,7 +53,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
       .catch(() => {});
 
     try {
-      const res = await ApiService.getCNERecords();
+      const res = await ApiService.getCNERecords({ myRecordsOnly: true, scope: 'my-cne-records' });
       if (res.success && res.data) {
         setRecords(res.data);
       } else {
@@ -149,35 +149,40 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
         </div>
 
         {/* Action Button: Generate PDF */}
-        <div className="flex items-center gap-2">
-          <button
-            id="btn-refresh-my-cne"
-            onClick={loadMyRecords}
-            disabled={loading || isGeneratingPdf}
-            className="p-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors disabled:opacity-40"
-            title="Refresh records"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+        <div className="flex flex-col sm:items-end gap-1.5">
+          <div className="flex items-center gap-2">
+            <button
+              id="btn-refresh-my-cne"
+              onClick={loadMyRecords}
+              disabled={loading || isGeneratingPdf}
+              className="p-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors disabled:opacity-40"
+              title="Refresh records"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
 
-          <button
-            id="btn-generate-cne-records-pdf"
-            onClick={handleGeneratePdf}
-            disabled={isGeneratingPdf || loading}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs sm:text-sm shadow-xs transition-all cursor-pointer disabled:opacity-50"
-          >
-            {isGeneratingPdf ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
-                <span>Generating PDF...</span>
-              </>
-            ) : (
-              <>
-                <FileDown className="w-4 h-4 text-emerald-400" />
-                <span>Generate PDF</span>
-              </>
-            )}
-          </button>
+            <button
+              id="btn-generate-cne-records-pdf"
+              onClick={handleGeneratePdf}
+              disabled={isGeneratingPdf || loading}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs sm:text-sm shadow-xs transition-all cursor-pointer disabled:opacity-50"
+            >
+              {isGeneratingPdf ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                  <span>Generating PDF...</span>
+                </>
+              ) : (
+                <>
+                  <FileDown className="w-4 h-4 text-emerald-400" />
+                  <span>Generate PDF</span>
+                </>
+              )}
+            </button>
+          </div>
+          <p className="text-[11px] text-slate-500 text-left sm:text-right">
+            Generate a PDF of the CNE records matching the selected filters.
+          </p>
         </div>
       </div>
 

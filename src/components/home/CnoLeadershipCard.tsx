@@ -142,7 +142,7 @@ export const CnoLeadershipCard: React.FC<CnoLeadershipCardProps> = ({
                 In our tertiary apex healthcare institution, nursing officers stand on the frontlines of complex critical care, advanced surgical procedures, and intensive hemodynamic management. Ongoing skill development guarantees that our clinical practices adhere strictly to evidence-based national and international benchmarks.
               </p>
               <p>
-                This dedicated portal empowers every nursing officer to easily explore upcoming workshops, track verified attendance, maintain lifelong training portfolios, and auto-generate certified annual CNE documentation for coordinator verification and personal records.
+                This dedicated portal empowers every nursing officer to easily explore upcoming workshops, track verified attendance, maintain lifelong training portfolios, and auto-generate verified CNE training records for coordinator verification and personal records.
               </p>
             </>
           )}

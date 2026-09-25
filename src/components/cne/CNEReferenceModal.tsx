@@ -128,8 +128,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
       return;
     }
 
-    const MAX_FILE_SIZE = 3 * 1024 * 1024; // 3MB
-    if (file.size > MAX_FILE_SIZE) {
+    const MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024; // 3MB authoritative limit
+    if (file.size > MAX_CNE_LEARNING_MATERIAL_BYTES) {
       error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of 3 MB.`);
       return;
     }
@@ -188,7 +188,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     const hasAnyText = unifiedContent.trim().length > 0;
 
     if (!hasAnyFile && !hasAnyText) {
-      error('Please upload a CNE learning resource file (PDF, DOCX, PPT) or enter educational notes.');
+      error('Please upload a CNE learning resource file (PDF) or enter educational notes.');
       return false;
     }
 
@@ -346,9 +346,9 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                     <Upload className="w-4 h-4 text-teal-600" />
-                    Upload Learning Resource File (PDF &le; 3MB)
+                    Upload Learning Resource File (PDF only &bull; Maximum 3 MB)
                   </label>
-                  <span className="text-[11px] text-slate-400">Max size: 3 MB</span>
+                  <span className="text-[11px] text-slate-400">PDF only &bull; Maximum 3 MB</span>
                 </div>
 
                 {/* Existing Stored Resource Card */}
@@ -469,7 +469,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     )}
                   </p>
                   <p className="text-[11px] text-slate-400">
-                    Supported: PDF (.pdf) &bull; Maximum file size: 3 MB
+                    PDF only &bull; Maximum 3 MB
                   </p>
                 </div>
 

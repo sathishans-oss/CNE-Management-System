@@ -112,10 +112,12 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
       return;
     }
 
-    const MAX_SIZE = 3 * 1024 * 1024; // 3MB authoritative limit
-    if (file.size > MAX_SIZE) {
-      error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of 3 MB.`);
-      return;
+    if (resourceType === 'CNE_LEARNING_MATERIAL') {
+      const MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024; // 3MB authoritative limit
+      if (file.size > MAX_CNE_LEARNING_MATERIAL_BYTES) {
+        error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of 3 MB.`);
+        return;
+      }
     }
 
     if (resourceType === 'NURSING_REFERENCE_LIB' && (!resourceTitle || resourceTitle.trim() === '')) {
@@ -608,7 +610,11 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                       <span className="text-teal-600 hover:underline">browse</span>
                     </p>
                     <p className="text-[10px] text-slate-400 mt-1">
-                      Supported: PDF (.pdf) &bull; Maximum file size: 3 MB
+                      {resourceType === 'CNE_LEARNING_MATERIAL' ? (
+                        <>PDF only &bull; Maximum 3 MB</>
+                      ) : (
+                        <>PDF only &bull; Large PDFs may take longer to process and index.</>
+                      )}
                     </p>
                   </div>
                 )}

@@ -580,25 +580,8 @@ function handleRequest(e, method) {
         output = handleGetAiQuota(params, session);
         break;
 
-      case 'reserveAiQuota':
-        output = handleReserveAiQuota(params, session);
-        break;
-
       case 'generateCNEQuestions':
-      case 'generateAiQuestions':
         output = handleGenerateCNEQuestions(params, session);
-        break;
-
-      case 'commitAiQuota':
-        output = handleCommitAiQuota(params, session);
-        break;
-
-      case 'releaseAiQuota':
-        output = handleReleaseAiQuota(params, session);
-        break;
-
-      case 'validateAiQuotaReservation':
-        output = handleValidateAiQuotaReservation(params, session);
         break;
 
       case 'getAiConfig':
@@ -5537,175 +5520,9 @@ function sanitizeFileNamePart(str) {
 }
 
 /**
- * Lightweight inspector to extract entry filenames from a ZIP archive's central directory
- * or local file headers without decompressing any file content into memory.
- */
-function getZipArchiveEntryNames(bytes) {
-  var entryNames = [];
-  if (!bytes || bytes.length < 30) return entryNames;
-
-  // Approach 1: Read Central Directory via End of Central Directory (EOCD)
-  // EOCD signature: 0x50 0x4B 0x05 0x06
-  var maxSearch = Math.min(bytes.length, 65536 + 22);
-  var startSearch = bytes.length - maxSearch;
-  var eocdPos = -1;
-
-  for (var i = bytes.length - 22; i >= startSearch; i--) {
-    if ((bytes[i] & 0xFF) === 0x50 &&
-        (bytes[i + 1] & 0xFF) === 0x4B &&
-        (bytes[i + 2] & 0xFF) === 0x05 &&
-        (bytes[i + 3] & 0xFF) === 0x06) {
-      eocdPos = i;
-      break;
-    }
-  }
-
-  if (eocdPos !== -1 && eocdPos + 22 <= bytes.length) {
-    // Read Central Directory Offset (bytes 16..19, little-endian unsigned 32-bit int)
-    var cdOffset = ((bytes[eocdPos + 16] & 0xFF) |
-                   ((bytes[eocdPos + 17] & 0xFF) << 8) |
-                   ((bytes[eocdPos + 18] & 0xFF) << 16) |
-                   ((bytes[eocdPos + 19] & 0xFF) << 24)) >>> 0;
-
-    var cdSize = ((bytes[eocdPos + 12] & 0xFF) |
-                 ((bytes[eocdPos + 13] & 0xFF) << 8) |
-                 ((bytes[eocdPos + 14] & 0xFF) << 16) |
-                 ((bytes[eocdPos + 15] & 0xFF) << 24)) >>> 0;
-
-    if (cdOffset >= 0 && cdOffset < bytes.length && cdOffset + cdSize <= bytes.length) {
-      var ptr = cdOffset;
-      var count = 0;
-      // Central directory file header signature: 0x50 0x4B 0x01 0x02
-      while (ptr + 46 <= bytes.length && count < 200) {
-        if ((bytes[ptr] & 0xFF) === 0x50 &&
-            (bytes[ptr + 1] & 0xFF) === 0x4B &&
-            (bytes[ptr + 2] & 0xFF) === 0x01 &&
-            (bytes[ptr + 3] & 0xFF) === 0x02) {
-          var nameLen = ((bytes[ptr + 28] & 0xFF) | ((bytes[ptr + 29] & 0xFF) << 8)) >>> 0;
-          var extraLen = ((bytes[ptr + 30] & 0xFF) | ((bytes[ptr + 31] & 0xFF) << 8)) >>> 0;
-          var commentLen = ((bytes[ptr + 32] & 0xFF) | ((bytes[ptr + 33] & 0xFF) << 8)) >>> 0;
-
-          if (ptr + 46 + nameLen <= bytes.length) {
-            var nameChars = [];
-            for (var c = 0; c < nameLen; c++) {
-              nameChars.push(String.fromCharCode(bytes[ptr + 46 + c] & 0xFF));
-            }
-            entryNames.push(nameChars.join(''));
-          }
-          ptr += 46 + nameLen + extraLen + commentLen;
-          count++;
-        } else {
-          break;
-        }
-      }
-    }
-  }
-
-  // Approach 2: If EOCD yielded no entries, parse Local File Headers
-  // Local File Header signature: 0x50 0x4B 0x03 0x04
-  if (entryNames.length === 0) {
-    var lptr = 0;
-    var maxScan = Math.min(bytes.length - 30, 262144); // Scan up to first 256 KB
-    var lcount = 0;
-    while (lptr < maxScan && lcount < 100) {
-      if ((bytes[lptr] & 0xFF) === 0x50 &&
-          (bytes[lptr + 1] & 0xFF) === 0x4B &&
-          (bytes[lptr + 2] & 0xFF) === 0x03 &&
-          (bytes[lptr + 3] & 0xFF) === 0x04) {
-        var lNameLen = ((bytes[lptr + 26] & 0xFF) | ((bytes[lptr + 27] & 0xFF) << 8)) >>> 0;
-        if (lNameLen > 0 && lNameLen < 512 && lptr + 30 + lNameLen <= bytes.length) {
-          var lChars = [];
-          for (var lc = 0; lc < lNameLen; lc++) {
-            lChars.push(String.fromCharCode(bytes[lptr + 30 + lc] & 0xFF));
-          }
-          entryNames.push(lChars.join(''));
-        }
-      }
-      lptr++;
-      lcount++;
-    }
-  }
-
-  return entryNames;
-}
-
-/**
- * Validates the internal Office Open XML package structure for DOCX / PPTX
- * Rejects arbitrary ZIP files that do not contain valid Word or PowerPoint structures.
- */
-function validateOfficeOpenXmlStructure(bytes, ext) {
-  // First, verify standard ZIP local header signature (PK\\x03\\x04)
-  if (!bytes || bytes.length < 30 ||
-      (bytes[0] & 0xFF) !== 0x50 ||
-      (bytes[1] & 0xFF) !== 0x4B ||
-      (bytes[2] & 0xFF) !== 0x03 ||
-      (bytes[3] & 0xFF) !== 0x04) {
-    return {
-      valid: false,
-      message: 'File content does not match standard Office XML archive structure (missing ZIP header).'
-    };
-  }
-
-  var entries = getZipArchiveEntryNames(bytes);
-  if (!entries || entries.length === 0) {
-    return {
-      valid: false,
-      message: 'Unable to parse Office Open XML package structure from file.'
-    };
-  }
-
-  var hasContentTypes = false;
-  var hasWordStructure = false;
-  var hasPptStructure = false;
-
-  for (var i = 0; i < entries.length; i++) {
-    var entry = entries[i].toLowerCase();
-    if (entry === '[content_types].xml' || entry.indexOf('[content_types].xml') !== -1) {
-      hasContentTypes = true;
-    }
-    if (entry.indexOf('word/') === 0 || entry.indexOf('/word/') !== -1 || entry === 'word/document.xml') {
-      hasWordStructure = true;
-    }
-    if (entry.indexOf('ppt/') === 0 || entry.indexOf('/ppt/') !== -1 || entry === 'ppt/presentation.xml') {
-      hasPptStructure = true;
-    }
-  }
-
-  if (ext === 'docx') {
-    if (!hasWordStructure) {
-      return {
-        valid: false,
-        message: 'File content does not contain required Word package structure (word/document.xml).'
-      };
-    }
-    if (!hasContentTypes) {
-      return {
-        valid: false,
-        message: 'File content is missing required Office Open XML content types definition ([Content_Types].xml).'
-      };
-    }
-  } else if (ext === 'pptx') {
-    if (!hasPptStructure) {
-      return {
-        valid: false,
-        message: 'File content does not contain required PowerPoint package structure (ppt/presentation.xml).'
-      };
-    }
-    if (!hasContentTypes) {
-      return {
-        valid: false,
-        message: 'File content is missing required Office Open XML content types definition ([Content_Types].xml).'
-      };
-    }
-  }
-
-  return { valid: true };
-}
-
-/**
- * Upload and Store CNE Learning Resource File (Phase 1: Backend Foundation)
- * Supported Formats: PDF, DOCX, PPT, PPTX
- * Max Size: 5 MB
+ * Upload and Store CNE Learning Resource File
+ * Document Policy: Strictly PDF only (.pdf)
+ * Maximum Size: 3 MB (MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024)
  * Authoritative storage: DRIVE_FOLDER_ID -> Learning Resources subfolder
  * Access: Completely PRIVATE (No ANYONE_WITH_LINK)
  * Metadata: Appended non-destructively to CNE_Reference
@@ -5753,6 +5570,7 @@ function handleUploadLearningResource(params, session) {
 
   // Pre-decode size check (approximate base64 length check to avoid huge memory allocation)
   // For 3 MB binary file, base64 length is ~ 3 * 1024 * 1024 * 4/3 ≈ 4.19 MB.
+  var MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024;
   if (rawBase64.length > 4.5 * 1024 * 1024) {
     return {
       success: false,
@@ -5778,40 +5596,18 @@ function handleUploadLearningResource(params, session) {
     };
   }
 
-  // 2. MIME type handling
-  // Legitimate specific MIME types per extension
+  // 2. MIME type handling (PDF only)
   var SPECIFIC_MIMES_BY_EXT = {
-    'pdf': ['application/pdf', 'application/x-pdf'],
-    'docx': [
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/msword',
-      'application/x-docx'
-    ],
-    'ppt': [
-      'application/vnd.ms-powerpoint',
-      'application/powerpoint',
-      'application/mspowerpoint',
-      'application/x-mspowerpoint',
-      'application/x-ms-powerpoint'
-    ],
-    'pptx': [
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'application/vnd.ms-powerpoint',
-      'application/x-mspowerpoint'
-    ]
+    'pdf': ['application/pdf', 'application/x-pdf']
   };
 
-  // Generic MIME types that browsers sometimes report
-  // CRITICAL: Generic MIME types MUST NOT independently authorize an upload.
   var GENERIC_MIMES = [
     'application/octet-stream',
-    'application/zip',
-    'application/x-zip-compressed',
     'binary/octet-stream'
   ];
 
   if (contentType) {
-    var isSpecific = SPECIFIC_MIMES_BY_EXT[ext].indexOf(contentType) !== -1;
+    var isSpecific = SPECIFIC_MIMES_BY_EXT[ext] && SPECIFIC_MIMES_BY_EXT[ext].indexOf(contentType) !== -1;
     var isGeneric = GENERIC_MIMES.indexOf(contentType) !== -1;
 
     // Reject outright if declared MIME is incompatible with document types
@@ -5824,15 +5620,8 @@ function handleUploadLearningResource(params, session) {
     }
   }
 
-  // Canonical MIME types for Drive storage (never store with generic octet-stream/zip)
+  // Canonical MIME type for Drive storage
   var canonicalMime = 'application/pdf';
-  if (ext === 'docx') {
-    canonicalMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-  } else if (ext === 'ppt') {
-    canonicalMime = 'application/vnd.ms-powerpoint';
-  } else if (ext === 'pptx') {
-    canonicalMime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-  }
 
   // Decode base64
   var decoded;
@@ -5855,7 +5644,7 @@ function handleUploadLearningResource(params, session) {
     };
   }
 
-  if (fileSize > 3 * 1024 * 1024) {
+  if (fileSize > MAX_CNE_LEARNING_MATERIAL_BYTES || fileSize > 3 * 1024 * 1024) {
     return {
       success: false,
       errorCode: 'FILE_TOO_LARGE',
@@ -5863,9 +5652,8 @@ function handleUploadLearningResource(params, session) {
     };
   }
 
-  // 3. Binary & Structural Signature Validation
+  // 3. Binary & Structural Signature Validation (Strictly %PDF: 0x25 0x50 0x44 0x46)
   if (ext === 'pdf') {
-    // PDF must begin with %PDF (0x25 0x50 0x44 0x46)
     if (decoded.length < 4 ||
         (decoded[0] & 0xFF) !== 0x25 ||
         (decoded[1] & 0xFF) !== 0x50 ||
@@ -5875,33 +5663,6 @@ function handleUploadLearningResource(params, session) {
         success: false,
         errorCode: 'INVALID_FILE_CONTENT',
         message: 'File content does not match standard PDF document structure (%PDF header missing).'
-      };
-    }
-  } else if (ext === 'ppt') {
-    // Legacy PPT must have 8-byte OLE Compound Document signature: D0 CF 11 E0 A1 B1 1A E1
-    if (decoded.length < 8 ||
-        (decoded[0] & 0xFF) !== 0xD0 ||
-        (decoded[1] & 0xFF) !== 0xCF ||
-        (decoded[2] & 0xFF) !== 0x11 ||
-        (decoded[3] & 0xFF) !== 0xE0 ||
-        (decoded[4] & 0xFF) !== 0xA1 ||
-        (decoded[5] & 0xFF) !== 0xB1 ||
-        (decoded[6] & 0xFF) !== 0x1A ||
-        (decoded[7] & 0xFF) !== 0xE1) {
-      return {
-        success: false,
-        errorCode: 'INVALID_FILE_CONTENT',
-        message: 'File content does not match standard PowerPoint binary document structure (OLE compound header missing).'
-      };
-    }
-  } else if (ext === 'docx' || ext === 'pptx') {
-    // DOCX / PPTX: ZIP magic bytes + lightweight package structure verification
-    var structResult = validateOfficeOpenXmlStructure(decoded, ext);
-    if (!structResult.valid) {
-      return {
-        success: false,
-        errorCode: 'INVALID_FILE_CONTENT',
-        message: structResult.message
       };
     }
   }
@@ -6633,7 +6394,7 @@ function handleDownloadLearningResource(params, session) {
  * PHASE 2: CNE LEARNING RESOURCES CONTENT EXTRACTION SERVICE
  * ============================================================================
  * Extracts readable textual content from stored Google Drive learning resource
- * files (PDF, DOCX, PPT, PPTX) for AI MCQ generation grounding.
+ * files (PDF only, maximum 3 MB) for AI MCQ generation grounding.
  * Authoritative source of truth remains the Drive file stored in the configured
  * Learning Resources directory.
  */
@@ -6754,7 +6515,7 @@ function extractLearningResourceContentCore(cneId, session) {
     };
   }
 
-  // 6. Validate supported format (PDF, DOCX, PPT, PPTX only)
+  // 6. Validate supported format (PDF only)
   var nameForExt = file.getName() || storedFileName;
   var ext = '';
   var dotIdx = nameForExt.lastIndexOf('.');
@@ -6765,21 +6526,22 @@ function extractLearningResourceContentCore(cneId, session) {
     ext = storedFileType.toLowerCase().trim();
   }
 
-  var ALLOWED_EXTS = ['pdf', 'docx', 'ppt', 'pptx'];
+  var ALLOWED_EXTS = ['pdf'];
   if (ALLOWED_EXTS.indexOf(ext) === -1) {
     return {
       success: false,
       errorCode: 'UNSUPPORTED_FILE_TYPE',
-      message: 'Unsupported file type. Only PDF, DOCX, PPT, and PPTX documents are permitted.'
+      message: 'Unsupported file type. Only PDF (.pdf) documents are permitted.'
     };
   }
 
-  // 7. Validate size (Max 5 MB)
-  if (file.getSize() > 5 * 1024 * 1024) {
+  // 7. Validate size (Max 3 MB for CNE learning materials)
+  var MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024;
+  if (file.getSize() > MAX_CNE_LEARNING_MATERIAL_BYTES) {
     return {
       success: false,
       errorCode: 'CONTENT_TOO_LARGE',
-      message: 'Learning resource exceeds maximum allowed size of 5 MB.'
+      message: 'Learning resource exceeds maximum allowed size of 3 MB.'
     };
   }
 
@@ -6807,7 +6569,7 @@ function extractLearningResourceContentCore(cneId, session) {
             resourcePersonName: storedRpName,
             driveFileId: driveFileId,
             fileName: file.getName(),
-            fileType: ext.toUpperCase(),
+            fileType: 'PDF',
             extractedText: parsedCache.extractedText,
             charCount: parsedCache.extractedText.length,
             isTruncated: Boolean(parsedCache.isTruncated),
@@ -6821,20 +6583,12 @@ function extractLearningResourceContentCore(cneId, session) {
     // Cache failure must never cause functional failure
   }
 
-  // 9. Extract textual content based on file type
+  // 9. Extract textual content from PDF
   var rawExtracted = '';
   var blob = file.getBlob();
 
   try {
-    if (ext === 'docx') {
-      rawExtracted = extractTextFromDocx(blob);
-    } else if (ext === 'pptx') {
-      rawExtracted = extractTextFromPptx(blob);
-    } else if (ext === 'ppt') {
-      rawExtracted = extractTextFromPpt(blob);
-    } else if (ext === 'pdf') {
-      rawExtracted = extractTextFromPdf(blob);
-    }
+    rawExtracted = extractTextFromPdf(blob);
   } catch (extractErr) {
     logAuditAction('CONTENT_EXTRACTION_FAILED', {
       cneId: cneId,
@@ -6845,16 +6599,16 @@ function extractLearningResourceContentCore(cneId, session) {
     return {
       success: false,
       errorCode: 'CONTENT_EXTRACTION_FAILED',
-      message: 'Failed to extract textual content from ' + ext.toUpperCase() + ' document: ' + (extractErr.message || 'Malformed structure')
+      message: 'Failed to extract textual content from PDF document: ' + (extractErr.message || 'Malformed structure')
     };
   }
 
-  // 10. Check if extracted content is empty or unusable
+  // 10. Check if extracted content is empty or unusable (scanned/image-only PDF)
   if (!rawExtracted || rawExtracted.trim().length < 15) {
     return {
       success: false,
       errorCode: 'NO_EXTRACTABLE_CONTENT',
-      message: 'No readable textual content could be extracted from the uploaded document.'
+      message: 'This PDF does not contain usable text. Please upload a text-based PDF.'
     };
   }
 
@@ -6898,7 +6652,7 @@ function extractLearningResourceContentCore(cneId, session) {
       resourcePersonName: storedRpName,
       driveFileId: driveFileId,
       fileName: file.getName(),
-      fileType: ext.toUpperCase(),
+      fileType: 'PDF',
       extractedText: finalText,
       charCount: finalText.length,
       isTruncated: isTruncated,
@@ -6917,7 +6671,7 @@ function extractLearningResourceContentCore(cneId, session) {
 /**
  * Deterministic chunking of extracted document content.
  * Target chunk size: ~1,200 characters (allowed range: 1,000 - 1,500 chars).
- * Preserves slide headings for PPT/PPTX and section headings for DOCX/PDF.
+ * Preserves section headings for PDF.
  * Stable, deterministic chunk ordering without AI or external dependencies.
  */
 function chunkExtractedContent(text, fileType) {
@@ -6925,58 +6679,9 @@ function chunkExtractedContent(text, fileType) {
   var clean = text.trim();
   if (clean.length < 15) return [];
 
-  var normType = String(fileType || '').toUpperCase();
-  var isPpt = normType === 'PPT' || normType === 'PPTX' || clean.indexOf('--- Slide ') !== -1;
-
   var chunks = [];
 
-  if (isPpt) {
-    // PPT / PPTX: Split by slide boundaries
-    var slideRegex = /(?:^|\\n)(--- Slide \\d+(?: [^-]+)? ---)\\n?/g;
-    var slideMatches = [];
-    var m;
-    while ((m = slideRegex.exec(clean)) !== null) {
-      slideMatches.push({ index: m.index, header: m[1], length: m[0].length });
-    }
-
-    if (slideMatches.length > 0) {
-      for (var s = 0; s < slideMatches.length; s++) {
-        var start = slideMatches[s].index + slideMatches[s].length;
-        var end = (s + 1 < slideMatches.length) ? slideMatches[s + 1].index : clean.length;
-        var slideBody = clean.substring(start, end).trim();
-        var slideHeader = slideMatches[s].header.replace(/^-+\\s*|\\s*-+$/g, '');
-
-        if (!slideBody) continue;
-
-        // Extract slide title from first non-empty line when concise
-        var lines = slideBody.split('\\n');
-        var firstLine = lines[0].trim();
-        var slideHeading = slideHeader;
-        if (firstLine && firstLine.length <= 80 && !firstLine.match(/^[\\d\\.\\-\\*\\•]/)) {
-          slideHeading = slideHeader + ': ' + firstLine;
-        }
-
-        if (slideBody.length <= 1500) {
-          chunks.push({
-            heading: slideHeading,
-            text: slideBody
-          });
-        } else {
-          // Slide exceeds 1,500 characters: split into sequential sub-chunks with overlap
-          var subWindows = splitTextIntoWindows(slideBody, 1200, 150);
-          for (var sw = 0; sw < subWindows.length; sw++) {
-            chunks.push({
-              heading: slideHeading + (subWindows.length > 1 ? ' (Part ' + (sw + 1) + ')' : ''),
-              text: subWindows[sw]
-            });
-          }
-        }
-      }
-      if (chunks.length > 0) return chunks;
-    }
-  }
-
-  // Document (PDF/DOCX/General) chunking by paragraph and heading
+  // Document (PDF) chunking by paragraph and heading
   var paragraphs = clean.split(/\\n{2,}/);
   var currentHeading = 'General Content';
   var currentAccumulator = '';
@@ -7374,64 +7079,19 @@ function chunkReferenceLibraryContent(text, fileType, defaultTitle) {
   var clean = text.trim();
   if (clean.length < 15) return [];
 
-  var normType = String(fileType || '').toUpperCase();
-  var isPpt = normType === 'PPT' || normType === 'PPTX' || clean.indexOf('--- Slide ') !== -1;
+  // Support both (text, defaultTitle) and (text, fileType, defaultTitle) signatures
+  var fallbackTitle = 'Open RN Nursing Reference';
+  if (defaultTitle && typeof defaultTitle === 'string') {
+    fallbackTitle = defaultTitle.trim();
+  } else if (fileType && typeof fileType === 'string' && fileType.toUpperCase() !== 'PDF') {
+    fallbackTitle = fileType.trim();
+  }
 
   var chunks = [];
-  var fallbackTitle = String(defaultTitle || 'Open RN Nursing Reference').trim();
   var currentChapter = fallbackTitle;
   var currentSection = 'General Content';
 
-  if (isPpt) {
-    // PPT / PPTX: Split by slide boundaries
-    var slideRegex = /(?:^|\\n)(--- Slide \\d+(?: [^-]+)? ---)\\n?/g;
-    var slideMatches = [];
-    var m;
-    while ((m = slideRegex.exec(clean)) !== null) {
-      slideMatches.push({ index: m.index, header: m[1], length: m[0].length });
-    }
-
-    if (slideMatches.length > 0) {
-      for (var s = 0; s < slideMatches.length; s++) {
-        var start = slideMatches[s].index + slideMatches[s].length;
-        var end = (s + 1 < slideMatches.length) ? slideMatches[s + 1].index : clean.length;
-        var slideBody = clean.substring(start, end).trim();
-        var slideHeader = slideMatches[s].header.replace(/^-+\\s*|\\s*-+$/g, '');
-
-        if (!slideBody) continue;
-
-        var lines = slideBody.split('\\n');
-        var firstLine = lines[0].trim();
-        var slideHeading = slideHeader;
-        if (firstLine && firstLine.length <= 80 && !firstLine.match(/^[\\d\\.\\-\\*\\•]/)) {
-          slideHeading = slideHeader + ': ' + firstLine;
-          if (/^(?:chapter|unit|module|part)\\b/i.test(firstLine)) {
-            currentChapter = firstLine;
-          }
-        }
-
-        if (slideBody.length <= 1500) {
-          chunks.push({
-            topic: currentChapter,
-            sectionHeading: slideHeading,
-            text: slideBody
-          });
-        } else {
-          var subWindows = splitTextIntoWindows(slideBody, 1200, 150);
-          for (var sw = 0; sw < subWindows.length; sw++) {
-            chunks.push({
-              topic: currentChapter,
-              sectionHeading: slideHeading + (subWindows.length > 1 ? ' (Part ' + (sw + 1) + ')' : ''),
-              text: subWindows[sw]
-            });
-          }
-        }
-      }
-      if (chunks.length > 0) return chunks;
-    }
-  }
-
-  // Document (PDF/DOCX/General) chunking by paragraph and heading
+  // Document (PDF) chunking by paragraph and heading
   var paragraphs = clean.split(/\\n{2,}/);
   var currentAccumulator = '';
 
@@ -7528,26 +7188,16 @@ function flushAccumulatedRefText(chunks, chapter, section, text) {
 
 /**
  * Extract textual content from a reference library document blob.
- * Strictly uses local approved document parsers without OCR, macros, or external AI.
+ * Authoritative PDF extraction engine without OCR or external dependencies.
  */
 function extractReferenceLibraryBlob(blob, fileType) {
-  var normType = String(fileType || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (normType === 'docx') {
-    return extractTextFromDocx(blob);
-  } else if (normType === 'pptx') {
-    return extractTextFromPptx(blob);
-  } else if (normType === 'ppt') {
-    return extractTextFromPpt(blob);
-  } else if (normType === 'pdf') {
-    return extractTextFromPdf(blob);
-  } else {
-    throw new Error('Unsupported reference file type: ' + fileType);
-  }
+  return extractTextFromPdf(blob);
 }
 
 /**
  * Register and index an approved Open RN nursing reference resource into CNE_Reference_Index.
  * Strictly Admin-only.
+ * Document Policy: PDF only (.pdf). No application-defined size limit.
  * Extraction & chunking run OUTSIDE ScriptLock.
  * Duplicate protection and surgical batch writing run INSIDE ScriptLock.
  */
@@ -7602,25 +7252,39 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
     };
   }
 
-  // 4. Validate file type
+  // 4. Validate file non-empty and type (PDF only)
+  var fileSize = file.getSize();
+  if (fileSize <= 0) {
+    return {
+      success: false,
+      errorCode: 'EMPTY_FILE',
+      message: 'Specified reference file is empty (0 bytes).'
+    };
+  }
+
   var fileName = file.getName();
   var ext = getFileExtension(fileName).toLowerCase();
-  var ALLOWED_EXTS = ['pdf', 'docx', 'ppt', 'pptx'];
+  var ALLOWED_EXTS = ['pdf'];
   if (ALLOWED_EXTS.indexOf(ext) === -1) {
     return {
       success: false,
       errorCode: 'UNSUPPORTED_FILE_TYPE',
-      message: 'Unsupported file type. Only PDF, DOCX, PPT, and PPTX documents are permitted.'
+      message: 'Unsupported file type. Only PDF (.pdf) documents are permitted.'
     };
   }
 
-  // 5. Validate file size (Max 25 MB for reference textbooks)
-  var fileSize = file.getSize();
-  if (fileSize > 25 * 1024 * 1024) {
+  // 5. Binary & Structural Signature Validation (%PDF header)
+  var fileBlob = file.getBlob();
+  var headerBytes = fileBlob.getBytes().slice(0, 4);
+  if (headerBytes.length < 4 ||
+      (headerBytes[0] & 0xFF) !== 0x25 ||
+      (headerBytes[1] & 0xFF) !== 0x50 ||
+      (headerBytes[2] & 0xFF) !== 0x44 ||
+      (headerBytes[3] & 0xFF) !== 0x46) {
     return {
       success: false,
-      errorCode: 'FILE_TOO_LARGE',
-      message: 'Reference resource exceeds maximum allowed size of 25 MB.'
+      errorCode: 'INVALID_FILE_CONTENT',
+      message: 'File content does not match standard PDF document structure (%PDF header missing).'
     };
   }
 
@@ -7665,11 +7329,19 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
   var extResult = null;
   var rawText = '';
   try {
-    rawText = extractReferenceLibraryBlob(file.getBlob(), ext);
-    extResult = {
-      success: rawText && rawText.trim().length >= 15,
-      extractedText: rawText ? rawText.trim() : ''
-    };
+    rawText = extractReferenceLibraryBlob(fileBlob, ext);
+    if (!rawText || rawText.trim().length < 15) {
+      extResult = {
+        success: false,
+        errorCode: 'NO_EXTRACTABLE_CONTENT',
+        message: 'This PDF does not contain usable text. Please upload a text-based PDF.'
+      };
+    } else {
+      extResult = {
+        success: true,
+        extractedText: rawText.trim()
+      };
+    }
   } catch (extractErr) {
     extResult = {
       success: false,
@@ -7707,7 +7379,7 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
       extResult = {
         success: false,
         errorCode: 'NO_EXTRACTABLE_CONTENT',
-        message: 'No readable textual content could be extracted into chunks.'
+        message: 'This PDF does not contain usable text. Please upload a text-based PDF.'
       };
     }
   }
@@ -8072,7 +7744,7 @@ function listNursingReferenceResources(session) {
       var folderResult = getOrCreateOpenRnFolder();
       if (folderResult.success && folderResult.folder) {
         var filesIter = folderResult.folder.getFiles();
-        var ALLOWED_EXTS = ['pdf', 'docx', 'ppt', 'pptx'];
+        var ALLOWED_EXTS = ['pdf'];
 
         var indexedMap = {};
         for (var i = 0; i < resources.length; i++) {
@@ -8116,6 +7788,7 @@ function listNursingReferenceResources(session) {
 /**
  * Upload an Open RN reference resource directly into the Open RN folder and index it.
  * Strictly Admin-only.
+ * Document Policy: PDF only (.pdf). No application-defined size limit.
  */
 function uploadNursingReferenceResource(params, session) {
   var adminError = requireAdmin(session);
@@ -8152,11 +7825,24 @@ function uploadNursingReferenceResource(params, session) {
     return { success: false, errorCode: 'INVALID_PAYLOAD', message: 'Invalid file payload: unable to decode base64 content.' };
   }
 
-  if (fileBytes.length > 3 * 1024 * 1024) {
-    return { success: false, errorCode: 'FILE_TOO_LARGE', message: 'File size exceeds maximum allowed size of 3 MB.' };
+  if (!fileBytes || fileBytes.length === 0) {
+    return { success: false, errorCode: 'EMPTY_FILE', message: 'Uploaded file is empty (0 bytes).' };
   }
 
-  var mimeType = getMimeTypeFromExt(ext);
+  // Validate %PDF binary header signature (0x25, 0x50, 0x44, 0x46)
+  if (fileBytes.length < 4 ||
+      (fileBytes[0] & 0xFF) !== 0x25 ||
+      (fileBytes[1] & 0xFF) !== 0x50 ||
+      (fileBytes[2] & 0xFF) !== 0x44 ||
+      (fileBytes[3] & 0xFF) !== 0x46) {
+    return {
+      success: false,
+      errorCode: 'INVALID_FILE_CONTENT',
+      message: 'File content does not match standard PDF document structure (%PDF header missing).'
+    };
+  }
+
+  var mimeType = 'application/pdf';
   var safeName = sanitizeFileNamePart(fileName.replace(/\\.[^/.]+$/, '')) + '.' + ext;
   var blob = Utilities.newBlob(fileBytes, mimeType, safeName);
 
@@ -9323,294 +9009,6 @@ function handleRunLocalRetrievalValidation(params, session) {
   return handleAdminAction(params, session, function(p, s) {
     return runLocalRetrievalValidation(p, s);
   }, 'RUN_LOCAL_RETRIEVAL_VALIDATION');
-}
-
-/**
- * Extract readable document text and tables from DOCX
- */
-function extractTextFromDocx(blob) {
-  var zipBlobs;
-  try {
-    zipBlobs = Utilities.unzip(blob.setContentType('application/zip'));
-  } catch (unzipErr) {
-    throw new Error('CORRUPT_PACKAGE');
-  }
-
-  var docXmlBlob = null;
-  var additionalXmlBlobs = [];
-  for (var i = 0; i < zipBlobs.length; i++) {
-    var n = zipBlobs[i].getName().replace(/\\\\/g, '/').toLowerCase();
-    if (n === 'word/document.xml' || n.indexOf('document.xml') >= 0) {
-      docXmlBlob = zipBlobs[i];
-    } else if (n.indexOf('word/header') >= 0 || n.indexOf('word/footer') >= 0 || n.indexOf('word/footnotes') >= 0) {
-      additionalXmlBlobs.push(zipBlobs[i]);
-    }
-  }
-
-  if (!docXmlBlob && additionalXmlBlobs.length === 0) {
-    throw new Error('MISSING_WORD_DOCUMENT');
-  }
-
-  var textParts = [];
-  if (docXmlBlob) {
-    var xmlStr = docXmlBlob.getDataAsString('UTF-8');
-    var mainText = parseWordDocumentXml(xmlStr);
-    if (mainText && mainText.trim()) {
-      textParts.push(mainText.trim());
-    }
-  }
-
-  for (var a = 0; a < additionalXmlBlobs.length; a++) {
-    var aXml = additionalXmlBlobs[a].getDataAsString('UTF-8');
-    var aText = parseWordDocumentXml(aXml);
-    if (aText && aText.trim()) {
-      textParts.push(aText.trim());
-    }
-  }
-
-  return textParts.join('\\n\\n');
-}
-
-function parseWordDocumentXml(xmlStr) {
-  function decodeXml(s) {
-    return s
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/&#(\\d+);/g, function(_, n) { return String.fromCharCode(parseInt(n, 10)); })
-      .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) { return String.fromCharCode(parseInt(h, 16)); });
-  }
-
-  var paragraphs = [];
-  var pRegex = /<w:p\\b[^>]*>([\\s\\S]*?)<\\/w:p>/g;
-  var pMatch;
-  while ((pMatch = pRegex.exec(xmlStr)) !== null) {
-    var pContent = pMatch[1];
-    var pText = '';
-    var tRegex = /<w:t\\b[^>]*>([\\s\\S]*?)<\\/w:t>|<a:t\\b[^>]*>([\\s\\S]*?)<\\/a:t>|<w:tab\\/>|<w:br\\/>/g;
-    var tMatch;
-    while ((tMatch = tRegex.exec(pContent)) !== null) {
-      if (tMatch[0] === '<w:tab/>') {
-        pText += ' ';
-      } else if (tMatch[0] === '<w:br/>') {
-        pText += '\\n';
-      } else if (tMatch[1]) {
-        pText += tMatch[1];
-      } else if (tMatch[2]) {
-        pText += tMatch[2];
-      }
-    }
-    var cleanP = decodeXml(pText).trim();
-    if (cleanP) {
-      paragraphs.push(cleanP);
-    }
-  }
-
-  // Fallback: if no <w:p> matched, extract all <w:t> and <a:t> tags directly
-  if (paragraphs.length === 0) {
-    var allTRegex = /<(?:w|a):t\\b[^>]*>([\\s\\S]*?)<\\/(?:w|a):t>/g;
-    var aMatch;
-    var directTexts = [];
-    while ((aMatch = allTRegex.exec(xmlStr)) !== null) {
-      var dt = decodeXml(aMatch[1]).trim();
-      if (dt) directTexts.push(dt);
-    }
-    if (directTexts.length > 0) {
-      return directTexts.join(' ');
-    }
-  }
-
-  return paragraphs.join('\\n\\n');
-}
-
-/**
- * Extract readable text from PPTX slides in natural order
- */
-function extractTextFromPptx(blob) {
-  var zipBlobs;
-  try {
-    zipBlobs = Utilities.unzip(blob.setContentType('application/zip'));
-  } catch (unzipErr) {
-    throw new Error('CORRUPT_PACKAGE');
-  }
-
-  var slideBlobs = [];
-  var notesBlobs = [];
-  for (var i = 0; i < zipBlobs.length; i++) {
-    var bName = zipBlobs[i].getName().replace(/\\\\/g, '/').toLowerCase();
-    var match = bName.match(/(?:^|\\/)ppt\\/slides\\/slide(\\d+)\\.xml$/i);
-    if (match) {
-      slideBlobs.push({
-        num: parseInt(match[1], 10),
-        blob: zipBlobs[i]
-      });
-    }
-    var notesMatch = bName.match(/(?:^|\\/)ppt\\/notesSlides\\/notesSlide(\\d+)\\.xml$/i);
-    if (notesMatch) {
-      notesBlobs.push({
-        num: parseInt(notesMatch[1], 10),
-        blob: zipBlobs[i]
-      });
-    }
-  }
-
-  if (slideBlobs.length === 0 && notesBlobs.length === 0) {
-    throw new Error('NO_SLIDES_FOUND');
-  }
-
-  slideBlobs.sort(function(a, b) { return a.num - b.num; });
-  notesBlobs.sort(function(a, b) { return a.num - b.num; });
-
-  var slideTexts = [];
-  for (var s = 0; s < slideBlobs.length; s++) {
-    var sXml = slideBlobs[s].blob.getDataAsString('UTF-8');
-    var sText = parsePptxSlideXml(sXml);
-    if (sText && sText.trim()) {
-      slideTexts.push('--- Slide ' + slideBlobs[s].num + ' ---\\n' + sText.trim());
-    }
-  }
-
-  for (var n = 0; n < notesBlobs.length; n++) {
-    var nXml = notesBlobs[n].blob.getDataAsString('UTF-8');
-    var nText = parsePptxSlideXml(nXml);
-    if (nText && nText.trim()) {
-      slideTexts.push('--- Slide ' + notesBlobs[n].num + ' Notes ---\\n' + nText.trim());
-    }
-  }
-
-  return slideTexts.join('\\n\\n');
-}
-
-function parsePptxSlideXml(xmlStr) {
-  function decodeXml(s) {
-    return s
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/&#(\\d+);/g, function(_, n) { return String.fromCharCode(parseInt(n, 10)); })
-      .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) { return String.fromCharCode(parseInt(h, 16)); });
-  }
-
-  var lines = [];
-  var pRegex = /<a:p\\b[^>]*>([\\s\\S]*?)<\\/a:p>/g;
-  var pMatch;
-  while ((pMatch = pRegex.exec(xmlStr)) !== null) {
-    var pContent = pMatch[1];
-    var pText = '';
-    var tRegex = /<a:t\\b[^>]*>([\\s\\S]*?)<\\/a:t>|<a:br\\/>/g;
-    var tMatch;
-    while ((tMatch = tRegex.exec(pContent)) !== null) {
-      if (tMatch[0] === '<a:br/>') {
-        pText += '\\n';
-      } else if (tMatch[1]) {
-        pText += tMatch[1];
-      }
-    }
-    var cleanL = decodeXml(pText).trim();
-    if (cleanL) {
-      lines.push(cleanL);
-    }
-  }
-
-  if (lines.length === 0) {
-    var allTRegex = /<a:t\\b[^>]*>([\\s\\S]*?)<\\/a:t>/g;
-    var allMatch;
-    while ((allMatch = allTRegex.exec(xmlStr)) !== null) {
-      var dt = decodeXml(allMatch[1]).trim();
-      if (dt) lines.push(dt);
-    }
-  }
-
-  return lines.join('\\n');
-}
-
-/**
- * Extract readable text from legacy PPT binary file
- */
-function extractTextFromPpt(blob) {
-  var bytes = blob.getBytes();
-  if (!bytes || bytes.length < 512) {
-    throw new Error('CORRUPT_FILE');
-  }
-
-  var extracted = [];
-  var len = bytes.length;
-  var i = 0;
-
-  while (i + 8 <= len) {
-    var recType = (bytes[i + 2] & 0xFF) | ((bytes[i + 3] & 0xFF) << 8);
-    var recLen = ((bytes[i + 4] & 0xFF) |
-                  ((bytes[i + 5] & 0xFF) << 8) |
-                  ((bytes[i + 6] & 0xFF) << 16) |
-                  ((bytes[i + 7] & 0xFF) << 24)) >>> 0;
-
-    if (recLen > 0 && recLen < 200000 && i + 8 + recLen <= len) {
-      if (recType === 0x0FA0 || recType === 0x0FBA) { // TextCharsAtom / CString (UTF-16LE)
-        var utf16Chars = [];
-        for (var c = 0; c < recLen; c += 2) {
-          var code = (bytes[i + 8 + c] & 0xFF) | ((bytes[i + 8 + c + 1] & 0xFF) << 8);
-          if ((code >= 32 && code <= 126) || code === 10 || code === 13 || (code > 126 && code < 0xFFFE)) {
-            utf16Chars.push(String.fromCharCode(code));
-          }
-        }
-        var s16 = utf16Chars.join('').trim();
-        if (s16.length >= 3) extracted.push(s16);
-        i += 8 + recLen;
-        continue;
-      } else if (recType === 0x0FA8) { // TextBytesAtom (single-byte)
-        var asciiChars = [];
-        for (var a = 0; a < recLen; a++) {
-          var byteCode = bytes[i + 8 + a] & 0xFF;
-          if ((byteCode >= 32 && byteCode <= 126) || byteCode === 10 || byteCode === 13) {
-            asciiChars.push(String.fromCharCode(byteCode));
-          }
-        }
-        var s8 = asciiChars.join('').trim();
-        if (s8.length >= 3) extracted.push(s8);
-        i += 8 + recLen;
-        continue;
-      }
-    }
-    i++;
-  }
-
-  var deduped = [];
-  var last = '';
-  for (var d = 0; d < extracted.length; d++) {
-    if (extracted[d] !== last) {
-      deduped.push(extracted[d]);
-      last = extracted[d];
-    }
-  }
-
-  // Fallback for binary PPT: scan printable ASCII character runs (length >= 4)
-  if (deduped.length === 0) {
-    var asciiScan = [];
-    var curRun = [];
-    for (var bIdx = 0; bIdx < len; bIdx++) {
-      var bVal = bytes[bIdx] & 0xFF;
-      if (bVal >= 32 && bVal <= 126) {
-        curRun.push(String.fromCharCode(bVal));
-      } else {
-        if (curRun.length >= 5) {
-          var w = curRun.join('').trim();
-          if (w.length >= 5 && !/^[0-9\\s]+$/.test(w)) asciiScan.push(w);
-        }
-        curRun = [];
-      }
-    }
-    if (curRun.length >= 5) {
-      var wEnd = curRun.join('').trim();
-      if (wEnd.length >= 5 && !/^[0-9\\s]+$/.test(wEnd)) asciiScan.push(wEnd);
-    }
-    return asciiScan.join('\\n');
-  }
-
-  return deduped.join('\\n');
 }
 
 /**
@@ -11313,13 +10711,13 @@ function handleValidateAiQuotaReservation(params, session) {
 }
 
 /**
- * Direct Gemini Clinical MCQ Generation in Google Apps Script
+ * Direct Gemini Clinical MCQ Generation in Google Apps Script (Internal Helper)
  * Grounded strictly in local CNE Material and Nursing Reference Library.
  * Authoritatively verifies session, question management authorization, and active quota reservation.
  * Invokes Google Gemini API directly using UrlFetchApp.
  * Never uses paid models or external online knowledge fallback.
  */
-function handleGenerateAiQuestions(params, session) {
+function generateAiQuestionsInternal(params, session) {
   if (!session || !session.employeeId) {
     return {
       success: false,
@@ -11728,7 +11126,7 @@ function handleGenerateCNEQuestions(params, session) {
   // Direct Gemini network call and validation (OUTSIDE ScriptLock)
   var genRes = null;
   try {
-    genRes = handleGenerateAiQuestions({
+    genRes = generateAiQuestionsInternal({
       cneId: cneId,
       reservationToken: reservationToken,
       generationSource: 'MATERIAL'

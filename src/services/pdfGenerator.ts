@@ -215,11 +215,8 @@ export function generateCNERecordsPdf(
 
   // Trigger download
   const cleanName = (user.name || 'Officer').replace(/[^a-zA-Z0-9]/g, '_');
-  doc.save(`CNE_Record_${user.employeeId}_${cleanName}${dateRangeFilePart}.pdf`);
+  doc.save(`CNE_Record_${user.employeeId}_${cleanName}.pdf`);
 }
-
-// Backwards compatibility alias
-export const generateAnnualCNEPdf = generateCNERecordsPdf;
 
 export function generateCNESessionPdf(
   cne: CNERecord,

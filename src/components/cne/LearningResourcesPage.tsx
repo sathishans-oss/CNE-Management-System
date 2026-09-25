@@ -177,47 +177,10 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
 
   const getFileTypeBadge = (fileType?: string, fileName?: string) => {
     const ft = (fileType || '').toLowerCase();
-    const fn = (fileName || '').toLowerCase();
-
-    if (ft.includes('pdf') || fn.endsWith('.pdf')) {
-      return {
-        label: 'PDF',
-        bg: 'bg-rose-50 text-rose-700 border-rose-200',
-        iconColor: 'text-rose-600'
-      };
-    }
-    if (ft.includes('word') || ft.includes('docx') || fn.endsWith('.docx') || fn.endsWith('.doc')) {
-      return {
-        label: 'DOCX',
-        bg: 'bg-blue-50 text-blue-700 border-blue-200',
-        iconColor: 'text-blue-600'
-      };
-    }
-    if (fn.endsWith('.pptx') || ft.includes('presentationml') || (ft.includes('presentation') && !fn.endsWith('.ppt')) || ft.includes('pptx')) {
-      return {
-        label: 'PPTX',
-        bg: 'bg-amber-50 text-amber-700 border-amber-200',
-        iconColor: 'text-amber-600'
-      };
-    }
-    if (fn.endsWith('.ppt') || ft.includes('ms-powerpoint') || ft.includes('ppt')) {
-      return {
-        label: 'PPT',
-        bg: 'bg-orange-50 text-orange-700 border-orange-200',
-        iconColor: 'text-orange-600'
-      };
-    }
-    if (ft.includes('text') || fn.endsWith('.txt') || fn.endsWith('.md')) {
-      return {
-        label: 'TXT',
-        bg: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-        iconColor: 'text-emerald-600'
-      };
-    }
     return {
-      label: 'DOC',
-      bg: 'bg-slate-50 text-slate-700 border-slate-200',
-      iconColor: 'text-slate-600'
+      label: 'PDF',
+      bg: 'bg-rose-50 text-rose-700 border-rose-200',
+      iconColor: 'text-rose-600'
     };
   };
 

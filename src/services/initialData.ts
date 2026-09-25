@@ -602,8 +602,8 @@ export const INITIAL_QUICK_LINKS: QuickLinkItem[] = [
       title: "CNE Portfolio Certification Guide",
       body: [
         "Step 1: Sign in to the CNE Portal using your institutional Employee ID.",
-        "Step 2: Review your cumulative CNE hours and completed sessions under 'My CNE'.",
-        "Step 3: Click the 'Generate Annual CNE Record' button to download the institutional PDF report.",
+        "Step 2: Review your cumulative CNE hours and completed sessions under 'My CNE Records'.",
+        "Step 3: Click the 'Generate PDF' button to download the institutional CNE Training Record PDF report matching the selected filters.",
         "Step 4: Get your generated record verified and signed by the CNE Coordinator and Chairperson, CNE Committee / CNO.",
         "Step 5: Retain the verified record in your personal professional portfolio."
       ]

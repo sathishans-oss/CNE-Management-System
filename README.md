@@ -37,7 +37,17 @@ Google Sheets / Google Drive / Gemini API
 
 ## Backend Configuration (Google Apps Script Script Properties)
 
-* **GEMINI_API_KEY**: Script Property in Google Apps Script (Project Settings > Script Properties) for Google Gemini API access.
+The backend is configured entirely in Apps Script via Project Settings > Script Properties:
+* **CNE_SPREADSHEET_ID**: ID of the primary CNE Google Sheet.
+* **DROPDOWN_SPREADSHEET_ID**: ID of the Dropdowns and Configuration Google Sheet.
+* **DRIVE_FOLDER_ID**: Google Drive folder for uploaded CNE learning materials and resources.
+* **SESSION_SECRET**: Secret key used for HMAC session token verification.
+* **PASSWORD_PEPPER**: Pepper string used for SHA-256 password hashing.
+* **GEMINI_API_KEY**: API key for Google Gemini API access.
 * **GEMINI_MODEL**: AI model configuration (defaults to `gemini-2.5-flash`). Paid-tier models are strictly prohibited.
-* **VITE_APPS_SCRIPT_URL**: Google Apps Script web app endpoint configured in the web app.
+
+## Frontend Configuration (.env)
+
+* **VITE_APPS_SCRIPT_URL**: Google Apps Script web app endpoint for production backend connectivity.
+
 

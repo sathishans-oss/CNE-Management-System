@@ -723,7 +723,7 @@ export class ApiService {
   /**
    * Unified Authoritative CNE APIs (Operating on 'CNE Schedule')
    */
-  static async getCNERecords(params?: { status?: string; cneType?: string; area?: string; myRecordsOnly?: boolean }): Promise<ApiResponse<CNERecord[]>> {
+  static async getCNERecords(params?: { status?: string; cneType?: string; area?: string; myRecordsOnly?: boolean; scope?: string }): Promise<ApiResponse<CNERecord[]>> {
     return this.executeAction<CNERecord[]>('getCNERecords', params);
   }
 
@@ -918,53 +918,10 @@ export class ApiService {
   }
 
   /**
-   * Part 2: AI Question Generator
-   * Google Apps Script remains the single authoritative CNE backend and directly calls Gemini for AI MCQ generation.
-   */
-  static async generateAiQuestions(params: {
-    cneId: string;
-    topic: string;
-    reservationToken: string;
-    cneMaterial?: string;
-    referenceMaterial?: string;
-    syllabus?: string;
-    generationSource?: 'MATERIAL';
-  }): Promise<ApiResponse<CNEQuestion[]>> {
-    return this.executeAction<CNEQuestion[]>('generateAiQuestions', params);
-  }
-
-  static async getAiConfig(): Promise<ApiResponse<{ isConfigured: boolean; maskedApiKey: string; model: string }>> {
-    return this.executeAction('getAiConfig');
-  }
-
-  static async setAiConfig(params: { apiKey?: string; model?: string }): Promise<ApiResponse> {
-    return this.executeAction('setAiConfig', params);
-  }
-
-  /**
    * AI Quota Lifecycle & Concurrency APIs (Authoritative Google Apps Script)
    */
   static async getAiQuota(cneId: string): Promise<ApiResponse<CNEAiQuotaInfo>> {
     return this.executeAction<CNEAiQuotaInfo>('getAiQuota', { cneId });
-  }
-
-  static async reserveAiQuota(cneId: string, generationSource?: 'MATERIAL'): Promise<ApiResponse<{
-    reservationToken: string;
-    cneId: string;
-    attemptsUsed: number;
-    maxQuota: number;
-    remaining: number;
-    canGenerate: boolean;
-  }>> {
-    return this.executeAction('reserveAiQuota', { cneId, generationSource: generationSource || 'MATERIAL' });
-  }
-
-  static async commitAiQuota(cneId: string, reservationToken: string, questions?: CNEQuestion[]): Promise<ApiResponse<CNEAiQuotaInfo>> {
-    return this.executeAction<CNEAiQuotaInfo>('commitAiQuota', { cneId, reservationToken, questions });
-  }
-
-  static async releaseAiQuota(cneId: string, reservationToken: string): Promise<ApiResponse> {
-    return this.executeAction('releaseAiQuota', { cneId, reservationToken });
   }
 
   /**
@@ -985,7 +942,7 @@ export class ApiService {
   }
 
   /**
-   * Upload CNE Learning Resource File (PDF, DOCX, PPT, PPTX)
+   * Upload CNE Learning Resource File (PDF only, maximum 3 MB)
    */
   static async uploadLearningResource(params: {
     cneId: string;

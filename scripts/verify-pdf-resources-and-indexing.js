@@ -242,6 +242,54 @@ runTest('Reference Library resources support visibility toggling and indexing', 
   );
 });
 
+runTest('Office extraction functions are completely removed and single shared PDF engine is used', () => {
+  // Office extraction functions must NOT exist
+  assert.ok(!codeGs.includes('function extractTextFromDocx('), 'extractTextFromDocx must be removed from Code.gs');
+  assert.ok(!codeGs.includes('function extractTextFromPptx('), 'extractTextFromPptx must be removed from Code.gs');
+  assert.ok(!codeGs.includes('function extractTextFromPpt('), 'extractTextFromPpt must be removed from Code.gs');
+  assert.ok(!codeGs.includes('function parseWordDocumentXml('), 'parseWordDocumentXml must be removed from Code.gs');
+  assert.ok(!codeGs.includes('function parsePptxSlideXml('), 'parsePptxSlideXml must be removed from Code.gs');
+  assert.ok(!codeGs.includes('function validateOfficeOpenXmlStructure('), 'validateOfficeOpenXmlStructure must be removed from Code.gs');
+  assert.ok(!codeGs.includes('function getZipArchiveEntryNames('), 'getZipArchiveEntryNames must be removed from Code.gs');
+
+  // Authoritative extractTextFromPdf must exist as the single PDF engine
+  assert.ok(codeGs.includes('function extractTextFromPdf('), 'extractTextFromPdf must exist in Code.gs');
+  assert.ok(codeGs.includes('extractTextFromPdf(blob)'), 'extractTextFromPdf must be called for text extraction');
+
+  // Both CNE learning material extraction and Reference Library extraction must use extractTextFromPdf
+  const cneExtractionMatch = codeGs.includes('rawExtracted = extractTextFromPdf(blob)');
+  const refExtractionMatch = codeGs.includes('return extractTextFromPdf(blob)');
+  assert.ok(cneExtractionMatch, 'CNE learning material extraction must use extractTextFromPdf');
+  assert.ok(refExtractionMatch, 'Reference Library extraction must use extractTextFromPdf');
+});
+
+runTest('No application-defined file size limits (3MB, 5MB, 10MB, 25MB) exist for Reference Library', () => {
+  // indexReferenceLibraryResource must not have any 25MB or 3MB size check
+  const indexMatch = codeGs.match(/function\s+indexReferenceLibraryResource\s*\([\s\S]*?\n\}/);
+  assert.ok(indexMatch, 'indexReferenceLibraryResource must exist in Code.gs');
+  assert.ok(!indexMatch[0].includes('25 * 1024 * 1024'), 'indexReferenceLibraryResource must not have 25 MB limit');
+  assert.ok(!indexMatch[0].includes('3 * 1024 * 1024'), 'indexReferenceLibraryResource must not have 3 MB limit');
+  assert.ok(!indexMatch[0].includes('5 * 1024 * 1024'), 'indexReferenceLibraryResource must not have 5 MB limit');
+  assert.ok(!indexMatch[0].includes('10 * 1024 * 1024'), 'indexReferenceLibraryResource must not have 10 MB limit');
+
+  // uploadNursingReferenceResource must not restrict reference textbooks to 3MB or 25MB
+  const uploadRefMatch = codeGs.match(/function\s+uploadNursingReferenceResource\s*\([\s\S]*?\n\}/);
+  assert.ok(uploadRefMatch, 'uploadNursingReferenceResource must exist in Code.gs');
+  assert.ok(!uploadRefMatch[0].includes('3 * 1024 * 1024'), 'uploadNursingReferenceResource must not have 3 MB limit');
+  assert.ok(!uploadRefMatch[0].includes('25 * 1024 * 1024'), 'uploadNursingReferenceResource must not have 25 MB limit');
+});
+
+runTest('Scanned/image-only PDFs return NO_EXTRACTABLE_CONTENT with helpful guidance', () => {
+  assert.ok(
+    codeGs.includes("'NO_EXTRACTABLE_CONTENT'"),
+    'Code.gs must return NO_EXTRACTABLE_CONTENT error code'
+  );
+  assert.ok(
+    codeGs.includes('This PDF does not contain usable text. Please upload a text-based PDF.'),
+    'Code.gs must provide clear user-facing message for scanned/image-only PDFs'
+  );
+});
+
 // =============================================================================
 // 5. Deterministic Chunking & Indexing Schema (Phase 4A)
 // =============================================================================
