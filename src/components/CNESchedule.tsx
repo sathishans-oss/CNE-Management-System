@@ -426,7 +426,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         cneType: 'CENTRAL',
         date: newDate,
         toDate: newToDate,
-        time: '',
         duration: newDuration.trim(),
         resourcePersonEmpId: selectedRpEmpIds.join(', '),
         resourcePersonEmpIds: selectedRpEmpIds,
@@ -600,7 +599,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         cneType: editCneType,
         date: editDate,
         toDate: editToDate,
-        time: '',
         duration: editDuration.trim(),
         resourcePersonEmpId: editSelectedRpEmpIds.join(', '),
         resourcePersonEmpIds: editSelectedRpEmpIds,
@@ -622,7 +620,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           cneType: editCneType,
           date: editDate,
           toDate: editToDate,
-          time: '',
           duration: editDuration.trim(),
           resourcePersonEmpId: editSelectedRpEmpIds.join(', '),
           resourcePersonName: rpNames.join(', '),
@@ -983,7 +980,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         </td>
                         <td className="py-3 px-4 whitespace-nowrap">
                           <div className="font-semibold text-slate-800">
-                            {formatCneDateTimeDisplay(cls.date, cls.toDate, cls.time)}
+                            {formatCneDateTimeDisplay(cls.date, cls.toDate)}
                           </div>
                         </td>
                         <td className="py-3 px-4">

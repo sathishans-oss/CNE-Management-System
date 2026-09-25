@@ -3,15 +3,12 @@
  * LOCAL DEVELOPMENT SERVER (Express + Vite Middleware)
  * ============================================================================
  * PRODUCTION ARCHITECTURE:
- * - Hosting: Cloudflare Pages
- * - Production AI Endpoint: functions/api/ai/generate-questions.ts
- * - Production Route: /api/ai/generate-questions
- * - Production Health: functions/api/health.ts (/api/health)
+ * - Hosting: Cloudflare Pages (Pure React/Vite SPA only)
+ * - Single Authoritative Backend: Google Apps Script (Code.gs)
+ * - Gemini AI MCQ Generation: Directly executed inside Google Apps Script (UrlFetchApp)
  *
  * This server.ts file serves as the local development environment (`npm run dev`)
- * providing local API emulation matching the Cloudflare Pages Functions production
- * contract. In production, Cloudflare Pages directly executes the Edge Functions
- * under `functions/`.
+ * hosting the Vite dev server and providing local health diagnostics.
  * ============================================================================
  */
 

@@ -710,7 +710,8 @@ export class ApiService {
   }
 
   /**
-   * Part 2: AI Question Generator (Calls Express backend with Gemini Flash Free Tier)
+   * Part 2: AI Question Generator
+   * Google Apps Script remains the single authoritative CNE backend and directly calls Gemini for AI MCQ generation.
    */
   static async generateAiQuestions(params: {
     cneId: string;
@@ -721,69 +722,15 @@ export class ApiService {
     syllabus?: string;
     generationSource?: 'MATERIAL';
   }): Promise<ApiResponse<CNEQuestion[]>> {
-    try {
-      const session = this.getSessionUser();
-      const response = await fetch('/api/ai/generate-questions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({
-          ...params,
-          token: session?.token,
-          loggedInEmployeeId: session?.employeeId
-        })
-      });
+    return this.executeAction<CNEQuestion[]>('generateAiQuestions', params);
+  }
 
-      // 1. Read response body safely without throwing on non-JSON content
-      const rawText = await response.text();
+  static async getAiConfig(): Promise<ApiResponse<{ isConfigured: boolean; maskedApiKey: string; model: string }>> {
+    return this.executeAction('getAiConfig');
+  }
 
-      // 2. Check Content-Type and inspect payload structure
-      const contentType = (response.headers.get('content-type') || '').toLowerCase();
-      const trimmed = rawText.trim();
-      const isLikelyJson = (contentType.includes('application/json') || trimmed.startsWith('{') || trimmed.startsWith('[')) && !trimmed.startsWith('<!');
-
-      if (!isLikelyJson) {
-        const isProxyError = trimmed.startsWith('<!') || response.status >= 500;
-        return {
-          success: false,
-          errorCode: isProxyError ? 'AI_SERVICE_UNAVAILABLE' : 'AI_ENDPOINT_INVALID_RESPONSE',
-          message: isProxyError
-            ? 'AI question generation service is temporarily unavailable. Please try again in a few moments.'
-            : 'AI question generation service returned an unexpected response. Please try again.'
-        };
-      }
-
-      // 3. Safely parse JSON
-      let result: any;
-      try {
-        result = JSON.parse(rawText);
-      } catch {
-        return {
-          success: false,
-          errorCode: 'AI_SERVICE_UNAVAILABLE',
-          message: 'AI question generation service is temporarily unavailable. Please try again in a few moments.'
-        };
-      }
-
-      // 4. If HTTP status is not ok (4xx/5xx), return controlled error response
-      if (!response.ok) {
-        return {
-          success: false,
-          errorCode: result?.errorCode || 'AI_GENERATION_ERROR',
-          message: result?.message || 'Unable to generate AI questions.'
-        };
-      }
-
-      return result;
-    } catch (err: any) {
-      return {
-        success: false,
-        errorCode: 'AI_GENERATION_ERROR',
-        message: err?.message || 'Unable to generate AI questions.'
-      };
-    }
+  static async setAiConfig(params: { apiKey?: string; model?: string }): Promise<ApiResponse> {
+    return this.executeAction('setAiConfig', params);
   }
 
   /**

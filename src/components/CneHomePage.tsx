@@ -300,7 +300,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             <div className="bg-slate-50 p-4 rounded-xl space-y-2 text-xs text-slate-700 border border-slate-200">
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Date &amp; Schedule:</span>
-                <span className="font-bold text-slate-900">{formatCneDateTimeDisplay(selectedClass.date, selectedClass.toDate, selectedClass.time)}</span>
+                <span className="font-bold text-slate-900">{formatCneDateTimeDisplay(selectedClass.date, selectedClass.toDate)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Duration:</span>

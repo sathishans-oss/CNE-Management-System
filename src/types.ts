@@ -97,7 +97,6 @@ export interface CNERecord {
   fromDate: string;
   date?: string; // Date alias for fromDate
   toDate?: string;
-  time?: string;
   duration: string; // Duration in HH:MM:SS format
   resourcePersonEmpId: string;
   resourcePersonEmpIds?: string[];
@@ -144,7 +143,6 @@ export interface DepartmentalScheduleRow {
   area: string;
   date: string; // From Date & Time
   toDate?: string; // To Date & Time
-  time?: string; // Optional legacy time
   duration: string; // Duration in HH:MM:SS format
   resourcePersonEmpId: string;
   resourcePersonEmpIds?: string[];

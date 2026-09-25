@@ -280,7 +280,7 @@ export function generateCNESessionPdf(
   const cleanTopic = (cne.topic || 'Clinical Nursing Topic').slice(0, 48);
   doc.text(cleanTopic, 48, 60);
   doc.text(cne.area || 'General Clinical Area', 48, 66);
-  const scheduleText = formatCneDateTimeDisplay(cne.date, cne.toDate, cne.time);
+  const scheduleText = formatCneDateTimeDisplay(cne.date, cne.toDate);
   const durText = cne.duration ? ` (${cne.duration})` : '';
   doc.text(`${scheduleText}${durText}`, 48, 72);
 

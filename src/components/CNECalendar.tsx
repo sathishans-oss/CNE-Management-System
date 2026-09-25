@@ -45,7 +45,6 @@ export const CNECalendar: React.FC = () => {
       area: r.area,
       date: r.fromDate || r.date,
       toDate: r.toDate,
-      time: r.time || (r.status === 'Completed' ? 'Completed Session' : 'Scheduled'),
       duration: r.duration,
       instructor: r.resourcePersonName || r.resourcePersonEmpId,
       mode: r.modeOfTeaching,
@@ -297,7 +296,7 @@ export const CNECalendar: React.FC = () => {
                   <div className="text-right shrink-0">
                     <div className="text-xs font-bold text-slate-800 flex items-center gap-1 sm:justify-end">
                       <CalendarIcon className="w-3.5 h-3.5 text-slate-400" />
-                      <span>{formatCneDateTimeDisplay(ev.date, ev.toDate, ev.time)}</span>
+                      <span>{formatCneDateTimeDisplay(ev.date, ev.toDate)}</span>
                     </div>
                     {ev.duration && <div className="text-xs text-slate-500 mt-0.5">Duration: {ev.duration}</div>}
                   </div>
@@ -351,7 +350,7 @@ export const CNECalendar: React.FC = () => {
                 <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between shadow-xs">
                   <span className="text-slate-500 font-semibold">Date &amp; Time</span>
                   <span className="font-bold text-slate-900">
-                    {formatCneDateTimeDisplay(selectedEvent.date, selectedEvent.toDate, selectedEvent.time)}
+                    {formatCneDateTimeDisplay(selectedEvent.date, selectedEvent.toDate)}
                   </span>
                 </div>
 

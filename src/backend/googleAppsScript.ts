@@ -584,6 +584,10 @@ function handleRequest(e, method) {
         output = handleReserveAiQuota(params, session);
         break;
 
+      case 'generateAiQuestions':
+        output = handleGenerateAiQuestions(params, session);
+        break;
+
       case 'commitAiQuota':
         output = handleCommitAiQuota(params, session);
         break;
@@ -594,6 +598,14 @@ function handleRequest(e, method) {
 
       case 'validateAiQuotaReservation':
         output = handleValidateAiQuotaReservation(params, session);
+        break;
+
+      case 'getAiConfig':
+        output = handleGetAiConfig(params, session);
+        break;
+
+      case 'setAiConfig':
+        output = handleSetAiConfig(params, session);
         break;
 
       case 'saveCNEQuestions':
@@ -2226,7 +2238,6 @@ function handleGetCNERecords(params, session) {
   var areaCol = colMap['area'] !== undefined ? colMap['area'] : (colMap['wardnamearea'] !== undefined ? colMap['wardnamearea'] : 1);
   var fromDateCol = colMap['fromdate'] !== undefined ? colMap['fromdate'] : (colMap['date'] !== undefined ? colMap['date'] : 2);
   var toDateCol = colMap['todate'] !== undefined ? colMap['todate'] : 3;
-  var timeCol = colMap['time'] !== undefined ? colMap['time'] : -1;
   var durCol = colMap['duration'] !== undefined ? colMap['duration'] : 4;
   var topicCol = colMap['topic'] !== undefined ? colMap['topic'] : 5;
   var rpCol = colMap['resourcepersonempid'] !== undefined ? colMap['resourcepersonempid'] : 6;
@@ -2251,7 +2262,6 @@ function handleGetCNERecords(params, session) {
     var area = String(row[areaCol] || '').trim();
     var fromDate = formatDateValue(row[fromDateCol]);
     var toDate = formatDateValue(row[toDateCol] || row[fromDateCol]);
-    var time = timeCol !== -1 ? String(row[timeCol] || '').trim() : '';
     var duration = formatDurationValue(row[durCol]);
     var topic = String(row[topicCol] || '').trim();
     var resourcePersonEmpId = normalizeEmpId(row[rpCol]);
@@ -2325,7 +2335,6 @@ function handleGetCNERecords(params, session) {
       fromDate: fromDate,
       date: fromDate,
       toDate: toDate,
-      time: time,
       duration: duration,
       topic: topic,
       resourcePersonEmpId: resourcePersonEmpId,
@@ -2562,8 +2571,7 @@ function handleAddCNE(params, session) {
     setCell('fromdate', 3, fromDate);
     if (colMap['date'] !== undefined) rowData[colMap['date']] = fromDate;
     setCell('todate', 4, toDate);
-    setCell('time', 5, params.time || (isUnscheduled ? '09:00' : ''));
-    setCell('duration', 6, sanitizeCellInput(duration));
+    setCell('duration', 5, sanitizeCellInput(duration));
     setCell('resourcepersonempid', 7, rpClean.join(', '));
     setCell('modeofteaching', 8, sanitizeCellInput(params.modeOfTeaching || 'Lecture Cum Discussion'));
     if (colMap['mode'] !== undefined) rowData[colMap['mode']] = sanitizeCellInput(params.modeOfTeaching || 'Lecture Cum Discussion');
@@ -2731,8 +2739,7 @@ function handleUpdateCNE(params, session) {
           if (colMap['date'] !== undefined) sheet.getRange(rowNum, colMap['date'] + 1).setValue(effDate);
         }
         if (params.toDate !== undefined) setColVal('todate', 4, effToDate);
-        if (params.time !== undefined) setColVal('time', 5, params.time);
-        if (params.duration !== undefined) setColVal('duration', 6, effDuration);
+        if (params.duration !== undefined) setColVal('duration', 5, effDuration);
 
         // Resource person update
         var existingRp = data[r][colMap['resourcepersonempid'] !== undefined ? colMap['resourcepersonempid'] : 7]
@@ -3131,7 +3138,6 @@ function handleAddDepartmentalSchedule(params, session) {
       area: area,
       date: date,
       toDate: toDate,
-      time: sanitizeCellInput(c.time || ''),
       duration: sanitizeCellInput(duration),
       rpClean: rpClean,
       extRpClean: extRpClean,
@@ -3182,8 +3188,7 @@ function handleAddDepartmentalSchedule(params, session) {
       setCell('fromdate', 3, item.date);
       if (colMap['date'] !== undefined) rowData[colMap['date']] = item.date;
       setCell('todate', 4, item.toDate);
-      setCell('time', 5, item.time);
-      setCell('duration', 6, item.duration);
+      setCell('duration', 5, item.duration);
       setCell('resourcepersonempid', 7, item.rpClean.join(', '));
       setCell('modeofteaching', 8, item.mode);
       if (colMap['mode'] !== undefined) rowData[colMap['mode']] = item.mode;
@@ -4878,7 +4883,7 @@ function getHeaderMap(sheet) {
  */
 var CNE_SHEET_HEADERS = {
   'CNE Schedule': [
-    'CNE ID', 'Topic', 'Ward Name / Area', 'From Date', 'To Date', 'Time', 'Duration',
+    'CNE ID', 'Topic', 'Ward Name / Area', 'From Date', 'To Date', 'Duration',
     'Resource Person Emp Id', 'Mode of Teaching', 'Description', 'Max Participants', 'Status',
     'Type of CNE', 'External Resource Persons', 'Staff Emp ID', 'Staff Count', 'External Staff Participants',
     'Proposed By', 'Admin Remarks', 'Remarks', 'CreatedAt', 'CreatedBy'
@@ -5043,6 +5048,31 @@ function setupAndVerifyCNESheets(executorEmpId) {
             }
           }
 
+          // Targeted surgical cleanup: For CNE Schedule sheet, physically delete obsolete legacy column "Time"
+          if (tabName === 'CNE Schedule') {
+            var deletedTimeCols = [];
+            for (var c = existingHeaders.length - 1; c >= 0; c--) {
+              var rawH = String(existingHeaders[c] || '').trim();
+              var normH = rawH.toLowerCase().replace(/[^a-z0-9]/g, '');
+              if (normH === 'time') {
+                sheet.deleteColumn(c + 1);
+                deletedTimeCols.push(rawH);
+              }
+            }
+            if (deletedTimeCols.length > 0) {
+              auditReport.push({
+                tab: tabName,
+                status: 'Surgically deleted obsolete column(s): ' + deletedTimeCols.reverse().join(', '),
+                rowCount: sheet.getLastRow()
+              });
+              lastCol = sheet.getLastColumn() || 1;
+              existingHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+              existingKeys = existingHeaders.map(function(h) {
+                return String(h || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+              });
+            }
+          }
+
           // Targeted surgical cleanup: ONLY for CNE_Reference sheet, physically delete legacy columns "Syllabus" and "Reference Links"
           if (tabName === 'CNE_Reference') {
             var deletedCols = [];
@@ -5176,7 +5206,6 @@ function getCNEClassRecord(cneId) {
         area: String((colMap['area'] !== undefined ? row[colMap['area']] : row[2]) || '').trim(),
         date: formatDateValue(colMap['fromdate'] !== undefined ? row[colMap['fromdate']] : (colMap['date'] !== undefined ? row[colMap['date']] : row[3])),
         toDate: formatDateValue(colMap['todate'] !== undefined ? row[colMap['todate']] : (row[4] || row[3])),
-        time: String((colMap['time'] !== undefined ? row[colMap['time']] : row[5]) || '').trim(),
         duration: durVal ? Number(durVal) : 60,
         instructor: String((colMap['resourcepersonempid'] !== undefined ? row[colMap['resourcepersonempid']] : row[7]) || '').trim(),
         mode: String((colMap['modeofteaching'] !== undefined ? row[colMap['modeofteaching']] : (colMap['mode'] !== undefined ? row[colMap['mode']] : row[8])) || 'Offline').trim(),
@@ -6435,7 +6464,6 @@ function handleListLearningResources(params, session) {
           area: String((classColMap['area'] !== undefined ? cRow[classColMap['area']] : cRow[2]) || '').trim(),
           date: formatDateValue(classColMap['fromdate'] !== undefined ? cRow[classColMap['fromdate']] : (classColMap['date'] !== undefined ? cRow[classColMap['date']] : cRow[3])),
           toDate: formatDateValue(classColMap['todate'] !== undefined ? cRow[classColMap['todate']] : (cRow[4] || cRow[3])),
-          time: String((classColMap['time'] !== undefined ? cRow[classColMap['time']] : cRow[5]) || '').trim(),
           duration: durVal ? Number(durVal) : 60,
           instructor: String((classColMap['resourcepersonempid'] !== undefined ? cRow[classColMap['resourcepersonempid']] : cRow[7]) || '').trim(),
           mode: String((classColMap['modeofteaching'] !== undefined ? cRow[classColMap['modeofteaching']] : (classColMap['mode'] !== undefined ? cRow[classColMap['mode']] : cRow[8])) || 'Offline').trim(),
@@ -11284,6 +11312,413 @@ function handleValidateAiQuotaReservation(params, session) {
 }
 
 /**
+ * Direct Gemini Clinical MCQ Generation in Google Apps Script
+ * Grounded strictly in local CNE Material and Nursing Reference Library.
+ * Authoritatively verifies session, question management authorization, and active quota reservation.
+ * Invokes Google Gemini API directly using UrlFetchApp.
+ * Never uses paid models or external online knowledge fallback.
+ */
+function handleGenerateAiQuestions(params, session) {
+  if (!session || !session.employeeId) {
+    return {
+      success: false,
+      errorCode: 'UNAUTHORIZED',
+      message: 'Authentication required. Please sign in.'
+    };
+  }
+
+  var cneId = sanitizeCellInput(params.cneId);
+  var reservationToken = sanitizeCellInput(params.reservationToken);
+
+  if (!cneId) {
+    return { success: false, errorCode: 'CNE_ID_REQUIRED', message: 'CNE ID is required.' };
+  }
+  if (!reservationToken) {
+    return { success: false, errorCode: 'RESERVATION_TOKEN_REQUIRED', message: 'A valid AI quota reservation token is required before invoking question generation.' };
+  }
+
+  // 1. Authoritative validation of quota reservation and retrieval of local grounding material
+  var validation = handleValidateAiQuotaReservation(params, session);
+  if (!validation || !validation.success) {
+    return validation || {
+      success: false,
+      errorCode: 'VALIDATION_FAILED',
+      message: 'Failed to validate AI quota reservation.'
+    };
+  }
+
+  var valData = validation.data || {};
+  var authoritativeTopic = valData.topic || '';
+  var authoritativeRpName = valData.resourcePersonName || '';
+  var directMaterial = String(valData.authoritativeLearningContent || '').trim();
+  var retrievedEvidence = Array.isArray(valData.retrievedEvidence) ? valData.retrievedEvidence : [];
+
+  var authoritativeMaterial = directMaterial;
+  if (retrievedEvidence.length > 0) {
+    var formattedChunks = retrievedEvidence.map(function(ev, idx) {
+      return '[Reference Evidence Chunk ' + (idx + 1) + ']\\n' +
+        'Source: ' + (ev.resourceTitle || 'Authoritative Clinical Guide') + (ev.sectionHeading ? ' - ' + ev.sectionHeading : '') + '\\n' +
+        ev.chunkText;
+    }).join('\\n\\n---\\n\\n');
+
+    if (directMaterial && directMaterial.indexOf(retrievedEvidence[0] && retrievedEvidence[0].chunkText ? retrievedEvidence[0].chunkText.substring(0, 40) : '___NOMATCH___') === -1) {
+      authoritativeMaterial = '=== CNE SESSION LEARNING MATERIAL ===\\n' + directMaterial + '\\n\\n=== RETRIEVED REFERENCE EVIDENCE ===\\n' + formattedChunks;
+    } else {
+      authoritativeMaterial = formattedChunks;
+    }
+  }
+
+  if (!authoritativeMaterial || authoritativeMaterial.length < 15) {
+    return {
+      success: false,
+      errorCode: 'INSUFFICIENT_TOPIC_MATERIAL',
+      message: 'No relevant material related to this topic is available on the server. Kindly upload the relevant topic material and try again.'
+    };
+  }
+
+  // 2. Resolve Gemini API Key from Script Properties
+  var props = PropertiesService.getScriptProperties();
+  var apiKey = (props.getProperty('GEMINI_API_KEY') ||
+                PropertiesService.getUserProperties().getProperty('GEMINI_API_KEY') ||
+                (params && params.geminiApiKey ? String(params.geminiApiKey).trim() : '')).trim();
+
+  if (!apiKey) {
+    return {
+      success: false,
+      errorCode: 'AI_CONFIGURATION_ERROR',
+      message: 'Gemini API key is not configured in Google Apps Script properties (GEMINI_API_KEY). Please configure GEMINI_API_KEY in Project Settings > Script Properties.'
+    };
+  }
+
+  var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-2.5-flash').trim();
+
+  var blockedModels = [
+    'gemini-3.1-pro-preview',
+    'gemini-3.1-pro',
+    'gemini-3-pro-image',
+    'gemini-3.1-flash-image',
+    'gemini-3.1-flash-lite-image',
+    'gemini-pro',
+    'gemini-1.5-pro',
+    'gemini-2.0-pro',
+    'veo-3.1-generate-preview',
+    'veo-3.1-lite-generate-preview',
+    'lyria-3-clip-preview',
+    'lyria-3-pro-preview'
+  ];
+
+  if (blockedModels.indexOf(configuredModel.toLowerCase()) !== -1 || /pro|image|veo|lyria/i.test(configuredModel)) {
+    return {
+      success: false,
+      errorCode: 'PAID_MODEL_PROHIBITED',
+      message: 'Configured model "' + configuredModel + '" is a paid model. Paid models are prohibited.'
+    };
+  }
+
+  // 3. Construct clinical prompt
+  var prompt = 'You are a Senior Clinical Nursing Education Specialist and Examiner at AIIMS (All India Institute of Medical Sciences).\\n' +
+    'Your task is to generate EXACTLY 5 high-quality Multiple Choice Questions (MCQs) for a Clinical Nursing Education (CNE) session post-test evaluation.\\n\\n' +
+    'CNE Topic:\\n"' + authoritativeTopic + '"\\n' +
+    (authoritativeRpName ? 'Resource Person / Speaker:\\n"' + authoritativeRpName + '"\\n' : '') +
+    'Authoritative CNE Session Content & Local Clinical Material (PRIMARY GROUNDING SOURCE):\\n"""\\n' +
+    authoritativeMaterial + '\\n"""\\n\\n' +
+    'GROUNDING AND SOURCE VERIFICATION REQUIREMENTS (STRICT):\\n' +
+    '1. PRIMARY GROUNDING SOURCE: Use the local CNE session content and clinical material above as your SOLE grounding source. All 5 questions, correct answers, and distractors must be strictly grounded in and directly verifiable from this supplied local clinical material.\\n' +
+    '2. EVIDENCE & SOURCE ATTRIBUTION:\\n' +
+    '   - For each question, extract and cite the specific authoritative clinical guideline, protocol, or standard cited in or directly supporting the session (e.g., "AIIMS Clinical Nursing Protocols", "WHO Guidelines", "Ministry of Health and Family Welfare / INC Standards", "Indian Nursing Council Standards", "CDC Clinical Guidelines", or local clinical literature).\\n' +
+    '   - DO NOT fabricate online verification, DO NOT invent fake URLs, and DO NOT cite unretrieved online sources. Instead, cite authoritative references contained in the supplied local material or clearly designate the source as derived from the verified CNE session (e.g., "Verified CNE Session: [Topic/Section/Protocol]").\\n' +
+    '   - Absolutely DO NOT cite random blogs, forums, social media, commercial SEO articles, or unverified websites.\\n' +
+    '3. CLINICAL RIGOR: Focus on clinical nursing practice, patient assessment, pharmacological safety, emergency escalation, infection control protocols, and nursing care standards.\\n' +
+    '4. OPTIONS: Each question must have EXACTLY 4 distinct, plausible options labeled A, B, C, and D.\\n' +
+    '5. CORRECT ANSWER: Exactly one option must be the correct answer ("A", "B", "C", or "D").\\n' +
+    '6. CLINICAL RATIONALE: Provide an evidence-based clinical rationale/explanation for why the correct option is the standard of care based strictly on the provided local material.\\n' +
+    '7. AUTHORITATIVE SOURCE: Every single question MUST provide the "authoritativeSource" field reflecting genuine grounding as specified above.\\n' +
+    '8. Output MUST strictly conform to the requested JSON schema with an array of exactly 5 question objects.';
+
+  var geminiPayload = {
+    contents: [
+      {
+        parts: [{ text: prompt }]
+      }
+    ],
+    generationConfig: {
+      temperature: 0.2,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'OBJECT',
+        properties: {
+          questions: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                questionText: { type: 'STRING' },
+                optionA: { type: 'STRING' },
+                optionB: { type: 'STRING' },
+                optionC: { type: 'STRING' },
+                optionD: { type: 'STRING' },
+                correctOption: { type: 'STRING' },
+                explanation: { type: 'STRING' },
+                authoritativeSource: { type: 'STRING' }
+              },
+              required: ['questionText', 'optionA', 'optionB', 'optionC', 'optionD', 'correctOption', 'explanation', 'authoritativeSource']
+            }
+          }
+        },
+        required: ['questions']
+      }
+    }
+  };
+
+  var endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(configuredModel) + ':generateContent?key=' + encodeURIComponent(apiKey);
+  var maxRetries = 2;
+  var generatedText = '';
+  var lastErrorMsg = '';
+
+  for (var attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      var fetchOptions = {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify(geminiPayload),
+        muteHttpExceptions: true
+      };
+
+      var res = UrlFetchApp.fetch(endpoint, fetchOptions);
+      var resCode = res.getResponseCode();
+      var resText = res.getContentText();
+
+      if (resCode === 200) {
+        var parsed = JSON.parse(resText);
+        var cand = parsed.candidates && parsed.candidates[0] && parsed.candidates[0].content && parsed.candidates[0].content.parts && parsed.candidates[0].content.parts[0] ? parsed.candidates[0].content.parts[0].text : '';
+        if (cand) {
+          generatedText = cand;
+          break;
+        }
+      } else {
+        var errJson = {};
+        try { errJson = JSON.parse(resText); } catch (pe) {}
+        lastErrorMsg = (errJson.error && errJson.error.message) || ('HTTP ' + resCode + ': ' + resText);
+        if ((resCode === 503 || resCode === 429) && attempt < maxRetries) {
+          Utilities.sleep(1000);
+        } else {
+          break;
+        }
+      }
+    } catch (fetchErr) {
+      lastErrorMsg = fetchErr.message || String(fetchErr);
+      if (attempt < maxRetries) {
+        Utilities.sleep(1000);
+      } else {
+        break;
+      }
+    }
+  }
+
+  if (!generatedText) {
+    var isOverloaded = /503|UNAVAILABLE|high demand|429|RESOURCE_EXHAUSTED|capacity/i.test(lastErrorMsg);
+    return {
+      success: false,
+      errorCode: isOverloaded ? 'AI_TEMPORARILY_UNAVAILABLE' : 'AI_GENERATION_FAILED',
+      message: isOverloaded
+        ? 'AI question generation service is temporarily at capacity. Please try again in a few moments.'
+        : ('AI question generation encountered an error: ' + (lastErrorMsg || 'No candidate response returned from Gemini.'))
+    };
+  }
+
+  // 4. Parse and sanitize JSON output
+  var cleaned = generatedText.trim();
+  if (cleaned.indexOf('\`\`\`json') === 0) {
+    cleaned = cleaned.replace(/^\`\`\`json\\s*/, '').replace(/\\s*\`\`\`$/, '');
+  } else if (cleaned.indexOf('\`\`\`') === 0) {
+    cleaned = cleaned.replace(/^\`\`\`\\s*/, '').replace(/\\s*\`\`\`$/, '');
+  }
+
+  var rawQuestionsList = [];
+  try {
+    var jsonParsed = JSON.parse(cleaned);
+    rawQuestionsList = Array.isArray(jsonParsed) ? jsonParsed : (Array.isArray(jsonParsed.questions) ? jsonParsed.questions : []);
+  } catch (jsonErr) {
+    return {
+      success: false,
+      errorCode: 'JSON_PARSE_ERROR',
+      message: 'Failed to parse AI question output as structured JSON: ' + jsonErr.message
+    };
+  }
+
+  if (!rawQuestionsList || rawQuestionsList.length !== 5) {
+    return {
+      success: false,
+      errorCode: 'INSUFFICIENT_QUESTIONS',
+      message: 'AI generation returned ' + (rawQuestionsList ? rawQuestionsList.length : 0) + ' questions. Exactly 5 questions are required.'
+    };
+  }
+
+  var validatedQuestions = [];
+  var seenQuestions = {};
+
+  for (var qIdx = 0; qIdx < rawQuestionsList.length; qIdx++) {
+    var rawQ = rawQuestionsList[qIdx] || {};
+    var qText = String(rawQ.questionText || rawQ.question || '').trim();
+    if (!qText || qText.length < 10) {
+      return { success: false, errorCode: 'INVALID_QUESTION_TEXT', message: 'Question ' + (qIdx + 1) + ' is too short or missing question text.' };
+    }
+
+    var qKey = qText.toLowerCase();
+    if (seenQuestions[qKey]) {
+      return { success: false, errorCode: 'DUPLICATE_QUESTION', message: 'Duplicate question generated in batch at position ' + (qIdx + 1) };
+    }
+    seenQuestions[qKey] = true;
+
+    var optA = String(rawQ.optionA || (rawQ.options && rawQ.options.A) || '').trim();
+    var optB = String(rawQ.optionB || (rawQ.options && rawQ.options.B) || '').trim();
+    var optC = String(rawQ.optionC || (rawQ.options && rawQ.options.C) || '').trim();
+    var optD = String(rawQ.optionD || (rawQ.options && rawQ.options.D) || '').trim();
+
+    if (!optA || !optB || !optC || !optD) {
+      return { success: false, errorCode: 'MISSING_OPTIONS', message: 'Question ' + (qIdx + 1) + ' is missing one or more of options A, B, C, D.' };
+    }
+
+    var distinctCheck = {};
+    distinctCheck[optA.toLowerCase()] = true;
+    distinctCheck[optB.toLowerCase()] = true;
+    distinctCheck[optC.toLowerCase()] = true;
+    distinctCheck[optD.toLowerCase()] = true;
+    if (Object.keys(distinctCheck).length < 4) {
+      return { success: false, errorCode: 'DUPLICATE_OPTIONS', message: 'Question ' + (qIdx + 1) + ' has duplicate option values.' };
+    }
+
+    var rawCorrect = String(rawQ.correctOption || rawQ.correctAnswer || '').trim().toUpperCase();
+    if (['A', 'B', 'C', 'D'].indexOf(rawCorrect) === -1) {
+      return { success: false, errorCode: 'INVALID_CORRECT_OPTION', message: 'Question ' + (qIdx + 1) + ' has invalid correct option: ' + rawCorrect };
+    }
+
+    var explanation = String(rawQ.explanation || rawQ.rationale || '').trim();
+    if (!explanation || explanation.length < 5) {
+      return { success: false, errorCode: 'MISSING_EXPLANATION', message: 'Question ' + (qIdx + 1) + ' is missing an evidence-based clinical explanation.' };
+    }
+
+    var authSource = String(rawQ.authoritativeSource || rawQ.source || rawQ.reference || '').trim();
+    if (!authSource || authSource.length < 3) {
+      authSource = 'Verified CNE Session: ' + authoritativeTopic;
+    }
+
+    // Informal source check
+    if (/\\b(blog|quora|reddit|wordpress|medium\\.com|wikipedia)\\b/i.test(authSource)) {
+      return { success: false, errorCode: 'INFORMAL_SOURCE_PROHIBITED', message: 'Question ' + (qIdx + 1) + ' cites an informal source (' + authSource + ').' };
+    }
+
+    if (/^https?:\\/\\//i.test(authSource) || /live online verified/i.test(authSource)) {
+      authSource = 'Verified CNE Material (Topic: ' + authoritativeTopic + ') - ' + (authSource.replace(/^https?:\\/\\/[^\\/]+\\/?/i, '') || 'Clinical Standard');
+    }
+
+    validatedQuestions.push({
+      id: 'q_ai_' + Date.now() + '_' + (qIdx + 1),
+      cneId: cneId,
+      question: qText,
+      questionText: qText,
+      options: {
+        A: optA,
+        B: optB,
+        C: optC,
+        D: optD
+      },
+      optionA: optA,
+      optionB: optB,
+      optionC: optC,
+      optionD: optD,
+      correctOption: rawCorrect,
+      explanation: explanation,
+      authoritativeSource: authSource,
+      status: 'Active',
+      isFinalized: true
+    });
+  }
+
+  logAuditAction('AI_QUESTION_GENERATION_COMPLETED', session.employeeId, 'Generated 5 grounded clinical MCQs for CNE: ' + cneId + ' via Gemini (' + configuredModel + ')', 'SUCCESS');
+
+  return {
+    success: true,
+    data: validatedQuestions,
+    cneId: cneId,
+    reservationToken: reservationToken,
+    source: configuredModel
+  };
+}
+
+/**
+ * Get AI Configuration (Admin Only)
+ */
+function handleGetAiConfig(params, session) {
+  var adminError = requireAdmin(session);
+  if (adminError) return adminError;
+
+  var props = PropertiesService.getScriptProperties();
+  var apiKey = props.getProperty('GEMINI_API_KEY') || '';
+  var maskedKey = apiKey ? (apiKey.substring(0, 4) + '...' + apiKey.substring(apiKey.length - 4)) : '';
+  var model = props.getProperty('GEMINI_MODEL') || 'gemini-2.5-flash';
+
+  return {
+    success: true,
+    data: {
+      isConfigured: !!apiKey,
+      maskedApiKey: maskedKey,
+      model: model
+    }
+  };
+}
+
+/**
+ * Set AI Configuration (Admin Only)
+ */
+function handleSetAiConfig(params, session) {
+  var adminError = requireAdmin(session);
+  if (adminError) return adminError;
+
+  var props = PropertiesService.getScriptProperties();
+
+  if (params.apiKey !== undefined) {
+    var cleanKey = String(params.apiKey || '').trim();
+    if (cleanKey) {
+      props.setProperty('GEMINI_API_KEY', cleanKey);
+    } else {
+      props.deleteProperty('GEMINI_API_KEY');
+    }
+  }
+
+  if (params.model !== undefined) {
+    var cleanModel = String(params.model || '').trim();
+    var blockedModels = [
+      'gemini-3.1-pro-preview',
+      'gemini-3.1-pro',
+      'gemini-3-pro-image',
+      'gemini-3.1-flash-image',
+      'gemini-3.1-flash-lite-image',
+      'gemini-pro',
+      'gemini-1.5-pro',
+      'gemini-2.0-pro',
+      'veo-3.1-generate-preview',
+      'veo-3.1-lite-generate-preview',
+      'lyria-3-clip-preview',
+      'lyria-3-pro-preview'
+    ];
+    if (cleanModel && (blockedModels.indexOf(cleanModel.toLowerCase()) !== -1 || /pro|image|veo|lyria/i.test(cleanModel))) {
+      return { success: false, errorCode: 'PAID_MODEL_PROHIBITED', message: 'Paid models are prohibited.' };
+    }
+    if (cleanModel) {
+      props.setProperty('GEMINI_MODEL', cleanModel);
+    }
+  }
+
+  logAuditAction('UPDATE_AI_CONFIG', session.employeeId, 'Updated Gemini AI configuration', 'SUCCESS');
+
+  return {
+    success: true,
+    message: 'Gemini AI configuration updated successfully in Google Apps Script.'
+  };
+}
+
+/**
  * Normalize CNE ID consistently across operations
  */
 function normalizeCneId(cneId) {
@@ -11969,7 +12404,7 @@ function handleResolveQRToken(params) {
       topic: record.topic,
       area: record.area,
       date: record.date,
-      time: record.time,
+      toDate: record.toDate,
       duration: record.duration,
       instructor: record.instructor,
       mode: record.mode,

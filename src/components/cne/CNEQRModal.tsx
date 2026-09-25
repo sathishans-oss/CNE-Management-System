@@ -193,7 +193,7 @@ export const CNEQRModal: React.FC<CNEQRModalProps> = ({
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                   <span className="text-slate-500">Schedule:</span>
-                  <span className="font-semibold text-slate-700">{formatCneDateTimeDisplay(cne.date, cne.toDate, cne.time)}</span>
+                  <span className="font-semibold text-slate-700">{formatCneDateTimeDisplay(cne.date, cne.toDate)}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500">Resource Person:</span>

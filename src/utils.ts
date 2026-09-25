@@ -160,15 +160,14 @@ const MONTH_NAMES_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug
  */
 export function formatCneDateTimeDisplay(
   fromDate?: string | Date | null,
-  toDate?: string | null,
-  legacyTime?: string | null
+  toDate?: string | null
 ): string {
   if (!fromDate) return '—';
 
-  // If toDate or legacyTime was passed, defer to range display
-  if (toDate !== undefined || legacyTime !== undefined) {
+  // If toDate was passed, defer to range display
+  if (toDate !== undefined) {
     const fromStr = fromDate instanceof Date ? fromDate.toISOString() : fromDate;
-    return formatCneDateTimeRangeDisplay(fromStr, toDate, legacyTime);
+    return formatCneDateTimeRangeDisplay(fromStr, toDate);
   }
 
   const dtVal = fromDate;
@@ -229,12 +228,10 @@ export function formatCneDateTimeDisplay(
  * Formats a CNE activity date & time range.
  * Example: "01-Jan-2026 08:00 AM – 03-Jan-2026 05:00 PM"
  * If fromDate and toDate are identical: "01-Jan-2026 08:00 AM"
- * If legacy date-only with legacyTime: "01-Jan-2026 • 14:00 - 15:30"
  */
 export function formatCneDateTimeRangeDisplay(
   fromDate?: string | null,
-  toDate?: string | null,
-  legacyTime?: string | null
+  toDate?: string | null
 ): string {
   if (!fromDate) return '—';
 
@@ -253,16 +250,10 @@ export function formatCneDateTimeRangeDisplay(
     return `${formattedFrom} – ${formattedTo}`;
   }
 
-  // Legacy date-only formatting
+  // Date-only formatting
   const formattedFrom = formatCneDateDisplay(fromDate);
   const formattedTo = toDate && toDate !== fromDate ? formatCneDateDisplay(toDate) : '';
-  const datePart = formattedTo && formattedTo !== formattedFrom ? `${formattedFrom} – ${formattedTo}` : formattedFrom;
-
-  const cleanLegacyTime = legacyTime ? legacyTime.trim() : '';
-  if (cleanLegacyTime && cleanLegacyTime !== '—') {
-    return `${datePart} • ${cleanLegacyTime}`;
-  }
-  return datePart;
+  return formattedTo && formattedTo !== formattedFrom ? `${formattedFrom} – ${formattedTo}` : formattedFrom;
 }
 
 /**
