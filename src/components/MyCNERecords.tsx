@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Award,
-  Search,
   FileDown,
   Clock,
   X,
@@ -11,26 +10,27 @@ import {
 } from 'lucide-react';
 import { CNERecord, Employee, SessionUser } from '../types';
 import { ApiService } from '../services/api';
-import { generateAnnualCNEPdf } from '../services/pdfGenerator';
+import { generateCNERecordsPdf } from '../services/pdfGenerator';
 import { useToast } from './Toast';
 import { getCachedOfficers, loadOfficersSingleFlight } from '../services/officerLoader';
 import {
   formatCneDateRangeDisplay,
   formatResourcePersonsDisplay
 } from '../utils';
+import { SearchInput } from './SearchInput';
+import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 
-interface MyCNEProps {
+export interface MyCNERecordsProps {
   user: SessionUser;
 }
 
-export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
+export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   const [records, setRecords] = useState<CNERecord[]>([]);
   const [officers, setOfficers] = useState<Employee[]>(() => getCachedOfficers() || []);
   const [loading, setLoading] = useState(true);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const generatingPdfRef = useRef(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedYear, setSelectedYear] = useState<string>('2026-2027');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedRecord, setSelectedRecord] = useState<CNERecord | null>(null);
@@ -66,25 +66,9 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
     }
   };
 
-  // Assessment Year helper (1 April to 31 March)
-  const isDateInAssessmentYear = (dateStr: string, ayKey: string): boolean => {
-    if (ayKey === 'ALL') return true;
-    const startYear = parseInt(ayKey.split('-')[0], 10);
-    if (isNaN(startYear)) return true;
-    const ayStart = `${startYear}-04-01`;
-    const ayEnd = `${startYear + 1}-03-31`;
-    return dateStr >= ayStart && dateStr <= ayEnd;
-  };
-
-  // Filter logic
+  // Filter logic: Search + Date Range (From Date / To Date)
   const filteredRecords = useMemo(() => {
     return records.filter((rec) => {
-      // Assessment Year filter (1 April - 31 March)
-      const recDate = rec.fromDate || rec.toDate || '';
-      if (!isDateInAssessmentYear(recDate, selectedYear)) {
-        return false;
-      }
-
       // Date Range filter
       if (startDate && rec.fromDate < startDate) return false;
       if (endDate && rec.fromDate > endDate) return false;
@@ -108,7 +92,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
 
       return true;
     });
-  }, [records, selectedYear, startDate, endDate, searchTerm]);
+  }, [records, startDate, endDate, searchTerm, officers]);
 
   // Compute total duration
   const totalDurationStats = useMemo(() => {
@@ -127,17 +111,19 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
   const handleGeneratePdf = async () => {
     if (generatingPdfRef.current || isGeneratingPdf) return;
 
-    const ayDisplay = selectedYear === 'ALL' ? '2026–2027' : selectedYear.replace('-', '–');
     if (filteredRecords.length === 0) {
-      error(`No CNE records found for Assessment Year ${ayDisplay}.`);
+      error('No CNE records found for the selected filters.');
       return;
     }
 
     generatingPdfRef.current = true;
     setIsGeneratingPdf(true);
     try {
-      generateAnnualCNEPdf(user, filteredRecords, ayDisplay);
-      success(`Annual CNE Record for AY ${ayDisplay} downloaded successfully.`, 'PDF Generated');
+      generateCNERecordsPdf(user, filteredRecords, {
+        fromDate: startDate || undefined,
+        toDate: endDate || undefined
+      });
+      success('CNE Record PDF downloaded successfully.', 'PDF Generated');
     } catch (e: any) {
       error('Failed to generate PDF document.');
     } finally {
@@ -162,7 +148,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
           </p>
         </div>
 
-        {/* Action Button: Generate Annual CNE PDF */}
+        {/* Action Button: Generate PDF */}
         <div className="flex items-center gap-2">
           <button
             id="btn-refresh-my-cne"
@@ -175,7 +161,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
           </button>
 
           <button
-            id="btn-generate-annual-cne-pdf"
+            id="btn-generate-cne-records-pdf"
             onClick={handleGeneratePdf}
             disabled={isGeneratingPdf || loading}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs sm:text-sm shadow-xs transition-all cursor-pointer disabled:opacity-50"
@@ -188,7 +174,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
             ) : (
               <>
                 <FileDown className="w-4 h-4 text-emerald-400" />
-                <span>Generate Annual CNE Record</span>
+                <span>Generate PDF</span>
               </>
             )}
           </button>
@@ -197,55 +183,37 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
 
       {/* Filter & Metric Ribbon */}
       <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {/* Search Box */}
-          <div className="relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-            <input
-              id="input-my-cne-search"
-              type="text"
-              placeholder="Search topic, area, instructor..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:bg-white focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
-            />
-          </div>
-
-          {/* Year Filter */}
           <div>
-            <select
-              id="select-my-cne-year"
-              value={selectedYear}
-              onChange={(e) => setSelectedYear(e.target.value)}
-              className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:bg-white font-semibold text-slate-800"
-            >
-              <option value="2026-2027">Assessment Year 2026–2027 (01-Apr-2026 – 31-Mar-2027)</option>
-              <option value="2025-2026">Assessment Year 2025–2026 (01-Apr-2025 – 31-Mar-2026)</option>
-              <option value="2024-2025">Assessment Year 2024–2025 (01-Apr-2024 – 31-Mar-2025)</option>
-              <option value="2023-2024">Assessment Year 2023–2024 (01-Apr-2023 – 31-Mar-2024)</option>
-              <option value="ALL">All Recorded Years</option>
-            </select>
+            <SearchInput
+              id="input-my-cne-search"
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder="Search topic, area, instructor..."
+            />
           </div>
 
           {/* From Date */}
           <div>
-            <input
-              type="date"
+            <ConfirmDatePicker
+              id="my-cne-from-date"
               value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg text-slate-700"
-              title="From Date"
+              onChange={setStartDate}
+              placeholder="Filter From Date..."
+              compact
             />
           </div>
 
           {/* To Date */}
           <div>
-            <input
-              type="date"
+            <ConfirmDatePicker
+              id="my-cne-to-date"
               value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg text-slate-700"
-              title="To Date"
+              onChange={setEndDate}
+              minDate={startDate}
+              placeholder="Filter To Date..."
+              compact
             />
           </div>
         </div>
@@ -261,15 +229,14 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
             </span>
           </div>
 
-          {(searchTerm || startDate || endDate || selectedYear !== '2026-2027') && (
+          {(searchTerm || startDate || endDate) && (
             <button
               onClick={() => {
                 setSearchTerm('');
-                setSelectedYear('2026-2027');
                 setStartDate('');
                 setEndDate('');
               }}
-              className="text-xs text-rose-600 hover:text-rose-800 font-medium"
+              className="text-xs text-rose-600 hover:text-rose-800 font-medium cursor-pointer"
             >
               Clear Filters
             </button>
@@ -293,7 +260,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
               No CNE sessions found for the selected period.
             </h3>
             <p className="text-xs text-slate-500 max-w-sm mx-auto">
-              Check your date/year filters or contact the CNE In-charge if a session you attended is missing.
+              Check your date filters or contact the CNE In-charge if a session you attended is missing.
             </p>
           </div>
         ) : (
@@ -318,7 +285,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
                     const isResourcePerson = (rec.resourcePersonEmpId || '').toLowerCase().includes((user.employeeId || '').toLowerCase());
                     return (
                       <tr
-                        key={rec.dataId}
+                        key={rec.cneId || rec.dataId || `rec-${index}`}
                         className="hover:bg-slate-50/80 transition-colors"
                       >
                         <td className="py-3 px-4 text-center font-medium text-slate-500">
@@ -360,9 +327,9 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
                         </td>
                         <td className="py-3 px-4 text-right">
                           <button
-                            id={`btn-view-rec-${rec.dataId}`}
+                            id={`btn-view-rec-${rec.cneId || rec.dataId || index}`}
                             onClick={() => setSelectedRecord(rec)}
-                            className="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors"
+                            className="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors cursor-pointer"
                           >
                             View
                           </button>
@@ -377,9 +344,9 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
             {/* Mobile Card List */}
             <div className="md:hidden divide-y divide-slate-100">
               {filteredRecords.map((rec, index) => {
-                const isResourcePerson = rec.resourcePersonEmpId.toLowerCase() === user.employeeId.toLowerCase();
+                const isResourcePerson = (rec.resourcePersonEmpId || '').toLowerCase() === (user.employeeId || '').toLowerCase();
                 return (
-                  <div key={rec.dataId} className="p-4 space-y-2">
+                  <div key={rec.cneId || rec.dataId || `mob-rec-${index}`} className="p-4 space-y-2">
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-semibold text-slate-500">#{index + 1} • {formatCneDateRangeDisplay(rec.fromDate, rec.toDate)}</span>
                       <span
@@ -419,7 +386,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
                       </span>
                       <button
                         onClick={() => setSelectedRecord(rec)}
-                        className="text-xs font-bold text-emerald-700 hover:text-emerald-800"
+                        className="text-xs font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer"
                       >
                         Details →
                       </button>
@@ -438,7 +405,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-slate-200 relative">
             <button
               onClick={() => setSelectedRecord(null)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -449,7 +416,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
               </div>
               <div>
                 <h3 className="text-base font-bold text-slate-900">CNE Record</h3>
-                <span className="text-xs text-slate-500 font-mono">ID: {selectedRecord.dataId}</span>
+                <span className="text-xs text-slate-500 font-mono">ID: {selectedRecord.cneId || selectedRecord.dataId}</span>
               </div>
             </div>
 
@@ -512,7 +479,7 @@ export const MyCNE: React.FC<MyCNEProps> = ({ user }) => {
             <div className="mt-5 flex justify-end">
               <button
                 onClick={() => setSelectedRecord(null)}
-                className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800"
+                className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 cursor-pointer"
               >
                 Close
               </button>

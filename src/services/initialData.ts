@@ -539,7 +539,7 @@ export const INITIAL_QUICK_LINKS: QuickLinkItem[] = [
     title: "Upcoming CNE Schedule",
     description: "Browse open classes, curriculum topics, venue allocations, and secure your registration.",
     iconName: "Sparkles",
-    target: "upcoming",
+    target: "cne-schedule",
     badge: "Open for Enrollment",
     actionType: "navigate"
   },

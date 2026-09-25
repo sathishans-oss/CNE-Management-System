@@ -69,7 +69,7 @@ export const UpcomingClassesWidget: React.FC<UpcomingClassesWidgetProps> = ({
         {hasMoreThanFive && (
           <button
             type="button"
-            onClick={() => onNavigate('upcoming')}
+            onClick={() => onNavigate('cne-schedule')}
             className={`text-[11px] font-semibold ${iconColor} hover:underline flex items-center gap-0.5 cursor-pointer`}
           >
             <span>View All</span>

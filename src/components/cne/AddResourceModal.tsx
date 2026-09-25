@@ -107,31 +107,19 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
   const handleFileSelect = (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
 
-    if (resourceType === 'CNE_LEARNING_MATERIAL') {
-      const allowedExts = ['pdf', 'docx', 'doc', 'ppt', 'pptx'];
-      if (!allowedExts.includes(ext)) {
-        error('Invalid file format. Only PDF, DOCX, and PPT/PPTX presentations are supported.');
-        return;
-      }
-      const MAX_SIZE = 10 * 1024 * 1024; // 10MB
-      if (file.size > MAX_SIZE) {
-        error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the 10 MB limit for CNE materials.`);
-        return;
-      }
-    } else {
-      const allowedExts = ['pdf', 'docx', 'txt', 'md'];
-      if (!allowedExts.includes(ext)) {
-        error('Invalid reference file format. Supported: PDF, DOCX, TXT, MD.');
-        return;
-      }
-      const MAX_SIZE = 25 * 1024 * 1024; // 25MB for reference textbooks
-      if (file.size > MAX_SIZE) {
-        error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the 25 MB limit for reference books.`);
-        return;
-      }
-      if (!resourceTitle || resourceTitle.trim() === '') {
-        setResourceTitle(file.name.replace(/\.[^/.]+$/, ''));
-      }
+    if (ext !== 'pdf') {
+      error('Invalid file format. Only PDF (.pdf) documents are supported.');
+      return;
+    }
+
+    const MAX_SIZE = 3 * 1024 * 1024; // 3MB authoritative limit
+    if (file.size > MAX_SIZE) {
+      error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of 3 MB.`);
+      return;
+    }
+
+    if (resourceType === 'NURSING_REFERENCE_LIB' && (!resourceTitle || resourceTitle.trim() === '')) {
+      setResourceTitle(file.name.replace(/\.[^/.]+$/, ''));
     }
 
     setSelectedFile(file);
@@ -584,11 +572,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                       handleFileSelect(e.target.files[0]);
                     }
                   }}
-                  accept={
-                    resourceType === 'CNE_LEARNING_MATERIAL'
-                      ? '.pdf,.docx,.doc,.ppt,.pptx'
-                      : '.pdf,.docx,.txt,.md'
-                  }
+                  accept=".pdf,application/pdf"
                   className="hidden"
                 />
 
@@ -620,13 +604,11 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                   <div className="flex flex-col items-center justify-center">
                     <Upload className="w-6 h-6 text-slate-400 mb-1.5" />
                     <p className="text-xs font-semibold text-slate-700">
-                      Drag & drop your file here, or{' '}
+                      Drag & drop your PDF file here, or{' '}
                       <span className="text-teal-600 hover:underline">browse</span>
                     </p>
                     <p className="text-[10px] text-slate-400 mt-1">
-                      {resourceType === 'CNE_LEARNING_MATERIAL'
-                        ? 'Supported: PDF, DOCX, PPT, PPTX (Max 10 MB)'
-                        : 'Supported: PDF, DOCX, TXT, MD (Max 25 MB)'}
+                      Supported: PDF (.pdf) &bull; Maximum file size: 3 MB
                     </p>
                   </div>
                 )}

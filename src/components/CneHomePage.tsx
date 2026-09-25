@@ -112,7 +112,10 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   const handleQuickLinkClick = (item: QuickLinkItem) => {
     if (!item) return;
     if (item.actionType === 'navigate' && item.target) {
-      onNavigate(item.target as ViewMode);
+      let targetView = item.target;
+      if (targetView === 'upcoming') targetView = 'cne-schedule';
+      if (targetView === 'my-cne') targetView = 'my-cne-records';
+      onNavigate(targetView as ViewMode);
     } else if (item.actionType === 'modal' || item.modalContent) {
       setSelectedQuickLink(item);
     } else if (item.actionType === 'external' && item.target) {

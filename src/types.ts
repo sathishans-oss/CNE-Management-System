@@ -3,9 +3,9 @@ export type UserRole = 'ADMIN' | 'AREA_INCHARGE' | 'EMPLOYEE';
 export type ViewMode =
   | 'home'
   | 'dashboard'
-  | 'my-cne'
+  | 'my-cne-records'
   | 'calendar'
-  | 'upcoming'
+  | 'cne-schedule'
   | 'learning-resources'
   | 'gallery'
   | 'admin-areas'

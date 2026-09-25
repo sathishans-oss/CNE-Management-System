@@ -3,10 +3,15 @@ import autoTable from 'jspdf-autotable';
 import { CNERecord, SessionUser, CNEParticipant } from '../types';
 import { formatCneDateRangeDisplay, formatCneDateDisplay, formatCneDateTimeDisplay } from '../utils';
 
-export function generateAnnualCNEPdf(
+export interface CNERecordPdfOptions {
+  fromDate?: string;
+  toDate?: string;
+}
+
+export function generateCNERecordsPdf(
   user: SessionUser,
   records: CNERecord[],
-  year: number | string
+  options?: CNERecordPdfOptions | string
 ): void {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -14,10 +19,24 @@ export function generateAnnualCNEPdf(
     format: 'a4'
   });
 
-  // Normalize Assessment Year string (e.g., 2026 -> "2026–2027" if single year passed, or preserve "2026–2027")
-  const ayStr = typeof year === 'number'
-    ? `${year}–${year + 1}`
-    : (year.includes('–') || year.includes('-') ? year.replace('-', '–') : `${year}–${parseInt(year, 10) + 1}`);
+  // Determine date period label
+  let periodLabel = 'All Available Records';
+  let dateRangeFilePart = '';
+  if (options && typeof options === 'object') {
+    const { fromDate, toDate } = options;
+    if (fromDate && toDate) {
+      periodLabel = `Period: ${formatCneDateDisplay(fromDate)} – ${formatCneDateDisplay(toDate)}`;
+      dateRangeFilePart = `_${fromDate.replace(/[^0-9]/g, '')}_to_${toDate.replace(/[^0-9]/g, '')}`;
+    } else if (fromDate) {
+      periodLabel = `From: ${formatCneDateDisplay(fromDate)}`;
+      dateRangeFilePart = `_from_${fromDate.replace(/[^0-9]/g, '')}`;
+    } else if (toDate) {
+      periodLabel = `Up to: ${formatCneDateDisplay(toDate)}`;
+      dateRangeFilePart = `_upto_${toDate.replace(/[^0-9]/g, '')}`;
+    }
+  } else if (typeof options === 'string' && options.trim()) {
+    periodLabel = options.trim();
+  }
 
   // Calculate totals accurately
   let totalMinutes = 0;
@@ -49,12 +68,12 @@ export function generateAnnualCNEPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(12);
   doc.setTextColor(30, 41, 59); // slate-800
-  doc.text('ANNUAL CLINICAL NURSING EDUCATION (CNE) RECORD', 105, 30, { align: 'center' });
+  doc.text('CNE TRAINING RECORD', 105, 30, { align: 'center' });
 
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
   doc.setTextColor(51, 65, 85);
-  doc.text(`Assessment Year: ${ayStr}`, 105, 36, { align: 'center' });
+  doc.text(periodLabel, 105, 36, { align: 'center' });
 
   // Top Divider
   doc.setDrawColor(203, 213, 225);
@@ -71,7 +90,7 @@ export function generateAnnualCNEPdf(
   doc.setFontSize(8.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(100, 116, 139); // slate-500
-  doc.text('EMPLOYEE INFORMATION & ANNUAL SUMMARY', 18, 50);
+  doc.text('EMPLOYEE INFORMATION & TRAINING SUMMARY', 18, 50);
 
   // Left Column: Employee Identity
   doc.setFontSize(8.5);
@@ -90,13 +109,13 @@ export function generateAnnualCNEPdf(
   // Right Column: Summary Metrics (Total Sessions & Duration ABOVE Table)
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(51, 65, 85);
-  doc.text('Assessment Year:', 110, 57);
+  doc.text('Record Filter:', 110, 57);
   doc.text('Total CNE Sessions:', 110, 64);
   doc.text('Total Training Duration:', 110, 71);
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(15, 23, 42);
-  doc.text(`${ayStr}`, 154, 57);
+  doc.text(`${periodLabel.length > 28 ? periodLabel.slice(0, 28) + '...' : periodLabel}`, 154, 57);
   doc.text(`${records.length} Sessions`, 154, 64);
   doc.text(`${durationSummaryStr}`, 154, 71);
 
@@ -126,7 +145,7 @@ export function generateAnnualCNEPdf(
   autoTable(doc, {
     startY: 87,
     head: [['Sr', 'Date / Period', 'Area / Ward', 'CNE Topic / Skills', 'Mode', 'Role', 'Duration']],
-    body: tableData.length > 0 ? tableData : [['-', '-', 'No CNE activities recorded for this assessment year', '-', '-', '-', '-']],
+    body: tableData.length > 0 ? tableData : [['-', '-', 'No CNE activities recorded for the selected filters', '-', '-', '-', '-']],
     theme: 'grid',
     headStyles: {
       fillColor: [30, 41, 59], // Slate-800
@@ -195,10 +214,12 @@ export function generateAnnualCNEPdf(
   doc.text('This is a verified institutional record from the Clinical Nursing Education (CNE) Portal • AIIMS Rishikesh.', 105, pageHeight - 8, { align: 'center' });
 
   // Trigger download
-  const cleanAy = ayStr.replace(/[^a-zA-Z0-9-]/g, '_');
   const cleanName = (user.name || 'Officer').replace(/[^a-zA-Z0-9]/g, '_');
-  doc.save(`CNE_Annual_Record_${user.employeeId}_AY_${cleanAy}_${cleanName}.pdf`);
+  doc.save(`CNE_Record_${user.employeeId}_${cleanName}${dateRangeFilePart}.pdf`);
 }
+
+// Backwards compatibility alias
+export const generateAnnualCNEPdf = generateCNERecordsPdf;
 
 export function generateCNESessionPdf(
   cne: CNERecord,

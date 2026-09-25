@@ -48,6 +48,8 @@ import { CNEFinalizeModal } from './cne/CNEFinalizeModal';
 import { DepartmentalScheduleModal } from './cne/DepartmentalScheduleModal';
 import { AddUnscheduledCneModal } from './cne/AddUnscheduledCneModal';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
+import { CneDateTimeFields } from './cne/CneDateTimeFields';
+import { SearchInput } from './SearchInput';
 import { loadOfficersSingleFlight, getCachedOfficers } from '../services/officerLoader';
 
 interface CNEScheduleProps {
@@ -831,15 +833,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           {isFilterOpen && (
             <div className="pt-3 border-t border-slate-100 flex flex-col md:flex-row items-stretch md:items-center gap-3">
               {/* 1. Search */}
-              <div className="relative flex-1 min-w-[200px]">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
+              <div className="flex-1 min-w-[200px]">
+                <SearchInput
                   id="filter-search"
-                  type="text"
                   placeholder="Search..."
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-9 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-xl shadow-xs focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all placeholder:text-slate-400"
+                  onChange={setSearchTerm}
                 />
               </div>
 
@@ -848,12 +847,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                 <label htmlFor="filter-from-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
                   From Date
                 </label>
-                <input
+                <ConfirmDatePicker
                   id="filter-from-date"
-                  type="date"
                   value={fromDateFilter}
-                  onChange={(e) => setFromDateFilter(e.target.value)}
-                  className="px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-xl shadow-xs focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all text-slate-700 cursor-pointer"
+                  onChange={setFromDateFilter}
+                  placeholder="From Date..."
+                  compact
                 />
               </div>
 
@@ -862,12 +861,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                 <label htmlFor="filter-to-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
                   To Date
                 </label>
-                <input
+                <ConfirmDatePicker
                   id="filter-to-date"
-                  type="date"
                   value={toDateFilter}
-                  onChange={(e) => setToDateFilter(e.target.value)}
-                  className="px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-xl shadow-xs focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all text-slate-700 cursor-pointer"
+                  onChange={setToDateFilter}
+                  minDate={fromDateFilter}
+                  placeholder="To Date..."
+                  compact
                 />
               </div>
 
@@ -1122,84 +1122,23 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       <span>2. Date & Schedule</span>
                     </h4>
 
-                    <div className="space-y-3">
-                      {/* From Date & Time */}
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
-                            From Date &amp; Time *
-                          </label>
-                          <span className="text-[10px] text-indigo-600 font-medium">Calendar + Time</span>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
-                          <div className="sm:col-span-3">
-                            <ConfirmDatePicker
-                              id="central-cne-from-date"
-                              value={scheduleFromDate}
-                              onChange={handleConfirmFromDate}
-                              minDate={todayStr}
-                              placeholder="Select From Date..."
-                            />
-                          </div>
-                          <div className="sm:col-span-2">
-                            <input
-                              type="time"
-                              required
-                              id="central-cne-from-time"
-                              value={scheduleFromTime}
-                              onChange={(e) => handleFromTimeChange(e.target.value)}
-                              className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                              title="From Time"
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* To Date & Time */}
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
-                            To Date &amp; Time *
-                          </label>
-                          {!isFromComplete ? (
-                            <span className="text-[10px] text-amber-600 font-medium">Select From Date &amp; Time first</span>
-                          ) : scheduleToDate === scheduleFromDate ? (
-                            <span className="text-[10px] text-indigo-600 font-medium">Same day (Min time: {scheduleFromTime})</span>
-                          ) : (
-                            <span className="text-[10px] text-emerald-600 font-medium">Multi-day workshop</span>
-                          )}
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
-                          <div className="sm:col-span-3">
-                            <ConfirmDatePicker
-                              id="central-cne-to-date"
-                              value={scheduleToDate}
-                              onChange={handleConfirmToDate}
-                              minDate={scheduleFromDate || todayStr}
-                              disabled={!isFromComplete}
-                              placeholder={isFromComplete ? 'Select To Date...' : 'Select From Date first'}
-                            />
-                          </div>
-                          <div className="sm:col-span-2">
-                            <input
-                              type="time"
-                              required
-                              id="central-cne-to-time"
-                              disabled={!isFromComplete || !scheduleToDate}
-                              min={scheduleToDate === scheduleFromDate ? scheduleFromTime : undefined}
-                              value={scheduleToTime}
-                              onChange={(e) => handleToTimeChange(e.target.value)}
-                              className={`w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none ${
-                                !isFromComplete || !scheduleToDate
-                                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200'
-                                  : ''
-                              }`}
-                              title={scheduleToDate === scheduleFromDate ? `To Time (Min: ${scheduleFromTime})` : 'To Time'}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                    <CneDateTimeFields
+                      idPrefix="central-cne"
+                      fromDate={scheduleFromDate}
+                      fromTime={scheduleFromTime}
+                      toDate={scheduleToDate}
+                      toTime={scheduleToTime}
+                      minDate={todayStr}
+                      onChange={({ fromDate, fromTime, toDate, toTime, calculatedDuration }) => {
+                        setScheduleFromDate(fromDate);
+                        setScheduleFromTime(fromTime);
+                        setScheduleToDate(toDate);
+                        setScheduleToTime(toTime);
+                        if (calculatedDuration && calculatedDuration !== '00:00:00') {
+                          setNewDuration(calculatedDuration);
+                        }
+                      }}
+                    />
 
                     <div>
                       <div className="flex items-center justify-between mb-1">
@@ -2028,33 +1967,20 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       <span>2. Scheduling & Logistics</span>
                     </h4>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                          From Date &amp; Time *
-                        </label>
-                        <input
-                          type="datetime-local"
-                          required
-                          value={editDate}
-                          onChange={(e) => handleEditFromDateChange(e.target.value)}
-                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                          To Date &amp; Time *
-                        </label>
-                        <input
-                          type="datetime-local"
-                          required
-                          min={editDate}
-                          value={editToDate}
-                          onChange={(e) => handleEditToDateChange(e.target.value)}
-                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
-                        />
-                      </div>
-                    </div>
+                    <CneDateTimeFields
+                      idPrefix="edit-cne"
+                      fromDate={editDate ? editDate.split('T')[0] : ''}
+                      fromTime={editDate && editDate.includes('T') ? editDate.split('T')[1].substring(0, 5) : '09:00'}
+                      toDate={editToDate ? editToDate.split('T')[0] : (editDate ? editDate.split('T')[0] : '')}
+                      toTime={editToDate && editToDate.includes('T') ? editToDate.split('T')[1].substring(0, 5) : '10:30'}
+                      onChange={({ fullFrom, fullTo, calculatedDuration }) => {
+                        setEditDate(fullFrom);
+                        setEditToDate(fullTo);
+                        if (calculatedDuration && calculatedDuration !== '00:00:00') {
+                          setEditDuration(calculatedDuration);
+                        }
+                      }}
+                    />
 
                     <div>
                       <div className="flex items-center justify-between mb-1">

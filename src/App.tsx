@@ -8,7 +8,7 @@ import { CneHomePage } from './components/CneHomePage';
 import { LoginModal } from './components/LoginModal';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { ForgotPasswordModal } from './components/ForgotPasswordModal';
-import { MyCNE } from './components/MyCNE';
+import { MyCNERecords } from './components/MyCNERecords';
 import { CNECalendar } from './components/CNECalendar';
 import { CNESchedule } from './components/CNESchedule';
 import { LearningResourcesPage } from './components/cne/LearningResourcesPage';
@@ -46,7 +46,7 @@ const AppContent: React.FC = () => {
   const handleNavigate = (view: ViewMode) => {
     // If not logged in and attempting to access staff/admin protected views, prompt login
     if (!user || !user.employeeId) {
-      if (['my-cne', 'admin-areas', 'admin-roles', 'admin-content', 'admin-reports'].includes(view)) {
+      if (['my-cne-records', 'admin-areas', 'admin-roles', 'admin-content', 'admin-reports'].includes(view)) {
         info('Please log in with your Employee ID to access this section.', 'Authentication Required');
         setIsLoginOpen(true);
         return;
@@ -85,13 +85,13 @@ const AppContent: React.FC = () => {
             />
           )}
 
-          {user && user.employeeId && activeView === 'my-cne' && (
-            <MyCNE user={user} />
+          {user && user.employeeId && activeView === 'my-cne-records' && (
+            <MyCNERecords user={user} />
           )}
 
           {user && user.employeeId && activeView === 'calendar' && <CNECalendar />}
 
-          {user && user.employeeId && activeView === 'upcoming' && (
+          {user && user.employeeId && activeView === 'cne-schedule' && (
             <CNESchedule user={user} />
           )}
 

@@ -34,12 +34,12 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
     { id: 'dashboard' as ViewMode, label: 'Menu', icon: LayoutDashboard },
     { id: 'calendar' as ViewMode, label: 'CNE Calendar', icon: Calendar },
     {
-      id: 'upcoming' as ViewMode,
+      id: 'cne-schedule' as ViewMode,
       label: 'CNE Schedule',
       icon: Sparkles,
       badge: upcomingCount > 0 ? upcomingCount : undefined
     },
-    { id: 'my-cne' as ViewMode, label: 'My CNE Records', icon: Award },
+    { id: 'my-cne-records' as ViewMode, label: 'My CNE Records', icon: Award },
     { id: 'learning-resources' as ViewMode, label: 'Learning Resources', icon: BookOpen },
     ...(isAdmin
       ? [{ id: 'admin-reports' as ViewMode, label: 'Report and Stats', icon: BarChart3 }]

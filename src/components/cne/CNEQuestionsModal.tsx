@@ -98,7 +98,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const handleGenerateAi = async () => {
     if (generatingRef.current || isGenerating || isLocked || !isAuthorized) return;
 
-    // Immediate synchronous lock and UI state
     generatingRef.current = true;
     setIsGenerating(true);
 
@@ -112,91 +111,26 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     }
 
     try {
-      // Stage: Reserving generation quota
-      setGenerationStage({
-        title: 'Reserving generation quota',
-        subtitle: 'Securing the quota required to generate your MCQs…'
-      });
-      const reserveRes = await ApiService.reserveAiQuota(cneId, 'MATERIAL');
-      if (!reserveRes.success || !reserveRes.data?.reservationToken) {
-        error(reserveRes.message || 'Failed to reserve AI generation allowance.');
-        if (reserveRes.data) {
-          setQuotaInfo(reserveRes.data);
-        }
-        return;
-      }
-
-      const reservationToken = reserveRes.data.reservationToken;
-
-      // Stage: Generating MCQs
       setGenerationStage({
         title: 'Generating MCQs',
-        subtitle: 'Analyzing the learning content and CNE Library resources…'
+        subtitle: 'Synthesizing 5 clinical MCQs directly in Google Apps Script via Gemini Flash…'
       });
-      let aiRes: any;
-      try {
-        aiRes = await ApiService.generateAiQuestions({
-          cneId: cneId,
-          topic: cne.topic,
-          reservationToken: reservationToken,
-          generationSource: 'MATERIAL'
-        });
-      } catch (genErr: any) {
-        // Exception during Gemini generation: release reservation so allowance is not consumed
-        try {
-          await ApiService.releaseAiQuota(cneId, reservationToken);
-        } catch (rErr) {}
-        error('AI question generation failed. No AI generation allowance was consumed.');
-        return;
-      }
 
-      // Exact 5 MCQs validation
-      if (!aiRes || !aiRes.success || !aiRes.data || !Array.isArray(aiRes.data) || aiRes.data.length !== 5) {
-        try {
-          await ApiService.releaseAiQuota(cneId, reservationToken);
-        } catch (rErr) {}
-        if (aiRes?.errorCode === 'MATERIAL_REQUIRED' || aiRes?.errorCode === 'NO_EXTRACTABLE_CONTENT' || aiRes?.errorCode === 'INSUFFICIENT_TOPIC_MATERIAL') {
-          setHasMaterial(false);
-        }
-        error(aiRes?.message || 'AI question generation failed: Expected exactly 5 complete MCQs. Allowance was not consumed.');
-        return;
-      }
+      const res = await ApiService.generateCNEQuestions(cneId);
 
-      setHasMaterial(true);
-
-      // Stage: Finalizing MCQs
-      setGenerationStage({
-        title: 'Finalizing MCQs',
-        subtitle: 'Almost ready…'
-      });
-      const commitRes = await ApiService.commitAiQuota(cneId, reservationToken, aiRes.data);
-
-      if (commitRes && commitRes.success && commitRes.data) {
-        setQuotaInfo(commitRes.data);
-        try {
-          const freshQuestionsRes = await ApiService.getCNEQuestions(cneId);
-          if (freshQuestionsRes.success && freshQuestionsRes.data && freshQuestionsRes.data.length > 0) {
-            setQuestions(freshQuestionsRes.data);
-          } else {
-            setQuestions(aiRes.data);
-          }
-        } catch {
-          setQuestions(aiRes.data);
-        }
-        success('Successfully generated and saved exactly 5 clinical MCQs via AI. Post-test is ready.');
+      if (res && res.success && res.data && Array.isArray(res.data) && res.data.length === 5) {
+        setQuestions(res.data);
+        setHasMaterial(true);
+        success('Successfully generated and saved exactly 5 clinical MCQs via Gemini. Post-test is ready.');
+        await loadQuota();
         if (onUpdated) onUpdated();
       } else {
-        error(
-          commitRes?.message ||
-          'AI questions were generated, but saving to Google Sheets could not be verified. Please retry or contact administrator.'
-        );
-        // Refresh quota from server
-        try {
-          const freshQuota = await ApiService.getAiQuota(cneId);
-          if (freshQuota.success && freshQuota.data) {
-            setQuotaInfo(freshQuota.data);
-          }
-        } catch (qErr) {}
+        const errMsg = res?.message || 'AI question generation failed. No AI generation allowance was consumed.';
+        if (res?.errorCode === 'MATERIAL_REQUIRED' || res?.errorCode === 'NO_EXTRACTABLE_CONTENT' || res?.errorCode === 'INSUFFICIENT_TOPIC_MATERIAL') {
+          setHasMaterial(false);
+        }
+        error(errMsg);
+        await loadQuota();
       }
     } catch (e: any) {
       error(e?.message || 'Error occurred during AI question generation.');

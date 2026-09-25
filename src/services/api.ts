@@ -168,7 +168,8 @@ export class ApiService {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000); // 45-second timeout for Apps Script
+      const timeoutMs = action === 'generateCNEQuestions' ? 120000 : 45000; // 120-sec timeout for Gemini generation in GAS, 45-sec for standard requests
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       const response = await fetch(apiUrl, {
         method: 'POST',
@@ -707,6 +708,15 @@ export class ApiService {
    */
   static async getDashboardStats(): Promise<ApiResponse<CNEReportStats>> {
     return this.executeAction<CNEReportStats>('getDashboardStats');
+  }
+
+  /**
+   * Part 1C: Authoritative Google Apps Script Gemini MCQ Generation
+   * Invokes Gemini directly inside Google Apps Script using UrlFetchApp.
+   * Atomically checks quota, retrieves evidence, generates 5 MCQs, persists them, and commits quota.
+   */
+  static async generateCNEQuestions(cneId: string): Promise<ApiResponse<CNEQuestion[]>> {
+    return this.executeAction<CNEQuestion[]>('generateCNEQuestions', { cneId });
   }
 
   /**

@@ -579,8 +579,9 @@ function handleRequest(e, method) {
         output = handleReserveAiQuota(params, session);
         break;
 
+      case 'generateCNEQuestions':
       case 'generateAiQuestions':
-        output = handleGenerateAiQuestions(params, session);
+        output = handleGenerateCNEQuestions(params, session);
         break;
 
       case 'commitAiQuota':
@@ -5746,16 +5747,16 @@ function handleUploadLearningResource(params, session) {
   }
 
   // Pre-decode size check (approximate base64 length check to avoid huge memory allocation)
-  // For 5 MB binary file, base64 length is ~ 5 * 1024 * 1024 * 4/3 ≈ 6.99 MB.
-  if (rawBase64.length > 7 * 1024 * 1024) {
+  // For 3 MB binary file, base64 length is ~ 3 * 1024 * 1024 * 4/3 ≈ 4.19 MB.
+  if (rawBase64.length > 4.5 * 1024 * 1024) {
     return {
       success: false,
       errorCode: 'FILE_TOO_LARGE',
-      message: 'File exceeds maximum allowed size of 5 MB.'
+      message: 'File exceeds maximum allowed size of 3 MB.'
     };
   }
 
-  // 1. Determine and validate normalized extension (exactly pdf, docx, ppt, pptx)
+  // 1. Determine and validate normalized extension (strictly pdf)
   var ext = '';
   if (clientFileName && clientFileName.lastIndexOf('.') !== -1) {
     ext = clientFileName.substring(clientFileName.lastIndexOf('.') + 1).toLowerCase().trim();
@@ -5763,12 +5764,12 @@ function handleUploadLearningResource(params, session) {
     ext = String(params.extension).toLowerCase().replace(/^\./, '').trim();
   }
 
-  var ALLOWED_EXTS = ['pdf', 'docx', 'ppt', 'pptx'];
+  var ALLOWED_EXTS = ['pdf'];
   if (!ext || ALLOWED_EXTS.indexOf(ext) === -1) {
     return {
       success: false,
       errorCode: 'INVALID_FILE_TYPE',
-      message: 'Invalid file format. Only PDF, DOCX, PPT, and PPTX documents are permitted.'
+      message: 'Invalid file format. Only PDF (.pdf) documents are permitted.'
     };
   }
 
@@ -5849,11 +5850,11 @@ function handleUploadLearningResource(params, session) {
     };
   }
 
-  if (fileSize > 5 * 1024 * 1024) {
+  if (fileSize > 3 * 1024 * 1024) {
     return {
       success: false,
       errorCode: 'FILE_TOO_LARGE',
-      message: 'File exceeds maximum allowed size of 5 MB (Actual: ' + (Math.round(fileSize / (1024 * 1024) * 10) / 10) + ' MB).'
+      message: 'File exceeds maximum allowed size of 3 MB (Actual: ' + (Math.round(fileSize / (1024 * 1024) * 10) / 10) + ' MB).'
     };
   }
 
@@ -8124,9 +8125,9 @@ function uploadNursingReferenceResource(params, session) {
   }
 
   var ext = getFileExtension(fileName).toLowerCase();
-  var ALLOWED_EXTS = ['pdf', 'docx', 'ppt', 'pptx'];
+  var ALLOWED_EXTS = ['pdf'];
   if (ALLOWED_EXTS.indexOf(ext) === -1) {
-    return { success: false, errorCode: 'UNSUPPORTED_FILE_TYPE', message: 'Only PDF, DOCX, PPT, and PPTX documents are permitted.' };
+    return { success: false, errorCode: 'UNSUPPORTED_FILE_TYPE', message: 'Only PDF (.pdf) documents are permitted.' };
   }
 
   var folderResult = getOrCreateOpenRnFolder();
@@ -8146,8 +8147,8 @@ function uploadNursingReferenceResource(params, session) {
     return { success: false, errorCode: 'INVALID_PAYLOAD', message: 'Invalid file payload: unable to decode base64 content.' };
   }
 
-  if (fileBytes.length > 25 * 1024 * 1024) {
-    return { success: false, errorCode: 'FILE_TOO_LARGE', message: 'File size exceeds maximum allowed size of 25 MB.' };
+  if (fileBytes.length > 3 * 1024 * 1024) {
+    return { success: false, errorCode: 'FILE_TOO_LARGE', message: 'File size exceeds maximum allowed size of 3 MB.' };
   }
 
   var mimeType = getMimeTypeFromExt(ext);
@@ -11638,6 +11639,155 @@ function handleGenerateAiQuestions(params, session) {
     cneId: cneId,
     reservationToken: reservationToken,
     source: configuredModel
+  };
+}
+
+/**
+ * Part 1C / 1D: Authoritative End-to-End Gemini MCQ Generation in Google Apps Script
+ * Action: generateCNEQuestions
+ *
+ * Workflow:
+ * 1. Verify authenticated session
+ * 2. Resolve CNE record
+ * 3. Authorize user (admin or instructor/incharge) via checkQuestionManagementAuthorized
+ * 4. Confirm CNE is not finalized (normalizeCNEStatus !== 'Completed')
+ * 5. Confirm questions are not permanently locked (!isCNEQuestionsLocked)
+ * 6. Safely reserve one-time quota (locks held only during reservation)
+ * 7. Retrieve only approved local CNE / reference material
+ * 8. Invoke Gemini REST API dynamically via UrlFetchApp (WITHOUT holding ScriptLock)
+ * 9. Validate exactly 5 structurally valid MCQs
+ * 10. Persist questions and commit quota (under lock)
+ * 11. Release reservation if generation/validation fails
+ * 12. Write audit log and return generated questions
+ */
+function handleGenerateCNEQuestions(params, session) {
+  if (!session || !session.employeeId) {
+    return {
+      success: false,
+      errorCode: 'UNAUTHORIZED',
+      message: 'Authentication required. Please sign in.'
+    };
+  }
+
+  var cneId = sanitizeCellInput(params.cneId);
+  if (!cneId) {
+    return { success: false, errorCode: 'CNE_ID_REQUIRED', message: 'CNE ID is required.' };
+  }
+
+  var record = getCNEClassRecord(cneId);
+  if (!record) {
+    return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
+  }
+
+  var authErr = checkQuestionManagementAuthorized(session, record);
+  if (authErr) return authErr;
+
+  if (normalizeCNEStatus(record.status) === 'Completed') {
+    return {
+      success: false,
+      errorCode: 'CNE_ALREADY_FINALIZED',
+      message: 'This CNE has already been finalized. Questions cannot be modified.'
+    };
+  }
+
+  if (isCNEQuestionsLocked(cneId)) {
+    return {
+      success: false,
+      errorCode: 'QUESTIONS_LOCKED',
+      message: 'Questions are permanently locked because post-test submissions have already begun.'
+    };
+  }
+
+  // Quota reservation: lock acquired and released within handleReserveAiQuota
+  var reservationToken = params.reservationToken ? sanitizeCellInput(params.reservationToken) : '';
+  if (!reservationToken) {
+    var reserveRes = handleReserveAiQuota({ cneId: cneId, generationSource: 'MATERIAL' }, session);
+    if (!reserveRes || !reserveRes.success) {
+      return reserveRes || {
+        success: false,
+        errorCode: 'QUOTA_EXHAUSTED',
+        message: 'Failed to reserve AI generation quota.'
+      };
+    }
+
+    reservationToken = reserveRes.data && reserveRes.data.reservationToken;
+    if (!reservationToken) {
+      return {
+        success: false,
+        errorCode: 'RESERVATION_FAILED',
+        message: 'Failed to obtain AI quota reservation token.'
+      };
+    }
+  }
+
+  // Direct Gemini network call and validation (OUTSIDE ScriptLock)
+  var genRes = null;
+  try {
+    genRes = handleGenerateAiQuestions({
+      cneId: cneId,
+      reservationToken: reservationToken,
+      generationSource: 'MATERIAL'
+    }, session);
+  } catch (genErr) {
+    genRes = {
+      success: false,
+      errorCode: 'AI_GENERATION_FAILED',
+      message: 'Unexpected error during AI generation: ' + (genErr && genErr.message ? genErr.message : String(genErr))
+    };
+  }
+
+  if (!genRes || !genRes.success || !Array.isArray(genRes.data) || genRes.data.length !== 5) {
+    // Release quota reservation so the user does not forfeit allowance upon failure
+    try {
+      handleReleaseAiQuota({ cneId: cneId, reservationToken: reservationToken }, session);
+    } catch (relErr) {
+      console.warn('Failed to release AI quota reservation: ' + relErr);
+    }
+    return genRes || {
+      success: false,
+      errorCode: 'AI_GENERATION_FAILED',
+      message: 'AI question generation failed to produce 5 valid questions.'
+    };
+  }
+
+  var validatedQuestions = genRes.data;
+
+  // Persist questions to sheet
+  var saveRes = handleSaveCNEQuestions({
+    cneId: cneId,
+    questions: validatedQuestions
+  }, session);
+
+  if (!saveRes || !saveRes.success) {
+    try {
+      handleReleaseAiQuota({ cneId: cneId, reservationToken: reservationToken }, session);
+    } catch (relErr2) {}
+    return saveRes || {
+      success: false,
+      errorCode: 'SAVE_QUESTIONS_FAILED',
+      message: 'Failed to persist generated MCQs to sheet.'
+    };
+  }
+
+  // Commit quota to USED
+  var commitRes = handleCommitAiQuota({
+    cneId: cneId,
+    reservationToken: reservationToken,
+    questions: validatedQuestions
+  }, session);
+
+  if (!commitRes || !commitRes.success) {
+    logAuditAction('AI_QUOTA_COMMIT_WARNING', session.employeeId, 'Questions saved but quota commit returned warning for CNE: ' + cneId, 'WARNING');
+  }
+
+  logAuditAction('AI_QUESTION_GENERATION_SUCCESS', session.employeeId, 'End-to-end AI MCQ generation completed and saved for CNE: ' + cneId, 'SUCCESS');
+
+  return {
+    success: true,
+    data: validatedQuestions,
+    cneId: cneId,
+    source: genRes.source || 'gemini',
+    message: 'Successfully generated and saved exactly 5 clinical MCQs.'
   };
 }
 

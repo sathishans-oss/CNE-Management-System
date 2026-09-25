@@ -119,18 +119,18 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   };
 
   const handleFileSelect = (file: File) => {
-    const validExtensions = ['.pdf', '.docx', '.ppt', '.pptx'];
+    const validExtensions = ['.pdf'];
     const lowerName = file.name.toLowerCase();
     const isValidExt = validExtensions.some((ext) => lowerName.endsWith(ext));
 
     if (!isValidExt) {
-      error('Invalid file format. Only PDF (.pdf), Word (.docx), and PowerPoint (.ppt, .pptx) files are supported.');
+      error('Invalid file format. Only PDF (.pdf) documents are supported.');
       return;
     }
 
-    const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+    const MAX_FILE_SIZE = 3 * 1024 * 1024; // 3MB
     if (file.size > MAX_FILE_SIZE) {
-      error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of 5 MB.`);
+      error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of 3 MB.`);
       return;
     }
 
@@ -318,7 +318,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             <div className="px-6 py-2.5 bg-teal-50/70 border-b border-teal-100/80 flex items-start gap-2.5 text-xs text-teal-900 shrink-0">
               <Info className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
               <div className="leading-relaxed">
-                Upload the authoritative presentation slides, PDF guideline, or document (PDF, DOCX, PPT, PPTX up to 5MB).
+                Upload the authoritative presentation slides or guideline document (PDF up to 3MB).
                 The AI Question Synthesizer reads the uploaded document as primary grounding to generate 5 standardized clinical MCQs.
               </div>
             </div>
@@ -346,9 +346,9 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                     <Upload className="w-4 h-4 text-teal-600" />
-                    Upload Learning Resource File (PDF, DOCX, PPT, PPTX &le; 5MB)
+                    Upload Learning Resource File (PDF &le; 3MB)
                   </label>
-                  <span className="text-[11px] text-slate-400">Max size: 5 MB</span>
+                  <span className="text-[11px] text-slate-400">Max size: 3 MB</span>
                 </div>
 
                 {/* Existing Stored Resource Card */}
@@ -435,7 +435,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".pdf,.docx,.ppt,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                  accept=".pdf,application/pdf"
                   onChange={(e) => {
                     if (e.target.files && e.target.files[0]) {
                       handleFileSelect(e.target.files[0]);
@@ -464,12 +464,12 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       </span>
                     ) : (
                       <span>
-                        Drag and drop your file here, or <span className="text-teal-600 underline">browse</span>
+                        Drag and drop your PDF here, or <span className="text-teal-600 underline">browse</span>
                       </span>
                     )}
                   </p>
                   <p className="text-[11px] text-slate-400">
-                    Supported: PDF (.pdf), Word (.docx), PowerPoint (.ppt, .pptx)
+                    Supported: PDF (.pdf) &bull; Maximum file size: 3 MB
                   </p>
                 </div>
 
