@@ -15,7 +15,8 @@
     "verify:all": "node scripts/verify-all.js",
     "verify:security": "node scripts/verify-security-and-access.js",
     "verify:workflows": "node scripts/verify-cne-workflows.js",
-    "verify:pdf": "node scripts/verify-pdf-resources-and-indexing.js"
+    "verify:pdf": "node scripts/verify-pdf-resources-and-indexing.js",
+    "verify:integration": "node scripts/verify-system-integration.js"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

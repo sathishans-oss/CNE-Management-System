@@ -5,6 +5,7 @@
  * 1. verify-security-and-access.js
  * 2. verify-cne-workflows.js
  * 3. verify-pdf-resources-and-indexing.js
+ * 4. verify-system-integration.js
  *
  * Exit code 0 if all tests across all suites pass.
  * Exit code 1 if any suite encounters a failure.
@@ -32,6 +33,11 @@ const suites = [
     name: 'PDF Resources & Evidence Indexing',
     script: 'scripts/verify-pdf-resources-and-indexing.js',
     desc: 'PDF document policy, size boundaries, unsupported formats, chunking & clinical relevance gating'
+  },
+  {
+    name: 'System Integration',
+    script: 'scripts/verify-system-integration.js',
+    desc: 'Frontend API ↔ GAS consistency, Code.gs sync, canonical routing, schema lifecycle, Gemini & safety'
   }
 ];
 
