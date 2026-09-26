@@ -197,7 +197,6 @@ export interface CNELearningResourceMetadata {
   updatedAt?: string;
   updatedBy?: string;
   hasFile?: boolean;
-  visibleToUsers?: boolean;
   indexingStatus?: 'SUCCESS' | 'FAILED' | 'PENDING';
   indexingErrorCode?: string;
   indexingMessage?: string;
@@ -229,7 +228,6 @@ export interface CNENursingReferenceResource {
   version: string;
   fileType: string;
   active: boolean;
-  visibleToUsers?: boolean;
   indexedAt: string;
   updatedAt: string;
 }

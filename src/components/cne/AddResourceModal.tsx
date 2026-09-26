@@ -6,8 +6,6 @@ import {
   Library,
   FileText,
   Loader2,
-  Eye,
-  EyeOff,
   User
 } from 'lucide-react';
 import {
@@ -32,7 +30,6 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
 }) => {
   const [resourceType, setResourceType] = useState<'CNE_LEARNING_MATERIAL' | 'NURSING_REFERENCE_LIB'>(initialType);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [visibleToUsers, setVisibleToUsers] = useState<boolean>(true);
 
   // --- CNE Learning Material State ---
   const [upcomingClasses, setUpcomingClasses] = useState<CNERecord[]>([]);
@@ -60,7 +57,6 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setResourceType(initialType);
-      setVisibleToUsers(true);
       setSelectedFile(null);
       loadCneClasses();
       loadDriveFiles();
@@ -181,8 +177,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
           fileName: selectedFile.name,
           fileType: selectedFile.type || 'application/octet-stream',
           resourcePersonName: resourcePerson.trim() || undefined,
-          unifiedContent: notes.trim() || undefined,
-          visibleToUsers: visibleToUsers
+          unifiedContent: notes.trim() || undefined
         });
 
         if (res.success) {
@@ -221,8 +216,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
             resourceTitle: resourceTitle.trim(),
             authorOrganization: authorOrg.trim() || undefined,
             license: license.trim() || undefined,
-            version: version.trim() || undefined,
-            visibleToUsers: visibleToUsers
+            version: version.trim() || undefined
           });
 
           if (res.success) {
@@ -252,7 +246,6 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
             authorOrganization: authorOrg.trim() || undefined,
             license: license.trim() || undefined,
             version: version.trim() || undefined,
-            visibleToUsers: visibleToUsers,
             reindex: false
           });
 
@@ -621,43 +614,6 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
               </div>
             </div>
           )}
-
-          {/* Visibility Toggle Switch (for Admins) */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 flex items-center justify-between gap-4">
-            <div className="flex items-start gap-3">
-              <div
-                className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
-                  visibleToUsers ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                }`}
-              >
-                {visibleToUsers ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-              </div>
-              <div>
-                <div className="text-xs font-bold text-slate-900">
-                  User Visibility: {visibleToUsers ? 'Visible to Users' : 'Hidden from Users'}
-                </div>
-                <div className="text-[11px] text-slate-500 leading-snug">
-                  {visibleToUsers
-                    ? 'Staff and participants can view, preview, and download this resource.'
-                    : 'Only Admins can see and access this resource. (AI retrieval remains active).'}
-                </div>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setVisibleToUsers(!visibleToUsers)}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                visibleToUsers ? 'bg-teal-600' : 'bg-slate-300'
-              }`}
-            >
-              <span
-                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                  visibleToUsers ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          </div>
 
           {/* Action Buttons */}
           <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">

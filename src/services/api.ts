@@ -299,7 +299,6 @@ export class ApiService {
       case 'indexNursingReferenceResource':
       case 'uploadNursingReferenceResource':
       case 'deleteNursingReferenceResource':
-      case 'setResourceVisibility':
       case 'updateCoordinatorDesk':
       case 'uploadImage':
       case 'updateGalleryItem':
@@ -911,7 +910,6 @@ export class ApiService {
     resourcePersonName?: string;
     unifiedContent?: string;
     referenceText?: string;
-    visibleToUsers?: boolean;
   }): Promise<ApiResponse<CNELearningResourceMetadata>> {
     return this.executeAction<CNELearningResourceMetadata>('uploadLearningResource', params);
   }
@@ -995,7 +993,6 @@ export class ApiService {
     license?: string;
     version?: string;
     reindex?: boolean;
-    visibleToUsers?: boolean;
   }): Promise<ApiResponse<{
     resourceId: string;
     chunksCount: number;
@@ -1021,7 +1018,6 @@ export class ApiService {
     authorOrganization?: string;
     license?: string;
     version?: string;
-    visibleToUsers?: boolean;
   }): Promise<ApiResponse<{
     resourceId: string;
     chunksCount: number;
@@ -1075,28 +1071,6 @@ export class ApiService {
       fileBase64: string;
     }>('downloadNursingReferenceResource', params);
   }
-
-  /**
-   * Toggle or set the visibility of a CNE Learning Material or Nursing Reference Library resource for users.
-   * Strictly Admin-only.
-   */
-  static async setResourceVisibility(params: {
-    resourceType: 'CNE_LEARNING_MATERIAL' | 'NURSING_REFERENCE_LIB';
-    id: string;
-    visibleToUsers: boolean;
-  }): Promise<ApiResponse<{
-    id: string;
-    resourceType: string;
-    visibleToUsers: boolean;
-  }>> {
-    return this.executeAction<{
-      id: string;
-      resourceType: string;
-      visibleToUsers: boolean;
-    }>('setResourceVisibility', params);
-  }
-
-
 
   /**
    * CNE Activity Progress (Real data check across Material, Questions, QR, Participants, Post-Test, Finalization)

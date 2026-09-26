@@ -227,18 +227,87 @@ runTest('Nursing Reference Library does NOT inherit the CNE 3 MB limit', () => {
   assert.strictEqual(checkSizeAllowance('NURSING_REFERENCE_LIB', largeBookSize), true);
 });
 
-runTest('Reference Library resources support visibility toggling and indexing', () => {
-  assert.ok(
-    learningResPageTs.includes('handleToggleVisibility') || learningResPageTs.includes('setResourceVisibility'),
-    'LearningResourcesPage must provide visibility toggling'
+runTest('Educational resources are readable by all authenticated employees without visibility toggles, while re-indexing and Reference Library management remain Admin-only', () => {
+  const apiTs = fs.readFileSync('src/services/api.ts', 'utf8');
+  const typesTs = fs.readFileSync('src/types.ts', 'utf8');
+
+  // Visibility toggling and hidden-resource branches must be completely removed
+  const removedVisibilityAction = ['setResource', 'Visibility'].join('');
+  const removedVisibilityHandler = ['handleSetResource', 'Visibility'].join('');
+  const removedVisibilityField = ['visibleTo', 'Users'].join('');
+  const removedHiddenCode = ['RESOURCE_', 'HIDDEN'].join('');
+
+  assert.ok(!codeGs.includes(removedVisibilityAction), 'Code.gs must not contain setResourceVisibility');
+  assert.ok(!codeGs.includes(removedVisibilityHandler), 'Code.gs must not contain handleSetResourceVisibility');
+  assert.ok(!codeGs.includes(removedHiddenCode), 'Code.gs must not contain RESOURCE_HIDDEN branch');
+  assert.ok(!learningResPageTs.includes('handleToggleVisibility'), 'LearningResourcesPage must not contain handleToggleVisibility');
+  assert.ok(!learningResPageTs.includes(removedVisibilityField), 'LearningResourcesPage must not contain visibleToUsers');
+  assert.ok(!addResourceModalTs.includes(removedVisibilityField), 'AddResourceModal must not contain visibleToUsers');
+  assert.ok(!apiTs.includes(removedVisibilityAction), 'api.ts must not contain setResourceVisibility');
+  assert.ok(!apiTs.includes(removedVisibilityField), 'api.ts must not contain visibleToUsers');
+  assert.ok(!typesTs.includes(removedVisibilityField), 'types.ts must not contain visibleToUsers');
+
+  // CNE Learning Material listing and downloading allow all authenticated employees (do not call checkCNEActionAuthorized)
+  const listLrSection = codeGs.substring(
+    codeGs.indexOf('function handleListLearningResources('),
+    codeGs.indexOf('function handleDownloadLearningResource(')
   );
   assert.ok(
-    codeGs.includes('function handleToggleReferenceVisibility(') || codeGs.includes('setResourceVisibility'),
-    'Backend must support toggling reference resource visibility'
+    listLrSection.includes("if (!session || !session.employeeId)") &&
+    !listLrSection.includes('checkCNEActionAuthorized'),
+    'handleListLearningResources must allow any authenticated employee without requiring CNE management authorization'
   );
+
+  const downloadLrSection = codeGs.substring(
+    codeGs.indexOf('function handleDownloadLearningResource('),
+    codeGs.indexOf('function extractLearningResourceContentCore(')
+  );
+  assert.ok(
+    downloadLrSection.includes("if (!session || !session.employeeId)") &&
+    !downloadLrSection.includes('checkCNEActionAuthorized'),
+    'handleDownloadLearningResource must allow any authenticated employee without requiring CNE management authorization'
+  );
+
+  // Management endpoints (upload, delete, getLearningResource) still enforce checkCNEActionAuthorized
+  const uploadLrSection = codeGs.substring(
+    codeGs.indexOf('function handleUploadLearningResource('),
+    codeGs.indexOf('function handleDeleteLearningResource(')
+  );
+  const deleteLrSection = codeGs.substring(
+    codeGs.indexOf('function handleDeleteLearningResource('),
+    codeGs.indexOf('function handleGetLearningResource(')
+  );
+  const getLrSection = codeGs.substring(
+    codeGs.indexOf('function handleGetLearningResource('),
+    codeGs.indexOf('function handleListLearningResources(')
+  );
+  assert.ok(uploadLrSection.includes('checkCNEActionAuthorized(session, record)'), 'handleUploadLearningResource must enforce checkCNEActionAuthorized');
+  assert.ok(deleteLrSection.includes('checkCNEActionAuthorized(session, record)'), 'handleDeleteLearningResource must enforce checkCNEActionAuthorized');
+  assert.ok(getLrSection.includes('checkCNEActionAuthorized(session, record)'), 'handleGetLearningResource must enforce checkCNEActionAuthorized');
+
+  // Nursing Reference Library read/download allows all authenticated employees
+  const listNrlSection = codeGs.substring(
+    codeGs.indexOf('function listNursingReferenceResources('),
+    codeGs.indexOf('function uploadNursingReferenceResource(')
+  );
+  const downloadNrlSection = codeGs.substring(
+    codeGs.indexOf('function handleDownloadNursingReferenceResource('),
+    codeGs.indexOf('var CLINICAL_PROCEDURAL_TAXONOMY')
+  );
+  assert.ok(
+    listNrlSection.includes("if (!session || !session.employeeId)") &&
+    !listNrlSection.includes('if (!isAdmin && !isVisible)'),
+    'listNursingReferenceResources must return active reference resources to all authenticated employees'
+  );
+  assert.ok(
+    downloadNrlSection.includes("if (!session || !session.employeeId)") &&
+    !downloadNrlSection.includes(removedHiddenCode),
+    'handleDownloadNursingReferenceResource must allow all authenticated employees to download active reference resources'
+  );
+
   assert.ok(
     learningResPageTs.includes('handleReindex') || learningResPageTs.includes('reindex'),
-    'LearningResourcesPage must support re-indexing'
+    'LearningResourcesPage must support Admin re-indexing'
   );
 });
 

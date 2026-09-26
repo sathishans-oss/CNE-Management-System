@@ -5,7 +5,6 @@ import {
   Search,
   Download,
   Eye,
-  EyeOff,
   Loader2,
   Calendar,
   User,
@@ -44,7 +43,6 @@ export interface UnifiedResourceItem {
   uploadedAt?: string;
   updatedAt?: string;
   updatedBy?: string;
-  visibleToUsers: boolean;
   // Specific IDs
   cneId?: string;
   driveFileId?: string;
@@ -72,7 +70,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
 
   // Operation states
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  const [togglingVisibilityId, setTogglingVisibilityId] = useState<string | null>(null);
   const [reindexingId, setReindexingId] = useState<string | null>(null);
 
   // Modals
@@ -136,7 +133,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
       uploadedAt: item.uploadedAt || item.updatedAt,
       updatedAt: item.updatedAt,
       updatedBy: item.updatedBy,
-      visibleToUsers: item.visibleToUsers !== false,
       cneId: item.cneId,
       driveFileId: item.driveFileId,
       chunksCount: item.chunksCount
@@ -157,7 +153,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
         fileSize: matchedDrive?.fileSize,
         uploadedAt: item.indexedAt || item.updatedAt,
         updatedAt: item.updatedAt,
-        visibleToUsers: item.visibleToUsers !== false,
         driveFileId: item.driveFileId,
         resourceId: item.resourceId,
         license: item.license,
@@ -312,51 +307,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
     setPreviewItem(null);
   };
 
-  // Admin: Toggle Visibility
-  const handleToggleVisibility = async (item: UnifiedResourceItem) => {
-    if (!isAdmin) return;
-    const newVisibility = !item.visibleToUsers;
-    setTogglingVisibilityId(item.id);
-
-    try {
-      const targetId = item.sourceType === 'CNE_LEARNING_MATERIAL' ? (item.cneId || '') : (item.driveFileId || item.resourceId || '');
-      const res = await ApiService.setResourceVisibility({
-        resourceType: item.sourceType,
-        id: targetId,
-        visibleToUsers: newVisibility
-      });
-
-      if (res.success) {
-        success(
-          `Resource is now ${newVisibility ? 'Visible to Users' : 'Hidden from Users'}`,
-          'Visibility Updated'
-        );
-        // Optimistically update local state
-        if (item.sourceType === 'CNE_LEARNING_MATERIAL') {
-          setCneResources((prev) =>
-            prev.map((c) =>
-              c.cneId === item.cneId ? { ...c, visibleToUsers: newVisibility } : c
-            )
-          );
-        } else {
-          setNursingResources((prev) =>
-            prev.map((r) =>
-              (r.driveFileId === item.driveFileId || r.resourceId === item.resourceId)
-                ? { ...r, visibleToUsers: newVisibility }
-                : r
-            )
-          );
-        }
-      } else {
-        error(res.message || 'Failed to update resource visibility.');
-      }
-    } catch (e: any) {
-      error(e?.message || 'Error updating visibility.');
-    } finally {
-      setTogglingVisibilityId(null);
-    }
-  };
-
   // Admin: Re-Index Nursing Reference Resource
   const handleReindex = async (item: UnifiedResourceItem) => {
     if (!isAdmin || item.sourceType !== 'NURSING_REFERENCE_LIB' || !item.driveFileId) return;
@@ -369,7 +319,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
         authorOrganization: item.authorOrSpeaker,
         license: item.license,
         version: item.version,
-        visibleToUsers: item.visibleToUsers,
         reindex: true
       });
 
@@ -422,17 +371,12 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
 
   // Filtering Logic
   const filteredResources = unifiedResources.filter((item) => {
-    // 1. Non-admin visibility filter (regular users NEVER see hidden items)
-    if (!isAdmin && !item.visibleToUsers) {
-      return false;
-    }
-
-    // 2. Category Filter
+    // 1. Category Filter
     if (activeCategory !== 'ALL' && item.sourceType !== activeCategory) {
       return false;
     }
 
-    // 4. Search Filter
+    // 2. Search Filter
     const q = searchQuery.toLowerCase().trim();
     if (q) {
       const matchSearch =
@@ -447,9 +391,9 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
     return true;
   });
 
-  const cneCount = unifiedResources.filter((r) => r.sourceType === 'CNE_LEARNING_MATERIAL' && (isAdmin || r.visibleToUsers)).length;
-  const libraryCount = unifiedResources.filter((r) => r.sourceType === 'NURSING_REFERENCE_LIB' && (isAdmin || r.visibleToUsers)).length;
-  const totalVisibleCount = unifiedResources.filter((r) => isAdmin || r.visibleToUsers).length;
+  const cneCount = unifiedResources.filter((r) => r.sourceType === 'CNE_LEARNING_MATERIAL').length;
+  const libraryCount = unifiedResources.filter((r) => r.sourceType === 'NURSING_REFERENCE_LIB').length;
+  const totalCount = unifiedResources.length;
 
   return (
     <div id="cne-unified-learning-resources-page" className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
@@ -473,7 +417,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                 activeCategory === 'ALL' ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-700'
               }`}
             >
-              {totalVisibleCount}
+              {totalCount}
             </span>
           </button>
 
@@ -596,7 +540,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                   <th className="py-3.5 px-4 sm:px-6">Resource Title & Category</th>
                   <th className="py-3.5 px-4">Instructor / Author</th>
                   <th className="py-3.5 px-4">File Format & Size</th>
-                  {isAdmin && <th className="py-3.5 px-4">User Visibility</th>}
                   <th className="py-3.5 px-4">Uploaded / Updated</th>
                   <th className="py-3.5 px-4 sm:px-6 text-right">Actions</th>
                 </tr>
@@ -608,7 +551,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                     (item.fileType || '').toLowerCase().includes('pdf') ||
                     (item.fileName || '').toLowerCase().endsWith('.pdf');
                   const isBusyDownload = downloadingId === item.id;
-                  const isBusyToggle = togglingVisibilityId === item.id;
                   const isBusyReindex = reindexingId === item.id;
 
                   return (
@@ -670,32 +612,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                           </div>
                         </div>
                       </td>
-
-                      {/* User Visibility (Admin Only) */}
-                      {isAdmin && (
-                        <td className="py-4 px-4">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleVisibility(item)}
-                            disabled={isBusyToggle}
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold transition-all cursor-pointer border ${
-                              item.visibleToUsers
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                                : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
-                            }`}
-                            title="Click to toggle user visibility for this resource"
-                          >
-                            {isBusyToggle ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : item.visibleToUsers ? (
-                              <Eye className="w-3.5 h-3.5 text-emerald-600" />
-                            ) : (
-                              <EyeOff className="w-3.5 h-3.5 text-amber-600" />
-                            )}
-                            <span>{item.visibleToUsers ? 'Visible to Users' : 'Hidden from Users'}</span>
-                          </button>
-                        </td>
-                      )}
 
                       {/* Uploaded / Updated */}
                       <td className="py-4 px-4 text-slate-500">
