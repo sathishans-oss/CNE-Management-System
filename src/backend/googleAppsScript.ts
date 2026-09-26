@@ -584,14 +584,6 @@ function handleRequest(e, method) {
         output = handleGenerateCNEQuestions(params, session);
         break;
 
-      case 'getAiConfig':
-        output = handleGetAiConfig(params, session);
-        break;
-
-      case 'setAiConfig':
-        output = handleSetAiConfig(params, session);
-        break;
-
       case 'saveCNEQuestions':
         output = handleSaveCNEQuestions(params, session);
         break;
@@ -4313,7 +4305,7 @@ function handleGetQuickLinks(params) {
       title: 'Upcoming CNE Schedule',
       description: 'Browse open classes, curriculum topics, venue allocations, and secure your registration.',
       iconName: 'Sparkles',
-      target: 'upcoming',
+      target: 'cne-schedule',
       badge: 'Open for Enrollment',
       actionType: 'navigate'
     },
@@ -11191,78 +11183,6 @@ function handleGenerateCNEQuestions(params, session) {
     cneId: cneId,
     source: genRes.source || 'gemini',
     message: 'Successfully generated and saved exactly 5 clinical MCQs.'
-  };
-}
-
-/**
- * Get AI Configuration (Admin Only)
- */
-function handleGetAiConfig(params, session) {
-  var adminError = requireAdmin(session);
-  if (adminError) return adminError;
-
-  var props = PropertiesService.getScriptProperties();
-  var apiKey = props.getProperty('GEMINI_API_KEY') || '';
-  var maskedKey = apiKey ? (apiKey.substring(0, 4) + '...' + apiKey.substring(apiKey.length - 4)) : '';
-  var model = props.getProperty('GEMINI_MODEL') || 'gemini-2.5-flash';
-
-  return {
-    success: true,
-    data: {
-      isConfigured: !!apiKey,
-      maskedApiKey: maskedKey,
-      model: model
-    }
-  };
-}
-
-/**
- * Set AI Configuration (Admin Only)
- */
-function handleSetAiConfig(params, session) {
-  var adminError = requireAdmin(session);
-  if (adminError) return adminError;
-
-  var props = PropertiesService.getScriptProperties();
-
-  if (params.apiKey !== undefined) {
-    var cleanKey = String(params.apiKey || '').trim();
-    if (cleanKey) {
-      props.setProperty('GEMINI_API_KEY', cleanKey);
-    } else {
-      props.deleteProperty('GEMINI_API_KEY');
-    }
-  }
-
-  if (params.model !== undefined) {
-    var cleanModel = String(params.model || '').trim();
-    var blockedModels = [
-      'gemini-3.1-pro-preview',
-      'gemini-3.1-pro',
-      'gemini-3-pro-image',
-      'gemini-3.1-flash-image',
-      'gemini-3.1-flash-lite-image',
-      'gemini-pro',
-      'gemini-1.5-pro',
-      'gemini-2.0-pro',
-      'veo-3.1-generate-preview',
-      'veo-3.1-lite-generate-preview',
-      'lyria-3-clip-preview',
-      'lyria-3-pro-preview'
-    ];
-    if (cleanModel && (blockedModels.indexOf(cleanModel.toLowerCase()) !== -1 || /pro|image|veo|lyria/i.test(cleanModel))) {
-      return { success: false, errorCode: 'PAID_MODEL_PROHIBITED', message: 'Paid models are prohibited.' };
-    }
-    if (cleanModel) {
-      props.setProperty('GEMINI_MODEL', cleanModel);
-    }
-  }
-
-  logAuditAction('UPDATE_AI_CONFIG', session.employeeId, 'Updated Gemini AI configuration', 'SUCCESS');
-
-  return {
-    success: true,
-    message: 'Gemini AI configuration updated successfully in Google Apps Script.'
   };
 }
 
