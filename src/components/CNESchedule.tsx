@@ -128,7 +128,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
   const { success, error } = useToast();
   const isAdmin = user?.role === 'ADMIN';
-  const isAreaIncharge = user?.role === 'AREA_INCHARGE';
+  const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
   const canScheduleCne = isAdmin || isAreaIncharge;
   const todayStr = new Date().toISOString().split('T')[0];
   const isFromComplete = Boolean(scheduleFromDate && scheduleFromTime);
@@ -191,16 +191,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         setAreasList(uniqueAreas);
       }
 
-      // Asynchronously load officers in the background without blocking CNE Schedule rendering
-      if (user) {
-        loadOfficersSingleFlight()
-          .then((officers) => {
-            if (officers && officers.length > 0) {
-              setOfficersList(officers);
-            }
-          })
-          .catch(() => {});
-      }
       return clsRes.data;
     } catch (e: any) {
       error(e?.message || 'Failed to load CNE schedule.');
@@ -209,9 +199,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
   };
 
-  // On-demand fetch of officers when Central CNE Add or Edit modal opens if not yet loaded
+  // On-demand fetch of officers when Central CNE Add or Edit modal opens for authorized roles if not yet loaded
   useEffect(() => {
-    if ((isAddClassOpen || Boolean(editingCne)) && officersList.length === 0 && !isResourcePersonsLoading) {
+    if (canScheduleCne && (isAddClassOpen || Boolean(editingCne)) && officersList.length === 0 && !isResourcePersonsLoading) {
       let cancelled = false;
       setIsResourcePersonsLoading(true);
       loadOfficersSingleFlight()
@@ -230,7 +220,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         cancelled = true;
       };
     }
-  }, [isAddClassOpen, editingCne, officersList.length, isResourcePersonsLoading]);
+  }, [canScheduleCne, isAddClassOpen, editingCne, officersList.length, isResourcePersonsLoading]);
 
   const handleChildModalUpdated = async (targetCneId?: string) => {
     const cneId = targetCneId || selectedDetailCne?.cneId || selectedDetailCne?.classId;

@@ -271,24 +271,46 @@ runTest('Participant roster, staff counts, and post-test participants are record
     'External participants stored in CNE Schedule column 18'
   );
 
-  // Manual participant additions write to participant responses sheet
+  // Manual participant additions write to participant responses sheet via canonical plural action/handler
+  const singularActionCheck = ['addManual', 'Participant'].join('');
+  const singularHandlerCheck = ['handleAddManual', 'Participant'].join('');
+  assert.ok(
+    apiTs.includes("executeAction<{ count?: number; addedCount?: number }>('addManualParticipants', params)"),
+    'ApiService.addManualParticipants must invoke canonical plural action addManualParticipants'
+  );
+  assert.ok(
+    codeGs.includes("case 'addManualParticipants':") &&
+    codeGs.includes('output = handleAddManualParticipants(params, session);'),
+    'Code.gs router must route canonical plural action addManualParticipants to handleAddManualParticipants'
+  );
+  assert.ok(
+    !codeGs.includes(`case '${singularActionCheck}':`) &&
+    !codeGs.includes(`function ${singularHandlerCheck}(`) &&
+    !apiTs.includes(`'${singularActionCheck}'`),
+    'Singular manual participant action and handler must be completely absent'
+  );
+
   const manualPartSection = codeGs.substring(
-    codeGs.indexOf('function handleAddManualParticipant'),
+    codeGs.indexOf('function handleAddManualParticipants'),
     codeGs.indexOf('function handleGetCNEParticipants')
   );
   assert.ok(
     manualPartSection.includes('getResponsesSheet') && manualPartSection.includes("'MANUAL'"),
-    'handleAddManualParticipant must record participant in responses sheet with MANUAL source'
+    'handleAddManualParticipants must record participant in responses sheet with MANUAL source'
   );
 
-  // Post test submissions write participant record and update responses sheet
+  // Post test submissions write participant record, update responses sheet, and enforce >= 50% pass threshold
   const submitPostTestSection = codeGs.substring(
     codeGs.indexOf('function handleSubmitPostTest'),
-    codeGs.indexOf('function handleAddManualParticipant')
+    codeGs.indexOf('function handleAddManualParticipants')
   );
   assert.ok(
     submitPostTestSection.includes('getResponsesSheet()') && submitPostTestSection.includes('ALREADY_SUBMITTED'),
     'handleSubmitPostTest must record in responses sheet and prevent duplicate submissions'
+  );
+  assert.ok(
+    submitPostTestSection.includes('var passed = percentage >= 50;'),
+    'handleSubmitPostTest must enforce percentage >= 50 as PASSED threshold'
   );
 });
 

@@ -25,7 +25,6 @@ import {
 } from '../types';
 import {
   INITIAL_AREAS,
-  INITIAL_OFFICERS,
   INITIAL_CNE_RECORDS,
   INITIAL_UPCOMING_CLASSES,
   INITIAL_GALLERY,
@@ -80,9 +79,7 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'listLearningResources',
   'downloadLearningResource',
   'listNursingReferenceResources',
-  'downloadNursingReferenceResource',
-  'retrieveCNETopicEvidence',
-  'runLocalRetrievalValidation'
+  'downloadNursingReferenceResource'
 ]);
 
 export function isPublicCacheableAction(action: string): boolean {
@@ -264,9 +261,6 @@ export class ApiService {
     session: SessionUser | null
   ): ApiResponse<T> {
     switch (action) {
-      case 'ping':
-        return { success: true, message: 'Local preview active (read-only sample content loaded).' } as ApiResponse<T>;
-
       case 'login':
       case 'changePassword':
       case 'resetPassword':
@@ -278,13 +272,11 @@ export class ApiService {
         };
 
       // Protected / Security-Sensitive & Mutation Actions — Fail Closed without Google Apps Script
+      case 'getOfficersDropdown':
       case 'getRoles':
       case 'updateRole':
-      case 'addRole':
-      case 'deleteRole':
       case 'addArea':
       case 'updateArea':
-      case 'addCNE':
       case 'createCNE':
       case 'addUnscheduledCNE':
       case 'addDepartmentalSchedule':
@@ -292,7 +284,6 @@ export class ApiService {
       case 'finalizeCNE':
       case 'cancelCNE':
       case 'setupAndVerifyCNESheets':
-      case 'addManualParticipant':
       case 'addManualParticipants':
       case 'getCNEParticipants':
       case 'submitPostTest':
@@ -305,19 +296,11 @@ export class ApiService {
       case 'saveReferenceMaterial':
       case 'uploadLearningResource':
       case 'deleteLearningResource':
-      case 'extractLearningResourceContent':
       case 'indexNursingReferenceResource':
-      case 'registerAndIndexReferenceResource':
       case 'uploadNursingReferenceResource':
       case 'deleteNursingReferenceResource':
       case 'setResourceVisibility':
-      case 'retrieveCNETopicEvidence':
-      case 'getCNETopicEvidence':
-      case 'runLocalRetrievalValidation':
-      case 'validateLocalRetrieval':
-      case 'saveCoordinatorDesk':
       case 'updateCoordinatorDesk':
-      case 'updateChairpersonMessage':
       case 'uploadImage':
       case 'updateGalleryItem':
       case 'deleteGalleryItem':
@@ -339,9 +322,6 @@ export class ApiService {
 
       case 'getAreas':
         return { success: true, data: [..._inMemoryAreas] as any };
-
-      case 'getOfficersDropdown':
-        return { success: true, data: [...INITIAL_OFFICERS] as any };
 
       case 'getChairpersonMessage':
         return { success: true, data: INITIAL_CHAIRPERSON_MESSAGE as any };
@@ -472,60 +452,6 @@ export class ApiService {
         message: isTimeout
           ? 'Backend connection timed out. Please check your internet connection or Google Apps Script performance.'
           : 'Backend connection is unavailable. Please check your network and Google Apps Script configuration.'
-      };
-    }
-  }
-
-  /**
-   * Test Connection with Diagnostics
-   */
-  static async testConnection(url: string): Promise<{ success: boolean; message: string; latencyMs?: number }> {
-    const cleanUrl = url.trim();
-    if (!cleanUrl) {
-      return { success: false, message: 'URL is required.' };
-    }
-
-    const start = performance.now();
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
-
-      const res = await fetch(cleanUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'ping' }),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-      const latencyMs = Math.round(performance.now() - start);
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          return {
-            success: true,
-            message: `Connected successfully (${latencyMs}ms). ${data.message || 'Database service active.'}`,
-            latencyMs
-          };
-        } else {
-          return {
-            success: false,
-            message: data.message || 'Apps Script returned an unsuccessful response.'
-          };
-        }
-      } else {
-        return {
-          success: false,
-          message: `HTTP Error ${res.status}: ${res.statusText}. Verify Web App is deployed with Access: Anyone.`
-        };
-      }
-    } catch (e: any) {
-      return {
-        success: false,
-        message: e?.name === 'AbortError'
-          ? 'Connection timed out. Please check the URL and deployment.'
-          : (e?.message || 'Network request failed. Ensure CORS and Web App permissions are set to Anyone.')
       };
     }
   }
@@ -714,8 +640,8 @@ export class ApiService {
   /**
    * Master Data APIs
    */
-  static async getOfficersDropdown(): Promise<ApiResponse<Employee[]>> {
-    return this.executeAction<Employee[]>('getOfficersDropdown');
+  static async getOfficersDropdown(params?: { cneId?: string }): Promise<ApiResponse<Employee[]>> {
+    return this.executeAction<Employee[]>('getOfficersDropdown', params);
   }
 
   static async getAreas(): Promise<ApiResponse<Area[]>> {
@@ -899,12 +825,6 @@ export class ApiService {
    */
   static async getChairpersonMessage(): Promise<ApiResponse<ChairpersonMessageData>> {
     return this.executeAction<ChairpersonMessageData>('getChairpersonMessage');
-  }
-
-  static async updateChairpersonMessage(
-    data: Partial<ChairpersonMessageData> & { base64Image?: string }
-  ): Promise<ApiResponse<{ photoUrl?: string; driveFileId?: string; driveUrl?: string }>> {
-    return this.executeAction<{ photoUrl?: string; driveFileId?: string; driveUrl?: string }>('updateChairpersonMessage', data);
   }
 
   /**
@@ -1252,7 +1172,7 @@ export class ApiService {
       remarks?: string;
     }>;
   }): Promise<ApiResponse<{ count?: number; addedCount?: number }>> {
-    return this.executeAction<{ count?: number; addedCount?: number }>('addManualParticipant', params);
+    return this.executeAction<{ count?: number; addedCount?: number }>('addManualParticipants', params);
   }
 
   static async getCNEParticipants(cneId: string): Promise<ApiResponse<CNEParticipantsSummary>> {

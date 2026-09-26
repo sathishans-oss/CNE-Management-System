@@ -2,22 +2,26 @@ import { Employee } from '../types';
 import { ApiService } from './api';
 
 let cachedOfficers: Employee[] | null = null;
+let cachedSessionToken: string | null = null;
 let inFlightOfficersPromise: Promise<Employee[]> | null = null;
 
+function syncOfficerCacheWithSession(): void {
+  const currentToken = ApiService.getSessionUser()?.token || null;
+  if (currentToken !== cachedSessionToken) {
+    cachedOfficers = null;
+    inFlightOfficersPromise = null;
+    cachedSessionToken = currentToken;
+  }
+}
+
 /**
- * Returns currently cached officers master list if available, or null.
+ * Returns currently cached officers master list if available for the active session, or null.
  */
 export function getCachedOfficers(): Employee[] | null {
+  syncOfficerCacheWithSession();
   if (cachedOfficers && cachedOfficers.length > 0) {
     return cachedOfficers;
   }
-  try {
-    const local = ApiService.getCachedData<Employee[]>('getOfficersDropdown');
-    if (local && Array.isArray(local) && local.length > 0) {
-      cachedOfficers = local;
-      return cachedOfficers;
-    }
-  } catch {}
   return null;
 }
 
@@ -25,6 +29,7 @@ export function getCachedOfficers(): Employee[] | null {
  * Returns true if an officer dropdown request is currently in-flight.
  */
 export function isOfficersInFlight(): boolean {
+  syncOfficerCacheWithSession();
   return inFlightOfficersPromise !== null;
 }
 
@@ -35,7 +40,9 @@ export function isOfficersInFlight(): boolean {
  * If a request is already in-flight, returns that same Promise so callers share the pending request.
  * If no request is in-flight and no cache exists, initiates one request and updates cache on success.
  */
-export async function loadOfficersSingleFlight(force: boolean = false): Promise<Employee[]> {
+export async function loadOfficersSingleFlight(force: boolean = false, cneId?: string): Promise<Employee[]> {
+  syncOfficerCacheWithSession();
+
   if (!force && cachedOfficers && cachedOfficers.length > 0) {
     return cachedOfficers;
   }
@@ -46,7 +53,7 @@ export async function loadOfficersSingleFlight(force: boolean = false): Promise<
 
   inFlightOfficersPromise = (async () => {
     try {
-      const res = await ApiService.getOfficersDropdown();
+      const res = await ApiService.getOfficersDropdown(cneId ? { cneId } : undefined);
       if (res.success && Array.isArray(res.data) && res.data.length > 0) {
         cachedOfficers = res.data;
         return res.data;
@@ -67,7 +74,9 @@ export async function loadOfficersSingleFlight(force: boolean = false): Promise<
  * Allows updating the cached officers list when new officers are retrieved.
  */
 export function setCachedOfficers(officers: Employee[]): void {
+  syncOfficerCacheWithSession();
   if (Array.isArray(officers) && officers.length > 0) {
     cachedOfficers = officers;
   }
 }
+

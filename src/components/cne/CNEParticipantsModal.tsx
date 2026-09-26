@@ -83,13 +83,13 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
       return;
     }
 
-    // Only load if form is opened and officers are not loaded yet
-    if (isAddingManual) {
+    // Only load if form is opened by an authorized manager/RP and officers are not loaded yet
+    if (isAddingManual && isAuthorized) {
       let cancelled = false;
       setIsOfficersLoading(true);
       setOfficersLoadError(null);
 
-      loadOfficersSingleFlight()
+      loadOfficersSingleFlight(false, cneId)
         .then((officers) => {
           if (!cancelled) {
             if (officers && officers.length > 0) {

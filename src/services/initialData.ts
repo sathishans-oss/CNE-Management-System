@@ -1,4 +1,4 @@
-import { Area, Employee, RoleMapping, CNERecord, GalleryItem, ChairpersonMessageData, NewsEventItem, QuickLinkItem, CoordinatorDeskInfo, ProgramImpactStats } from '../types';
+import { Area, CNERecord, GalleryItem, ChairpersonMessageData, NewsEventItem, QuickLinkItem, CoordinatorDeskInfo, ProgramImpactStats } from '../types';
 
 export const INITIAL_AREAS: Area[] = [
   "216(OT-Complex)-(DSA & IR)",
@@ -85,28 +85,6 @@ export const INITIAL_AREAS: Area[] = [
   createdAt: '2026-01-01'
 }));
 
-export const INITIAL_OFFICERS: Employee[] = [
-  {
-    srNo: 1,
-    employeeId: "DEMO001",
-    name: "Demo Nurse",
-    designation: "Nursing Officer",
-    contactNo: "",
-    email: "",
-    dob: "",
-    doj: ""
-  }
-];
-
-export const INITIAL_ROLES: RoleMapping[] = [
-  {
-    employeeId: "DEMO001",
-    name: "Demo Nurse",
-    designation: "Nursing Officer",
-    role: "ADMIN"
-  }
-];
-
 export const INITIAL_CNE_RECORDS: CNERecord[] = [
   {
     cneId: "b41c5020",
@@ -116,10 +94,10 @@ export const INITIAL_CNE_RECORDS: CNERecord[] = [
     toDate: "2026-03-01",
     duration: "1:00:00",
     topic: "Nursing management patient with Glaucoma (Skills: Instillation of Eye Drops)",
-    resourcePersonEmpId: "DEMO002",
+    resourcePersonEmpId: "",
     resourcePersonName: "Clinical Nurse Specialist",
     modeOfTeaching: "Lecture Cum Discussion",
-    staffEmpIds: ["DEMO001", "DEMO002"],
+    staffEmpIds: [],
     staffCount: 13,
     status: "Completed",
     remarks: "Practical demo included eye drop angle technique",
@@ -133,10 +111,10 @@ export const INITIAL_CNE_RECORDS: CNERecord[] = [
     toDate: "2026-02-18",
     duration: "1:30:00",
     topic: "Pediatric Advanced Life Support & Emergency Resuscitation Algorithms",
-    resourcePersonEmpId: "DEMO003",
+    resourcePersonEmpId: "",
     resourcePersonName: "Senior Nursing Instructor",
     modeOfTeaching: "Hands-on Workshop",
-    staffEmpIds: ["DEMO001", "DEMO002"],
+    staffEmpIds: [],
     staffCount: 18,
     status: "Completed",
     remarks: "Simulation lab practicals on pediatric mannequins",
@@ -150,10 +128,10 @@ export const INITIAL_CNE_RECORDS: CNERecord[] = [
     toDate: "2026-02-05",
     duration: "1:00:00",
     topic: "Triage Protocols & Rapid Response in Polytrauma Management",
-    resourcePersonEmpId: "DEMO004",
+    resourcePersonEmpId: "",
     resourcePersonName: "Emergency Nurse Specialist",
     modeOfTeaching: "Lecture Cum Discussion",
-    staffEmpIds: ["DEMO001", "DEMO002"],
+    staffEmpIds: [],
     staffCount: 22,
     status: "Completed",
     remarks: "ED workflow optimization",
@@ -167,10 +145,10 @@ export const INITIAL_CNE_RECORDS: CNERecord[] = [
     toDate: "2026-01-22",
     duration: "1:00:00",
     topic: "Intracranial Pressure (ICP) Monitoring and Post-Op Neuro-Care",
-    resourcePersonEmpId: "DEMO002",
+    resourcePersonEmpId: "",
     resourcePersonName: "Clinical Nurse Specialist",
     modeOfTeaching: "Clinical Case Discussion",
-    staffEmpIds: ["DEMO001", "DEMO002"],
+    staffEmpIds: [],
     staffCount: 15,
     status: "Completed",
     remarks: "EVD drainage & wave analysis",
@@ -184,10 +162,10 @@ export const INITIAL_CNE_RECORDS: CNERecord[] = [
     toDate: "2026-01-10",
     duration: "2:00:00",
     topic: "Hospital Acquired Infection Control, Bundles of Care & Hand Hygiene Audits",
-    resourcePersonEmpId: "DEMO005",
+    resourcePersonEmpId: "",
     resourcePersonName: "Infection Control Nurse",
     modeOfTeaching: "Hands-on Workshop",
-    staffEmpIds: ["DEMO001", "DEMO002"],
+    staffEmpIds: [],
     staffCount: 45,
     status: "Completed",
     remarks: "Institutional annual quality infection control update",
@@ -201,10 +179,10 @@ export const INITIAL_CNE_RECORDS: CNERecord[] = [
     toDate: "2025-11-14",
     duration: "1:00:00",
     topic: "12-Lead ECG Interpretation & Lethal Arrhythmia Recognition for Nurses",
-    resourcePersonEmpId: "DEMO003",
+    resourcePersonEmpId: "",
     resourcePersonName: "Senior Nursing Instructor",
     modeOfTeaching: "Lecture Cum Discussion",
-    staffEmpIds: ["DEMO001", "DEMO002"],
+    staffEmpIds: [],
     staffCount: 20,
     status: "Completed",
     remarks: "Interactive strip readings",
@@ -222,7 +200,7 @@ export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [
     date: "2026-09-08T14:00",
     toDate: "2026-09-08T15:30",
     duration: "1:30:00",
-    resourcePersonEmpId: "DEMO003",
+    resourcePersonEmpId: "",
     resourcePersonName: "Senior Nursing Instructor",
     modeOfTeaching: "Hands-on Workshop",
     description: "In-depth clinical workshop on ventilator modes, alarm troubleshooting, endotracheal suctioning techniques, and sedation vacation.",
@@ -238,7 +216,7 @@ export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [
     date: "2026-09-15T11:00",
     toDate: "2026-09-15T12:00",
     duration: "1:00:00",
-    resourcePersonEmpId: "DEMO005",
+    resourcePersonEmpId: "",
     resourcePersonName: "Infection Control Nurse",
     modeOfTeaching: "Lecture Cum Discussion",
     description: "Guidelines on preventing look-alike sound-alike (LASA) errors, infusion pump calculations, and adverse event reporting.",
@@ -254,7 +232,7 @@ export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [
     date: "2026-09-22T15:00",
     toDate: "2026-09-22T16:30",
     duration: "1:30:00",
-    resourcePersonEmpId: "DEMO002",
+    resourcePersonEmpId: "",
     resourcePersonName: "Clinical Nurse Specialist",
     modeOfTeaching: "Hands-on Workshop",
     description: "Targeted refresher on T-piece resuscitator, chest compressions, and umbilical venous catheterization assistance.",
@@ -270,7 +248,7 @@ export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [
     date: "2026-09-29T14:00",
     toDate: "2026-09-29T15:00",
     duration: "1:00:00",
-    resourcePersonEmpId: "DEMO004",
+    resourcePersonEmpId: "",
     resourcePersonName: "Emergency Nurse Specialist",
     modeOfTeaching: "Lecture Cum Discussion",
     description: "Hazardous drug preparation and disposal, spill kit usage, and prompt extravasation care steps.",

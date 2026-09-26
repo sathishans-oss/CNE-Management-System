@@ -113,7 +113,6 @@ runTest('Admin-only actions remain strictly Admin-only', () => {
     'addNewsEvent',
     'updateNewsEvent',
     'deleteNewsEvent',
-    'updateChairpersonMessage',
     'updateCoordinatorDesk',
     'addQuickLink',
     'updateQuickLink',
@@ -388,13 +387,13 @@ runTest('Finalized CNE cannot be edited or have mutations', () => {
 
   // 2. Participant mutations locked
   const manualPartSection = codeGs.substring(
-    codeGs.indexOf('function handleAddManualParticipant'),
+    codeGs.indexOf('function handleAddManualParticipants'),
     codeGs.indexOf('function handleGetCNEParticipants')
   );
   assert.ok(
     manualPartSection.includes("normalizeCNEStatus(record.status) === 'Completed'") &&
     manualPartSection.includes('CNE_ALREADY_FINALIZED'),
-    'handleAddManualParticipant must reject additions to Completed CNE with CNE_ALREADY_FINALIZED'
+    'handleAddManualParticipants must reject additions to Completed CNE with CNE_ALREADY_FINALIZED'
   );
 
   // 3. Learning material mutations locked
@@ -435,7 +434,7 @@ runTest('Post Test direct CNE-ID lookup is restricted to authorized roles', () =
 
   const submitPostTestSection = codeGs.substring(
     codeGs.indexOf('function handleSubmitPostTest'),
-    codeGs.indexOf('function handleAddManualParticipant')
+    codeGs.indexOf('function handleAddManualParticipants')
   );
   assert.ok(
     submitPostTestSection.includes('var actionAuthErr = checkCNEActionAuthorized(session, candidateRecord);'),
@@ -463,7 +462,7 @@ runTest('Valid public QR token flow is required and permitted for attendees', ()
 
   const submitSection = codeGs.substring(
     codeGs.indexOf('function handleSubmitPostTest'),
-    codeGs.indexOf('function handleAddManualParticipant')
+    codeGs.indexOf('function handleAddManualParticipants')
   );
   assert.ok(
     submitSection.includes('findOfficerById'),
@@ -936,7 +935,7 @@ runTest('Frontend consumes mustChangePassword & forced Change Password modal can
   // Answer-key protection: getCNEQuestions can never be written to localStorage or served from offline fallback
   const execActionSection = apiTs.substring(
     apiTs.indexOf('static async executeAction'),
-    apiTs.indexOf('static async testConnection')
+    apiTs.indexOf('static async login')
   );
   assert.ok(
     execActionSection.includes('if (result.success && result.data && isPublicCacheableAction(action))'),
@@ -970,6 +969,129 @@ runTest('Frontend consumes mustChangePassword & forced Change Password modal can
     logoutSection.includes('localStorage.removeItem(k)') &&
     logoutSection.includes('localStorage.removeItem(STORAGE_KEYS.SESSION)'),
     'ApiService.logout() must remove all cne_cache_* keys in addition to STORAGE_KEYS.SESSION'
+  );
+});
+
+// -----------------------------------------------------------------------------
+// 8. Officer Directory Role Restriction & Public Employee ID Protection
+// -----------------------------------------------------------------------------
+runTest('Officer directory access is restricted to Admin, Area Incharge/Incharge, or CNE-scoped authorized manager, and rejected for ordinary EMPLOYEE', () => {
+  const officersDropdownSection = codeGs.substring(
+    codeGs.indexOf('function handleGetOfficersDropdown('),
+    codeGs.indexOf('function getOfficerNameMap(')
+  );
+
+  assert.ok(
+    officersDropdownSection.includes("role === 'ADMIN' || role === 'AREA_INCHARGE' || role === 'INCHARGE'"),
+    'handleGetOfficersDropdown must explicitly check for ADMIN, AREA_INCHARGE, or INCHARGE roles'
+  );
+  assert.ok(
+    officersDropdownSection.includes("errorCode: 'FORBIDDEN'") &&
+    officersDropdownSection.includes("message: 'You are not authorized to access the officer directory.'"),
+    'handleGetOfficersDropdown must return FORBIDDEN with authorization message for ordinary employees'
+  );
+
+  // Simulate handleGetOfficersDropdown authorization logic
+  function simulateOfficersDropdownAuth(session, params = {}, cneRecordMap = {}) {
+    if (!session) {
+      return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
+    }
+    const role = String(session.role || '').trim().toUpperCase();
+    const isDirectoryRole = (role === 'ADMIN' || role === 'AREA_INCHARGE' || role === 'INCHARGE');
+    if (!isDirectoryRole) {
+      const cneId = params && params.cneId ? String(params.cneId).trim() : '';
+      let isAuthorizedForCne = false;
+      if (cneId && cneRecordMap[cneId]) {
+        if (simulateCheckCNEActionAuthorized(session, cneRecordMap[cneId]) === null) {
+          isAuthorizedForCne = true;
+        }
+      }
+      if (!isAuthorizedForCne) {
+        return {
+          success: false,
+          errorCode: 'FORBIDDEN',
+          message: 'You are not authorized to access the officer directory.'
+        };
+      }
+    }
+    return { success: true };
+  }
+
+  // Ordinary EMPLOYEE cannot access full officer dropdown
+  const ordinaryEmployee = { employeeId: 'EMP100', role: 'EMPLOYEE' };
+  const empRes = simulateOfficersDropdownAuth(ordinaryEmployee);
+  assert.strictEqual(empRes.success, false, 'Ordinary EMPLOYEE must be denied officer directory access');
+  assert.strictEqual(empRes.errorCode, 'FORBIDDEN', 'Ordinary EMPLOYEE must receive FORBIDDEN');
+
+  // Admin can access it
+  const adminSession = { employeeId: 'ADM01', role: 'ADMIN' };
+  assert.strictEqual(simulateOfficersDropdownAuth(adminSession).success, true, 'ADMIN must be allowed officer directory access');
+
+  // Area Incharge and Incharge can access it
+  const areaInchargeSession = { employeeId: 'INC01', role: 'AREA_INCHARGE', assignedAreas: ['ICU'] };
+  const inchargeSession = { employeeId: 'INC02', role: 'INCHARGE', assignedAreas: ['Ward-1'] };
+  assert.strictEqual(simulateOfficersDropdownAuth(areaInchargeSession).success, true, 'AREA_INCHARGE must be allowed officer directory access');
+  assert.strictEqual(simulateOfficersDropdownAuth(inchargeSession).success, true, 'INCHARGE must be allowed officer directory access');
+
+  // Assigned Resource Person can access only when scoped to their assigned CNE, not globally
+  const rpSession = { employeeId: 'RP500', role: 'EMPLOYEE' };
+  assert.strictEqual(simulateOfficersDropdownAuth(rpSession).success, false, 'Resource Person without CNE scope must not have global directory access');
+  assert.strictEqual(
+    simulateOfficersDropdownAuth(rpSession, { cneId: 'CNE-500' }, { 'CNE-500': { cneId: 'CNE-500', area: 'ICU', cneType: 'CENTRAL', resourcePersonEmpId: 'RP500' } }).success,
+    true,
+    'Assigned Resource Person with valid CNE scope must be allowed directory access for that CNE'
+  );
+});
+
+runTest('Frontend does not automatically fetch officer directory for every logged-in user and protects public CNE output from raw Employee ID fallback', () => {
+  const myCneRecordsTs = fs.readFileSync('src/components/MyCNERecords.tsx', 'utf8');
+  const utilsTs = fs.readFileSync('src/utils.ts', 'utf8');
+
+  // MyCNERecords (ordinary employee view) must not call loadOfficersSingleFlight
+  assert.ok(
+    !myCneRecordsTs.includes('loadOfficersSingleFlight'),
+    'MyCNERecords.tsx must not fetch the officer directory'
+  );
+
+  // CNESchedule loadData must not unconditionally fetch officers whenever any user is logged in
+  const loadDataSlice = cneSchedule.substring(
+    cneSchedule.indexOf('const loadData = async'),
+    cneSchedule.indexOf('const handleChildModalUpdated')
+  );
+  assert.ok(
+    !loadDataSlice.includes('if (user) {\n        loadOfficersSingleFlight()'),
+    'CNESchedule loadData must not fetch the officer directory merely because any user is logged in'
+  );
+  assert.ok(
+    loadDataSlice.includes('if (canScheduleCne && (isAddClassOpen || Boolean(editingCne))'),
+    'CNESchedule must gate on-demand officer loading behind canScheduleCne && (isAddClassOpen || Boolean(editingCne))'
+  );
+
+  // Public CNE output cannot fall back to raw Employee ID
+  const getCneSection = codeGs.substring(
+    codeGs.indexOf('function handleGetCNERecords('),
+    codeGs.indexOf('function handleCreateCNE(')
+  );
+  assert.ok(
+    getCneSection.includes("return officerMap[id] || (isAdmin ? id : 'Resource Person');"),
+    "handleGetCNERecords must fall back to neutral 'Resource Person' label rather than raw Employee ID for non-admin/public callers"
+  );
+  assert.ok(
+    getCneSection.includes("resourcePersonEmpId: isPublicRequest ? '' : resourcePersonEmpId") &&
+    getCneSection.includes("proposedByEmpId: isPublicRequest ? '' : proposedBy") &&
+    getCneSection.includes("staffEmpIds: isPublicRequest ? [] : sanitizedStaffEmpIds") &&
+    getCneSection.includes("remarks: isPublicRequest ? '' : remarks") &&
+    getCneSection.includes("adminRemarks: isPublicRequest ? '' : remarks"),
+    'handleGetCNERecords must strip Resource Person IDs, Proposed By ID, participant IDs, and internal remarks from public responses'
+  );
+
+  const rpDisplaySection = utilsTs.substring(
+    utilsTs.indexOf('export function formatResourcePersonsDisplay('),
+    utilsTs.indexOf('export function getUserAssignedAreas(')
+  );
+  assert.ok(
+    rpDisplaySection.includes(".map(() => 'Resource Person')"),
+    "formatResourcePersonsDisplay must never fall back to raw Employee ID when officer directory is not loaded"
   );
 });
 

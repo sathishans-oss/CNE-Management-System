@@ -257,30 +257,6 @@ export function formatCneDateTimeRangeDisplay(
 }
 
 /**
- * Formats a short time/range or duration for compact widgets.
- */
-export function formatCneTimeOrRangeShort(
-  fromDate?: string | null,
-  _toDate?: string | null,
-  legacyTime?: string | null,
-  duration?: string | null
-): string {
-  if (fromDate && (String(fromDate).includes('T') || String(fromDate).includes(':'))) {
-    const dStr = formatCneDateTimeDisplay(fromDate);
-    // Extract the time portion e.g. "08:00 AM"
-    const match = dStr.match(/(\d{2}:\d{2}\s+(?:AM|PM))$/);
-    if (match) return match[1];
-  }
-  if (legacyTime && legacyTime.trim() && legacyTime !== '—') {
-    return legacyTime.trim();
-  }
-  if (duration && duration.trim()) {
-    return `${duration.trim()} Hrs`;
-  }
-  return 'Scheduled';
-}
-
-/**
  * Converts any date or date-time representation into YYYY-MM-DDTHH:mm
  * for standard HTML <input type="datetime-local" /> fields.
  */
@@ -547,7 +523,8 @@ export function formatResourcePersonsDisplay(params: {
     internalNames = resourcePersonEmpId
       .split(/[,;\n]+/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .map(() => 'Resource Person');
   }
 
   const extNames = (externalResourcePersons || [])
@@ -557,44 +534,6 @@ export function formatResourcePersonsDisplay(params: {
 
   const combined = [...internalNames, ...extNames];
   return combined.length > 0 ? combined.join(', ') : '—';
-}
-
-/**
- * Formats internal and external staff participants display for an activity.
- * Returns both formatted summary text and individual names array.
- */
-export function formatStaffParticipantsDisplay(params: {
-  staffEmpIds?: string[] | null;
-  staffNames?: string[] | null;
-  externalStaffParticipants?: string[] | null;
-  officers?: Employee[];
-}): {
-  internalNames: string[];
-  externalNames: string[];
-  allNames: string[];
-  summaryText: string;
-} {
-  const { staffEmpIds, staffNames, externalStaffParticipants, officers } = params;
-
-  let internal: string[] = [];
-  if (officers && officers.length > 0 && staffEmpIds && staffEmpIds.length > 0) {
-    internal = staffEmpIds.map((id) => resolveEmployeeName(id, officers));
-  } else if (staffNames && staffNames.length > 0) {
-    internal = staffNames.map((s) => s.trim()).filter(Boolean);
-  } else if (staffEmpIds && staffEmpIds.length > 0) {
-    internal = staffEmpIds.map((id) => id.trim()).filter(Boolean);
-  }
-
-  const external = (externalStaffParticipants || []).map((s) => s.trim()).filter(Boolean);
-  const extFormatted = external.map((s) => `${s} (Ext)`);
-
-  const allNames = [...internal, ...extFormatted];
-  return {
-    internalNames: internal,
-    externalNames: external,
-    allNames,
-    summaryText: allNames.length > 0 ? allNames.join(', ') : 'None'
-  };
 }
 
 /**

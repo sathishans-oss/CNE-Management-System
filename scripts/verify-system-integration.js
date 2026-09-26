@@ -647,7 +647,7 @@ runTest('Active API methods wired correctly & cleanup candidates audited', () =>
   const methodRegex = /static\s+(?:async\s+)?([a-zA-Z0-9_]+)\s*\(/g;
   const methods = [];
   while ((m = methodRegex.exec(apiTs)) !== null) {
-    if (!['isLiveBackendConnected', 'getAppsScriptUrl', 'executeLocalMockAction', 'executeAction', 'testConnection', 'logout', 'getSessionUser', 'getCurrentUser', 'saveSessionUser', 'invalidateCache'].includes(m[1])) {
+    if (!['isLiveBackendConnected', 'getAppsScriptUrl', 'executeLocalMockAction', 'executeAction', 'logout', 'getSessionUser', 'getCurrentUser', 'saveSessionUser', 'invalidateCache'].includes(m[1])) {
       methods.push(m[1]);
     }
   }
@@ -691,9 +691,7 @@ runTest('Active API methods wired correctly & cleanup candidates audited', () =>
   }
 
   assert.ok(activeMethodsVerified.length > 30, 'Should verify over 30 active ApiService methods');
-  if (cleanupCandidates.length > 0) {
-    console.log(`    Note: Found ${cleanupCandidates.length} cleanup candidate(s): ${cleanupCandidates.map(c => c.method).join(', ')}`);
-  }
+  assert.strictEqual(cleanupCandidates.length, 0, 'Should have 0 dead API cleanup candidates');
 });
 
 // -----------------------------------------------------------------------------
@@ -930,6 +928,40 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
     codeGs.includes("resourcePersonEmpId: isPublicRequest ? '' : resourcePersonEmpId") &&
     codeGs.includes("staffEmpIds: isPublicRequest ? [] : sanitizedStaffEmpIds"),
     'handleGetCNERecords in Code.gs must sanitize sensitive employee IDs and rosters for unauthenticated public requests'
+  );
+
+  // 8. Final cleanup symbols & Chairperson API verification
+  const utilsTs = fs.readFileSync('src/utils.ts', 'utf8');
+  const deadTimeHelper = ['formatCneTime', 'OrRangeShort'].join('');
+  const deadStaffHelper = ['formatStaff', 'ParticipantsDisplay'].join('');
+  const deadReportType = ['CNEReport', 'Stats'].join('');
+  const deadChairpersonUpdate = ['updateChairperson', 'Message'].join('');
+  const deadChairpersonHandler = ['handleUpdateChairperson', 'Message'].join('');
+
+  assert.ok(!utilsTs.includes(deadTimeHelper), 'Dead utility formatCneTimeOrRangeShort must be absent from src/utils.ts');
+  assert.ok(!utilsTs.includes(deadStaffHelper), 'Dead utility formatStaffParticipantsDisplay must be absent from src/utils.ts');
+  assert.ok(!typesTs.includes(deadReportType), 'Dead interface CNEReportStats must be absent from src/types.ts');
+
+  // Officer directory authorization is role-restricted
+  const officerDropdownSection = codeGs.substring(
+    codeGs.indexOf('function handleGetOfficersDropdown('),
+    codeGs.indexOf('function getOfficerNameMap(')
+  );
+  assert.ok(
+    officerDropdownSection.includes("role === 'ADMIN' || role === 'AREA_INCHARGE' || role === 'INCHARGE'") &&
+    officerDropdownSection.includes("errorCode: 'FORBIDDEN'"),
+    'handleGetOfficersDropdown must enforce role-based authorization and return FORBIDDEN for unauthorized callers'
+  );
+
+  // Unused Chairperson update API is completely removed while public read/display remains intact
+  assert.ok(!apiTs.includes(deadChairpersonUpdate), 'Unused updateChairpersonMessage must be absent from src/services/api.ts');
+  assert.ok(!codeGs.includes(deadChairpersonUpdate), 'Unused updateChairpersonMessage router case must be absent from Code.gs');
+  assert.ok(!codeGs.includes(deadChairpersonHandler), 'Unused handleUpdateChairpersonMessage handler must be absent from Code.gs');
+  assert.ok(
+    apiTs.includes('static async getChairpersonMessage(') &&
+    codeGs.includes("case 'getChairpersonMessage':") &&
+    codeGs.includes('function handleGetChairpersonMessage('),
+    'Public getChairpersonMessage read/display path must remain intact across frontend and backend'
   );
 });
 

@@ -8,11 +8,10 @@ import {
   CheckCircle2,
   Loader2
 } from 'lucide-react';
-import { CNERecord, Employee, SessionUser } from '../types';
+import { CNERecord, SessionUser } from '../types';
 import { ApiService } from '../services/api';
 import { generateCNERecordsPdf } from '../services/pdfGenerator';
 import { useToast } from './Toast';
-import { getCachedOfficers, loadOfficersSingleFlight } from '../services/officerLoader';
 import {
   formatCneDateRangeDisplay,
   formatResourcePersonsDisplay
@@ -26,7 +25,6 @@ export interface MyCNERecordsProps {
 
 export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   const [records, setRecords] = useState<CNERecord[]>([]);
-  const [officers, setOfficers] = useState<Employee[]>(() => getCachedOfficers() || []);
   const [loading, setLoading] = useState(true);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const generatingPdfRef = useRef(false);
@@ -43,14 +41,6 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
 
   const loadMyRecords = async () => {
     setLoading(true);
-    // Non-blocking background officer directory loading
-    loadOfficersSingleFlight()
-      .then((offData) => {
-        if (offData && offData.length > 0) {
-          setOfficers(offData);
-        }
-      })
-      .catch(() => {});
 
     try {
       const res = await ApiService.getCNERecords({ myRecordsOnly: true, scope: 'my-cne-records' });
@@ -82,8 +72,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
         const rpDisplay = formatResourcePersonsDisplay({
           resourcePersonEmpId: rec.resourcePersonEmpId,
           resourcePersonName: rec.resourcePersonName,
-          externalResourcePersons: rec.externalResourcePersons,
-          officers
+          externalResourcePersons: rec.externalResourcePersons
         }).toLowerCase();
         const matchRp = rpDisplay.includes(q) || (rec.resourcePersonEmpId || '').toLowerCase().includes(q);
         const matchExtRp = rec.externalResourcePersons?.some(p => p.toLowerCase().includes(q));
@@ -92,7 +81,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
 
       return true;
     });
-  }, [records, startDate, endDate, searchTerm, officers]);
+  }, [records, startDate, endDate, searchTerm]);
 
   // Compute total duration
   const totalDurationStats = useMemo(() => {
@@ -322,8 +311,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                           {formatResourcePersonsDisplay({
                             resourcePersonEmpId: rec.resourcePersonEmpId,
                             resourcePersonName: rec.resourcePersonName,
-                            externalResourcePersons: rec.externalResourcePersons,
-                            officers
+                            externalResourcePersons: rec.externalResourcePersons
                           })}
                         </td>
                         <td className="py-3 px-4 whitespace-nowrap text-slate-700 flex items-center gap-1">
@@ -385,8 +373,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                         {formatResourcePersonsDisplay({
                           resourcePersonEmpId: rec.resourcePersonEmpId,
                           resourcePersonName: rec.resourcePersonName,
-                          externalResourcePersons: rec.externalResourcePersons,
-                          officers
+                          externalResourcePersons: rec.externalResourcePersons
                         })}
                       </span>
                       <button
@@ -455,8 +442,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                     {formatResourcePersonsDisplay({
                       resourcePersonEmpId: selectedRecord.resourcePersonEmpId,
                       resourcePersonName: selectedRecord.resourcePersonName,
-                      externalResourcePersons: selectedRecord.externalResourcePersons,
-                      officers
+                      externalResourcePersons: selectedRecord.externalResourcePersons
                     })}
                   </span>
                 </div>

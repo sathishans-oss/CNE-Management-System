@@ -82,8 +82,6 @@ export interface RoleMapping {
   updatedAt?: string;
 }
 
-export type RoleConfig = RoleMapping;
-
 /**
  * Authoritative Unified CNE Record
  * Represents a CNE program/session stored directly in the single authoritative 'CNE Schedule' sheet.
@@ -247,20 +245,6 @@ export interface CNENursingReferenceDriveFile {
   resourceTitle: string;
 }
 
-export interface CNELearningResourceExtractedContent {
-  cneId: string;
-  topic: string;
-  resourcePersonName: string;
-  driveFileId: string;
-  fileName: string;
-  fileType: string;
-  extractedText: string;
-  charCount: number;
-  isTruncated: boolean;
-  originalCharCount: number;
-  cached: boolean;
-}
-
 export interface CNEAiQuotaInfo {
   cneId: string;
   topic?: string;
@@ -359,19 +343,6 @@ export interface SheetAuditItem {
   error?: string;
 }
 
-export interface CNEReportStats {
-  totalActivities: number;
-  currentMonthActivities: number;
-  upcomingClassesCount: number;
-  totalParticipants: number;
-  activeAreasCount: number;
-  totalTrainingHours: number;
-  monthlyBreakdown: { month: string; count: number; hours: number }[];
-  areaBreakdown: { area: string; count: number }[];
-  modeBreakdown: { mode: string; count: number }[];
-  topResourcePersons: { name: string; count: number; empId: string }[];
-}
-
 export interface ProgramImpactStats {
   totalCompletedClasses: number;
   cneDuration?: string;
@@ -383,71 +354,9 @@ export interface ProgramImpactStats {
   scope: 'institutional' | 'user';
 }
 
-export interface CNEPortfolioFilterParams {
-  year: number;
-  startDate?: string;
-  endDate?: string;
-}
-
-export type APARFilterParams = CNEPortfolioFilterParams;
-
 export interface CoordinatorDeskInfo {
   note: string;
   coordinators: string[];
   email: string;
 }
 
-export interface CNETopicEvidenceChunk {
-  indexId: string;
-  sourceType: 'UPLOADED_CNE' | 'LOCAL_REFERENCE_LIB';
-  resourceTitle: string;
-  sectionHeading: string;
-  chunkIndex: number;
-  chunkText: string;
-  relevanceScore: number;
-}
-
-export interface CNETopicEvidenceResult {
-  cneId: string;
-  topic: string;
-  totalEvidenceChunks: number;
-  uploadedCount: number;
-  libraryCount: number;
-  evidence: CNETopicEvidenceChunk[];
-}
-
-export interface Phase4DTopicValidationReport {
-  queryTopic: string;
-  uploadedCount: number;
-  libraryCount: number;
-  totalResults: number;
-  top5EvidenceChunks: Array<{
-    sourceType: 'UPLOADED_CNE' | 'LOCAL_REFERENCE_LIB';
-    resourceTitle: string;
-    sectionHeading: string;
-    relevanceScore: number;
-  }>;
-  clinicallyRelevant: boolean;
-  falsePositiveMatches: string[];
-}
-
-export interface Phase4DValidationResult {
-  cneIdTested: string;
-  timestamp: string;
-  topicReports: Phase4DTopicValidationReport[];
-  verifications: {
-    sourceOrderingVerified: boolean;
-    unauthorizedForbiddenVerified: boolean;
-    crossCNEIsolationVerified: boolean;
-    inactiveLibraryExcludedVerified: boolean;
-    nonexistentTopicReturnsInsufficient: boolean;
-    noExternalOrDriveApiUsed: boolean;
-  };
-  summary: {
-    totalTopicsTested: number;
-    allSourceOrderingValid: boolean;
-    unauthorizedAccessBlocked: boolean;
-    nonexistentTopicBlocked: boolean;
-    falsePositiveCount: number;
-  };
-}

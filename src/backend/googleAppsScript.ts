@@ -329,7 +329,7 @@ function handleRequest(e, method) {
     
     // Authoritative account-status and password-change enforcement for protected actions
     var isPublicQrAction = (action === 'getPostTestQuestions' || action === 'submitPostTest') && Boolean(params.qrToken);
-    if (session && !isPublicQrAction && action !== 'login' && action !== 'resetPassword' && action !== 'ping') {
+    if (session && !isPublicQrAction && action !== 'login' && action !== 'resetPassword') {
       var secState = getUserCredentialSecurityState(session.employeeId);
       if (secState.accountStatus === 'INACTIVE') {
         output = {
@@ -356,11 +356,7 @@ function handleRequest(e, method) {
     }
     
     switch (action) {
-      // Diagnostic & Public Information Endpoints
-      case 'ping':
-        output = handleDiagnosticPing(params);
-        break;
-        
+      // Public & Authentication Endpoints
       case 'login':
         output = handleLogin(params);
         break;
@@ -480,10 +476,6 @@ function handleRequest(e, method) {
         output = handleAdminAction(params, session, handleDeleteNewsEvent, 'DELETE_NEWS');
         break;
         
-      case 'updateChairpersonMessage':
-        output = handleAdminAction(params, session, handleUpdateChairpersonMessage, 'UPDATE_CHAIRPERSON_MSG');
-        break;
-        
       case 'updateCoordinatorDesk':
         output = handleAdminAction(params, session, handleUpdateCoordinatorDesk, 'UPDATE_COORDINATOR_DESK');
         break;
@@ -529,16 +521,11 @@ function handleRequest(e, method) {
         output = handleDownloadLearningResource(params, session);
         break;
 
-      case 'extractLearningResourceContent':
-        output = handleExtractLearningResourceContent(params, session);
-        break;
-
       case 'listNursingReferenceResources':
         output = handleListNursingReferenceResources(params, session);
         break;
 
       case 'indexNursingReferenceResource':
-      case 'registerAndIndexReferenceResource':
         output = handleIndexNursingReferenceResource(params, session);
         break;
 
@@ -560,16 +547,6 @@ function handleRequest(e, method) {
 
       case 'getReferenceMaterial':
         output = handleGetReferenceMaterial(params, session);
-        break;
-
-      case 'retrieveCNETopicEvidence':
-      case 'getCNETopicEvidence':
-        output = handleRetrieveCNETopicEvidence(params, session);
-        break;
-
-      case 'runLocalRetrievalValidation':
-      case 'validateLocalRetrieval':
-        output = handleRunLocalRetrievalValidation(params, session);
         break;
 
       case 'getCNEActivityProgress':
@@ -604,9 +581,8 @@ function handleRequest(e, method) {
         output = handleSubmitPostTest(params, session);
         break;
 
-      case 'addManualParticipant':
       case 'addManualParticipants':
-        output = handleAddManualParticipant(params, session);
+        output = handleAddManualParticipants(params, session);
         break;
 
       case 'getCNEParticipants':
@@ -661,83 +637,6 @@ function handleAdminAction(params, session, handlerFn, actionName) {
   }
   
   return handlerFn(params, session);
-}
-
-/**
- * Diagnostic & Health Check (No Secrets or Sensitive Data Leaked)
- */
-function handleDiagnosticPing(params) {
-  var props = PropertiesService.getScriptProperties();
-  var diagnostics = {
-    backendApi: 'PASS',
-    cneSpreadsheet: 'FAIL',
-    employeeMaster: 'FAIL',
-    cneScheduleTab: 'FAIL',
-    areaTab: 'FAIL',
-    roleTab: 'FAIL',
-    sessionConfig: 'FAIL',
-    passwordPepper: 'FAIL',
-    driveGallery: 'NOT CONFIGURED'
-  };
-  
-  var sheetNames = [];
-  
-  // 1. Check CNE Spreadsheet
-  try {
-    var cneSS = getSpreadsheet('CNE');
-    diagnostics.cneSpreadsheet = 'PASS';
-    var sheets = cneSS.getSheets();
-    for (var i = 0; i < sheets.length; i++) {
-      var sName = sheets[i].getName();
-      sheetNames.push(sName);
-      if (sName === 'CNE Schedule') diagnostics.cneScheduleTab = 'PASS';
-      if (sName === 'Area') diagnostics.areaTab = 'PASS';
-      if (sName === 'Role') diagnostics.roleTab = 'PASS';
-    }
-  } catch (e) {
-    diagnostics.cneSpreadsheet = 'FAIL';
-  }
-  
-  // 2. Check Employee Master Spreadsheet
-  try {
-    var offSS = getSpreadsheet('OFFICERS');
-    var offSheet = offSS.getSheetByName('Rosters Master Data');
-    if (offSheet) {
-      diagnostics.employeeMaster = 'PASS';
-    } else {
-      diagnostics.employeeMaster = 'FAIL';
-    }
-  } catch (e) {
-    diagnostics.employeeMaster = 'FAIL';
-  }
-  
-  // 3. Check Session Security & Password Pepper
-  if (props.getProperty('SESSION_SECRET') && props.getProperty('SESSION_SECRET').trim() !== '') {
-    diagnostics.sessionConfig = 'PASS';
-  }
-  if (props.getProperty('PASSWORD_PEPPER') && props.getProperty('PASSWORD_PEPPER').trim() !== '') {
-    diagnostics.passwordPepper = 'PASS';
-  }
-  
-  // 4. Check Drive Folder
-  var driveFolderId = props.getProperty('DRIVE_FOLDER_ID');
-  if (driveFolderId && driveFolderId.trim() !== '') {
-    try {
-      DriveApp.getFolderById(driveFolderId.trim());
-      diagnostics.driveGallery = 'PASS';
-    } catch (e) {
-      diagnostics.driveGallery = 'FAIL';
-    }
-  }
-  
-  return {
-    success: true,
-    message: 'CNE Apps Script API is online and responding.',
-    diagnostics: diagnostics,
-    sheetNames: sheetNames,
-    timestamp: new Date().toISOString(),
-    version: '2.2.0-PROD-SECURE'
-  };
 }
 
 /**
@@ -1448,7 +1347,7 @@ function getFromScriptCache(baseKey) {
 }
 
 /**
- * Officers Dropdown (Admin Only, Sanitized: ONLY employeeId, name, designation returned)
+ * Officers Dropdown (Restricted to ADMIN, AREA_INCHARGE, INCHARGE, or CNE-authorized Resource Person; Sanitized: ONLY employeeId, name, designation returned)
  * Uses CacheService (TTL 60s) with chunking protection to eliminate repeated full-roster sheet reads.
  */
 function handleGetOfficersDropdown(params, session) {
@@ -1458,6 +1357,26 @@ function handleGetOfficersDropdown(params, session) {
       errorCode: 'UNAUTHORIZED',
       message: 'Authentication required. Please sign in.'
     };
+  }
+
+  var role = String(session.role || '').trim().toUpperCase();
+  var isDirectoryRole = (role === 'ADMIN' || role === 'AREA_INCHARGE' || role === 'INCHARGE');
+  if (!isDirectoryRole) {
+    var cneId = (params && params.cneId) ? sanitizeCellInput(params.cneId) : '';
+    var isAuthorizedForCne = false;
+    if (cneId) {
+      var cneRecord = getCNEScheduleRecord(cneId);
+      if (cneRecord && checkCNEActionAuthorized(session, cneRecord) === null) {
+        isAuthorizedForCne = true;
+      }
+    }
+    if (!isAuthorizedForCne) {
+      return {
+        success: false,
+        errorCode: 'FORBIDDEN',
+        message: 'You are not authorized to access the officer directory.'
+      };
+    }
   }
 
   var startedAt = Date.now();
@@ -2551,12 +2470,12 @@ function handleGetCNERecords(params, session) {
     var sanitizedStaffEmpIds = isAdmin ? staffArray : (isStaffParticipant && session ? [session.employeeId] : []);
     
     var rpNames = rpArray.map(function(id) {
-      return officerMap[id] || id;
+      return officerMap[id] || (isAdmin ? id : 'Resource Person');
     }).filter(Boolean);
     var rpNameString = rpNames.join(', ');
 
     var staffNameList = sanitizedStaffEmpIds.map(function(id) {
-      return officerMap[id] || id;
+      return officerMap[id] || (isAdmin ? id : 'Staff Member');
     });
 
     // Public / Unauthenticated callers: sanitize sensitive employee IDs and remarks
@@ -4086,7 +4005,7 @@ function handleDeleteNewsEvent(params, session) {
 }
 
 /**
- * 12. Chairperson Message Management (Public Read, Admin Write)
+ * 12. Chairperson Message Management (Public Read-Only)
  */
 function handleGetChairpersonMessage(params) {
   var props = PropertiesService.getScriptProperties();
@@ -4109,105 +4028,6 @@ function handleGetChairpersonMessage(params) {
       driveFileId: driveFileId,
       driveUrl: driveFileId ? ('https://lh3.googleusercontent.com/d/' + driveFileId) : photoUrl,
       message: message
-    }
-  };
-}
-
-function handleUpdateChairpersonMessage(params, session) {
-  var adminError = requireAdmin(session);
-  if (adminError) return adminError;
-
-  var props = PropertiesService.getScriptProperties();
-  
-  if (params.name) props.setProperty('CHAIRPERSON_NAME', sanitizeCellInput(params.name));
-  if (params.designation) props.setProperty('CHAIRPERSON_DESIG', sanitizeCellInput(params.designation));
-  if (params.message) props.setProperty('CHAIRPERSON_MESSAGE', sanitizeCellInput(params.message));
-  
-  var finalPhotoUrl = params.photoUrl || props.getProperty('CHAIRPERSON_PHOTO') || '';
-  var driveFileId = null;
-  var driveUrl = null;
-
-  // Auto-Save image to Google Drive if base64 image data is provided (either in base64Image or photoUrl)
-  var rawImage = params.base64Image || (params.photoUrl && params.photoUrl.indexOf('data:image') === 0 ? params.photoUrl : null);
-  
-  if (rawImage) {
-    var driveFolderId = props.getProperty('DRIVE_FOLDER_ID');
-    if (!driveFolderId || driveFolderId.trim() === '') {
-      return {
-        success: false,
-        message: 'Google Drive upload error: CNO Photo Drive folder is not configured. Please configure DRIVE_FOLDER_ID in Script Properties.'
-      };
-    }
-
-    var folder;
-    try {
-      folder = DriveApp.getFolderById(driveFolderId.trim());
-    } catch (e) {
-      return { success: false, message: 'Google Drive upload error: Invalid DRIVE_FOLDER_ID configured.' };
-    }
-
-    var contentType = 'image/jpeg';
-    var rawBase64 = rawImage;
-    if (rawImage.indexOf(';base64,') !== -1) {
-      var parts = rawImage.split(';base64,');
-      contentType = parts[0].replace('data:', '').toLowerCase().trim();
-      rawBase64 = parts[1];
-    }
-
-    var allowedMimes = ['image/jpeg', 'image/png', 'image/webp'];
-    if (allowedMimes.indexOf(contentType) === -1) {
-      return { success: false, message: 'Invalid file format. Only JPEG, PNG, and WebP images are allowed.' };
-    }
-
-    try {
-      var decoded = Utilities.base64Decode(rawBase64);
-      // 5MB max check
-      if (decoded.length > 5 * 1024 * 1024) {
-        return { success: false, message: 'CNO image exceeds maximum allowed size of 5MB.' };
-      }
-
-      var ext = (contentType === 'image/png') ? '.png' : ((contentType === 'image/webp') ? '.webp' : '.jpg');
-      var fileName = 'CNO_Dr_Anita_Rani_Kansal_' + new Date().getTime() + ext;
-      var blob = Utilities.newBlob(decoded, contentType, fileName);
-      var file = folder.createFile(blob);
-      
-      // Public view-only permission granted strictly for institutional CNE display in the portal
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-      
-      driveFileId = file.getId();
-      driveUrl = 'https://lh3.googleusercontent.com/d/' + driveFileId;
-      finalPhotoUrl = driveUrl;
-      
-      props.setProperty('CHAIRPERSON_PHOTO', finalPhotoUrl);
-      props.setProperty('CHAIRPERSON_PHOTO_DRIVE_ID', driveFileId);
-      props.setProperty('CHAIRPERSON_PHOTO_FILE_NAME', fileName);
-    } catch (driveErr) {
-      return { 
-        success: false, 
-        message: 'Failed to save CNO photo to Google Drive: ' + driveErr.message 
-      };
-    }
-  } else if (params.photoUrl) {
-    if (params.photoUrl.indexOf('data:') === 0 || params.photoUrl.length > 500) {
-      return { success: false, message: 'Invalid photo URL. Base64 strings cannot be saved directly; please upload an image file.' };
-    }
-    props.setProperty('CHAIRPERSON_PHOTO', sanitizeCellInput(params.photoUrl));
-    finalPhotoUrl = params.photoUrl;
-  }
-  
-  logAuditAction('UPDATE_CHAIRPERSON_MSG', session.employeeId, 'Updated CNO profile & photo' + (driveFileId ? ' (Saved to Google Drive: ' + driveFileId + ')' : ''), 'SUCCESS');
-  
-  return { 
-    success: true, 
-    message: driveFileId 
-      ? 'CNO photo successfully saved to Google Drive and leadership profile updated.' 
-      : 'Chairperson leadership profile updated successfully.',
-    data: {
-      name: sanitizeCellInput(params.name || ''),
-      designation: sanitizeCellInput(params.designation || ''),
-      photoUrl: finalPhotoUrl,
-      driveFileId: driveFileId,
-      driveUrl: driveUrl
     }
   };
 }
@@ -6062,6 +5882,13 @@ function handleListLearningResources(params, session) {
       }
     }
 
+    var resolvedRpName = rpName;
+    if (!resolvedRpName && record.instructor) {
+      var instIds = String(record.instructor).split(',').map(function(s) { return normalizeEmpId(s); }).filter(Boolean);
+      var instNames = instIds.map(function(id) { return (officerMap && officerMap[id]) ? officerMap[id] : ''; }).filter(Boolean);
+      resolvedRpName = instNames.join(', ');
+    }
+
     results.push({
       cneId: cneId,
       topic: String(data[r][topicCol] || record.topic),
@@ -6070,7 +5897,7 @@ function handleListLearningResources(params, session) {
       fileName: fileName,
       fileType: fileType,
       fileSize: fileSize,
-      resourcePersonName: rpName || record.instructor || 'Department Faculty',
+      resourcePersonName: resolvedRpName || 'Department Faculty',
       updatedAt: String(data[r][updatedCol] || ''),
       updatedBy: displayName,
       hasFile: true,
@@ -6188,17 +6015,6 @@ function handleDownloadLearningResource(params, session) {
  * Authoritative source of truth remains the Drive file stored in the configured
  * Learning Resources directory.
  */
-
-/**
- * Handle action: extractLearningResourceContent
- */
-function handleExtractLearningResourceContent(params, session) {
-  var cneId = sanitizeCellInput(params ? params.cneId : '');
-  if (!cneId) {
-    return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE ID is required.' };
-  }
-  return extractLearningResourceContentCore(cneId, session);
-}
 
 /**
  * Core extraction service for CNE Learning Resource
@@ -8570,235 +8386,6 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
       };
     })
   };
-}
-
-function handleRetrieveCNETopicEvidence(params, session) {
-  var p = params || {};
-  return retrieveCNETopicEvidence(p.cneId, p.topic, session);
-}
-
-/**
- * Phase 4D: Local Retrieval Validation Diagnostic
- * Evaluates retrieveCNETopicEvidence() across representative nursing topics
- * and returns a structured validation report.
- */
-function runLocalRetrievalValidation(params, session) {
-  var p = params || {};
-  var testCneId = p.cneId ? String(p.cneId).trim() : '';
-
-  // If no CNE ID was provided, discover the first active CNE in CNE Schedule
-  if (!testCneId) {
-    try {
-      var ss = getSpreadsheet('CNE');
-      var upcomingSheet = ss.getSheetByName('CNE Schedule');
-      if (upcomingSheet && upcomingSheet.getLastRow() > 1) {
-        var uData = upcomingSheet.getDataRange().getValues();
-        var uMap = getHeaderMap(upcomingSheet);
-        var cneIdCol = uMap['cneid'] !== undefined ? uMap['cneid'] : (uMap['classid'] !== undefined ? uMap['classid'] : 0);
-        for (var i = 1; i < uData.length; i++) {
-          var val = String(uData[i][cneIdCol] || '').trim();
-          if (val) {
-            testCneId = val;
-            break;
-          }
-        }
-      }
-    } catch (findErr) {
-      Logger.log('Could not resolve CNE ID automatically: ' + findErr.message);
-    }
-  }
-
-  // If still no CNE record, attempt to resolve from CNE_Reference_Index
-  if (!testCneId) {
-    try {
-      var cneSS = getSpreadsheet('CNE');
-      var idxSheet = cneSS.getSheetByName('CNE_Reference_Index');
-      if (idxSheet && idxSheet.getLastRow() > 1) {
-        var idxData = idxSheet.getDataRange().getValues();
-        var idxMap = getHeaderMap(idxSheet);
-        var idxCneCol = idxMap['cneid'] !== undefined ? idxMap['cneid'] : 2;
-        for (var r = 1; r < idxData.length; r++) {
-          var rowCne = String(idxData[r][idxCneCol] || '').trim();
-          if (rowCne) {
-            testCneId = rowCne;
-            break;
-          }
-        }
-      }
-    } catch (idxErr) {}
-  }
-
-  if (!testCneId) {
-    testCneId = 'CNE-TEST-VALIDATION';
-  }
-
-  // Representative test topics required for Phase 4D
-  var testTopics = [
-    'IV Cannulation',
-    'Foley Catheterization',
-    'Wound Dressing',
-    'CPR',
-    'Medication Administration',
-    'Blood Transfusion',
-    'Vital Signs',
-    'Infection Prevention',
-    'Pressure Injury / Wound Care',
-    'Quantum Particle Entanglement In Intergalactic Space' // Deliberately nonexistent topic
-  ];
-
-  var clinicalKeywordsMap = {
-    'IV Cannulation': ['cannula', 'cannulat', 'venipunct', 'vein', 'insertion', 'flashback', 'tourniquet', 'catheter', 'vascular access', 'peripheral iv', 'phlebitis'],
-    'Foley Catheterization': ['foley', 'catheter', 'urinary', 'bladder', 'meatus', 'balloon', 'sterile field', 'retention', 'drainage bag', 'catheterization'],
-    'Wound Dressing': ['wound', 'dressing', 'gauze', 'exudate', 'wound bed', 'cleansing', 'debridement', 'aseptic', 'sterile dressing', 'granulation'],
-    'CPR': ['cpr', 'cardiopulmonary', 'resuscitation', 'compressions', 'chest compression', 'aed', 'defibrillat', 'cardiac arrest', 'rescue breath'],
-    'Medication Administration': ['medication', 'administration', 'dose', 'drug', 'prescription', 'rights of medication', 'route', 'subcutaneous', 'intramuscular', 'oral', 'adverse reaction'],
-    'Blood Transfusion': ['blood transfusion', 'prbc', 'crossmatch', 'transfusion reaction', 'hemolytic', 'abo', 'rh compatibility', 'blood filter', 'packed red'],
-    'Vital Signs': ['vital signs', 'blood pressure', 'temperature', 'pulse', 'heart rate', 'respiratory rate', 'oxygen saturation', 'sphygmomanometer', 'oximetry', 'tachycardia', 'bradycardia'],
-    'Infection Prevention': ['infection prevention', 'infection control', 'hand hygiene', 'aseptic', 'asepsis', 'ppe', 'personal protective', 'pathogen', 'transmission', 'isolation precautions', 'standard precautions', 'disinfection', 'sterilization'],
-    'Pressure Injury / Wound Care': ['pressure injury', 'pressure ulcer', 'braden scale', 'tissue ischemia', 'stage 1', 'stage 2', 'stage 3', 'stage 4', 'deep tissue', 'shear', 'friction', 'repositioning', 'wound care', 'bony prominence', 'sacrum']
-  };
-
-  var falsePositivePatterns = {
-    'IV Cannulation': ['foley catheter', 'chest compress', 'urinary drainage'],
-    'Foley Catheterization': ['iv cannulation', 'venipuncture', 'chest compress', 'peripheral iv', 'cannula'],
-    'Wound Dressing': ['foley catheter', 'defibrillat', 'cardiac arrest', 'peripheral iv', 'cannula'],
-    'CPR': ['wound dressing', 'foley catheter', 'urinary elimination'],
-    'Medication Administration': ['foley catheterization', 'chest tube insertion'],
-    'Blood Transfusion': ['urinary elimination', 'foley catheter', 'cast care', 'peripheral iv', 'cannula'],
-    'Vital Signs': ['foley catheterization', 'surgical debridement'],
-    'Infection Prevention': ['blood crossmatch unit', 'cardiac compressions rate', 'braden scale', 'pressure ulcer'],
-    'Pressure Injury / Wound Care': ['defibrillator pad placement', 'urinary catheter', 'peripheral iv']
-  };
-
-  var topicReports = [];
-  var allSourceOrderingValid = true;
-  var falsePositiveCount = 0;
-
-  for (var t = 0; t < testTopics.length; t++) {
-    var queryTopic = testTopics[t];
-    var isNonexistent = (queryTopic.indexOf('Quantum') >= 0);
-
-    var res = retrieveCNETopicEvidence(testCneId, queryTopic, session);
-    var evidence = (res && res.success && res.evidence) ? res.evidence : [];
-
-    var uploadedCount = res && typeof res.uploadedCount === 'number' ? res.uploadedCount : 0;
-    var libraryCount = res && typeof res.libraryCount === 'number' ? res.libraryCount : 0;
-
-    // Check source ordering: UPLOADED_CNE must remain before LOCAL_REFERENCE_LIB
-    var seenLibrary = false;
-    for (var e = 0; e < evidence.length; e++) {
-      if (evidence[e].sourceType === 'LOCAL_REFERENCE_LIB') {
-        seenLibrary = true;
-      } else if (evidence[e].sourceType === 'UPLOADED_CNE' && seenLibrary) {
-        allSourceOrderingValid = false;
-      }
-    }
-
-    var top5 = evidence.slice(0, 5).map(function(ch) {
-      return {
-        sourceType: ch.sourceType,
-        resourceTitle: ch.resourceTitle,
-        sectionHeading: ch.sectionHeading,
-        relevanceScore: ch.relevanceScore
-      };
-    });
-
-    // Assess clinical relevance and check false positives
-    var clinicallyRelevant = false;
-    var topicFalsePositives = [];
-
-    if (isNonexistent) {
-      // Nonexistent topic MUST return 0 results and INSUFFICIENT_TOPIC_MATERIAL
-      if (!res.success && res.errorCode === 'INSUFFICIENT_TOPIC_MATERIAL') {
-        clinicallyRelevant = true; // Correct clinical discrimination
-      }
-    } else {
-      var expectedTerms = clinicalKeywordsMap[queryTopic] || [];
-      var clashPatterns = falsePositivePatterns[queryTopic] || [];
-
-      if (evidence.length > 0) {
-        var matchFound = false;
-        for (var topIdx = 0; topIdx < top5.length; topIdx++) {
-          var item = top5[topIdx];
-          var combinedText = (item.resourceTitle + ' ' + item.sectionHeading).toLowerCase();
-          
-          for (var k = 0; k < expectedTerms.length; k++) {
-            if (combinedText.indexOf(expectedTerms[k].toLowerCase()) >= 0) {
-              matchFound = true;
-              break;
-            }
-          }
-
-          for (var cp = 0; cp < clashPatterns.length; cp++) {
-            if (combinedText.indexOf(clashPatterns[cp].toLowerCase()) >= 0) {
-              topicFalsePositives.push(item.sectionHeading + ' (' + item.resourceTitle + ')');
-              falsePositiveCount++;
-            }
-          }
-        }
-        clinicallyRelevant = matchFound;
-      } else {
-        // No evidence found in current database for this topic
-        clinicallyRelevant = false;
-      }
-    }
-
-    topicReports.push({
-      queryTopic: queryTopic,
-      uploadedCount: uploadedCount,
-      libraryCount: libraryCount,
-      totalResults: evidence.length,
-      top5EvidenceChunks: top5,
-      clinicallyRelevant: clinicallyRelevant,
-      falsePositiveMatches: topicFalsePositives
-    });
-  }
-
-  // Verifications
-  // 1. Unauthorized session check
-  var unauthorizedResult = retrieveCNETopicEvidence(testCneId, 'IV Cannulation', { employeeId: 'UNAUTHORIZED_TEST_USER', role: 'EMPLOYEE' });
-  var unauthorizedForbiddenVerified = (!unauthorizedResult.success && (unauthorizedResult.errorCode === 'FORBIDDEN' || unauthorizedResult.errorCode === 'UNAUTHORIZED'));
-
-  // 2. Nonexistent topic insufficient material check
-  var nonexistentResult = retrieveCNETopicEvidence(testCneId, 'Quantum Particle Entanglement In Intergalactic Space', session);
-  var nonexistentTopicReturnsInsufficient = (!nonexistentResult.success && nonexistentResult.errorCode === 'INSUFFICIENT_TOPIC_MATERIAL');
-
-  // 3. Cross-CNE isolation verification
-  var crossCNEIsolationVerified = true;
-
-  // 4. Inactive library exclusion verification
-  var inactiveLibraryExcludedVerified = true;
-
-  // 5. No Drive API or external/online sources used
-  var noExternalOrDriveApiUsed = true;
-
-  return {
-    success: true,
-    cneIdTested: testCneId,
-    timestamp: new Date().toISOString(),
-    topicReports: topicReports,
-    verifications: {
-      sourceOrderingVerified: allSourceOrderingValid,
-      unauthorizedForbiddenVerified: unauthorizedForbiddenVerified,
-      crossCNEIsolationVerified: crossCNEIsolationVerified,
-      inactiveLibraryExcludedVerified: inactiveLibraryExcludedVerified,
-      nonexistentTopicReturnsInsufficient: nonexistentTopicReturnsInsufficient,
-      noExternalOrDriveApiUsed: noExternalOrDriveApiUsed
-    },
-    summary: {
-      totalTopicsTested: testTopics.length,
-      allSourceOrderingValid: allSourceOrderingValid,
-      unauthorizedAccessBlocked: unauthorizedForbiddenVerified,
-      nonexistentTopicBlocked: nonexistentTopicReturnsInsufficient,
-      falsePositiveCount: falsePositiveCount
-    }
-  };
-}
-
-function handleRunLocalRetrievalValidation(params, session) {
-  return handleAdminAction(params, session, function(p, s) {
-    return runLocalRetrievalValidation(p, s);
-  }, 'RUN_LOCAL_RETRIEVAL_VALIDATION');
 }
 
 /**
@@ -11932,7 +11519,7 @@ function handleSubmitPostTest(params, session) {
  * They have no score and are NOT treated as failed or assigned 0%.
  * Supports both single participant and batch participant addition with ONE ScriptLock and ONE setValues write.
  */
-function handleAddManualParticipant(params, session) {
+function handleAddManualParticipants(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
