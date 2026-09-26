@@ -37,12 +37,16 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     try {
       const response = await ApiService.login(empId.trim(), pass.trim());
       if (response.success && response.data) {
-        success(`Welcome, ${response.data.name}`, 'Login Successful');
         onLoginSuccess(response.data);
       } else {
         const msg = response.message || 'Login failed. Please verify your credentials.';
         setErrorMsg(msg);
-        error(msg, 'Authentication Error');
+        const title = response.errorCode === 'RATE_LIMITED'
+          ? 'Rate Limited'
+          : response.errorCode === 'ACCOUNT_INACTIVE'
+          ? 'Account Inactive'
+          : 'Authentication Error';
+        error(msg, title);
       }
     } catch (err: any) {
       const msg = err?.message || 'Server error occurred during login.';

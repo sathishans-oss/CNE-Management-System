@@ -322,6 +322,23 @@ function handleRequest(e, method) {
       session = verifySession(params.token, params.loggedInEmployeeId);
     }
     
+    // Authoritative password-change enforcement for protected actions
+    var isPublicQrAction = (action === 'getPostTestQuestions' || action === 'submitPostTest' || action === 'resolveQRToken') && Boolean(params.qrToken);
+    if (session && !isPublicQrAction && action !== 'changePassword' && action !== 'login' && action !== 'resetPassword' && action !== 'ping') {
+      var secState = getUserCredentialSecurityState(session.employeeId);
+      if (secState.mustChangePassword) {
+        output = {
+          success: false,
+          errorCode: 'MUST_CHANGE_PASSWORD',
+          message: 'You must set your personal password before continuing to the CNE Portal.'
+        };
+        if (output && typeof output === 'object') {
+          output._perfMs = Date.now() - requestStart;
+        }
+        return ContentService.createTextOutput(JSON.stringify(output)).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    
     switch (action) {
       // Diagnostic & Public Information Endpoints
       case 'ping':
@@ -1570,7 +1587,45 @@ function getOfficerNameMap() {
 }
 
 /**
- * Login Handler with Initial Default Password (pass1234) & Salted SHA-256 (Zero Backdoors)
+ * Authoritative Credential Security State Reader (Must Change Password & Account Status)
+ */
+function getUserCredentialSecurityState(employeeId) {
+  var cleanId = normalizeEmpId(employeeId);
+  if (!cleanId) return { mustChangePassword: false, accountStatus: 'ACTIVE' };
+
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get('cred_sec_' + cleanId);
+  if (cached) {
+    try {
+      return JSON.parse(cached);
+    } catch (e) {}
+  }
+
+  var ss = getCNESpreadsheet();
+  var authSheet = ss.getSheetByName('User Credentials');
+  if (!authSheet) {
+    return { mustChangePassword: false, accountStatus: 'ACTIVE' };
+  }
+
+  var authData = authSheet.getDataRange().getValues();
+  var state = { mustChangePassword: false, accountStatus: 'ACTIVE' };
+
+  for (var i = 1; i < authData.length; i++) {
+    if (normalizeEmpId(authData[i][0]) === cleanId) {
+      var mustChange = (String(authData[i][3] || '').trim().toUpperCase() === 'YES');
+      var rawStatus = String(authData[i][7] || '').trim().toUpperCase();
+      var status = (rawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
+      state = { mustChangePassword: mustChange, accountStatus: status };
+      break;
+    }
+  }
+
+  cache.put('cred_sec_' + cleanId, JSON.stringify(state), 300);
+  return state;
+}
+
+/**
+ * Login Handler with Initial Default Password (pass1234), Salted SHA-256, Inactive Protection & Rate Limiting
  */
 function handleLogin(params) {
   var employeeId = normalizeEmpId(params.employeeId);
@@ -1578,6 +1633,20 @@ function handleLogin(params) {
   
   if (!employeeId || !password) {
     return { success: false, message: 'Employee ID and password are required.' };
+  }
+
+  // Rate-limiting check: max 5 failed attempts per 15 minutes per employee ID
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'login_fail_' + employeeId;
+  var failCount = parseInt(cache.get(cacheKey) || '0', 10);
+
+  if (failCount >= 5) {
+    logAuditAction('LOGIN_BLOCKED', employeeId, 'Rate limit exceeded (5 failed attempts in 15m)', 'BLOCKED');
+    return {
+      success: false,
+      errorCode: 'RATE_LIMITED',
+      message: 'Too many failed login attempts. Please try again after 15 minutes.'
+    };
   }
   
   var officer;
@@ -1588,6 +1657,8 @@ function handleLogin(params) {
   }
 
   if (!officer) {
+    cache.put(cacheKey, String(failCount + 1), 900);
+    logAuditAction('LOGIN_FAILED', employeeId, 'Employee ID not found in institutional roster', 'FAILED');
     return { success: false, message: 'Employee ID not found in institutional roster.' };
   }
   
@@ -1605,15 +1676,28 @@ function handleLogin(params) {
   var savedSalt = '';
   var mustChangePass = false;
   var userRowIndex = -1;
+  var accountStatus = 'ACTIVE';
   
   for (var i = 1; i < authData.length; i++) {
     if (normalizeEmpId(authData[i][0]) === employeeId) {
       savedHash = String(authData[i][1] || '').trim();
       savedSalt = String(authData[i][2] || '').trim();
       mustChangePass = (String(authData[i][3] || '').toUpperCase() === 'YES');
+      var rawStatus = String(authData[i][7] || '').trim().toUpperCase();
+      accountStatus = (rawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
       userRowIndex = i + 1;
       break;
     }
+  }
+
+  // Inactive Account Protection: Reject before token generation or Last Login update
+  if (accountStatus === 'INACTIVE') {
+    logAuditAction('LOGIN_FAILED', employeeId, 'Inactive account login attempt', 'BLOCKED');
+    return {
+      success: false,
+      errorCode: 'ACCOUNT_INACTIVE',
+      message: 'Your CNE account is inactive. Please contact Nursing Administration.'
+    };
   }
   
   var isValid = false;
@@ -1634,6 +1718,7 @@ function handleLogin(params) {
   }
   
   if (!isValid) {
+    cache.put(cacheKey, String(failCount + 1), 900);
     logAuditAction('LOGIN_FAILED', employeeId, 'Invalid credentials attempt', 'FAILED');
     return {
       success: false,
@@ -1641,10 +1726,49 @@ function handleLogin(params) {
     };
   }
   
-  // Record Last Login
-  if (userRowIndex > 0) {
-    authSheet.getRange(userRowIndex, 7).setValue(new Date().toISOString());
+  // Clear failure counter on successful credentials
+  cache.remove(cacheKey);
+
+  var nowStr = new Date().toISOString();
+
+  // First default-password login: Establish authoritative User Credentials record with Must Change Password = YES
+  if (userRowIndex <= 0 || (!savedHash && !savedSalt)) {
+    var lock = LockService.getScriptLock();
+    try {
+      lock.waitLock(10000);
+      var freshData = authSheet.getDataRange().getValues();
+      var existingRow = -1;
+      for (var r = 1; r < freshData.length; r++) {
+        if (normalizeEmpId(freshData[r][0]) === employeeId) {
+          existingRow = r + 1;
+          break;
+        }
+      }
+      var defaultSalt = Utilities.getUuid().replace(/-/g, '');
+      var defaultHash = computePasswordHash('pass1234', defaultSalt);
+      if (existingRow > 0) {
+        authSheet.getRange(existingRow, 2).setValue(defaultHash);
+        authSheet.getRange(existingRow, 3).setValue(defaultSalt);
+        authSheet.getRange(existingRow, 4).setValue('YES');
+        authSheet.getRange(existingRow, 6).setValue(nowStr);
+        authSheet.getRange(existingRow, 7).setValue(nowStr);
+        authSheet.getRange(existingRow, 8).setValue('ACTIVE');
+      } else {
+        authSheet.appendRow([employeeId, defaultHash, defaultSalt, 'YES', nowStr, nowStr, nowStr, 'ACTIVE']);
+      }
+    } catch (e) {
+      // Fallback if lock busy
+    } finally {
+      lock.releaseLock();
+    }
+    mustChangePass = true;
+  } else if (userRowIndex > 0) {
+    // Record Last Login
+    authSheet.getRange(userRowIndex, 7).setValue(nowStr);
   }
+
+  // Update cached security state
+  cache.put('cred_sec_' + employeeId, JSON.stringify({ mustChangePassword: mustChangePass, accountStatus: 'ACTIVE' }), 300);
   
   var roleInfo = getUserRoleInfo(employeeId);
   var role = roleInfo.role;
@@ -1723,12 +1847,33 @@ function handleChangePassword(params, session) {
     }
     
     // Invalidate previous active sessions
-    CacheService.getScriptCache().put('pwd_change_' + empId, String(Date.now()), 7 * 24 * 60 * 60);
+    var changeTime = Date.now();
+    CacheService.getScriptCache().put('pwd_change_' + empId, String(changeTime), 7 * 24 * 60 * 60);
     invalidateUserRoleCache(empId);
+    CacheService.getScriptCache().put('cred_sec_' + empId, JSON.stringify({ mustChangePassword: false, accountStatus: 'ACTIVE' }), 300);
 
     logAuditAction('PASSWORD_CHANGED', empId, 'User changed personal password', 'SUCCESS');
     
-    return { success: true, message: 'Password updated successfully. You can now use your new password.' };
+    // Generate fresh session token and return updated SessionUser data
+    var officer = findOfficerById(empId);
+    var roleInfo = getUserRoleInfo(empId);
+    var newToken = generateSessionToken(empId);
+
+    return {
+      success: true,
+      message: 'Password updated successfully. You can now use your new password.',
+      data: {
+        employeeId: officer ? officer.employeeId : empId,
+        name: officer ? officer.name : '',
+        designation: officer ? officer.designation : '',
+        role: roleInfo.role,
+        assignedArea: roleInfo.assignedArea,
+        assignedAreas: roleInfo.assignedAreas,
+        token: newToken,
+        isFirstLogin: false,
+        mustChangePassword: false
+      }
+    };
   } finally {
     lock.releaseLock();
   }
@@ -11933,6 +12078,15 @@ function handleGetPostTestQuestions(params, session) {
   
   var empId = normalizeEmpId(params.employeeId || (session ? session.employeeId : ''));
   if (!empId) return { success: false, message: 'Employee ID is required.' };
+  
+  var officer = findOfficerById(empId);
+  if (!officer || !officer.name) {
+    return {
+      success: false,
+      errorCode: 'INVALID_EMPLOYEE_ID',
+      message: 'Employee ID ' + empId + ' not found in institutional employee roster.'
+    };
+  }
   
   var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };

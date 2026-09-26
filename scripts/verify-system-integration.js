@@ -52,6 +52,8 @@ const unscheduledModalTs = fs.readFileSync('src/components/cne/AddUnscheduledCne
 const departmentalModalTs = fs.readFileSync('src/components/cne/DepartmentalScheduleModal.tsx', 'utf8');
 const addResourceModalTs = fs.readFileSync('src/components/cne/AddResourceModal.tsx', 'utf8');
 const learningResPageTs = fs.readFileSync('src/components/cne/LearningResourcesPage.tsx', 'utf8');
+const postTestModalTs = fs.readFileSync('src/components/cne/CNEPostTestModal.tsx', 'utf8');
+const cneQrModalTs = fs.readFileSync('src/components/cne/CNEQRModal.tsx', 'utf8');
 const envExample = fs.readFileSync('.env.example', 'utf8');
 
 // Helper to recursively collect files
@@ -708,6 +710,59 @@ runTest('Shared date-time architecture across all CNE creation/edit workflows', 
   assert.ok(
     cneScheduleTs.includes('idPrefix="edit-cne"') && cneScheduleTs.includes('<CneDateTimeFields'),
     "Edit CNE workflow must render <CneDateTimeFields idPrefix=\"edit-cne\" ... />"
+  );
+});
+
+// -----------------------------------------------------------------------------
+// 12. QR Post-Test Root Deep-Link & Guest Workflow
+// -----------------------------------------------------------------------------
+runTest('QR Post-Test root routing, guest employee flow, and opaque token security', () => {
+  // 1. App.tsx reads postTest query parameter on initial load
+  assert.ok(
+    appTs.includes("params.get('postTest')"),
+    "App.tsx must inspect window.location.search for 'postTest' query parameter"
+  );
+
+  // 2. App.tsx renders CNEPostTestModal at root level without requiring authenticated session
+  assert.ok(
+    appTs.includes("{rootQrToken && (") && appTs.includes("<CNEPostTestModal"),
+    "App.tsx must render CNEPostTestModal directly at root level when rootQrToken exists"
+  );
+
+  // 3. CNESchedule.tsx no longer owns global query-param detection
+  assert.ok(
+    !cneScheduleTs.includes("params.get('postTest')"),
+    "CNESchedule.tsx must NOT contain duplicate postTest query parameter handling"
+  );
+
+  // 4. Public QR access URL format & opaque token resolution
+  assert.ok(
+    cneQrModalTs.includes("/?postTest="),
+    "CNEQRModal must generate public QR access URLs in canonical format /?postTest=<token>"
+  );
+  assert.ok(
+    codeGs.includes("getQRTokensSheet()"),
+    "Backend must resolve opaque QR tokens through CNE_QR_Tokens"
+  );
+  assert.ok(
+    codeGs.includes("INVALID_OR_MISSING_QR_TOKEN"),
+    "Backend must reject post-test access without a valid opaque QR token or authorized session"
+  );
+
+  // 5. Guest employee verification before loading questions
+  assert.ok(
+    postTestModalTs.includes("guestEmpIdVerified") && postTestModalTs.includes("handleGuestContinue"),
+    "CNEPostTestModal must prompt unauthenticated visitors for Employee ID and verify before loading questions"
+  );
+  assert.ok(
+    codeGs.includes("INVALID_EMPLOYEE_ID"),
+    "handleGetPostTestQuestions must validate Employee ID against roster and reject invalid IDs with INVALID_EMPLOYEE_ID"
+  );
+
+  // 6. Safe query parameter removal on close without reload
+  assert.ok(
+    appTs.includes("url.searchParams.delete('postTest')") && appTs.includes("window.history.replaceState"),
+    "App.tsx must remove 'postTest' query parameter using window.history.replaceState on modal close"
   );
 });
 

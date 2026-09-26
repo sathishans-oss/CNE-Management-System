@@ -134,15 +134,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const isFromComplete = Boolean(scheduleFromDate && scheduleFromTime);
 
   useEffect(() => {
-    // Check for QR postTest URL query parameter
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get('postTest');
-    if (token) {
-      setActivePostTest({ qrToken: token });
-    }
-  }, []);
-
-  useEffect(() => {
     loadData();
   }, [isAdmin]);
 

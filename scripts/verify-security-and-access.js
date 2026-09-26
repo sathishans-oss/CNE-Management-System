@@ -24,6 +24,8 @@ console.log('========================================================\n');
 const codeGs = fs.readFileSync('Code.gs', 'utf8');
 const backendGs = fs.readFileSync('src/backend/googleAppsScript.ts', 'utf8');
 const cneSchedule = fs.readFileSync('src/components/CNESchedule.tsx', 'utf8');
+const appTs = fs.readFileSync('src/App.tsx', 'utf8');
+const changePasswordModalTs = fs.readFileSync('src/components/ChangePasswordModal.tsx', 'utf8');
 
 let totalTests = 0;
 let passedTests = 0;
@@ -489,6 +491,138 @@ runTest('Password hashing and first-login enforcement structure intact', () => {
   assert.ok(
     codeGs.includes('pwd_change_'),
     'Password change must invalidate previously issued session tokens'
+  );
+});
+
+runTest('handleLogin reads Account Status & explicit INACTIVE login is rejected without token', () => {
+  const loginSection = codeGs.substring(
+    codeGs.indexOf('function handleLogin('),
+    codeGs.indexOf('function handleChangePassword(')
+  );
+
+  assert.ok(
+    loginSection.includes("accountStatus === 'INACTIVE'") || loginSection.includes("ACCOUNT_INACTIVE"),
+    'handleLogin must check accountStatus and reject INACTIVE accounts'
+  );
+  assert.ok(
+    loginSection.includes("errorCode: 'ACCOUNT_INACTIVE'"),
+    "handleLogin must return errorCode 'ACCOUNT_INACTIVE' for inactive accounts"
+  );
+
+  // Must reject before generating token
+  const inactiveIndex = loginSection.indexOf("errorCode: 'ACCOUNT_INACTIVE'");
+  const tokenGenIndex = loginSection.indexOf('generateSessionToken(');
+  assert.ok(
+    inactiveIndex !== -1 && tokenGenIndex !== -1 && inactiveIndex < tokenGenIndex,
+    'handleLogin must reject INACTIVE accounts before generating a session token'
+  );
+});
+
+runTest('Normal login enforces 5-attempt / 15-minute rate limiting & clears counter on success', () => {
+  const loginSection = codeGs.substring(
+    codeGs.indexOf('function handleLogin('),
+    codeGs.indexOf('function handleChangePassword(')
+  );
+
+  assert.ok(
+    loginSection.includes("login_fail_"),
+    "handleLogin must maintain cache key 'login_fail_<id>'"
+  );
+  assert.ok(
+    loginSection.includes("failCount >= 5") || loginSection.includes("failCount >= 5"),
+    'handleLogin must enforce rate limiting at 5 failed attempts'
+  );
+  assert.ok(
+    loginSection.includes("errorCode: 'RATE_LIMITED'"),
+    "handleLogin must return errorCode 'RATE_LIMITED' when threshold reached"
+  );
+  assert.ok(
+    loginSection.includes("cache.remove(cacheKey)") || loginSection.includes("cache.remove('login_fail_'"),
+    'handleLogin must clear failure counter upon successful credentials verification'
+  );
+});
+
+runTest('First default-password login establishes persistent User Credentials row with Must Change Password = YES', () => {
+  const loginSection = codeGs.substring(
+    codeGs.indexOf('function handleLogin('),
+    codeGs.indexOf('function handleChangePassword(')
+  );
+
+  assert.ok(
+    loginSection.includes("pass1234"),
+    'handleLogin must recognize default first-time password pass1234'
+  );
+  assert.ok(
+    loginSection.includes("authSheet.appendRow([employeeId, defaultHash, defaultSalt, 'YES'") ||
+    (loginSection.includes("defaultHash") && loginSection.includes("'YES'")),
+    "First login must establish User Credentials record with Must Change Password = YES and hashed password"
+  );
+});
+
+runTest('Backend protected actions enforce MUST_CHANGE_PASSWORD while changePassword remains allowed', () => {
+  assert.ok(
+    codeGs.includes("function getUserCredentialSecurityState("),
+    'Code.gs must define getUserCredentialSecurityState helper'
+  );
+  assert.ok(
+    codeGs.includes("errorCode: 'MUST_CHANGE_PASSWORD'"),
+    "handleRequest must return errorCode 'MUST_CHANGE_PASSWORD' for sessions requiring password change"
+  );
+
+  const routerSection = codeGs.substring(
+    codeGs.indexOf('function handleRequest('),
+    codeGs.indexOf('switch (action)')
+  );
+  assert.ok(
+    routerSection.includes("secState.mustChangePassword") && routerSection.includes("action !== 'changePassword'"),
+    "handleRequest must enforce MUST_CHANGE_PASSWORD while explicitly permitting 'changePassword'"
+  );
+});
+
+runTest('Password change clears Must Change Password flag and returns fresh valid session', () => {
+  const changeSection = codeGs.substring(
+    codeGs.indexOf('function handleChangePassword('),
+    codeGs.indexOf('function handleResetPassword(')
+  );
+
+  assert.ok(
+    changeSection.includes("authSheet.getRange(i + 1, 4).setValue('NO')") || changeSection.includes("'NO'"),
+    'handleChangePassword must set Must Change Password to NO'
+  );
+  assert.ok(
+    changeSection.includes("generateSessionToken("),
+    'handleChangePassword must generate a fresh session token'
+  );
+  assert.ok(
+    changeSection.includes("mustChangePassword: false") && changeSection.includes("isFirstLogin: false"),
+    'handleChangePassword must return SessionUser data with mustChangePassword = false'
+  );
+});
+
+runTest('Frontend consumes mustChangePassword & forced Change Password modal cannot be dismissed before success', () => {
+  assert.ok(
+    appTs.includes("isForcedPasswordChange"),
+    'App.tsx must define isForcedPasswordChange mode'
+  );
+  assert.ok(
+    appTs.includes("forced={isForcedPasswordChange}"),
+    'App.tsx must pass forced={isForcedPasswordChange} to ChangePasswordModal'
+  );
+  assert.ok(
+    appTs.includes("!isForcedPasswordChange && (") && appTs.includes("<TopToolbar"),
+    'App.tsx must hide TopToolbar while isForcedPasswordChange is true'
+  );
+  assert.ok(
+    changePasswordModalTs.includes("!forced && (") && changePasswordModalTs.includes("<X className="),
+    'ChangePasswordModal must hide X close button when forced is true'
+  );
+  assert.ok(
+    changePasswordModalTs.includes("e.key === 'Escape' && !forced"),
+    'ChangePasswordModal must prevent Escape dismissal when forced is true'
+  );
+  assert.ok(
+    changePasswordModalTs.includes("You must set your personal password before continuing to the CNE Portal"),
+    'ChangePasswordModal must inform user that personal password is required'
   );
 });
 

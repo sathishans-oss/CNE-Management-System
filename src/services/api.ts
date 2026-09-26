@@ -330,7 +330,25 @@ export class ApiService {
         return { success: true, message: 'Role removed successfully.' } as ApiResponse<T>;
       }
 
-      case 'changePassword':
+      case 'changePassword': {
+        const currentUser = this.getSessionUser();
+        if (currentUser) {
+          const updatedUser: SessionUser = {
+            ...currentUser,
+            isFirstLogin: false,
+            mustChangePassword: false,
+            token: currentUser.token || 'mock_token_' + Date.now()
+          };
+          this.saveSessionUser(updatedUser);
+          return {
+            success: true,
+            message: 'Password updated successfully. You can now use your new password.',
+            data: updatedUser
+          } as ApiResponse<T>;
+        }
+        return { success: true, message: 'Password updated successfully.' } as ApiResponse<T>;
+      }
+
       case 'resetPassword':
       case 'adminResetPassword':
         return { success: true, message: 'Password updated successfully.' } as ApiResponse<T>;
@@ -519,8 +537,12 @@ export class ApiService {
     return res;
   }
 
-  static async changePassword(newPassword: string): Promise<ApiResponse> {
-    return this.executeAction('changePassword', { newPassword });
+  static async changePassword(newPassword: string): Promise<ApiResponse<SessionUser>> {
+    const res = await this.executeAction<SessionUser>('changePassword', { newPassword });
+    if (res.success && res.data && res.data.token) {
+      this.saveSessionUser(res.data);
+    }
+    return res;
   }
 
   static async resetPassword(employeeId: string, doj: string, newPassword: string): Promise<ApiResponse> {

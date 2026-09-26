@@ -27,7 +27,10 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
   onClose,
   onSubmitted
 }) => {
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [guestEmpIdVerified, setGuestEmpIdVerified] = useState(Boolean(user?.employeeId));
+  const [guestLoading, setGuestLoading] = useState(false);
+  const [guestError, setGuestError] = useState('');
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [priorSubmission, setPriorSubmission] = useState<any>(null);
   const [resolvedCneId, setResolvedCneId] = useState(cneId || '');
@@ -43,13 +46,15 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
   const { success, error, warning } = useToast();
 
   useEffect(() => {
-    loadTest();
+    if (user?.employeeId) {
+      loadTest(user.employeeId);
+    }
   }, [cneId, qrToken, user?.employeeId]);
 
-  const loadTest = async () => {
+  const loadTest = async (empIdToUse: string) => {
     setLoading(true);
     try {
-      const activeEmpId = user?.employeeId || empIdInput || '';
+      const activeEmpId = empIdToUse.trim();
       const res = await ApiService.getPostTestQuestions({
         cneId: cneId || resolvedCneId,
         qrToken,
@@ -73,6 +78,50 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
       error(e?.message || 'Error occurred while loading test questions.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGuestContinue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanId = empIdInput.trim().toUpperCase();
+    if (!cleanId) {
+      setGuestError('Please enter your Employee ID.');
+      return;
+    }
+
+    setGuestLoading(true);
+    setGuestError('');
+
+    try {
+      const res = await ApiService.getPostTestQuestions({
+        cneId: cneId || resolvedCneId,
+        qrToken,
+        employeeId: cleanId
+      });
+
+      if (res.success && res.data) {
+        setResolvedCneId(res.data.cneId);
+        setEmpIdInput(cleanId);
+        setGuestEmpIdVerified(true);
+
+        if (res.data.alreadySubmitted) {
+          setAlreadySubmitted(true);
+          setPriorSubmission(res.data.submission);
+        } else {
+          setAlreadySubmitted(false);
+          setQuestions(res.data.questions || []);
+        }
+      } else {
+        const msg = res.message || 'Employee ID not found in institutional roster.';
+        setGuestError(msg);
+        error(msg, 'Verification Failed');
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Connection error. Please try again.';
+      setGuestError(msg);
+      error(msg, 'Connection Error');
+    } finally {
+      setGuestLoading(false);
     }
   };
 
@@ -154,7 +203,61 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
 
         {/* Content Body */}
         <div className="p-6 overflow-y-auto flex-1 bg-slate-50/40 text-xs">
-          {loading ? (
+          {!user?.employeeId && !guestEmpIdVerified ? (
+            /* Guest Employee ID Entry & Verification Step */
+            <div className="py-12 max-w-md mx-auto space-y-5 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-teal-100 text-teal-800 flex items-center justify-center mx-auto border border-teal-200 shadow-xs">
+                <Award className="w-7 h-7" />
+              </div>
+              <div>
+                <h4 className="text-lg font-bold text-slate-900">Enter Your Employee ID</h4>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  Enter your official AIIMS Rishikesh Employee ID to access your post-test evaluation and record attendance.
+                </p>
+              </div>
+
+              <form onSubmit={handleGuestContinue} className="space-y-4 text-left">
+                {guestError && (
+                  <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div>{guestError}</div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">
+                    Employee ID No. *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. RSNHO000001"
+                    value={empIdInput}
+                    onChange={(e) => setEmpIdInput(e.target.value.toUpperCase())}
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 uppercase focus:outline-hidden focus:ring-2 focus:ring-teal-700 shadow-xs"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Your ID is verified against the institutional roster.
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={guestLoading}
+                  className="w-full py-2.5 px-4 bg-teal-800 hover:bg-teal-900 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+                >
+                  {guestLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Verifying ID &amp; Loading Test...</span>
+                    </>
+                  ) : (
+                    <span>Continue to Post-Test</span>
+                  )}
+                </button>
+              </form>
+            </div>
+          ) : loading ? (
             <div className="py-24 flex flex-col items-center justify-center gap-2 text-slate-500">
               <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
               <span>Verifying enrollment &amp; loading evaluation questions...</span>
@@ -305,25 +408,15 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
           ) : (
             /* Active Test Form - 2-Column Wide Grid on Desktop */
             <form onSubmit={handleSubmit} className="space-y-5">
-              {/* Employee ID bar if not logged in */}
-              {!user && (
-                <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-200 space-y-1.5">
-                  <label className="block text-[11px] font-bold text-amber-900 uppercase tracking-wider">
-                    Enter Your Employee ID *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. EMP1042"
-                    value={empIdInput}
-                    onChange={(e) => setEmpIdInput(e.target.value)}
-                    className="w-full max-w-md p-2 bg-white border border-amber-300 rounded-lg text-xs"
-                  />
-                  <span className="text-[10px] text-amber-800 block">
-                    Required to record your official CNE attendance and post-test score in the hospital roster.
-                  </span>
-                </div>
-              )}
+              {/* Verified Participant Badge */}
+              <div className="p-3 bg-teal-50 rounded-xl border border-teal-200 flex items-center justify-between text-xs">
+                <span className="text-teal-900 font-medium">
+                  Participant Employee ID: <strong className="font-mono text-teal-950 font-bold">{user?.employeeId || empIdInput}</strong>
+                </span>
+                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-800 bg-teal-100 px-2.5 py-0.5 rounded-full">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-700" /> Verified
+                </span>
+              </div>
 
               {/* Questions List in 1 Question per Row */}
               <div className="grid grid-cols-1 gap-4 items-start">
