@@ -327,11 +327,22 @@ function handleRequest(e, method) {
       session = verifySession(params.token, params.loggedInEmployeeId);
     }
     
-    // Authoritative password-change enforcement for protected actions
+    // Authoritative account-status and password-change enforcement for protected actions
     var isPublicQrAction = (action === 'getPostTestQuestions' || action === 'submitPostTest' || action === 'resolveQRToken') && Boolean(params.qrToken);
-    if (session && !isPublicQrAction && action !== 'changePassword' && action !== 'login' && action !== 'resetPassword' && action !== 'ping') {
+    if (session && !isPublicQrAction && action !== 'login' && action !== 'resetPassword' && action !== 'ping') {
       var secState = getUserCredentialSecurityState(session.employeeId);
-      if (secState.mustChangePassword) {
+      if (secState.accountStatus === 'INACTIVE') {
+        output = {
+          success: false,
+          errorCode: 'ACCOUNT_INACTIVE',
+          message: 'Your CNE account is inactive. Please contact Nursing Administration.'
+        };
+        if (output && typeof output === 'object') {
+          output._perfMs = Date.now() - requestStart;
+        }
+        return ContentService.createTextOutput(JSON.stringify(output)).setMimeType(ContentService.MimeType.JSON);
+      }
+      if (secState.mustChangePassword && action !== 'changePassword') {
         output = {
           success: false,
           errorCode: 'MUST_CHANGE_PASSWORD',
@@ -1741,6 +1752,16 @@ function handleLogin(params) {
     var lock = LockService.getScriptLock();
     try {
       lock.waitLock(10000);
+    } catch (lockErr) {
+      logAuditAction('FIRST_LOGIN_SETUP_FAILED', employeeId, 'Lock acquisition timeout during first-login setup', 'FAILED');
+      return {
+        success: false,
+        errorCode: 'CREDENTIAL_SETUP_FAILED',
+        message: 'Server is busy completing account setup. Please try again.'
+      };
+    }
+
+    try {
       var freshData = authSheet.getDataRange().getValues();
       var existingRow = -1;
       for (var r = 1; r < freshData.length; r++) {
@@ -1749,20 +1770,116 @@ function handleLogin(params) {
           break;
         }
       }
-      var defaultSalt = Utilities.getUuid().replace(/-/g, '');
-      var defaultHash = computePasswordHash('pass1234', defaultSalt);
+
+      var expectedHash = '';
+      var expectedSalt = '';
+
       if (existingRow > 0) {
-        authSheet.getRange(existingRow, 2).setValue(defaultHash);
-        authSheet.getRange(existingRow, 3).setValue(defaultSalt);
-        authSheet.getRange(existingRow, 4).setValue('YES');
-        authSheet.getRange(existingRow, 6).setValue(nowStr);
-        authSheet.getRange(existingRow, 7).setValue(nowStr);
-        authSheet.getRange(existingRow, 8).setValue('ACTIVE');
+        var existingRowData = freshData[existingRow - 1];
+        var existingHash = String(existingRowData[1] || '').trim();
+        var existingSalt = String(existingRowData[2] || '').trim();
+        var existingMustChange = String(existingRowData[3] || '').trim().toUpperCase();
+        var existingCreatedAt = String(existingRowData[4] || '').trim() || nowStr;
+        var existingAccountStatus = String(existingRowData[7] || '').trim().toUpperCase();
+
+        // Re-check Account Status under lock to prevent overwriting concurrent administrative deactivation
+        if (existingAccountStatus === 'INACTIVE') {
+          logAuditAction('LOGIN_FAILED', employeeId, 'Inactive account login attempt detected under lock', 'BLOCKED');
+          return {
+            success: false,
+            errorCode: 'ACCOUNT_INACTIVE',
+            message: 'Your CNE account is inactive. Please contact Nursing Administration.'
+          };
+        }
+
+        // Case 4: Existing row has Must Change Password = NO (password change already completed concurrently)
+        if (existingMustChange === 'NO') {
+          logAuditAction('FIRST_LOGIN_STATE_CHANGED', employeeId, 'Concurrent credential state change detected (Must Change Password is NO)', 'FAILED');
+          return {
+            success: false,
+            errorCode: 'CREDENTIAL_STATE_CHANGED',
+            message: 'Your account credentials changed while signing in. Please sign in again with your current password.'
+          };
+        }
+
+        // Case 2: Existing row has blank password hash and blank salt
+        if (!existingHash && !existingSalt) {
+          var defaultSalt = Utilities.getUuid().replace(/-/g, '');
+          var defaultHash = computePasswordHash('pass1234', defaultSalt);
+          authSheet.getRange(existingRow, 2).setValue(defaultHash);
+          authSheet.getRange(existingRow, 3).setValue(defaultSalt);
+          authSheet.getRange(existingRow, 4).setValue('YES');
+          authSheet.getRange(existingRow, 5).setValue(existingCreatedAt);
+          authSheet.getRange(existingRow, 6).setValue(nowStr);
+          authSheet.getRange(existingRow, 7).setValue(nowStr);
+          authSheet.getRange(existingRow, 8).setValue('ACTIVE');
+          expectedHash = defaultHash;
+          expectedSalt = defaultSalt;
+        } else if (existingHash && existingSalt) {
+          // Case 3 & Case 5: Existing row has populated credentials
+          if (computePasswordHash('pass1234', existingSalt) === existingHash && existingMustChange === 'YES') {
+            // Case 3: Concurrent first-login request already established default-password credentials with Must Change Password = YES
+            // Reuse existing row without generating another salt or overwriting password hash
+            expectedHash = existingHash;
+            expectedSalt = existingSalt;
+            mustChangePass = true;
+          } else {
+            // Case 5: Existing populated credential does not match pass1234 (or Must Change Password is not YES)
+            logAuditAction('FIRST_LOGIN_STATE_CHANGED', employeeId, 'Concurrent credential state change detected (populated hash does not match initial default)', 'FAILED');
+            return {
+              success: false,
+              errorCode: 'CREDENTIAL_STATE_CHANGED',
+              message: 'Your account credentials changed while signing in. Please sign in again with your current password.'
+            };
+          }
+        } else {
+          // Partially populated or changed credential state
+          logAuditAction('FIRST_LOGIN_STATE_CHANGED', employeeId, 'Concurrent credential state change detected (incomplete credential state)', 'FAILED');
+          return {
+            success: false,
+            errorCode: 'CREDENTIAL_STATE_CHANGED',
+            message: 'Your account credentials changed while signing in. Please sign in again with your current password.'
+          };
+        }
       } else {
+        // Case 1: No existing credential row
+        var defaultSalt = Utilities.getUuid().replace(/-/g, '');
+        var defaultHash = computePasswordHash('pass1234', defaultSalt);
         authSheet.appendRow([employeeId, defaultHash, defaultSalt, 'YES', nowStr, nowStr, nowStr, 'ACTIVE']);
+        expectedHash = defaultHash;
+        expectedSalt = defaultSalt;
       }
-    } catch (e) {
-      // Fallback if lock busy
+
+      SpreadsheetApp.flush();
+
+      // Confirm the row was successfully persisted
+      var persistedData = authSheet.getDataRange().getValues();
+      var verifiedRowCount = 0;
+      var persistedSuccessfully = false;
+      for (var p = 1; p < persistedData.length; p++) {
+        if (normalizeEmpId(persistedData[p][0]) === employeeId) {
+          verifiedRowCount++;
+          var pHash = String(persistedData[p][1] || '').trim();
+          var pSalt = String(persistedData[p][2] || '').trim();
+          var pMustChange = String(persistedData[p][3] || '').trim().toUpperCase();
+          var pRawStatus = String(persistedData[p][7] || '').trim().toUpperCase();
+          var pStatus = (pRawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
+          if (pHash === expectedHash && pSalt === expectedSalt && pMustChange === 'YES' && pStatus === 'ACTIVE') {
+            persistedSuccessfully = true;
+          }
+        }
+      }
+
+      if (!persistedSuccessfully || verifiedRowCount !== 1) {
+        throw new Error('Authoritative first-login credential row persistence verification failed.');
+      }
+    } catch (setupErr) {
+      logAuditAction('FIRST_LOGIN_SETUP_FAILED', employeeId, 'Credential persistence failed during first-login setup', 'FAILED');
+      return {
+        success: false,
+        errorCode: 'CREDENTIAL_SETUP_FAILED',
+        message: 'Your account security setup could not be completed. Please try again.'
+      };
     } finally {
       lock.releaseLock();
     }
@@ -1834,14 +1951,25 @@ function handleChangePassword(params, session) {
     var data = authSheet.getDataRange().getValues();
     var updated = false;
     var now = new Date().toISOString();
+    var preservedAccountStatus = 'ACTIVE';
     
     for (var i = 1; i < data.length; i++) {
       if (normalizeEmpId(data[i][0]) === empId) {
+        var rawStatus = String(data[i][7] || '').trim().toUpperCase();
+        if (rawStatus === 'INACTIVE') {
+          CacheService.getScriptCache().remove('cred_sec_' + empId);
+          logAuditAction('PASSWORD_CHANGE_BLOCKED', empId, 'Account inactive', 'BLOCKED');
+          return {
+            success: false,
+            errorCode: 'ACCOUNT_INACTIVE',
+            message: 'Your CNE account is inactive. Please contact Nursing Administration.'
+          };
+        }
+        preservedAccountStatus = 'ACTIVE';
         authSheet.getRange(i + 1, 2).setValue(hashStr);
         authSheet.getRange(i + 1, 3).setValue(salt);
         authSheet.getRange(i + 1, 4).setValue('NO');
         authSheet.getRange(i + 1, 6).setValue(now);
-        authSheet.getRange(i + 1, 8).setValue('ACTIVE');
         updated = true;
         break;
       }
@@ -1855,7 +1983,7 @@ function handleChangePassword(params, session) {
     var changeTime = Date.now();
     CacheService.getScriptCache().put('pwd_change_' + empId, String(changeTime), 7 * 24 * 60 * 60);
     invalidateUserRoleCache(empId);
-    CacheService.getScriptCache().put('cred_sec_' + empId, JSON.stringify({ mustChangePassword: false, accountStatus: 'ACTIVE' }), 300);
+    CacheService.getScriptCache().put('cred_sec_' + empId, JSON.stringify({ mustChangePassword: false, accountStatus: preservedAccountStatus }), 300);
 
     logAuditAction('PASSWORD_CHANGED', empId, 'User changed personal password', 'SUCCESS');
     
@@ -1981,14 +2109,25 @@ function handleResetPassword(params) {
     }
     var data = authSheet.getDataRange().getValues();
     var updated = false;
+    var preservedAccountStatus = 'ACTIVE';
     
     for (var i = 1; i < data.length; i++) {
       if (normalizeEmpId(data[i][0]) === employeeId) {
+        var rawStatus = String(data[i][7] || '').trim().toUpperCase();
+        if (rawStatus === 'INACTIVE') {
+          CacheService.getScriptCache().remove('cred_sec_' + employeeId);
+          logAuditAction('PASSWORD_RESET_BLOCKED', employeeId, 'Account inactive', 'BLOCKED');
+          return {
+            success: false,
+            errorCode: 'ACCOUNT_INACTIVE',
+            message: 'Your CNE account is inactive. Please contact Nursing Administration.'
+          };
+        }
+        preservedAccountStatus = 'ACTIVE';
         authSheet.getRange(i + 1, 2).setValue(hashStr);
         authSheet.getRange(i + 1, 3).setValue(salt);
         authSheet.getRange(i + 1, 4).setValue('NO');
         authSheet.getRange(i + 1, 6).setValue(now);
-        authSheet.getRange(i + 1, 8).setValue('ACTIVE');
         updated = true;
         break;
       }
@@ -2001,6 +2140,7 @@ function handleResetPassword(params) {
     // Invalidate previous active sessions
     CacheService.getScriptCache().put('pwd_change_' + employeeId, String(Date.now()), 7 * 24 * 60 * 60);
     invalidateUserRoleCache(employeeId);
+    CacheService.getScriptCache().put('cred_sec_' + employeeId, JSON.stringify({ mustChangePassword: false, accountStatus: preservedAccountStatus }), 300);
 
     logAuditAction('PASSWORD_RESET_SUCCESS', employeeId, 'Password reset via DOJ verification', 'SUCCESS');
     
@@ -2049,14 +2189,16 @@ function handleAdminResetPassword(params, session) {
     }
     var data = authSheet.getDataRange().getValues();
     var updated = false;
+    var preservedAccountStatus = 'ACTIVE';
     
     for (var i = 1; i < data.length; i++) {
       if (normalizeEmpId(data[i][0]) === targetEmpId) {
+        var rawStatus = String(data[i][7] || '').trim().toUpperCase();
+        preservedAccountStatus = (rawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
         authSheet.getRange(i + 1, 2).setValue(defaultHash);
         authSheet.getRange(i + 1, 3).setValue(salt);
         authSheet.getRange(i + 1, 4).setValue('YES');
         authSheet.getRange(i + 1, 6).setValue(now);
-        authSheet.getRange(i + 1, 8).setValue('ACTIVE');
         updated = true;
         break;
       }
@@ -2069,6 +2211,7 @@ function handleAdminResetPassword(params, session) {
     // Invalidate previous active sessions
     CacheService.getScriptCache().put('pwd_change_' + targetEmpId, String(Date.now()), 7 * 24 * 60 * 60);
     invalidateUserRoleCache(targetEmpId);
+    CacheService.getScriptCache().put('cred_sec_' + targetEmpId, JSON.stringify({ mustChangePassword: true, accountStatus: preservedAccountStatus }), 300);
 
     logAuditAction('ADMIN_PASSWORD_RESET', session.employeeId, 'Target Employee ID: ' + targetEmpId + ', Timestamp: ' + now + ', Status: SUCCESS', 'SUCCESS');
     

@@ -557,6 +557,119 @@ runTest('First default-password login establishes persistent User Credentials ro
     (loginSection.includes("defaultHash") && loginSection.includes("'YES'")),
     "First login must establish User Credentials record with Must Change Password = YES and hashed password"
   );
+
+  // 1. Concurrent first-login protection remains under ScriptLock and re-reads User Credentials
+  assert.ok(
+    loginSection.includes('var lock = LockService.getScriptLock();') &&
+    loginSection.includes('lock.waitLock(10000);'),
+    'First-login setup must acquire ScriptLock via LockService.getScriptLock().waitLock(10000)'
+  );
+  assert.ok(
+    loginSection.includes('var freshData = authSheet.getDataRange().getValues();') &&
+    loginSection.includes('if (existingRow > 0)'),
+    'First-login setup must re-read User Credentials under lock and inspect existing row rather than duplicating'
+  );
+
+  // 1b. Existing populated credential rows are NOT blindly overwritten under lock
+  assert.ok(
+    loginSection.includes('var existingHash = String(existingRowData[1] || \'\').trim();') &&
+    loginSection.includes('var existingSalt = String(existingRowData[2] || \'\').trim();') &&
+    loginSection.includes('var existingMustChange = String(existingRowData[3] || \'\').trim().toUpperCase();') &&
+    loginSection.includes('var existingAccountStatus = String(existingRowData[7] || \'\').trim().toUpperCase();'),
+    'First-login lock section must inspect existingHash, existingSalt, existingMustChange, and existingAccountStatus before writing'
+  );
+
+  // 1c. Explicit INACTIVE status discovered under lock aborts with ACCOUNT_INACTIVE and does NOT overwrite to ACTIVE
+  assert.ok(
+    loginSection.includes("if (existingAccountStatus === 'INACTIVE')") &&
+    loginSection.includes("errorCode: 'ACCOUNT_INACTIVE'"),
+    'Explicit INACTIVE status discovered under lock must abort with ACCOUNT_INACTIVE instead of setting ACTIVE'
+  );
+
+  // 1d. Existing Must Change Password = NO causes stale first-login request to abort with CREDENTIAL_STATE_CHANGED
+  assert.ok(
+    loginSection.includes("if (existingMustChange === 'NO')") &&
+    loginSection.includes("errorCode: 'CREDENTIAL_STATE_CHANGED'") &&
+    loginSection.includes("message: 'Your account credentials changed while signing in. Please sign in again with your current password.'"),
+    'Existing Must Change Password = NO under lock must abort stale first-login request with CREDENTIAL_STATE_CHANGED'
+  );
+
+  // 1e. Only blank existingHash and existingSalt may initialize an existing row with new defaultHash/defaultSalt
+  assert.ok(
+    loginSection.includes('if (!existingHash && !existingSalt)'),
+    'Existing row may only be initialized with a new default password hash when both existingHash and existingSalt are blank'
+  );
+
+  // 1f. Concurrent already-created default credentials with Must Change Password = YES are reused rather than regenerated
+  assert.ok(
+    loginSection.includes("if (computePasswordHash('pass1234', existingSalt) === existingHash && existingMustChange === 'YES')") &&
+    loginSection.includes('expectedHash = existingHash;') &&
+    loginSection.includes('expectedSalt = existingSalt;'),
+    'Concurrent default-password row with Must Change Password = YES must be reused without regenerating salt or overwriting hash'
+  );
+
+  // 1g. Populated hash that no longer matches pass1234 aborts with CREDENTIAL_STATE_CHANGED and logs FIRST_LOGIN_STATE_CHANGED
+  assert.ok(
+    loginSection.includes("logAuditAction('FIRST_LOGIN_STATE_CHANGED'"),
+    'Stale concurrent credential state change must log FIRST_LOGIN_STATE_CHANGED audit event'
+  );
+
+  // 2. Lock failure is not silently swallowed; releaseLock() is only called after lock is acquired
+  assert.ok(
+    loginSection.includes('Server is busy completing account setup. Please try again.'),
+    'Lock acquisition failure must return temporary busy message'
+  );
+  const waitLockIdx = loginSection.indexOf('lock.waitLock(10000);');
+  const busyMsgIdx = loginSection.indexOf('Server is busy completing account setup. Please try again.');
+  const releaseLockIdx = loginSection.indexOf('lock.releaseLock();');
+  assert.ok(
+    waitLockIdx !== -1 && busyMsgIdx !== -1 && releaseLockIdx !== -1 &&
+    waitLockIdx < busyMsgIdx && busyMsgIdx < releaseLockIdx,
+    'Lock failure must return before entering the try/finally block that calls lock.releaseLock()'
+  );
+
+  // 3. No empty or silent catch block that allows falling through to token generation
+  assert.ok(
+    !loginSection.includes('Fallback if lock busy'),
+    'handleLogin must not contain silent fallback catch comment'
+  );
+  const emptyCatchPattern = /catch\s*\([^)]*\)\s*\{\s*(\/\/[^\n]*\s*)*\}/;
+  assert.ok(
+    !emptyCatchPattern.test(loginSection),
+    'handleLogin must not contain any empty or comment-only catch block'
+  );
+
+  // 4. Persistence confirmation and CREDENTIAL_SETUP_FAILED error response
+  assert.ok(
+    loginSection.includes('SpreadsheetApp.flush();') &&
+    loginSection.includes('var persistedData = authSheet.getDataRange().getValues();') &&
+    loginSection.includes('if (!persistedSuccessfully || verifiedRowCount !== 1)'),
+    'First-login setup must flush and re-read User Credentials to confirm exactly one valid row was persisted'
+  );
+  assert.ok(
+    loginSection.includes("logAuditAction('FIRST_LOGIN_SETUP_FAILED'"),
+    'First-login setup failure must log FIRST_LOGIN_SETUP_FAILED audit event'
+  );
+  assert.ok(
+    loginSection.includes("errorCode: 'CREDENTIAL_SETUP_FAILED'") &&
+    loginSection.includes("message: 'Your account security setup could not be completed. Please try again.'"),
+    'Credential persistence failure must return CREDENTIAL_SETUP_FAILED with safe user message'
+  );
+  assert.ok(
+    !loginSection.includes('setupErr.message') && !loginSection.includes('lockErr.message'),
+    'First-login error responses must not expose technical exception details to the user'
+  );
+
+  // 5. Token generation and security cache update occur ONLY after authoritative under-lock state is accepted
+  const setupErrorReturnIdx = loginSection.lastIndexOf("errorCode: 'CREDENTIAL_SETUP_FAILED'");
+  const stateChangedReturnIdx = loginSection.lastIndexOf("errorCode: 'CREDENTIAL_STATE_CHANGED'");
+  const credSecCacheIdx = loginSection.indexOf("cache.put('cred_sec_'");
+  const tokenGenIdx = loginSection.indexOf('generateSessionToken(employeeId)');
+  assert.ok(
+    setupErrorReturnIdx !== -1 && stateChangedReturnIdx !== -1 && credSecCacheIdx !== -1 && tokenGenIdx !== -1 &&
+    setupErrorReturnIdx < credSecCacheIdx && stateChangedReturnIdx < credSecCacheIdx && credSecCacheIdx < tokenGenIdx,
+    'All under-lock state checks, persistence checks, and error returns must complete before updating cred_sec_ cache or calling generateSessionToken()'
+  );
 });
 
 runTest('Backend protected actions enforce MUST_CHANGE_PASSWORD while changePassword remains allowed', () => {
@@ -577,12 +690,44 @@ runTest('Backend protected actions enforce MUST_CHANGE_PASSWORD while changePass
     routerSection.includes("secState.mustChangePassword") && routerSection.includes("action !== 'changePassword'"),
     "handleRequest must enforce MUST_CHANGE_PASSWORD while explicitly permitting 'changePassword'"
   );
+
+  // Authenticated protected actions reject secState.accountStatus === 'INACTIVE' BEFORE MUST_CHANGE_PASSWORD
+  assert.ok(
+    routerSection.includes("if (secState.accountStatus === 'INACTIVE')") &&
+    routerSection.includes("errorCode: 'ACCOUNT_INACTIVE'") &&
+    routerSection.includes("message: 'Your CNE account is inactive. Please contact Nursing Administration.'"),
+    "handleRequest must reject authenticated sessions when secState.accountStatus === 'INACTIVE'"
+  );
+  const inactiveCheckIdx = routerSection.indexOf("if (secState.accountStatus === 'INACTIVE')");
+  const mustChangeCheckIdx = routerSection.indexOf("if (secState.mustChangePassword && action !== 'changePassword')");
+  assert.ok(
+    inactiveCheckIdx !== -1 && mustChangeCheckIdx !== -1 && inactiveCheckIdx < mustChangeCheckIdx,
+    "ACCOUNT_INACTIVE enforcement must occur strictly before MUST_CHANGE_PASSWORD enforcement"
+  );
+
+  // changePassword bypasses MUST_CHANGE_PASSWORD only, NOT ACCOUNT_INACTIVE
+  const outerGuardLine = routerSection.substring(
+    routerSection.indexOf('if (session && !isPublicQrAction'),
+    inactiveCheckIdx
+  );
+  assert.ok(
+    !outerGuardLine.includes("action !== 'changePassword'"),
+    "changePassword must NOT bypass the outer security guard that enforces ACCOUNT_INACTIVE"
+  );
 });
 
 runTest('Password change clears Must Change Password flag and returns fresh valid session', () => {
   const changeSection = codeGs.substring(
     codeGs.indexOf('function handleChangePassword('),
     codeGs.indexOf('function handleResetPassword(')
+  );
+  const resetSection = codeGs.substring(
+    codeGs.indexOf('function handleResetPassword('),
+    codeGs.indexOf('function handleAdminResetPassword(')
+  );
+  const adminResetSection = codeGs.substring(
+    codeGs.indexOf('function handleAdminResetPassword('),
+    codeGs.indexOf('function handleGetAreas(')
   );
 
   assert.ok(
@@ -596,6 +741,79 @@ runTest('Password change clears Must Change Password flag and returns fresh vali
   assert.ok(
     changeSection.includes("mustChangePassword: false") && changeSection.includes("isFirstLogin: false"),
     'handleChangePassword must return SessionUser data with mustChangePassword = false'
+  );
+
+  // 1. handleChangePassword does NOT write ACTIVE to Column 8 of an existing credential row and rejects INACTIVE under lock
+  assert.ok(
+    !changeSection.includes("getRange(i + 1, 8).setValue('ACTIVE')"),
+    'handleChangePassword must not overwrite Column 8 (Account Status) to ACTIVE on an existing row'
+  );
+  assert.ok(
+    changeSection.includes("if (rawStatus === 'INACTIVE')") &&
+    changeSection.includes("logAuditAction('PASSWORD_CHANGE_BLOCKED', empId, 'Account inactive', 'BLOCKED')") &&
+    changeSection.includes("errorCode: 'ACCOUNT_INACTIVE'"),
+    'handleChangePassword must re-read Account Status under ScriptLock and reject INACTIVE accounts with ACCOUNT_INACTIVE'
+  );
+  const changeInactiveReturnIdx = changeSection.indexOf("errorCode: 'ACCOUNT_INACTIVE'");
+  const changeWriteIdx = changeSection.indexOf("authSheet.getRange(i + 1, 2).setValue(hashStr)");
+  const changeTokenIdx = changeSection.indexOf("generateSessionToken(empId)");
+  assert.ok(
+    changeInactiveReturnIdx !== -1 && changeWriteIdx !== -1 && changeTokenIdx !== -1 &&
+    changeInactiveReturnIdx < changeWriteIdx && changeInactiveReturnIdx < changeTokenIdx,
+    'handleChangePassword must abort on INACTIVE before writing password hash or issuing a new session token'
+  );
+  assert.ok(
+    changeSection.includes("authSheet.appendRow([empId, hashStr, salt, 'NO', now, now, now, 'ACTIVE'])"),
+    'handleChangePassword may still initialize genuinely new credential rows as ACTIVE'
+  );
+
+  // 2. handleResetPassword (Forgot Password) does NOT change an existing INACTIVE account to ACTIVE and rejects INACTIVE under lock
+  assert.ok(
+    !resetSection.includes("getRange(i + 1, 8).setValue('ACTIVE')"),
+    'handleResetPassword must not overwrite Column 8 (Account Status) to ACTIVE on an existing row'
+  );
+  assert.ok(
+    resetSection.includes("if (rawStatus === 'INACTIVE')") &&
+    resetSection.includes("logAuditAction('PASSWORD_RESET_BLOCKED', employeeId, 'Account inactive', 'BLOCKED')") &&
+    resetSection.includes("errorCode: 'ACCOUNT_INACTIVE'"),
+    'handleResetPassword must re-read Account Status under ScriptLock and reject INACTIVE accounts with ACCOUNT_INACTIVE'
+  );
+  const resetLockIdx = resetSection.indexOf('lock.waitLock(10000);');
+  const resetInactiveReturnIdx = resetSection.indexOf("errorCode: 'ACCOUNT_INACTIVE'");
+  const resetWriteIdx = resetSection.indexOf("authSheet.getRange(i + 1, 2).setValue(hashStr)");
+  assert.ok(
+    resetLockIdx !== -1 && resetInactiveReturnIdx !== -1 && resetWriteIdx !== -1 &&
+    resetLockIdx < resetInactiveReturnIdx && resetInactiveReturnIdx < resetWriteIdx,
+    'handleResetPassword must check INACTIVE status while holding ScriptLock and abort before modifying credentials'
+  );
+  assert.ok(
+    resetSection.includes("authSheet.appendRow([employeeId, hashStr, salt, 'NO', now, now, now, 'ACTIVE'])"),
+    'handleResetPassword may still initialize genuinely new credential rows as ACTIVE'
+  );
+
+  // 3. handleAdminResetPassword preserves existing Account Status (including INACTIVE) and does NOT write ACTIVE to Column 8
+  assert.ok(
+    !adminResetSection.includes("getRange(i + 1, 8).setValue('ACTIVE')"),
+    'handleAdminResetPassword must not overwrite Column 8 (Account Status) to ACTIVE on an existing row'
+  );
+  assert.ok(
+    adminResetSection.includes("preservedAccountStatus = (rawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';"),
+    'handleAdminResetPassword must read and preserve existing Account Status (INACTIVE vs ACTIVE) under ScriptLock'
+  );
+  assert.ok(
+    adminResetSection.includes("authSheet.appendRow([targetEmpId, defaultHash, salt, 'YES', now, now, now, 'ACTIVE'])"),
+    'handleAdminResetPassword may initialize genuinely new credential rows as ACTIVE'
+  );
+
+  // 4. cred_sec_ cache is never blindly set to ACTIVE when authoritative status is INACTIVE
+  assert.ok(
+    changeSection.includes("CacheService.getScriptCache().remove('cred_sec_' + empId)") &&
+    resetSection.includes("CacheService.getScriptCache().remove('cred_sec_' + employeeId)"),
+    'Blocked password operations on INACTIVE accounts must clear stale cred_sec_ cache entries'
+  );
+  assert.ok(
+    adminResetSection.includes("accountStatus: preservedAccountStatus"),
+    'handleAdminResetPassword must cache preservedAccountStatus in cred_sec_ rather than hardcoded ACTIVE'
   );
 });
 
