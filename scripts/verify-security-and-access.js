@@ -106,9 +106,7 @@ runTest('Admin-only actions remain strictly Admin-only', () => {
     'updateArea',
     'getRoles',
     'updateRole',
-    'deleteCNE',
     'setupAndVerifyCNESheets',
-    'reviewCNE',
     'uploadImage',
     'updateGalleryItem',
     'deleteGalleryItem',
@@ -127,6 +125,12 @@ runTest('Admin-only actions remain strictly Admin-only', () => {
     const casePattern = new RegExp(`case '${ep}':[\\s\\S]*?handleAdminAction`, 'm');
     assert.ok(casePattern.test(codeGs), `Endpoint '${ep}' must be protected by handleAdminAction`);
   }
+
+  // Obsolete deleteCNE and reviewCNE endpoints must remain completely absent
+  assert.ok(!codeGs.includes("case 'deleteCNE':"), "Code.gs must not contain obsolete router case 'deleteCNE'");
+  assert.ok(!codeGs.includes("function handleDeleteCNE"), "Code.gs must not define obsolete function 'handleDeleteCNE'");
+  assert.ok(!codeGs.includes("case 'reviewCNE':"), "Code.gs must not contain obsolete router case 'reviewCNE'");
+  assert.ok(!codeGs.includes("function handleReviewCNE"), "Code.gs must not define obsolete function 'handleReviewCNE'");
 });
 
 // -----------------------------------------------------------------------------
@@ -194,7 +198,7 @@ runTest('Area Incharge cannot transfer a Departmental CNE to another ward', () =
   // Check that handleUpdateCNE includes FORBIDDEN_WARD_TRANSFER check
   const updateSection = codeGs.substring(
     codeGs.indexOf('function handleUpdateCNE'),
-    codeGs.indexOf('function handleDeleteCNE')
+    codeGs.indexOf('function parseDurationToSeconds')
   );
   assert.ok(
     updateSection.includes('FORBIDDEN_WARD_TRANSFER'),
@@ -298,7 +302,7 @@ runTest('CNESchedule UI button restricts Post Test management to authorized user
 runTest('CNE ID and CNE Type cannot be modified through Edit CNE', () => {
   const updateSection = codeGs.substring(
     codeGs.indexOf('function handleUpdateCNE'),
-    codeGs.indexOf('function handleDeleteCNE')
+    codeGs.indexOf('function parseDurationToSeconds')
   );
 
   // Immutability of CNE ID
@@ -325,7 +329,7 @@ runTest('CNE ID and CNE Type cannot be modified through Edit CNE', () => {
 runTest('updateCNE cannot directly change Scheduled to Completed or Canceled', () => {
   const updateSection = codeGs.substring(
     codeGs.indexOf('function handleUpdateCNE'),
-    codeGs.indexOf('function handleDeleteCNE')
+    codeGs.indexOf('function parseDurationToSeconds')
   );
 
   assert.ok(
@@ -360,7 +364,7 @@ runTest('Cancel uses dedicated cancellation workflow', () => {
   assert.ok(codeGs.includes('function handleCancelCNE('), 'handleCancelCNE must exist');
   const cancelSection = codeGs.substring(
     codeGs.indexOf('function handleCancelCNE'),
-    codeGs.indexOf('function migrateCNEApplicationsHeaderToCNEId')
+    codeGs.length
   );
 
   assert.ok(cancelSection.includes("setValue('Canceled')"), 'Cancel must set status to Canceled');
@@ -374,7 +378,7 @@ runTest('Finalized CNE cannot be edited or have mutations', () => {
   // 1. Edit CNE locked
   const updateSection = codeGs.substring(
     codeGs.indexOf('function handleUpdateCNE'),
-    codeGs.indexOf('function handleDeleteCNE')
+    codeGs.indexOf('function parseDurationToSeconds')
   );
   assert.ok(
     updateSection.includes("normalizeCNEStatus(record.status) === 'Completed'") &&

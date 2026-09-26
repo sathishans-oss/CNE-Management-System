@@ -237,7 +237,7 @@ runTest('CNE Schedule is the sole authoritative lifecycle table (Scheduled -> Co
   // Cancel handler modifies existing row in CNE Schedule
   const cancelSection = codeGs.substring(
     codeGs.indexOf('function handleCancelCNE'),
-    codeGs.indexOf('function migrateCNEApplicationsHeaderToCNEId')
+    codeGs.length
   );
   assert.ok(
     cancelSection.includes("ss.getSheetByName('CNE Schedule')"),
@@ -347,6 +347,43 @@ runTest("Separate legacy 'Time' column is NOT recreated in CNE Schedule schema",
   assert.ok(
     !headers.some(h => h.trim().toLowerCase() === 'time'),
     "No column named 'time' may exist in CNE Schedule headers"
+  );
+});
+
+// -----------------------------------------------------------------------------
+// 7. Obsolete CNE Applications Subsystem & Schema Removal
+// -----------------------------------------------------------------------------
+runTest('CNE Applications is absent from active schema, Verify / Initialize, and migrations', () => {
+  // 1. CNE Applications absent from CNE_SHEET_HEADERS
+  assert.ok(
+    !codeGs.includes("'CNE Applications':"),
+    'CNE Applications must be completely absent from CNE_SHEET_HEADERS'
+  );
+
+  // 2. CNE Applications absent from tabNames in setupAndVerifyCNESheets
+  const setupSection = codeGs.substring(
+    codeGs.indexOf('function setupAndVerifyCNESheets'),
+    codeGs.indexOf('function getOrCreateSheet')
+  );
+  assert.ok(
+    !setupSection.includes("'CNE Applications'"),
+    'CNE Applications must be absent from setupAndVerifyCNESheets tabNames, initialization, and validation'
+  );
+
+  // 3. migrateCNEApplicationsHeaderToCNEId function absent
+  assert.ok(
+    !codeGs.includes('migrateCNEApplicationsHeaderToCNEId'),
+    'migrateCNEApplicationsHeaderToCNEId must be completely absent from Code.gs'
+  );
+  assert.ok(
+    !backendGs.includes('migrateCNEApplicationsHeaderToCNEId'),
+    'migrateCNEApplicationsHeaderToCNEId must be completely absent from src/backend/googleAppsScript.ts'
+  );
+
+  // 4. Verify / Initialize does not contain automatic deleteSheet calls
+  assert.ok(
+    !setupSection.includes('deleteSheet'),
+    'setupAndVerifyCNESheets must NOT contain automatic deleteSheet logic'
   );
 });
 

@@ -231,7 +231,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                   <input
                     type="text"
                     required
-                    placeholder="e.g. RSNHO000001"
+                    placeholder="e.g. EMP10001"
                     value={empIdInput}
                     onChange={(e) => setEmpIdInput(e.target.value.toUpperCase())}
                     className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 uppercase focus:outline-hidden focus:ring-2 focus:ring-teal-700 shadow-xs"

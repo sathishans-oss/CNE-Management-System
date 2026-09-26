@@ -2,7 +2,6 @@ import {
   ApiResponse,
   Area,
   CNERecord,
-  CNEReportStats,
   ProgramImpactStats,
   ChairpersonMessageData,
   Employee,
@@ -16,16 +15,13 @@ import {
   CNEQuestion,
   CNEReferenceMaterial,
   CNELearningResourceMetadata,
-  CNELearningResourceExtractedContent,
   CNENursingReferenceResource,
   CNENursingReferenceDriveFile,
   CNEAiQuotaInfo,
   CNEParticipantsSummary,
   CNEActivityProgress,
   PostTestSubmissionResult,
-  SheetAuditItem,
-  CNETopicEvidenceResult,
-  Phase4DValidationResult
+  SheetAuditItem
 } from '../types';
 import {
   INITIAL_AREAS,
@@ -79,7 +75,6 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getReferenceMaterial',
   'getCNERecords',
   'getProgramImpact',
-  'getDashboardStats',
   'getAreas',
   'getOfficersDropdown',
   'listLearningResources',
@@ -296,8 +291,6 @@ export class ApiService {
       case 'updateCNE':
       case 'finalizeCNE':
       case 'cancelCNE':
-      case 'deleteCNE':
-      case 'reviewCNE':
       case 'setupAndVerifyCNESheets':
       case 'addManualParticipant':
       case 'addManualParticipants':
@@ -305,7 +298,6 @@ export class ApiService {
       case 'submitPostTest':
       case 'getPostTestQuestions':
       case 'getQRToken':
-      case 'resolveQRToken':
       case 'saveCNEQuestions':
       case 'getCNEQuestions':
       case 'generateCNEQuestions':
@@ -840,27 +832,7 @@ export class ApiService {
     return res;
   }
 
-  static async deleteCNE(cneId: string): Promise<ApiResponse> {
-    const res = await this.executeAction('deleteCNE', { cneId, classId: cneId, dataId: cneId });
-    if (res.success) {
-      this.invalidateCache('getCNERecords');
-      this.invalidateCache('getProgramImpact');
-    }
-    return res;
-  }
 
-  static async reviewCNE(
-    cneId: string,
-    status: 'Scheduled' | 'Completed' | 'Canceled',
-    adminRemarks?: string
-  ): Promise<ApiResponse> {
-    const res = await this.executeAction('reviewCNE', { cneId, classId: cneId, status, adminRemarks });
-    if (res.success) {
-      this.invalidateCache('getCNERecords');
-      this.invalidateCache('getProgramImpact');
-    }
-    return res;
-  }
 
   static async addDepartmentalSchedule(
     schedules: any[]
@@ -972,12 +944,7 @@ export class ApiService {
     return this.executeAction<ProgramImpactStats>('getProgramImpact');
   }
 
-  /**
-   * Dashboard & Analytics
-   */
-  static async getDashboardStats(): Promise<ApiResponse<CNEReportStats>> {
-    return this.executeAction<CNEReportStats>('getDashboardStats');
-  }
+
 
   /**
    * Part 1C: Authoritative Google Apps Script Gemini MCQ Generation
@@ -1055,12 +1022,7 @@ export class ApiService {
     }>('deleteLearningResource', { cneId });
   }
 
-  /**
-   * Phase 2: Authoritatively extract textual content from CNE learning resource in Drive
-   */
-  static async extractLearningResourceContent(cneId: string): Promise<ApiResponse<CNELearningResourceExtractedContent>> {
-    return this.executeAction<CNELearningResourceExtractedContent>('extractLearningResourceContent', { cneId });
-  }
+
 
   /**
    * Phase 3: List all CNE Learning Resources available to authenticated user
@@ -1214,28 +1176,7 @@ export class ApiService {
     }>('setResourceVisibility', params);
   }
 
-  /**
-   * Phase 4C: Local Topic-Relevance Retrieval
-   * Retrieves deterministic ranked evidence chunks from CNE_Reference_Index.
-   * Priority 1: UPLOADED_CNE chunks for the given CNE ID.
-   * Priority 2: LOCAL_REFERENCE_LIB chunks from active Open RN reference resources.
-   */
-  static async retrieveCNETopicEvidence(params: {
-    cneId: string;
-    topic?: string;
-  }): Promise<ApiResponse<CNETopicEvidenceResult>> {
-    return this.executeAction<CNETopicEvidenceResult>('retrieveCNETopicEvidence', params);
-  }
 
-  /**
-   * Phase 4D: Local Retrieval Validation Diagnostic (Admin-only)
-   * Runs retrieveCNETopicEvidence() across 10 representative topics and returns a structured validation report.
-   */
-  static async runLocalRetrievalValidation(params?: {
-    cneId?: string;
-  }): Promise<ApiResponse<Phase4DValidationResult>> {
-    return this.executeAction<Phase4DValidationResult>('runLocalRetrievalValidation', params || {});
-  }
 
   /**
    * CNE Activity Progress (Real data check across Material, Questions, QR, Participants, Post-Test, Finalization)
@@ -1268,9 +1209,7 @@ export class ApiService {
     });
   }
 
-  static async resolveQRToken(token: string): Promise<ApiResponse<any>> {
-    return this.executeAction('resolveQRToken', { qrToken: token });
-  }
+
 
   /**
    * Participant Post-Test APIs
@@ -1303,17 +1242,6 @@ export class ApiService {
   /**
    * Participant Management APIs
    */
-  static async addManualParticipant(params: {
-    cneId: string;
-    employeeId?: string;
-    name?: string;
-    designation?: string;
-    department?: string;
-    remarks?: string;
-  }): Promise<ApiResponse> {
-    return this.executeAction('addManualParticipant', params);
-  }
-
   static async addManualParticipants(params: {
     cneId: string;
     participants: Array<{

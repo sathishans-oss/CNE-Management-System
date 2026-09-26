@@ -290,6 +290,21 @@ runTest('Scanned/image-only PDFs return NO_EXTRACTABLE_CONTENT with helpful guid
   );
 });
 
+runTest('OCR is completely absent from PDF extraction engine', () => {
+  assert.ok(
+    !codeGs.includes('ocr: true') && !codeGs.includes('ocr:true'),
+    'Code.gs must not contain Drive OCR conversions (ocr: true)'
+  );
+  assert.ok(
+    !codeGs.includes('Drive.Files.insert'),
+    'Code.gs must not call Drive.Files.insert for OCR conversion'
+  );
+  assert.ok(
+    !codeGs.includes('temp_extract_'),
+    'Code.gs must not create temporary Docs files for OCR'
+  );
+});
+
 // =============================================================================
 // 5. Deterministic Chunking & Indexing Schema (Phase 4A)
 // =============================================================================

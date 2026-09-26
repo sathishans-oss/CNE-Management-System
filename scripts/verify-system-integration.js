@@ -791,6 +791,149 @@ runTest('QR Post-Test root routing, guest employee flow, and opaque token securi
 });
 
 // -----------------------------------------------------------------------------
+// 13. Obsolete CNE Applications Subsystem Permanent Absence
+// -----------------------------------------------------------------------------
+runTest('CNE Applications subsystem and legacy artifacts remain permanently absent', () => {
+  // 1. Obsolete frontend API methods in api.ts
+  const obsoleteApiMethods = [
+    'applyForClass',
+    'getMyApplications',
+    'getAllApplications',
+    'updateApplicationStatus'
+  ];
+  for (const method of obsoleteApiMethods) {
+    const methodRegex = new RegExp(`\\b${method}\\s*\\(`, 'g');
+    assert.ok(
+      !methodRegex.test(apiTs),
+      `Frontend API method '${method}' must be permanently absent from src/services/api.ts`
+    );
+  }
+
+  // 2. Obsolete backend router actions in Code.gs
+  const obsoleteActions = [
+    'applyForClass',
+    'getMyApplications',
+    'getAllApplications',
+    'updateApplicationStatus'
+  ];
+  for (const action of obsoleteActions) {
+    assert.ok(
+      !codeGs.includes(`case '${action}':`),
+      `Backend router action '${action}' must be permanently absent from Code.gs`
+    );
+  }
+
+  // 3. Obsolete backend handlers in Code.gs
+  const obsoleteHandlers = [
+    'handleApplyForClass',
+    'handleGetMyApplications',
+    'handleGetAllApplications',
+    'handleUpdateApplicationStatus'
+  ];
+  for (const handler of obsoleteHandlers) {
+    assert.ok(
+      !codeGs.includes(`function ${handler}`),
+      `Backend handler '${handler}' must be permanently absent from Code.gs`
+    );
+  }
+
+  // 4. CNEApplication interface/type in types.ts
+  assert.ok(
+    !typesTs.includes('CNEApplication'),
+    "Type/Interface 'CNEApplication' must be permanently absent from src/types.ts"
+  );
+
+  // 5. INITIAL_APPLICATIONS mock/initial data
+  const allTsFiles = getFilesRecursively('src', ['.ts', '.tsx']);
+  for (const file of allTsFiles) {
+    const content = fs.readFileSync(file, 'utf8');
+    assert.ok(
+      !content.includes('INITIAL_APPLICATIONS'),
+      `INITIAL_APPLICATIONS must be absent from ${file}`
+    );
+    assert.ok(
+      !content.includes('pendingApplicationsCount'),
+      `pendingApplicationsCount must be absent from ${file}`
+    );
+  }
+
+  // 6. pendingApplicationsCount absent from Code.gs
+  assert.ok(
+    !codeGs.includes('pendingApplicationsCount'),
+    "pendingApplicationsCount must be absent from Code.gs"
+  );
+
+  // 7. Active CNE Applications schema absent from CNE_SHEET_HEADERS
+  assert.ok(
+    !codeGs.includes("'CNE Applications':"),
+    "CNE Applications must be absent from CNE_SHEET_HEADERS in Code.gs"
+  );
+
+  // 8. migrateCNEApplicationsHeaderToCNEId absent
+  assert.ok(
+    !codeGs.includes('migrateCNEApplicationsHeaderToCNEId'),
+    "migrateCNEApplicationsHeaderToCNEId must be absent from Code.gs"
+  );
+  assert.ok(
+    !backendGs.includes('migrateCNEApplicationsHeaderToCNEId'),
+    "migrateCNEApplicationsHeaderToCNEId must be absent from src/backend/googleAppsScript.ts"
+  );
+
+  // 9. No programmatic deleteSheet logic added
+  assert.ok(
+    !codeGs.includes("deleteSheet(sheet)") && !codeGs.includes("deleteSheet(cneAppSheet)"),
+    "No automatic deleteSheet logic should be added to Code.gs"
+  );
+});
+
+// -----------------------------------------------------------------------------
+// 14. Final Production Cleanup: Obsolete Endpoints, OCR, & Real Data Permanent Absence
+// -----------------------------------------------------------------------------
+runTest('Obsolete production endpoints, OCR, and real employee data permanent absence', () => {
+  // 1. Obsolete reviewCNE endpoint removed
+  assert.ok(!apiTs.includes('static async reviewCNE'), 'ApiService.reviewCNE must be permanently absent');
+  assert.ok(!codeGs.includes("case 'reviewCNE':"), "Code.gs must not contain router case 'reviewCNE'");
+  assert.ok(!codeGs.includes('function handleReviewCNE'), "Code.gs must not define 'handleReviewCNE'");
+
+  // 2. Obsolete deleteCNE endpoint removed
+  assert.ok(!apiTs.includes('static async deleteCNE'), 'ApiService.deleteCNE must be permanently absent');
+  assert.ok(!codeGs.includes("case 'deleteCNE':"), "Code.gs must not contain router case 'deleteCNE'");
+  assert.ok(!codeGs.includes('function handleDeleteCNE'), "Code.gs must not define 'handleDeleteCNE'");
+
+  // 3. Obsolete public resolveQRToken endpoint removed
+  assert.ok(!apiTs.includes('static async resolveQRToken'), 'ApiService.resolveQRToken must be permanently absent');
+  assert.ok(!codeGs.includes("case 'resolveQRToken':"), "Code.gs must not contain router case 'resolveQRToken'");
+  assert.ok(!codeGs.includes('function handleResolveQRToken'), "Code.gs must not define 'handleResolveQRToken'");
+
+  // 4. Obsolete getDashboardStats removed
+  assert.ok(!apiTs.includes('static async getDashboardStats'), 'ApiService.getDashboardStats must be permanently absent');
+  assert.ok(!codeGs.includes("case 'getDashboardStats':"), "Code.gs must not contain router case 'getDashboardStats'");
+  assert.ok(!codeGs.includes('function handleGetDashboardStats'), "Code.gs must not define 'handleGetDashboardStats'");
+
+  // 5. OCR completely absent
+  assert.ok(!codeGs.includes('ocr: true') && !codeGs.includes('ocr:true'), 'Code.gs must not contain ocr: true');
+  assert.ok(!codeGs.includes('Drive.Files.insert'), 'Code.gs must not contain Drive.Files.insert');
+
+  // 6. Real employee IDs absent from frontend source files
+  const frontendSourceFiles = getFilesRecursively('src', ['.ts', '.tsx']);
+  for (const file of frontendSourceFiles) {
+    if (file.includes('googleAppsScript.ts')) continue;
+    const content = fs.readFileSync(file, 'utf8');
+    assert.ok(!content.includes('RSNHO'), `Real employee ID prefix RSNHO must be absent from ${file}`);
+    assert.ok(!content.includes('AIIMSR'), `Real employee ID prefix AIIMSR must be absent from ${file}`);
+    assert.ok(!content.includes('FNMDCNO'), `Real employee ID prefix FNMDCNO must be absent from ${file}`);
+  }
+
+  // 7. handleGetCNERecords public response sanitization
+  assert.ok(
+    codeGs.includes('isPublicRequest') &&
+    codeGs.includes("resourcePersonEmpId: isPublicRequest ? '' : resourcePersonEmpId") &&
+    codeGs.includes("staffEmpIds: isPublicRequest ? [] : sanitizedStaffEmpIds"),
+    'handleGetCNERecords in Code.gs must sanitize sensitive employee IDs and rosters for unauthenticated public requests'
+  );
+});
+
+// -----------------------------------------------------------------------------
 // Summary Report
 // -----------------------------------------------------------------------------
 console.log('\n========================================================');

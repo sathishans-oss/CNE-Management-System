@@ -120,7 +120,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
                 <input
                   type="text"
                   required
-                  placeholder="example ID: RSNHO000001"
+                  placeholder="example ID: EMP10001"
                   value={employeeId}
                   onChange={(e) => setEmployeeId(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm uppercase focus:outline-hidden focus:ring-2 focus:ring-teal-700"
