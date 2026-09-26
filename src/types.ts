@@ -105,7 +105,6 @@ export interface CNERecord {
   modeOfTeaching: string;
   description?: string;
   maxParticipants?: number;
-  currentApplicationsCount?: number;
   status: 'Scheduled' | 'Completed' | 'Canceled' | 'Draft' | 'Pending';
   cneType?: 'CENTRAL' | 'DEPARTMENTAL';
   proposedByEmpId?: string;
@@ -321,23 +320,6 @@ export interface PostTestSubmissionResult {
   }[];
 }
 
-export type ApplicationStatus = 'Pending' | 'Applied' | 'Approved' | 'Rejected' | 'Attended' | 'Cancelled';
-
-export interface CNEApplication {
-  applicationId: string;
-  cneId: string;
-  classId?: string; // Optional backward-compatibility alias
-  classTopic?: string;
-  classDate?: string;
-  classArea?: string;
-  employeeId: string;
-  employeeName: string;
-  appliedAt: string;
-  status: ApplicationStatus;
-  remarks?: string;
-  adminRemarks?: string;
-}
-
 export interface GalleryItem {
   id: string;
   title: string;
@@ -383,7 +365,6 @@ export interface CNEReportStats {
   upcomingClassesCount: number;
   totalParticipants: number;
   activeAreasCount: number;
-  pendingApplicationsCount: number;
   totalTrainingHours: number;
   monthlyBreakdown: { month: string; count: number; hours: number }[];
   areaBreakdown: { area: string; count: number }[];

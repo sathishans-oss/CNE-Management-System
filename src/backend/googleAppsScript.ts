@@ -406,14 +406,6 @@ function handleRequest(e, method) {
         break;
         
       // Authenticated User Endpoints
-      case 'applyForClass':
-        output = handleApplyForClass(params, session);
-        break;
-        
-      case 'getMyApplications':
-        output = handleGetMyApplications(params, session);
-        break;
-        
       case 'getDashboardStats':
         output = handleGetDashboardStats(params, session);
         break;
@@ -474,14 +466,6 @@ function handleRequest(e, method) {
 
       case 'reviewCNE':
         output = handleAdminAction(params, session, handleReviewCNE, 'REVIEW_CNE');
-        break;
-        
-      case 'getAllApplications':
-        output = handleAdminAction(params, session, handleGetAllApplications, 'GET_ALL_APPLICATIONS');
-        break;
-        
-      case 'updateApplicationStatus':
-        output = handleAdminAction(params, session, handleUpdateApplicationStatus, 'UPDATE_APP_STATUS');
         break;
         
       case 'uploadImage':
@@ -3552,257 +3536,6 @@ function handleReviewCNE(params, session) {
 }
 
 /**
- * 5, 15 & 16. Upcoming Class Applications Management
- */
-function handleApplyForClass(params, session) {
-  if (!session) {
-    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Unauthorized session.' };
-  }
-  
-  var cneId = String(params.cneId || params.classId || '').trim();
-  if (!cneId) return { success: false, message: 'CNE ID is required.' };
-  
-  var lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(10000);
-  } catch (e) {
-    return { success: false, message: 'Server is busy processing applications. Please try again.' };
-  }
-  
-  try {
-    var ss = getSpreadsheet('CNE');
-    var classSheet = ss.getSheetByName('CNE Schedule');
-    if (!classSheet) return { success: false, message: 'CNE Schedule sheet not found.' };
-    
-    // 1. Confirm Class Exists and is Scheduled
-    var classData = classSheet.getDataRange().getValues();
-    var colMap = getHeaderMap(classSheet);
-    var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 0);
-    var maxPCol = colMap['maxparticipants'] !== undefined ? colMap['maxparticipants'] : 10;
-    var statusCol = colMap['status'] !== undefined ? colMap['status'] : 11;
-    var targetClass = null;
-
-    for (var c = 1; c < classData.length; c++) {
-      if (String(classData[c][idCol]).trim().toLowerCase() === cneId.toLowerCase()) {
-        targetClass = {
-          cneId: String(classData[c][idCol]),
-          classId: String(classData[c][idCol]),
-          topic: String(classData[c][colMap['topic'] !== undefined ? colMap['topic'] : 1]),
-          maxParticipants: parseInt(classData[c][maxPCol], 10) || 50,
-          status: normalizeCNEStatus(classData[c][statusCol])
-        };
-        break;
-      }
-    }
-    
-    if (!targetClass) {
-      return { success: false, message: 'CNE session with ID ' + cneId + ' not found.' };
-    }
-    
-    if (targetClass.status !== 'Scheduled') {
-      return { success: false, message: 'This class is currently ' + targetClass.status + ' and not accepting applications.' };
-    }
-    
-    var appSheet = getOrCreateSheet('CNE Applications');
-    var appColMap = getHeaderMap(appSheet);
-    var appCneIdCol = appColMap['cneid'] !== undefined ? appColMap['cneid'] : (appColMap['classid'] !== undefined ? appColMap['classid'] : 1);
-    var appEmpIdCol = appColMap['employeeid'] !== undefined ? appColMap['employeeid'] : 2;
-    var appStatusCol = appColMap['status'] !== undefined ? appColMap['status'] : 5;
-    
-    var appData = appSheet.getDataRange().getValues();
-    var empId = normalizeEmpId(session.employeeId);
-    var activeAppCount = 0;
-    
-    // 2. Prevent duplicate applications and count active applications
-    for (var r = 1; r < appData.length; r++) {
-      var rowCneId = String(appData[r][appCneIdCol]).trim().toLowerCase();
-      var rowEmpId = normalizeEmpId(appData[r][appEmpIdCol]);
-      var rowStatus = String(appData[r][appStatusCol]).trim();
-      
-      if (rowCneId === cneId.toLowerCase()) {
-        if (rowStatus !== 'Cancelled' && rowStatus !== 'Rejected') {
-          activeAppCount++;
-        }
-        if (rowEmpId === empId && rowStatus !== 'Cancelled') {
-          return { success: false, message: 'You have already applied for this class (Status: ' + rowStatus + ').' };
-        }
-      }
-    }
-    
-    // 3. Respect Max Participants limit
-    if (activeAppCount >= targetClass.maxParticipants) {
-      return {
-        success: false,
-        message: 'This class has reached its maximum participant capacity (' + targetClass.maxParticipants + ').'
-      };
-    }
-    
-    var officer = findOfficerById(session.employeeId);
-    var empName = officer ? officer.name : session.employeeId;
-    var curYear = new Date().getFullYear();
-    var timestampSuffix = Date.now().toString().slice(-5);
-    var randSuffix = ('000' + Math.floor(Math.random() * 1000)).slice(-3);
-    var appId = 'APP-' + curYear + '-' + timestampSuffix + randSuffix;
-    
-    appSheet.appendRow([
-      appId,
-      cneId,
-      session.employeeId,
-      empName,
-      new Date().toISOString(),
-      'Applied',
-      sanitizeCellInput(params.remarks || '')
-    ]);
-    
-    logAuditAction('APPLY_CLASS', session.employeeId, 'Applied for CNE: ' + cneId + ' (App ID: ' + appId + ')', 'SUCCESS');
-    
-    return {
-      success: true,
-      message: 'Application submitted successfully.',
-      data: {
-        applicationId: appId,
-        cneId: cneId,
-        classId: cneId,
-        employeeId: session.employeeId,
-        employeeName: empName,
-        appliedAt: new Date().toISOString(),
-        status: 'Applied',
-        remarks: params.remarks || ''
-      }
-    };
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-function handleGetMyApplications(params, session) {
-  if (!session) {
-    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Unauthorized session.' };
-  }
-  
-  var ss = getSpreadsheet('CNE');
-  var sheet = ss.getSheetByName('CNE Applications');
-  if (!sheet) return { success: true, data: [] };
-  
-  var data = sheet.getDataRange().getValues();
-  var colMap = getHeaderMap(sheet);
-  var idCol = colMap['applicationid'] !== undefined ? colMap['applicationid'] : 0;
-  var cneIdCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 1);
-  var empIdCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 2;
-  var nameCol = colMap['employeename'] !== undefined ? colMap['employeename'] : 3;
-  var appliedAtCol = colMap['appliedat'] !== undefined ? colMap['appliedat'] : 4;
-  var statusCol = colMap['status'] !== undefined ? colMap['status'] : 5;
-  var remarksCol = colMap['remarks'] !== undefined ? colMap['remarks'] : 6;
-
-  var empId = normalizeEmpId(session.employeeId);
-  var list = [];
-  
-  for (var r = 1; r < data.length; r++) {
-    if (normalizeEmpId(data[r][empIdCol]) === empId) {
-      var cneId = String(data[r][cneIdCol]);
-      list.push({
-        applicationId: String(data[r][idCol]),
-        cneId: cneId,
-        classId: cneId,
-        employeeId: String(data[r][empIdCol]),
-        employeeName: String(data[r][nameCol]),
-        appliedAt: formatDateValue(data[r][appliedAtCol]),
-        status: String(data[r][statusCol]),
-        remarks: String(data[r][remarksCol] || '')
-      });
-    }
-  }
-  
-  return { success: true, data: list };
-}
-
-function handleGetAllApplications(params, session) {
-  var adminError = requireAdmin(session);
-  if (adminError) return adminError;
-
-  var ss = getSpreadsheet('CNE');
-  var sheet = ss.getSheetByName('CNE Applications');
-  if (!sheet) return { success: true, data: [] };
-  
-  var data = sheet.getDataRange().getValues();
-  var colMap = getHeaderMap(sheet);
-  var idCol = colMap['applicationid'] !== undefined ? colMap['applicationid'] : 0;
-  var cneIdCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 1);
-  var empIdCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 2;
-  var nameCol = colMap['employeename'] !== undefined ? colMap['employeename'] : 3;
-  var appliedAtCol = colMap['appliedat'] !== undefined ? colMap['appliedat'] : 4;
-  var statusCol = colMap['status'] !== undefined ? colMap['status'] : 5;
-  var remarksCol = colMap['remarks'] !== undefined ? colMap['remarks'] : 6;
-
-  var list = [];
-  
-  for (var r = 1; r < data.length; r++) {
-    var id = String(data[r][idCol]).trim();
-    if (!id) continue;
-    var cneId = String(data[r][cneIdCol]);
-    list.push({
-      applicationId: id,
-      cneId: cneId,
-      classId: cneId,
-      employeeId: String(data[r][empIdCol]),
-      employeeName: String(data[r][nameCol]),
-      appliedAt: formatDateValue(data[r][appliedAtCol]),
-      status: String(data[r][statusCol]),
-      remarks: String(data[r][remarksCol] || '')
-    });
-  }
-  
-  return { success: true, data: list };
-}
-
-function handleUpdateApplicationStatus(params, session) {
-  var adminError = requireAdmin(session);
-  if (adminError) return adminError;
-
-  var appId = (params.applicationId || '').trim();
-  var newStatus = (params.status || 'Approved').trim();
-  var allowedStatuses = ['Applied', 'Approved', 'Rejected', 'Cancelled'];
-  
-  if (allowedStatuses.indexOf(newStatus) === -1) {
-    return {
-      success: false,
-      message: 'Invalid application status. Allowed values: ' + allowedStatuses.join(', ')
-    };
-  }
-  
-  var lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(10000);
-  } catch (e) {
-    return { success: false, message: 'Server is busy. Please try again.' };
-  }
-  
-  try {
-    var ss = getSpreadsheet('CNE');
-    var sheet = ss.getSheetByName('CNE Applications');
-    if (!sheet) return { success: false, message: 'Applications sheet not found.' };
-    
-    var data = sheet.getDataRange().getValues();
-    var colMap = getHeaderMap(sheet);
-    var idCol = colMap['applicationid'] !== undefined ? colMap['applicationid'] : 0;
-    var statusCol = colMap['status'] !== undefined ? (colMap['status'] + 1) : 6;
-    var remarksCol = colMap['remarks'] !== undefined ? (colMap['remarks'] + 1) : 7;
-
-    for (var r = 1; r < data.length; r++) {
-      if (String(data[r][idCol]).trim().toLowerCase() === appId.toLowerCase()) {
-        sheet.getRange(r + 1, statusCol).setValue(newStatus);
-        if (params.remarks !== undefined) sheet.getRange(r + 1, remarksCol).setValue(sanitizeCellInput(params.remarks));
-        logAuditAction('UPDATE_APP_STATUS', session.employeeId, 'App ID: ' + appId + ' set to ' + newStatus, 'SUCCESS');
-        return { success: true, message: 'Application status updated to ' + newStatus + '.' };
-      }
-    }
-    return { success: false, message: 'Application not found.' };
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-/**
  * 9 & 10. Gallery & Drive Image Storage (Isolated Public View, Strict Image MIME Validation & 5MB Limit)
  */
 function handleGetGallery(params, session) {
@@ -4985,7 +4718,6 @@ function handleGetDashboardStats(params, session) {
   var ss = getSpreadsheet('CNE');
   var cneSheet = ss.getSheetByName('CNE Schedule');
   var areaSheet = ss.getSheetByName('Area');
-  var appSheet = ss.getSheetByName('CNE Applications');
   
   var totalActivities = 0;
   var totalParticipants = 0;
@@ -5062,14 +4794,6 @@ function handleGetDashboardStats(params, session) {
     }
   }
   
-  var pendingAppsCount = 0;
-  if (appSheet) {
-    var apData = appSheet.getDataRange().getValues();
-    for (var p = 1; p < apData.length; p++) {
-      if (String(apData[p][5] || 'Applied') === 'Applied') pendingAppsCount++;
-    }
-  }
-  
   var monthlyBreakdown = Object.keys(monthlyMap).sort().map(function(k) {
     return { month: k, count: monthlyMap[k].count, hours: Math.round((monthlyMap[k].minutes / 60) * 10) / 10 };
   });
@@ -5090,7 +4814,6 @@ function handleGetDashboardStats(params, session) {
       upcomingClassesCount: upcomingCount,
       totalParticipants: totalParticipants,
       activeAreasCount: activeAreasCount,
-      pendingApplicationsCount: pendingAppsCount,
       totalTrainingHours: Math.round((totalMinutes / 60) * 10) / 10,
       monthlyBreakdown: monthlyBreakdown,
       areaBreakdown: areaBreakdown,

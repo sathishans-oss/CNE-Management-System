@@ -1,7 +1,6 @@
 import {
   ApiResponse,
   Area,
-  CNEApplication,
   CNERecord,
   CNEReportStats,
   ProgramImpactStats,
@@ -73,8 +72,6 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getPostTestQuestions',
   'getCNEParticipants',
   'getRoles',
-  'getAllApplications',
-  'getMyApplications',
   'getQRToken',
   'getAiQuota',
   'getCNEActivityProgress',
@@ -302,10 +299,6 @@ export class ApiService {
       case 'deleteCNE':
       case 'reviewCNE':
       case 'setupAndVerifyCNESheets':
-      case 'applyForClass':
-      case 'getMyApplications':
-      case 'getAllApplications':
-      case 'updateApplicationStatus':
       case 'addManualParticipant':
       case 'addManualParticipants':
       case 'getCNEParticipants':
@@ -884,26 +877,6 @@ export class ApiService {
 
   static async setupAndVerifyCNESheets(): Promise<ApiResponse<{ results?: Record<string, string>; auditReport?: SheetAuditItem[] }> & { auditReport?: SheetAuditItem[] }> {
     return this.executeAction('setupAndVerifyCNESheets');
-  }
-
-  static async applyForClass(cneId: string, remarks?: string): Promise<ApiResponse<CNEApplication>> {
-    return this.executeAction<CNEApplication>('applyForClass', { cneId, classId: cneId, remarks });
-  }
-
-  static async getMyApplications(): Promise<ApiResponse<CNEApplication[]>> {
-    return this.executeAction<CNEApplication[]>('getMyApplications');
-  }
-
-  static async getAllApplications(): Promise<ApiResponse<CNEApplication[]>> {
-    return this.executeAction<CNEApplication[]>('getAllApplications');
-  }
-
-  static async updateApplicationStatus(
-    applicationId: string,
-    status: CNEApplication['status'],
-    remarks?: string
-  ): Promise<ApiResponse> {
-    return this.executeAction('updateApplicationStatus', { applicationId, status, remarks });
   }
 
   /**

@@ -1,4 +1,4 @@
-import { Area, Employee, RoleMapping, CNERecord, CNEApplication, GalleryItem, ChairpersonMessageData, NewsEventItem, QuickLinkItem, CoordinatorDeskInfo, ProgramImpactStats } from '../types';
+import { Area, Employee, RoleMapping, CNERecord, GalleryItem, ChairpersonMessageData, NewsEventItem, QuickLinkItem, CoordinatorDeskInfo, ProgramImpactStats } from '../types';
 
 export const INITIAL_AREAS: Area[] = [
   "216(OT-Complex)-(DSA & IR)",
@@ -318,7 +318,6 @@ export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [
     modeOfTeaching: "Hands-on Workshop",
     description: "In-depth clinical workshop on ventilator modes, alarm troubleshooting, endotracheal suctioning techniques, and sedation vacation.",
     maxParticipants: 35,
-    currentApplicationsCount: 18,
     status: "Scheduled"
   },
   {
@@ -335,7 +334,6 @@ export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [
     modeOfTeaching: "Lecture Cum Discussion",
     description: "Guidelines on preventing look-alike sound-alike (LASA) errors, infusion pump calculations, and adverse event reporting.",
     maxParticipants: 60,
-    currentApplicationsCount: 42,
     status: "Scheduled"
   },
   {
@@ -352,7 +350,6 @@ export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [
     modeOfTeaching: "Hands-on Workshop",
     description: "Targeted refresher on T-piece resuscitator, chest compressions, and umbilical venous catheterization assistance.",
     maxParticipants: 25,
-    currentApplicationsCount: 12,
     status: "Scheduled"
   },
   {
@@ -369,49 +366,7 @@ export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [
     modeOfTeaching: "Lecture Cum Discussion",
     description: "Hazardous drug preparation and disposal, spill kit usage, and prompt extravasation care steps.",
     maxParticipants: 40,
-    currentApplicationsCount: 20,
     status: "Scheduled"
-  }
-];
-
-export const INITIAL_APPLICATIONS: CNEApplication[] = [
-  {
-    applicationId: "APP-2026-0001",
-    cneId: "CLS-2026-001",
-    classId: "CLS-2026-001",
-    classTopic: "Comprehensive Ventilator Care & Weaning Protocols in Intensive Care",
-    classDate: "2026-09-08",
-    classArea: "266(CCU)",
-    employeeId: "AIIMSRDNS0013",
-    employeeName: "Ms.Rekha Sharma",
-    appliedAt: "2026-08-28T08:30:00Z",
-    status: "Approved",
-    remarks: "Duty off approved for session"
-  },
-  {
-    applicationId: "APP-2026-0002",
-    cneId: "CLS-2026-002",
-    classId: "CLS-2026-002",
-    classTopic: "Medication Administration Safety: High-Alert Drugs & Double-Check Standards",
-    classDate: "2026-09-15",
-    classArea: "CNE Open Forum",
-    employeeId: "AIIMSRDNS0013",
-    employeeName: "Ms.Rekha Sharma",
-    appliedAt: "2026-08-29T11:20:00Z",
-    status: "Applied",
-    remarks: "Mandatory departmental attendance"
-  },
-  {
-    applicationId: "APP-2026-0003",
-    cneId: "CLS-2026-001",
-    classId: "CLS-2026-001",
-    classTopic: "Comprehensive Ventilator Care & Weaning Protocols in Intensive Care",
-    classDate: "2026-09-08",
-    classArea: "266(CCU)",
-    employeeId: "RSNHO000890",
-    employeeName: "Mr.Amit Kumar",
-    appliedAt: "2026-08-29T14:15:00Z",
-    status: "Applied"
   }
 ];
 
