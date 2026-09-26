@@ -75,7 +75,7 @@ runTest('Protected backend actions require a valid session', () => {
   // Critical protected handlers fail closed without session
   assert.ok(
     codeGs.includes("if (!session) {\n    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };\n  }"),
-    'handleAddCNE must require session'
+    'handleCreateCNE must require session'
   );
   assert.ok(
     codeGs.includes("if (!session) {\n    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Unauthorized session.' };\n  }"),

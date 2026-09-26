@@ -535,7 +535,7 @@ export const INITIAL_NEWS_EVENTS: NewsEventItem[] = [
 
 export const INITIAL_QUICK_LINKS: QuickLinkItem[] = [
   {
-    id: "ql-upcoming",
+    id: "ql-cne-schedule",
     title: "Upcoming CNE Schedule",
     description: "Browse open classes, curriculum topics, venue allocations, and secure your registration.",
     iconName: "Sparkles",

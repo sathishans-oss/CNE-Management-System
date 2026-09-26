@@ -416,7 +416,7 @@ function handleRequest(e, method) {
         if (!session) {
           output = { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
         } else {
-          output = handleAddCNE(params, session);
+          output = handleCreateCNE(params, session);
         }
         break;
         
@@ -2191,7 +2191,7 @@ function formatDurationValue(rawValue, displayValue) {
  * 6. CNE Records Retrieval with Strict Server-Side Role and Privacy Filtering
  */
 function handleGetCNERecords(params, session) {
-  var isMyRecordsOnly = Boolean(params && (params.myRecordsOnly || params.scope === 'my-cne'));
+  var isMyRecordsOnly = Boolean(params && (params.myRecordsOnly || params.scope === 'my-cne-records'));
   if (isMyRecordsOnly && !session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Unauthorized session.' };
   }
@@ -2338,7 +2338,7 @@ function handleGetCNERecords(params, session) {
 /**
  * 18 & 19. Add CNE Activity with Concurrency Locking & Server-Side Roster Validation
  */
-function handleAddCNE(params, session) {
+function handleCreateCNE(params, session) {
   if (!session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
   }
@@ -2608,7 +2608,7 @@ function handleUpdateCNE(params, session) {
     };
   }
 
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
 
   var authErr = checkCNEAuthorized(session, record.area, record.cneType);
@@ -4301,7 +4301,7 @@ function handleGetQuickLinks(params) {
 
   var defaultLinks = [
     {
-      id: 'ql-upcoming',
+      id: 'ql-cne-schedule',
       title: 'Upcoming CNE Schedule',
       description: 'Browse open classes, curriculum topics, venue allocations, and secure your registration.',
       iconName: 'Sparkles',
@@ -5153,7 +5153,7 @@ function handleSetupAndVerifyCNESheets(params, session) {
  * ============================================================================
  */
 
-function getCNEClassRecord(cneId) {
+function getCNEScheduleRecord(cneId) {
   if (!cneId) return null;
   var ss = getSpreadsheet('CNE');
   var sheet = ss.getSheetByName('CNE Schedule');
@@ -5213,7 +5213,7 @@ function handleSaveReferenceMaterial(params, session) {
     return { success: false, message: 'CNE ID is required.' };
   }
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) {
     return { success: false, message: 'CNE record not found for ID: ' + cneId };
   }
@@ -5525,7 +5525,7 @@ function handleUploadLearningResource(params, session) {
     return { success: false, errorCode: 'INVALID_CNE_ID', message: 'CNE ID is required.' };
   }
 
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) {
     return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
   }
@@ -5892,7 +5892,7 @@ function handleDeleteLearningResource(params, session) {
   }
 
   // 1. Verify CNE exists
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) {
     return {
       success: false,
@@ -6086,7 +6086,7 @@ function handleGetLearningResource(params, session) {
     return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE ID is required.' };
   }
 
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) {
     return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
   }
@@ -6296,7 +6296,7 @@ function handleDownloadLearningResource(params, session) {
     return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE ID is required.' };
   }
 
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) {
     return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
   }
@@ -6412,7 +6412,7 @@ function extractLearningResourceContentCore(cneId, session) {
   }
 
   // 1. Authoritative CNE Record lookup
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) {
     return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
   }
@@ -8600,7 +8600,7 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
   }
 
   // Authorize CNE access
-  var record = getCNEClassRecord(cleanCneId);
+  var record = getCNEScheduleRecord(cleanCneId);
   if (!record) {
     return {
       success: false,
@@ -9459,7 +9459,7 @@ function handleGetReferenceMaterial(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (record) {
     var authErr = checkCNEActionAuthorized(session, record);
     if (authErr) return authErr;
@@ -9563,7 +9563,7 @@ function handleGetCNEActivityProgress(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
 
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found for ID: ' + cneId };
 
   var cleanId = cneId.toUpperCase();
@@ -9708,7 +9708,7 @@ function handleGetAiQuota(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found for ID: ' + cneId };
   
   var authErr = checkQuestionManagementAuthorized(session, record);
@@ -9843,7 +9843,7 @@ function handleReserveAiQuota(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found for ID: ' + cneId };
   
   var authErr = checkQuestionManagementAuthorized(session, record);
@@ -10042,7 +10042,7 @@ function handleCommitAiQuota(params, session) {
     return { success: false, message: 'CNE ID and reservation token are required.' };
   }
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found for ID: ' + cneId };
   
   var authErr = checkQuestionManagementAuthorized(session, record);
@@ -10409,7 +10409,7 @@ function handleReleaseAiQuota(params, session) {
   var reservationToken = sanitizeCellInput(params.reservationToken);
   if (!cneId || !reservationToken) return { success: false, errorCode: 'INVALID_RESERVATION', message: 'CNE ID and reservation token are required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found for ID: ' + cneId };
   
   var authErr = checkQuestionManagementAuthorized(session, record);
@@ -10510,7 +10510,7 @@ function handleValidateAiQuotaReservation(params, session) {
     return { success: false, errorCode: 'RESERVATION_TOKEN_REQUIRED', message: 'Reservation token is required.' };
   }
 
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) {
     return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
   }
@@ -11069,7 +11069,7 @@ function handleGenerateCNEQuestions(params, session) {
     return { success: false, errorCode: 'CNE_ID_REQUIRED', message: 'CNE ID is required.' };
   }
 
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) {
     return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
   }
@@ -11406,7 +11406,7 @@ function getQRTokensSheet() {
  */
 function isCNEQuestionsLocked(cneId) {
   if (!cneId) return false;
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (record && normalizeCNEStatus(record.status) === 'Completed') {
     return true; // Locked because CNE has been finalized/completed
   }
@@ -11450,7 +11450,7 @@ function handleSaveCNEQuestions(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
   var authErr = checkQuestionManagementAuthorized(session, record);
@@ -11666,7 +11666,7 @@ function handleGetCNEQuestions(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
   var authErr = checkQuestionManagementAuthorized(session, record);
@@ -11727,7 +11727,7 @@ function handleGetQRToken(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
   var authErr = checkQuestionManagementAuthorized(session, record);
@@ -11837,7 +11837,7 @@ function handleResolveQRToken(params) {
   
   if (!matchedCneId) return { success: false, message: 'Invalid or expired CNE QR Token.' };
   
-  var record = getCNEClassRecord(matchedCneId);
+  var record = getCNEScheduleRecord(matchedCneId);
   if (!record) return { success: false, message: 'CNE session not found for this QR token.' };
   
   var isLocked = isCNEQuestionsLocked(matchedCneId);
@@ -11917,7 +11917,7 @@ function handleGetPostTestQuestions(params, session) {
   // Direct CNE ID lookup is ONLY permitted if caller has authenticated session as ADMIN, responsible AREA_INCHARGE, or assigned RESOURCE_PERSON.
   if (!cneId && params.cneId) {
     var candidateId = sanitizeCellInput(params.cneId);
-    var candidateRecord = getCNEClassRecord(candidateId);
+    var candidateRecord = getCNEScheduleRecord(candidateId);
     if (!candidateRecord) {
       return { success: false, message: 'CNE record not found.' };
     }
@@ -11939,7 +11939,7 @@ function handleGetPostTestQuestions(params, session) {
   var empId = normalizeEmpId(params.employeeId || (session ? session.employeeId : ''));
   if (!empId) return { success: false, message: 'Employee ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
   // Check if participant has already submitted in CNE Post Test Responses
@@ -12037,7 +12037,7 @@ function handleSubmitPostTest(params, session) {
   // Direct CNE ID lookup is ONLY permitted if caller has authenticated session as ADMIN, responsible AREA_INCHARGE, or assigned RESOURCE_PERSON.
   if (!cneId && params.cneId) {
     var candidateId = sanitizeCellInput(params.cneId);
-    var candidateRecord = getCNEClassRecord(candidateId);
+    var candidateRecord = getCNEScheduleRecord(candidateId);
     if (!candidateRecord) {
       return { success: false, message: 'CNE record not found.' };
     }
@@ -12066,7 +12066,7 @@ function handleSubmitPostTest(params, session) {
     return { success: false, message: 'Answers object is required.' };
   }
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
   // Authoritative Employee Validation from Rosters Master Data
@@ -12217,7 +12217,7 @@ function handleAddManualParticipant(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
   var authErr = checkCNEActionAuthorized(session, record);
@@ -12437,7 +12437,7 @@ function handleGetCNEParticipants(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
   var authErr = checkCNEActionAuthorized(session, record);
@@ -12525,7 +12525,7 @@ function handleFinalizeCNE(params, session) {
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
   // 1. Resolve CNE
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
   // 2. Validate CNE type
@@ -12558,7 +12558,7 @@ function handleFinalizeCNE(params, session) {
     }
     
     // 5. Re-read the authoritative row while holding the lock
-    var liveRecord = getCNEClassRecord(cneId);
+    var liveRecord = getCNEScheduleRecord(cneId);
     if (!liveRecord) {
       return { success: false, message: 'CNE record not found upon re-reading CNE Schedule.' };
     }
@@ -12663,7 +12663,7 @@ function handleCancelCNE(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
-  var record = getCNEClassRecord(cneId);
+  var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
   var authErr = checkCNEAuthorized(session, record.area, record.cneType);
@@ -12677,7 +12677,7 @@ function handleCancelCNE(params, session) {
   }
   
   try {
-    var liveRecord = getCNEClassRecord(cneId);
+    var liveRecord = getCNEScheduleRecord(cneId);
     if (!liveRecord) return { success: false, message: 'CNE record not found.' };
     if (normalizeCNEStatus(liveRecord.status) === 'Completed') {
       return { success: false, message: 'Cannot cancel a CNE that has already been finalized/completed.' };

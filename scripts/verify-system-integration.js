@@ -213,6 +213,44 @@ runTest('Canonical navigation IDs (cne-schedule, my-cne-records)', () => {
     topToolbarTs.includes('upcomingCount'),
     "Legitimate use 'upcomingCount' for badge count must be preserved"
   );
+
+  // Backend naming cleanup & canonical identifiers
+  assert.ok(
+    codeGs.includes('function handleCreateCNE('),
+    "Code.gs must define canonical 'handleCreateCNE'"
+  );
+  assert.ok(
+    !codeGs.includes('handleAddCNE'),
+    "Code.gs must not contain obsolete function name 'handleAddCNE'"
+  );
+  assert.ok(
+    codeGs.includes('function getCNEScheduleRecord('),
+    "Code.gs must define canonical 'getCNEScheduleRecord'"
+  );
+  assert.ok(
+    !codeGs.includes('getCNEClassRecord'),
+    "Code.gs must not contain obsolete function name 'getCNEClassRecord'"
+  );
+  assert.ok(
+    codeGs.includes("params.scope === 'my-cne-records'"),
+    "Code.gs must check canonical scope 'my-cne-records'"
+  );
+  assert.ok(
+    !codeGs.includes("scope === 'my-cne'"),
+    "Code.gs must not contain legacy scope 'my-cne'"
+  );
+  assert.ok(
+    codeGs.includes("id: 'ql-cne-schedule'"),
+    "Code.gs default quick links must use 'ql-cne-schedule'"
+  );
+  assert.ok(
+    !codeGs.includes("'ql-upcoming'"),
+    "Code.gs must not contain obsolete quick link ID 'ql-upcoming'"
+  );
+
+  const quickLinkMatch = codeGs.match(/\{\s*id:\s*'ql-cne-schedule'[\s\S]*?target:\s*'([^']+)'/);
+  assert.ok(quickLinkMatch, "Backend default quick link 'ql-cne-schedule' must be defined in Code.gs");
+  assert.strictEqual(quickLinkMatch[1], 'cne-schedule', "Backend default quick link target must be 'cne-schedule'");
 });
 
 // -----------------------------------------------------------------------------

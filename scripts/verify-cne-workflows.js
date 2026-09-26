@@ -64,7 +64,7 @@ runTest('Central CNE creation requires Admin authority and enforces Scheduled st
 
 runTest('Central CNE enforces full From/To Date & Time and Duration computation', () => {
   const handleAddSection = codeGs.substring(
-    codeGs.indexOf('function handleAddCNE'),
+    codeGs.indexOf('function handleCreateCNE'),
     codeGs.indexOf('function handleUpdateCNE')
   );
 
@@ -72,23 +72,23 @@ runTest('Central CNE enforces full From/To Date & Time and Duration computation'
   assert.ok(
     handleAddSection.includes('var dFrom = new Date(fromDate);') &&
     handleAddSection.includes('var dTo = new Date(toDate);'),
-    'handleAddCNE must parse fromDate and toDate with Date objects'
+    'handleCreateCNE must parse fromDate and toDate with Date objects'
   );
   assert.ok(
     handleAddSection.includes('Invalid Date & Time format.'),
-    'handleAddCNE must validate Date & Time format'
+    'handleCreateCNE must validate Date & Time format'
   );
 
   // Chronological order verification
   assert.ok(
     handleAddSection.includes('To Date & Time must be equal to or later than From Date & Time.'),
-    'handleAddCNE must validate that toDate is equal to or later than fromDate'
+    'handleCreateCNE must validate that toDate is equal to or later than fromDate'
   );
 
   // Duration validation
   assert.ok(
     handleAddSection.includes('validateCneDuration(duration, fromDate, toDate)'),
-    'handleAddCNE must validate duration against fromDate and toDate'
+    'handleCreateCNE must validate duration against fromDate and toDate'
   );
 
   // Persisting duration into CNE Schedule
@@ -105,7 +105,7 @@ runTest('Central CNE enforces full From/To Date & Time and Duration computation'
 
 runTest('Central CNE stores Resource Persons cleanly', () => {
   const handleAddSection = codeGs.substring(
-    codeGs.indexOf('function handleAddCNE'),
+    codeGs.indexOf('function handleCreateCNE'),
     codeGs.indexOf('function handleUpdateCNE')
   );
 
@@ -124,14 +124,14 @@ runTest('Central CNE stores Resource Persons cleanly', () => {
 // -----------------------------------------------------------------------------
 runTest('Departmental CNE enforces Area/Ward assignment and Incharge scoping', () => {
   const handleAddSection = codeGs.substring(
-    codeGs.indexOf('function handleAddCNE'),
+    codeGs.indexOf('function handleCreateCNE'),
     codeGs.indexOf('function handleUpdateCNE')
   );
 
   // Area/ward check
   assert.ok(
     handleAddSection.includes('var areaAuthErr = checkCNEAuthorized(session, area, cneType);'),
-    'handleAddCNE must validate area authorization via checkCNEAuthorized'
+    'handleCreateCNE must validate area authorization via checkCNEAuthorized'
   );
 
   // Area storage in CNE Schedule
@@ -163,13 +163,13 @@ runTest('Departmental CNE supports batch scheduling for multiple wards/schedules
 // -----------------------------------------------------------------------------
 runTest('Unscheduled CNE records historical activity with U- prefix and Completed status', () => {
   const handleAddSection = codeGs.substring(
-    codeGs.indexOf('function handleAddCNE'),
+    codeGs.indexOf('function handleCreateCNE'),
     codeGs.indexOf('function handleUpdateCNE')
   );
 
   assert.ok(
     handleAddSection.includes("var isUnscheduled = Boolean("),
-    'handleAddCNE must calculate isUnscheduled flag'
+    'handleCreateCNE must calculate isUnscheduled flag'
   );
   assert.ok(
     handleAddSection.includes("(isUnscheduled ? 'U-' : '')"),
@@ -253,9 +253,9 @@ runTest('CNE Schedule is the sole authoritative lifecycle table (Scheduled -> Co
 // 5. Participants Management & Staff Count
 // -----------------------------------------------------------------------------
 runTest('Participant roster, staff counts, and post-test participants are recorded', () => {
-  // Staff IDs, count, and external participants in handleAddCNE
+  // Staff IDs, count, and external participants in handleCreateCNE
   const handleAddSection = codeGs.substring(
-    codeGs.indexOf('function handleAddCNE'),
+    codeGs.indexOf('function handleCreateCNE'),
     codeGs.indexOf('function handleUpdateCNE')
   );
   assert.ok(
