@@ -36,8 +36,22 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
     try {
       const response = await ApiService.login(empId.trim(), pass.trim());
-      if (response.success && response.data) {
-        onLoginSuccess(response.data);
+      const sessionData = response.data;
+      const validRoles = ['ADMIN', 'AREA_INCHARGE', 'INCHARGE', 'RESOURCE_PERSON', 'EMPLOYEE'];
+      const hasValidSession =
+        response.success === true &&
+        Boolean(sessionData) &&
+        typeof sessionData?.token === 'string' &&
+        sessionData.token.trim().length > 0 &&
+        !sessionData.token.trim().startsWith('preview-token-') &&
+        !sessionData.token.trim().startsWith('mock_token_') &&
+        typeof sessionData?.employeeId === 'string' &&
+        sessionData.employeeId.trim().length > 0 &&
+        typeof sessionData?.role === 'string' &&
+        validRoles.includes(sessionData.role.trim().toUpperCase());
+
+      if (hasValidSession && sessionData) {
+        onLoginSuccess(sessionData);
       } else {
         const msg = response.message || 'Login failed. Please verify your credentials.';
         setErrorMsg(msg);
@@ -45,6 +59,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           ? 'Rate Limited'
           : response.errorCode === 'ACCOUNT_INACTIVE'
           ? 'Account Inactive'
+          : response.errorCode === 'BACKEND_NOT_CONFIGURED'
+          ? 'Service Not Configured'
           : 'Authentication Error';
         error(msg, title);
       }

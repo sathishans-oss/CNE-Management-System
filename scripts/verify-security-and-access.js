@@ -842,6 +842,135 @@ runTest('Frontend consumes mustChangePassword & forced Change Password modal can
     changePasswordModalTs.includes("You must set your personal password before continuing to the CNE Portal"),
     'ChangePasswordModal must inform user that personal password is required'
   );
+
+  // Verify frontend authentication fails closed without Google Apps Script and removes mock/preview fallbacks
+  const apiTs = fs.readFileSync('src/services/api.ts', 'utf8');
+  const loginModalTs = fs.readFileSync('src/components/LoginModal.tsx', 'utf8');
+
+  assert.ok(
+    !apiTs.includes("? 'ADMIN' : 'ADMIN'"),
+    'api.ts must not contain ADMIN fallback (? \'ADMIN\' : \'ADMIN\') for unknown Employee IDs'
+  );
+  assert.ok(
+    !apiTs.includes("token: 'preview-token-'") &&
+    !apiTs.includes("token: currentUser.token || 'mock_token_'") &&
+    !apiTs.includes('Authentication successful (Preview Mode)'),
+    'api.ts must not generate preview-token-* or mock_token_* or authenticate in preview mode'
+  );
+  assert.ok(
+    apiTs.includes("errorCode: 'BACKEND_NOT_CONFIGURED'") &&
+    apiTs.includes("message: 'CNE authentication service is not configured. Please contact the system administrator.'"),
+    'api.ts must fail closed with BACKEND_NOT_CONFIGURED when VITE_APPS_SCRIPT_URL is missing or unusable'
+  );
+  assert.ok(
+    apiTs.includes("storedToken.startsWith('preview-token-')") &&
+    apiTs.includes("storedToken.startsWith('mock_token_')"),
+    'api.ts must purge legacy stored sessions whose token starts with preview-token- or mock_token_'
+  );
+  assert.ok(
+    loginModalTs.includes('response.success === true') &&
+    loginModalTs.includes('sessionData.token.trim().length > 0') &&
+    loginModalTs.includes('sessionData.employeeId.trim().length > 0') &&
+    loginModalTs.includes('validRoles.includes(sessionData.role.trim().toUpperCase())'),
+    'LoginModal must validate response.success, non-empty server token, employeeId, and recognized role before calling onLoginSuccess'
+  );
+
+  // Verify frontend API caching security: explicit public allowlist, no generic action.startsWith('get')
+  assert.ok(
+    !apiTs.includes("action.startsWith('get')"),
+    'api.ts must NOT use generic action.startsWith(\'get\') for browser localStorage caching or offline fallback'
+  );
+  assert.ok(
+    apiTs.includes('function isPublicCacheableAction(action: string): boolean') &&
+    apiTs.includes('PUBLIC_CACHEABLE_ACTIONS') &&
+    apiTs.includes('NEVER_CACHEABLE_PROTECTED_ACTIONS'),
+    'api.ts must define isPublicCacheableAction with explicit PUBLIC_CACHEABLE_ACTIONS allowlist and NEVER_CACHEABLE_PROTECTED_ACTIONS denylist'
+  );
+
+  // Extract PUBLIC_CACHEABLE_ACTIONS entries and verify only approved public CMS data can persist
+  const allowlistMatch = apiTs.match(/const\s+PUBLIC_CACHEABLE_ACTIONS[\s\S]*?new\s+Set\(\[([\s\S]*?)\]\)/);
+  assert.ok(allowlistMatch, 'PUBLIC_CACHEABLE_ACTIONS Set must be defined in api.ts');
+  const allowlistedActions = eval(`[${allowlistMatch[1]}]`);
+  const approvedPublicCmsActions = [
+    'getChairpersonMessage',
+    'getCoordinatorDesk',
+    'getNewsEvents',
+    'getQuickLinks',
+    'getGallery'
+  ];
+  assert.deepStrictEqual(
+    allowlistedActions.slice().sort(),
+    approvedPublicCmsActions.slice().sort(),
+    'Only explicitly approved public CMS actions may be in PUBLIC_CACHEABLE_ACTIONS'
+  );
+
+  // Explicit answer-key & protected-read regression assertions
+  const protectedExcludedReads = [
+    'getCNEQuestions',
+    'getPostTestQuestions',
+    'getCNEParticipants',
+    'getRoles',
+    'getAllApplications',
+    'getMyApplications',
+    'getQRToken',
+    'getAiQuota',
+    'getCNEActivityProgress',
+    'getLearningResource',
+    'getReferenceMaterial',
+    'getCNERecords'
+  ];
+  const denylistMatch = apiTs.match(/const\s+NEVER_CACHEABLE_PROTECTED_ACTIONS[\s\S]*?new\s+Set\(\[([\s\S]*?)\]\)/);
+  assert.ok(denylistMatch, 'NEVER_CACHEABLE_PROTECTED_ACTIONS Set must be defined in api.ts');
+  const denylistedActions = eval(`[${denylistMatch[1]}]`);
+  for (const protectedAction of protectedExcludedReads) {
+    assert.ok(
+      !allowlistedActions.includes(protectedAction),
+      `Protected action '${protectedAction}' must NEVER be present in PUBLIC_CACHEABLE_ACTIONS`
+    );
+    assert.ok(
+      denylistedActions.includes(protectedAction),
+      `Protected action '${protectedAction}' must be explicitly listed in NEVER_CACHEABLE_PROTECTED_ACTIONS`
+    );
+  }
+
+  // Answer-key protection: getCNEQuestions can never be written to localStorage or served from offline fallback
+  const execActionSection = apiTs.substring(
+    apiTs.indexOf('static async executeAction'),
+    apiTs.indexOf('static async testConnection')
+  );
+  assert.ok(
+    execActionSection.includes('if (result.success && result.data && isPublicCacheableAction(action))'),
+    'executeAction must gate localStorage writes strictly with isPublicCacheableAction(action)'
+  );
+  const fallbackChecks = execActionSection.match(/if\s*\(\s*isPublicCacheableAction\(action\)\s*\)/g) || [];
+  assert.strictEqual(
+    fallbackChecks.length,
+    2,
+    'Both HTTP error and network error offline fallbacks in executeAction must be gated strictly by isPublicCacheableAction(action)'
+  );
+
+  // getCachedData enforces the same allowlist
+  const getCachedSection = apiTs.substring(
+    apiTs.indexOf('static getCachedData'),
+    apiTs.indexOf('static async getOfficersDropdown')
+  );
+  assert.ok(
+    getCachedSection.includes('if (!isPublicCacheableAction(action))') &&
+    getCachedSection.includes('return null;'),
+    'ApiService.getCachedData must enforce isPublicCacheableAction(action) and return null for non-public actions'
+  );
+
+  // Logout removes all cne_cache_* entries and session
+  const logoutSection = apiTs.substring(
+    apiTs.indexOf('static logout()'),
+    apiTs.indexOf('static getSessionUser()')
+  );
+  assert.ok(
+    logoutSection.includes("k.startsWith('cne_cache_')") &&
+    logoutSection.includes('localStorage.removeItem(k)') &&
+    logoutSection.includes('localStorage.removeItem(STORAGE_KEYS.SESSION)'),
+    'ApiService.logout() must remove all cne_cache_* keys in addition to STORAGE_KEYS.SESSION'
+  );
 });
 
 console.log('\n========================================================');

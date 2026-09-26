@@ -605,6 +605,30 @@ runTest('Environment safety (no frontend secrets, no hardcoded sheet IDs, safe .
       `.env.example must have an empty placeholder for URL, not a live production URL: ${line}`
     );
   }
+
+  // 6. Frontend API fails closed for authentication and mutations without Apps Script URL
+  assert.ok(
+    !apiTs.includes("? 'ADMIN' : 'ADMIN'"),
+    'src/services/api.ts must not contain local ADMIN role fallback'
+  );
+  assert.ok(
+    !apiTs.includes("token: 'preview-token-'") && !apiTs.includes("token: currentUser.token || 'mock_token_'"),
+    'src/services/api.ts must never mint preview-token-* or mock_token_* session tokens'
+  );
+  assert.ok(
+    apiTs.includes("errorCode: 'BACKEND_NOT_CONFIGURED'"),
+    'src/services/api.ts must fail closed with BACKEND_NOT_CONFIGURED when Apps Script is not configured'
+  );
+
+  // 7. Frontend API caching uses explicit public CMS allowlist and never persists getCNEQuestions or protected reads
+  assert.ok(
+    !apiTs.includes("action.startsWith('get')"),
+    'src/services/api.ts must not use generic action.startsWith(\'get\') for caching or offline fallback'
+  );
+  assert.ok(
+    apiTs.includes('isPublicCacheableAction(action)'),
+    'src/services/api.ts must gate browser cache persistence and offline fallback with isPublicCacheableAction(action)'
+  );
 });
 
 // -----------------------------------------------------------------------------

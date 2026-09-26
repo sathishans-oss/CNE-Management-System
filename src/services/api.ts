@@ -31,20 +31,17 @@ import {
 import {
   INITIAL_AREAS,
   INITIAL_OFFICERS,
-  INITIAL_ROLES,
   INITIAL_CNE_RECORDS,
   INITIAL_UPCOMING_CLASSES,
   INITIAL_GALLERY,
   INITIAL_CHAIRPERSON_MESSAGE,
   INITIAL_NEWS_EVENTS,
   INITIAL_QUICK_LINKS,
-  INITIAL_COORDINATOR_DESK,
-  INITIAL_PROGRAM_IMPACT
+  INITIAL_COORDINATOR_DESK
 } from './initialData';
 
 let _inMemoryCNERecords: CNERecord[] = [...INITIAL_CNE_RECORDS, ...INITIAL_UPCOMING_CLASSES];
 let _inMemoryAreas: Area[] = [...INITIAL_AREAS];
-let _inMemoryRoles: RoleMapping[] = [...INITIAL_ROLES];
 let _inMemoryCoordinatorDesk: CoordinatorDeskInfo = { ...INITIAL_COORDINATOR_DESK };
 let _inMemoryNews: NewsEventItem[] = [...INITIAL_NEWS_EVENTS];
 let _inMemoryQuickLinks: QuickLinkItem[] = [...INITIAL_QUICK_LINKS];
@@ -54,14 +51,125 @@ const STORAGE_KEYS = {
   SESSION: 'cne_session_user'
 };
 
-// Actively purge legacy mock credential storage or environment mode flags from browser storage
+/**
+ * Explicit allowlist of genuinely public, non-sensitive CMS/display actions
+ * permitted to persist in browser localStorage for UI hydration and offline fallback.
+ */
+const PUBLIC_CACHEABLE_ACTIONS: ReadonlySet<string> = new Set([
+  'getChairpersonMessage',
+  'getCoordinatorDesk',
+  'getNewsEvents',
+  'getQuickLinks',
+  'getGallery'
+]);
+
+/**
+ * Explicit denylist of protected, user-specific, management, participant,
+ * question/answer-key, token, and quota read actions that must NEVER be
+ * written to or served from browser localStorage.
+ */
+const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
+  'getCNEQuestions',
+  'getPostTestQuestions',
+  'getCNEParticipants',
+  'getRoles',
+  'getAllApplications',
+  'getMyApplications',
+  'getQRToken',
+  'getAiQuota',
+  'getCNEActivityProgress',
+  'getLearningResource',
+  'getReferenceMaterial',
+  'getCNERecords',
+  'getProgramImpact',
+  'getDashboardStats',
+  'getAreas',
+  'getOfficersDropdown',
+  'listLearningResources',
+  'downloadLearningResource',
+  'listNursingReferenceResources',
+  'downloadNursingReferenceResource',
+  'retrieveCNETopicEvidence',
+  'runLocalRetrievalValidation'
+]);
+
+export function isPublicCacheableAction(action: string): boolean {
+  if (!action || typeof action !== 'string') return false;
+  const normalized = action.trim();
+  if (!normalized || NEVER_CACHEABLE_PROTECTED_ACTIONS.has(normalized)) {
+    return false;
+  }
+  return PUBLIC_CACHEABLE_ACTIONS.has(normalized);
+}
+
+function purgeNonPublicCaches(): void {
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('cne_cache_')) {
+        const actionName = k.slice('cne_cache_'.length);
+        if (!isPublicCacheableAction(actionName)) {
+          keysToRemove.push(k);
+        }
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+  } catch {}
+}
+
+const RECOGNIZED_USER_ROLES: ReadonlySet<string> = new Set([
+  'ADMIN',
+  'AREA_INCHARGE',
+  'INCHARGE',
+  'RESOURCE_PERSON',
+  'EMPLOYEE'
+]);
+
+function isMockOrInvalidToken(token: unknown): boolean {
+  if (typeof token !== 'string') return true;
+  const trimmed = token.trim();
+  if (!trimmed) return true;
+  const prefixPreview = 'preview' + '-token-';
+  const prefixMock = 'mock' + '_token_';
+  return trimmed.startsWith(prefixPreview) || trimmed.startsWith(prefixMock);
+}
+
+function isValidAuthenticatedSessionUser(user: any): user is SessionUser {
+  if (!user || typeof user !== 'object') return false;
+  const empId = typeof user.employeeId === 'string' ? user.employeeId.trim() : '';
+  const role = typeof user.role === 'string' ? user.role.trim().toUpperCase() : '';
+  if (!empId) return false;
+  if (!RECOGNIZED_USER_ROLES.has(role)) return false;
+  if (isMockOrInvalidToken(user.token)) return false;
+  return true;
+}
+
+// Actively purge legacy mock credential storage, fake preview/mock sessions, non-public caches, or environment mode flags from browser storage
 try {
   localStorage.removeItem('cne_user_creds');
   localStorage.removeItem('CNE_ENVIRONMENT_MODE');
-  for (let i = 0; i < localStorage.length; i++) {
+  for (let i = localStorage.length - 1; i >= 0; i--) {
     const k = localStorage.key(i);
     if (k && k.startsWith('CNE_CUSTOM_APPS_SCRIPT')) {
       localStorage.removeItem(k);
+    }
+  }
+  purgeNonPublicCaches();
+  const rawStoredSession = localStorage.getItem(STORAGE_KEYS.SESSION);
+  if (rawStoredSession) {
+    try {
+      const parsedSession = JSON.parse(rawStoredSession);
+      const storedToken = String(parsedSession?.token || '').trim();
+      if (
+        storedToken.startsWith('preview-token-') ||
+        storedToken.startsWith('mock_token_') ||
+        !isValidAuthenticatedSessionUser(parsedSession)
+      ) {
+        localStorage.removeItem(STORAGE_KEYS.SESSION);
+      }
+    } catch {
+      localStorage.removeItem(STORAGE_KEYS.SESSION);
     }
   }
 } catch (e) {}
@@ -160,30 +268,87 @@ export class ApiService {
 
   private static executeLocalMockAction<T = any>(
     action: string,
-    params: Record<string, any> = {},
+    _params: Record<string, any> = {},
     session: SessionUser | null
   ): ApiResponse<T> {
-    const empId = String(params.employeeId || session?.employeeId || '').trim().toUpperCase();
-
     switch (action) {
       case 'ping':
-        return { success: true, message: 'Local preview active (mock clinical dataset loaded).' } as ApiResponse<T>;
+        return { success: true, message: 'Local preview active (read-only sample content loaded).' } as ApiResponse<T>;
 
-      case 'login': {
-        const officer = INITIAL_OFFICERS.find(o => o.employeeId.toUpperCase() === empId);
-        const roleEntry = _inMemoryRoles.find(r => r.employeeId.toUpperCase() === empId);
-        const userRole = roleEntry?.role || (empId === 'RSNHO000841' || empId === 'FNMDCNO00067' ? 'ADMIN' : 'ADMIN');
-        const sessionUser: SessionUser = {
-          employeeId: empId || 'RSNHO000841',
-          name: officer?.name || roleEntry?.name || 'Dr. Anita Rani Kansal',
-          designation: officer?.designation || roleEntry?.designation || 'C.N.O / Admin',
-          role: userRole,
-          token: 'preview-token-' + Date.now(),
-          assignedArea: roleEntry?.area || 'All Department'
+      case 'login':
+      case 'changePassword':
+      case 'resetPassword':
+      case 'adminResetPassword':
+        return {
+          success: false,
+          errorCode: 'BACKEND_NOT_CONFIGURED',
+          message: 'CNE authentication service is not configured. Please contact the system administrator.'
         };
-        return { success: true, data: sessionUser as any, message: 'Authentication successful (Preview Mode)' };
-      }
 
+      // Protected / Security-Sensitive & Mutation Actions — Fail Closed without Google Apps Script
+      case 'getRoles':
+      case 'updateRole':
+      case 'addRole':
+      case 'deleteRole':
+      case 'addArea':
+      case 'updateArea':
+      case 'addCNE':
+      case 'createCNE':
+      case 'addUnscheduledCNE':
+      case 'addDepartmentalSchedule':
+      case 'updateCNE':
+      case 'finalizeCNE':
+      case 'cancelCNE':
+      case 'deleteCNE':
+      case 'reviewCNE':
+      case 'setupAndVerifyCNESheets':
+      case 'applyForClass':
+      case 'getMyApplications':
+      case 'getAllApplications':
+      case 'updateApplicationStatus':
+      case 'addManualParticipant':
+      case 'addManualParticipants':
+      case 'getCNEParticipants':
+      case 'submitPostTest':
+      case 'getPostTestQuestions':
+      case 'getQRToken':
+      case 'resolveQRToken':
+      case 'saveCNEQuestions':
+      case 'getCNEQuestions':
+      case 'generateCNEQuestions':
+      case 'getAiQuota':
+      case 'saveReferenceMaterial':
+      case 'uploadLearningResource':
+      case 'deleteLearningResource':
+      case 'extractLearningResourceContent':
+      case 'indexNursingReferenceResource':
+      case 'registerAndIndexReferenceResource':
+      case 'uploadNursingReferenceResource':
+      case 'deleteNursingReferenceResource':
+      case 'setResourceVisibility':
+      case 'retrieveCNETopicEvidence':
+      case 'getCNETopicEvidence':
+      case 'runLocalRetrievalValidation':
+      case 'validateLocalRetrieval':
+      case 'saveCoordinatorDesk':
+      case 'updateCoordinatorDesk':
+      case 'updateChairpersonMessage':
+      case 'uploadImage':
+      case 'updateGalleryItem':
+      case 'deleteGalleryItem':
+      case 'addNewsEvent':
+      case 'updateNewsEvent':
+      case 'deleteNewsEvent':
+      case 'addQuickLink':
+      case 'updateQuickLink':
+      case 'deleteQuickLink':
+        return {
+          success: false,
+          errorCode: 'BACKEND_NOT_CONFIGURED',
+          message: 'CNE backend service is not configured. Please contact the system administrator.'
+        };
+
+      // Read-only public preview content
       case 'getCNERecords':
         return { success: true, data: [..._inMemoryCNERecords] as any };
 
@@ -192,9 +357,6 @@ export class ApiService {
 
       case 'getOfficersDropdown':
         return { success: true, data: [...INITIAL_OFFICERS] as any };
-
-      case 'getRoles':
-        return { success: true, data: [..._inMemoryRoles] as any };
 
       case 'getChairpersonMessage':
         return { success: true, data: INITIAL_CHAIRPERSON_MESSAGE as any };
@@ -223,145 +385,22 @@ export class ApiService {
       case 'getCoordinatorDesk':
         return { success: true, data: _inMemoryCoordinatorDesk as any };
 
-      case 'saveCoordinatorDesk':
-        _inMemoryCoordinatorDesk = { ..._inMemoryCoordinatorDesk, ...params };
-        return { success: true, message: 'Coordinator desk details updated.' } as ApiResponse<T>;
-
       case 'getGallery':
         return { success: true, data: [..._inMemoryGallery] as any };
 
-      case 'setupAndVerifyCNESheets':
-        return {
-          success: true,
-          message: 'All CNE Sheets verified successfully in Preview Mode.',
-          auditReport: [
-            { sheetName: 'Area', status: 'OK', rowCount: _inMemoryAreas.length },
-            { sheetName: 'CNE Schedule', status: 'OK', rowCount: _inMemoryCNERecords.length },
-            { sheetName: 'Staff Roles', status: 'OK', rowCount: _inMemoryRoles.length },
-            { sheetName: 'CNE Officers', status: 'OK', rowCount: INITIAL_OFFICERS.length }
-          ]
-        } as unknown as ApiResponse<T>;
-
-      case 'addCNE':
-      case 'createCNE':
-      case 'addUnscheduledCNE': {
-        const newId = 'CNE-' + Date.now().toString(36).toUpperCase();
-        const newRecord: CNERecord = {
-          cneId: newId,
-          dataId: newId,
-          topic: params.topic || 'Clinical Nursing Education Workshop',
-          area: params.area || 'All Department',
-          fromDate: params.fromDate || new Date().toISOString().slice(0, 10),
-          toDate: params.toDate || params.fromDate || new Date().toISOString().slice(0, 10),
-          duration: params.duration || '1:00:00',
-          resourcePersonEmpId: params.resourcePersonEmpId || session?.employeeId || '',
-          resourcePersonName: params.resourcePersonName || session?.name || 'Resource Person',
-          modeOfTeaching: params.modeOfTeaching || 'Lecture Cum Discussion',
-          status: (params.status || (action === 'addUnscheduledCNE' ? 'Completed' : 'Scheduled')) as any,
-          remarks: params.remarks || '',
-          staffEmpIds: params.staffEmpIds || [],
-          staffCount: (params.staffEmpIds?.length || 0),
-          createdAt: new Date().toISOString()
-        };
-        _inMemoryCNERecords = [newRecord, ..._inMemoryCNERecords];
-        return { success: true, data: newRecord as any, message: 'CNE session created successfully.' };
-      }
-
-      case 'updateCNE': {
-        const targetId = params.cneId || params.classId || params.dataId;
-        _inMemoryCNERecords = _inMemoryCNERecords.map(rec =>
-          (rec.cneId === targetId || rec.classId === targetId || rec.dataId === targetId)
-            ? { ...rec, ...params }
-            : rec
-        );
-        return { success: true, message: 'CNE session updated successfully.' } as ApiResponse<T>;
-      }
-
-      case 'finalizeCNE': {
-        const targetId = params.cneId || params.classId || params.dataId;
-        _inMemoryCNERecords = _inMemoryCNERecords.map(rec =>
-          (rec.cneId === targetId || rec.classId === targetId || rec.dataId === targetId)
-            ? { ...rec, status: 'Completed', remarks: params.remarks || rec.remarks }
-            : rec
-        );
-        return { success: true, message: 'CNE session finalized.' } as ApiResponse<T>;
-      }
-
-      case 'deleteCNE': {
-        const targetId = params.cneId || params.classId || params.dataId;
-        _inMemoryCNERecords = _inMemoryCNERecords.filter(rec =>
-          !(rec.cneId === targetId || rec.classId === targetId || rec.dataId === targetId)
-        );
-        return { success: true, message: 'CNE session deleted.' } as ApiResponse<T>;
-      }
-
-      case 'addArea': {
-        const newArea: Area = {
-          id: 'AREA-' + (_inMemoryAreas.length + 1),
-          name: params.name || 'New Ward',
-          status: 'ACTIVE',
-          createdAt: new Date().toISOString()
-        };
-        _inMemoryAreas = [..._inMemoryAreas, newArea];
-        return { success: true, data: newArea as any, message: 'Area added successfully.' };
-      }
-
-      case 'updateArea': {
-        _inMemoryAreas = _inMemoryAreas.map(a =>
-          a.id === params.id || a.name === params.oldName ? { ...a, ...params } : a
-        );
-        return { success: true, message: 'Area updated successfully.' } as ApiResponse<T>;
-      }
-
-      case 'addRole': {
-        const newRole: RoleMapping = {
-          employeeId: params.employeeId,
-          name: params.name || params.employeeId,
-          designation: params.designation || 'Nursing Officer',
-          role: params.role || 'EMPLOYEE',
-          area: params.area || 'All Department'
-        };
-        _inMemoryRoles = [..._inMemoryRoles, newRole];
-        return { success: true, data: newRole as any, message: 'Role assigned successfully.' };
-      }
-
-      case 'deleteRole': {
-        _inMemoryRoles = _inMemoryRoles.filter(r => r.employeeId !== params.employeeId);
-        return { success: true, message: 'Role removed successfully.' } as ApiResponse<T>;
-      }
-
-      case 'changePassword': {
-        const currentUser = this.getSessionUser();
-        if (currentUser) {
-          const updatedUser: SessionUser = {
-            ...currentUser,
-            isFirstLogin: false,
-            mustChangePassword: false,
-            token: currentUser.token || 'mock_token_' + Date.now()
-          };
-          this.saveSessionUser(updatedUser);
-          return {
-            success: true,
-            message: 'Password updated successfully. You can now use your new password.',
-            data: updatedUser
-          } as ApiResponse<T>;
-        }
-        return { success: true, message: 'Password updated successfully.' } as ApiResponse<T>;
-      }
-
-      case 'resetPassword':
-      case 'adminResetPassword':
-        return { success: true, message: 'Password updated successfully.' } as ApiResponse<T>;
-
       default:
-        return { success: true, message: 'Action executed successfully.' } as ApiResponse<T>;
+        return {
+          success: false,
+          errorCode: 'BACKEND_NOT_CONFIGURED',
+          message: 'CNE backend service is not configured. Please contact the system administrator.'
+        };
     }
   }
 
   /**
    * Central Action Executor:
-   * Connects to Google Apps Script Web App when configured, or provides seamless
-   * in-memory persistence in development and preview mode.
+   * Connects to Google Apps Script Web App when configured, or fails closed for
+   * authentication and mutations when unconfigured.
    */
   static async executeAction<T = any>(
     action: string,
@@ -370,7 +409,7 @@ export class ApiService {
     const apiUrl = this.getAppsScriptUrl();
     const session = this.getSessionUser();
 
-    // If backend URL is not configured, seamlessly execute via local in-memory store
+    // If backend URL is not configured, fail closed for authentication & mutations
     if (!apiUrl) {
       return this.executeLocalMockAction<T>(action, params, session);
     }
@@ -404,24 +443,18 @@ export class ApiService {
         if (result.errorCode === 'UNAUTHORIZED' && session) {
           this.logout();
         }
-        if (result.success && result.data && action.startsWith('get')) {
+        if (result.success && result.data && isPublicCacheableAction(action)) {
           try {
-            const cacheKey = action === 'getProgramImpact'
-              ? (session && session.employeeId ? `cne_cache_getProgramImpact_${session.employeeId.toLowerCase()}` : 'cne_cache_getProgramImpact_institutional')
-              : (action === 'getCNERecords' && session && session.employeeId ? `cne_cache_getCNERecords_${session.employeeId.toLowerCase()}` : `cne_cache_${action}`);
-            localStorage.setItem(cacheKey, JSON.stringify(result.data));
+            localStorage.setItem(`cne_cache_${action}`, JSON.stringify(result.data));
           } catch (e) {}
         }
         return result as ApiResponse<T>;
       } else {
-        // If server returns HTTP error and it's a read query, attempt offline cache fallback
-        if (action.startsWith('get')) {
-          console.warn(`[CNE Service] HTTP ${response.status} on ${action}. Serving cached dataset.`);
+        // Only explicitly allowlisted public CMS actions may fall back to cached browser data
+        if (isPublicCacheableAction(action)) {
+          console.warn(`[CNE Service] HTTP ${response.status} on ${action}. Serving cached public dataset.`);
           try {
-            const cacheKey = action === 'getProgramImpact'
-              ? (session && session.employeeId ? `cne_cache_getProgramImpact_${session.employeeId.toLowerCase()}` : 'cne_cache_getProgramImpact_institutional')
-              : (action === 'getCNERecords' && session && session.employeeId ? `cne_cache_getCNERecords_${session.employeeId.toLowerCase()}` : `cne_cache_${action}`);
-            const cached = localStorage.getItem(cacheKey);
+            const cached = localStorage.getItem(`cne_cache_${action}`);
             if (cached) {
               return { success: true, data: JSON.parse(cached), message: 'Loaded from local cache' } as ApiResponse<T>;
             }
@@ -438,13 +471,10 @@ export class ApiService {
       console.warn(`[CNE Service] Network notice executing ${action} against ${apiUrl}:`, err);
       const isTimeout = err?.name === 'AbortError';
 
-      // For read queries, gracefully fall back to cached dataset if present
-      if (action.startsWith('get') || action === 'ping') {
+      // Only explicitly allowlisted public CMS actions may fall back to cached browser data
+      if (isPublicCacheableAction(action)) {
         try {
-          const cacheKey = action === 'getProgramImpact'
-            ? (session && session.employeeId ? `cne_cache_getProgramImpact_${session.employeeId.toLowerCase()}` : 'cne_cache_getProgramImpact_institutional')
-            : (action === 'getCNERecords' && session && session.employeeId ? `cne_cache_getCNERecords_${session.employeeId.toLowerCase()}` : `cne_cache_${action}`);
-          const cached = localStorage.getItem(cacheKey);
+          const cached = localStorage.getItem(`cne_cache_${action}`);
           if (cached) {
             return { success: true, data: JSON.parse(cached), message: 'Loaded from local cache' } as ApiResponse<T>;
           }
@@ -516,7 +546,7 @@ export class ApiService {
   }
 
   /**
-   * Authentication
+   * Authentication (Strictly Authoritative Google Apps Script Only)
    */
   static async login(employeeId: string, password: string): Promise<ApiResponse<SessionUser>> {
     const cleanEmpId = (employeeId || '').trim();
@@ -526,41 +556,89 @@ export class ApiService {
       return { success: false, message: 'Please enter both your Employee ID and Password.' };
     }
 
+    if (!this.getAppsScriptUrl()) {
+      return {
+        success: false,
+        errorCode: 'BACKEND_NOT_CONFIGURED',
+        message: 'CNE authentication service is not configured. Please contact the system administrator.'
+      };
+    }
+
+    const previousSession = this.getSessionUser();
     const res = await this.executeAction<SessionUser>('login', {
       employeeId: cleanEmpId,
       password: cleanPass
     });
 
-    if (res.success && res.data) {
+    if (res.success && isValidAuthenticatedSessionUser(res.data)) {
+      const prevEmpId = previousSession?.employeeId ? previousSession.employeeId.trim().toUpperCase() : '';
+      const nextEmpId = res.data.employeeId.trim().toUpperCase();
+      if (!prevEmpId || prevEmpId !== nextEmpId) {
+        purgeNonPublicCaches();
+      }
       this.saveSessionUser(res.data);
+      return res;
     }
+
+    if (res.success && !isValidAuthenticatedSessionUser(res.data)) {
+      return {
+        success: false,
+        errorCode: 'INVALID_SESSION_RESPONSE',
+        message: 'Authentication failed: invalid session response from server.'
+      };
+    }
+
     return res;
   }
 
   static async changePassword(newPassword: string): Promise<ApiResponse<SessionUser>> {
+    if (!this.getAppsScriptUrl()) {
+      return {
+        success: false,
+        errorCode: 'BACKEND_NOT_CONFIGURED',
+        message: 'CNE authentication service is not configured. Please contact the system administrator.'
+      };
+    }
     const res = await this.executeAction<SessionUser>('changePassword', { newPassword });
-    if (res.success && res.data && res.data.token) {
+    if (res.success && isValidAuthenticatedSessionUser(res.data)) {
       this.saveSessionUser(res.data);
     }
     return res;
   }
 
   static async resetPassword(employeeId: string, doj: string, newPassword: string): Promise<ApiResponse> {
+    if (!this.getAppsScriptUrl()) {
+      return {
+        success: false,
+        errorCode: 'BACKEND_NOT_CONFIGURED',
+        message: 'CNE authentication service is not configured. Please contact the system administrator.'
+      };
+    }
     return this.executeAction('resetPassword', { employeeId, dateOfJoining: doj, doj, newPassword });
   }
 
   static async adminResetPassword(targetEmployeeId: string): Promise<ApiResponse> {
+    if (!this.getAppsScriptUrl()) {
+      return {
+        success: false,
+        errorCode: 'BACKEND_NOT_CONFIGURED',
+        message: 'CNE authentication service is not configured. Please contact the system administrator.'
+      };
+    }
     return this.executeAction('adminResetPassword', { targetEmployeeId });
   }
 
   static logout() {
-    const session = this.getSessionUser();
-    if (session && session.employeeId) {
-      localStorage.removeItem(`cne_cache_getProgramImpact_${session.employeeId.toLowerCase()}`);
-      localStorage.removeItem(`cne_cache_getCNERecords_${session.employeeId.toLowerCase()}`);
-    }
-    localStorage.removeItem('cne_cache_getProgramImpact');
-    localStorage.removeItem('cne_cache_getCNERecords');
+    try {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('cne_cache_')) {
+          keysToRemove.push(k);
+        }
+      }
+      keysToRemove.forEach((k) => localStorage.removeItem(k));
+    } catch {}
     localStorage.removeItem(STORAGE_KEYS.SESSION);
   }
 
@@ -568,9 +646,14 @@ export class ApiService {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.SESSION);
       if (stored) {
-        return JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        if (isValidAuthenticatedSessionUser(parsed)) {
+          return parsed;
+        }
+        localStorage.removeItem(STORAGE_KEYS.SESSION);
       }
     } catch (e) {
+      localStorage.removeItem(STORAGE_KEYS.SESSION);
       console.error('Failed to parse session user', e);
     }
     return null;
@@ -592,6 +675,15 @@ export class ApiService {
   }
 
   static saveSessionUser(user: SessionUser) {
+    if (!isValidAuthenticatedSessionUser(user)) {
+      return;
+    }
+    const previousSession = this.getSessionUser();
+    const prevEmpId = previousSession?.employeeId ? previousSession.employeeId.trim().toUpperCase() : '';
+    const nextEmpId = user.employeeId.trim().toUpperCase();
+    if (!prevEmpId || prevEmpId !== nextEmpId) {
+      purgeNonPublicCaches();
+    }
     localStorage.setItem(STORAGE_KEYS.SESSION, JSON.stringify(user));
   }
 
@@ -611,35 +703,19 @@ export class ApiService {
         keysToRemove.forEach((k) => localStorage.removeItem(k));
         return;
       }
-      const session = this.getSessionUser();
-      if (actionOrKey === 'getCNERecords') {
-        localStorage.removeItem('cne_cache_getCNERecords');
-        if (session && session.employeeId) {
-          localStorage.removeItem(`cne_cache_getCNERecords_${session.employeeId.toLowerCase()}`);
-        }
-      } else if (actionOrKey === 'getProgramImpact') {
-        localStorage.removeItem('cne_cache_getProgramImpact');
-        localStorage.removeItem('cne_cache_getProgramImpact_institutional');
-        if (session && session.employeeId) {
-          localStorage.removeItem(`cne_cache_getProgramImpact_${session.employeeId.toLowerCase()}`);
-        }
-      } else {
-        localStorage.removeItem(`cne_cache_${actionOrKey}`);
-      }
+      localStorage.removeItem(`cne_cache_${actionOrKey}`);
     } catch {}
   }
 
   /**
-   * Safe read from local storage cache for instant UI hydration (stale-while-revalidate)
+   * Safe read from local storage cache for instant UI hydration (strictly public allowlisted CMS actions only)
    */
-  static getCachedData<T = any>(action: string, specificKey?: string): T | null {
+  static getCachedData<T = any>(action: string, _specificKey?: string): T | null {
+    if (!isPublicCacheableAction(action)) {
+      return null;
+    }
     try {
-      const session = this.getSessionUser();
-      const cacheKey = specificKey || (
-        action === 'getProgramImpact'
-          ? (session && session.employeeId ? `cne_cache_getProgramImpact_${session.employeeId.toLowerCase()}` : 'cne_cache_getProgramImpact_institutional')
-          : (action === 'getCNERecords' && session && session.employeeId ? `cne_cache_getCNERecords_${session.employeeId.toLowerCase()}` : `cne_cache_${action}`)
-      );
+      const cacheKey = `cne_cache_${action.trim()}`;
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
         return JSON.parse(cached) as T;
