@@ -2366,21 +2366,22 @@ function handleGetCNERecords(params, session) {
   if (isMyRecordsOnly && !session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Unauthorized session.' };
   }
-  
+
   var startedAt = Date.now();
-  var isAdmin = session ? (session.role === 'ADMIN') : false;
-  var loggedInId = session ? normalizeEmpId(session.employeeId) : null;
-  
+  var sessionRole = session ? String(session.role || '').toUpperCase() : '';
+  var isAdmin = sessionRole === 'ADMIN';
+  var loggedInId = session ? normalizeEmpId(session.employeeId) : '';
+
   var ss = getSpreadsheet('CNE');
   var sheet = ss.getSheetByName('CNE Schedule');
   if (!sheet) return { success: true, data: [] };
-  
+
   var dataRange = sheet.getDataRange();
   var data = dataRange.getValues();
   if (data.length <= 1) return { success: true, data: [] };
   var officerMap = getOfficerNameMap();
   var colMap = getHeaderMap(sheet);
-  
+
   var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : (colMap['dataid'] !== undefined ? colMap['dataid'] : 0));
   var areaCol = colMap['area'] !== undefined ? colMap['area'] : (colMap['wardnamearea'] !== undefined ? colMap['wardnamearea'] : 1);
   var fromDateCol = colMap['fromdate'] !== undefined ? colMap['fromdate'] : (colMap['date'] !== undefined ? colMap['date'] : 2);
@@ -2393,7 +2394,8 @@ function handleGetCNERecords(params, session) {
   var maxPartCol = colMap['maxparticipants'] !== undefined ? colMap['maxparticipants'] : -1;
   var staffCol = colMap['staffempid'] !== undefined ? colMap['staffempid'] : 8;
   var countCol = colMap['staffcount'] !== undefined ? colMap['staffcount'] : 9;
-  var remarksCol = colMap['adminremarks'] !== undefined ? colMap['adminremarks'] : (colMap['remarks'] !== undefined ? colMap['remarks'] : 10);
+  var adminRemarksCol = colMap['adminremarks'] !== undefined ? colMap['adminremarks'] : -1;
+  var remarksCol = colMap['remarks'] !== undefined ? colMap['remarks'] : -1;
   var typeCol = colMap['typeofcne'] !== undefined ? colMap['typeofcne'] : (colMap['cnetype'] !== undefined ? colMap['cnetype'] : 15);
   var extRpCol = colMap['externalresourcepersons'] !== undefined ? colMap['externalresourcepersons'] : 13;
   var extStaffCol = colMap['externalstaffparticipants'] !== undefined ? colMap['externalstaffparticipants'] : 14;
@@ -2405,48 +2407,46 @@ function handleGetCNERecords(params, session) {
     var row = data[r];
     var dataId = String(row[idCol] || '').trim();
     if (!dataId) continue;
-    
+
     var area = String(row[areaCol] || '').trim();
     var fromDate = formatDateValue(row[fromDateCol]);
     var toDate = formatDateValue(row[toDateCol] || row[fromDateCol]);
     var duration = formatDurationValue(row[durCol]);
     var topic = String(row[topicCol] || '').trim();
-    var resourcePersonEmpId = normalizeEmpId(row[rpCol]);
+    var resourcePersonEmpId = String(row[rpCol] || '').trim();
     var mode = String(row[modeCol] || 'Lecture Cum Discussion').trim();
     var description = descCol !== -1 ? String(row[descCol] || '').trim() : '';
     var maxParticipants = maxPartCol !== -1 ? (parseInt(row[maxPartCol], 10) || 50) : 50;
     var staffIdsRaw = String(row[staffCol] || '').trim();
     var staffCount = parseInt(row[countCol], 10) || 0;
-    var remarks = String(row[remarksCol] || '').trim();
+    var adminRemarks = adminRemarksCol !== -1 ? String(row[adminRemarksCol] || '').trim() : '';
+    var remarks = remarksCol !== -1 ? String(row[remarksCol] || '').trim() : '';
     var rawType = row[typeCol];
     var cneType = normalizeCNEType(rawType);
     var status = statusCol !== -1 ? normalizeCNEStatus(row[statusCol]) : 'Scheduled';
-    var proposedBy = proposedByCol !== -1 ? String(row[proposedByCol] || '').trim() : '';
-    
-    // Strict exact participant parsing
+    var proposedBy = proposedByCol !== -1 ? normalizeEmpId(row[proposedByCol]) : '';
+
     var staffArray = staffIdsRaw.split(',').map(function(s) {
       return normalizeEmpId(s);
     }).filter(Boolean);
-    
+
     if (staffCount === 0 && staffArray.length > 0) {
       staffCount = staffArray.length;
     }
-    
-    var rpArray = resourcePersonEmpId.split(',').map(function(s) {
+
+    var rpArray = resourcePersonEmpId.split(/[,;\\n]+/).map(function(s) {
       return normalizeEmpId(s);
     }).filter(Boolean);
-    
+
     var isResourcePerson = loggedInId ? (rpArray.indexOf(loggedInId) !== -1) : false;
     var isStaffParticipant = loggedInId ? (staffArray.indexOf(loggedInId) !== -1) : false;
-    
-    // Ordinary employees querying My CNE ONLY receive records where they were RP or participant
+
     if (isMyRecordsOnly) {
       if (!isAdmin && !isResourcePerson && !isStaffParticipant) {
         continue;
       }
     }
 
-    // Filter by query parameters if specified
     if (params) {
       if (params.status && params.status !== 'ALL' && status.toLowerCase() !== String(params.status).toLowerCase()) {
         continue;
@@ -2458,24 +2458,49 @@ function handleGetCNERecords(params, session) {
         continue;
       }
     }
-    
+
     var extRp = extRpCol !== -1 && row[extRpCol] ? String(row[extRpCol]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
     var extStaff = extStaffCol !== -1 && row[extStaffCol] ? String(row[extStaffCol]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
 
-    // PRIVACY HARDENING: Non-admins ONLY receive their own ID in staffEmpIds (never other staff IDs)
-    var sanitizedStaffEmpIds = isAdmin ? staffArray : (isStaffParticipant && session ? [session.employeeId] : []);
-    
+    // Names are safe display fields and may be shown to everyone.
+    // Raw Employee IDs remain restricted to authorized management/dropdown workflows.
     var rpNames = rpArray.map(function(id) {
-      return officerMap[id] || (isAdmin ? id : 'Resource Person');
+      return officerMap[id] || 'Resource Person';
     }).filter(Boolean);
     var rpNameString = rpNames.join(', ');
 
-    var staffNameList = sanitizedStaffEmpIds.map(function(id) {
-      return officerMap[id] || (isAdmin ? id : 'Staff Member');
-    });
+    var staffNameList = staffArray.map(function(id) {
+      return officerMap[id] || 'Staff Member';
+    }).filter(Boolean);
 
-    // Public / Unauthenticated callers: sanitize sensitive employee IDs and remarks
-    var isPublicRequest = !session;
+    var proposedByName = proposedBy ? (officerMap[proposedBy] || 'Staff Member') : '';
+
+    // Management fields are available only to Admin or the responsible Area Incharge/Incharge.
+    var canSeeInternalManagementFields = isAdmin;
+    if (!canSeeInternalManagementFields && session && (sessionRole === 'AREA_INCHARGE' || sessionRole === 'INCHARGE')) {
+      canSeeInternalManagementFields = (checkCNEAuthorized(session, area, cneType) === null);
+    }
+
+    // An assigned Resource Person receives only their own ID so the frontend can recognize
+    // their CNE-specific management permission without exposing co-resource-person IDs.
+    var resourcePersonEmpIdForResponse = '';
+    if (session) {
+      if (canSeeInternalManagementFields) {
+        resourcePersonEmpIdForResponse = rpArray.join(', ');
+      } else if (isResourcePerson) {
+        resourcePersonEmpIdForResponse = loggedInId;
+      }
+    }
+
+    // Participant IDs are similarly minimized; names remain visible to everyone.
+    var staffEmpIdsForResponse = [];
+    if (session) {
+      if (canSeeInternalManagementFields) {
+        staffEmpIdsForResponse = staffArray;
+      } else if (isStaffParticipant) {
+        staffEmpIdsForResponse = [loggedInId];
+      }
+    }
 
     records.push({
       cneId: dataId,
@@ -2487,31 +2512,29 @@ function handleGetCNERecords(params, session) {
       toDate: toDate,
       duration: duration,
       topic: topic,
-      resourcePersonEmpId: isPublicRequest ? '' : resourcePersonEmpId,
+      resourcePersonEmpId: resourcePersonEmpIdForResponse,
       resourcePersonName: rpNameString,
       externalResourcePersons: extRp,
-      externalStaffParticipants: (isAdmin && !isPublicRequest) ? extStaff : [],
+      externalStaffParticipants: extStaff,
       modeOfTeaching: mode,
       description: description,
       maxParticipants: maxParticipants,
-      staffEmpIds: isPublicRequest ? [] : sanitizedStaffEmpIds,
-      staffNames: isPublicRequest ? [] : staffNameList,
+      staffEmpIds: staffEmpIdsForResponse,
+      staffNames: staffNameList,
       staffCount: staffCount,
       status: status,
-      remarks: isPublicRequest ? '' : remarks,
-      adminRemarks: isPublicRequest ? '' : remarks,
+      remarks: remarks,
+      adminRemarks: canSeeInternalManagementFields ? adminRemarks : '',
       cneType: cneType,
-      proposedByEmpId: isPublicRequest ? '' : proposedBy
+      proposedByEmpId: canSeeInternalManagementFields ? proposedBy : '',
+      proposedByName: proposedByName
     });
   }
-  
+
   logPerf('handleGetCNERecords', startedAt, 'records: ' + records.length);
   return { success: true, data: records };
 }
 
-/**
- * 18 & 19. Add CNE Activity with Concurrency Locking & Server-Side Roster Validation
- */
 function handleCreateCNE(params, session) {
   if (!session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
@@ -3089,6 +3112,18 @@ function formatSecondsToDuration(totalSeconds) {
   var seconds = s % 60;
   var pad = function(n) { return (n < 10 ? '0' : '') + n; };
   return pad(hours) + ':' + pad(minutes) + ':' + pad(seconds);
+}
+
+/**
+ * Compact homepage duration label, e.g. 150 Hrs+.
+ * Keeps raw second-based calculation internal while exposing only a simple display metric.
+ */
+function formatDurationAsHoursPlus(totalSeconds) {
+  var safeSeconds = Math.max(0, Number(totalSeconds) || 0);
+  if (safeSeconds === 0) return '0 Hrs';
+  var hours = Math.floor(safeSeconds / 3600);
+  if (hours === 0) return '<1 Hr';
+  return hours === 1 ? '1 Hr+' : hours + ' Hrs+';
 }
 
 /**
@@ -4282,12 +4317,8 @@ function handleGetProgramImpact(params, session) {
       success: true,
       data: {
         totalCompletedClasses: 0,
-        cneDuration: '00:00:00',
-        totalDuration: '00:00:00',
-        totalDurationSeconds: 0,
+        cneDuration: '0 Hrs',
         uniqueStaffTrained: 0,
-        uniqueWardsCount: 0,
-        attendanceComplianceRate: 'N/A',
         scope: isUserLoggedIn ? 'user' : 'institutional'
       }
     };
@@ -4300,12 +4331,8 @@ function handleGetProgramImpact(params, session) {
       success: true,
       data: {
         totalCompletedClasses: 0,
-        cneDuration: '00:00:00',
-        totalDuration: '00:00:00',
-        totalDurationSeconds: 0,
+        cneDuration: '0 Hrs',
         uniqueStaffTrained: 0,
-        uniqueWardsCount: 0,
-        attendanceComplianceRate: 'N/A',
         scope: isUserLoggedIn ? 'user' : 'institutional'
       }
     };
@@ -4313,7 +4340,6 @@ function handleGetProgramImpact(params, session) {
   
   var colMap = getHeaderMap(dataSheet);
   var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['dataid'] !== undefined ? colMap['dataid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 0));
-  var areaCol = colMap['area'] !== undefined ? colMap['area'] : (colMap['wardnamearea'] !== undefined ? colMap['wardnamearea'] : 1);
   var durCol = colMap['duration'] !== undefined ? colMap['duration'] : (colMap['dur'] !== undefined ? colMap['dur'] : 4);
   var rpCol = colMap['resourcepersonempid'] !== undefined ? colMap['resourcepersonempid'] : 6;
   var staffCol = colMap['staffempid'] !== undefined ? colMap['staffempid'] : 8;
@@ -4324,7 +4350,6 @@ function handleGetProgramImpact(params, session) {
   var completedClasses = 0;
   var totalDurationSeconds = 0;
   var uniqueStaffMap = {};
-  var uniqueWardsMap = {};
   var userTrainedOthersMap = {};
   var anonymousStaffCount = 0;
   var anonymousStaffTrainedByRp = 0;
@@ -4340,7 +4365,6 @@ function handleGetProgramImpact(params, session) {
       if (rowStatus !== 'Completed') continue;
     }
     
-    var area = String(row[areaCol] || '').trim();
     var displayDur = (displayValues && displayValues[r]) ? displayValues[r][durCol] : '';
     var duration = formatDurationValue(row[durCol], displayDur);
     var durSec = parseDurationToSeconds(duration) || 0;
@@ -4360,9 +4384,6 @@ function handleGetProgramImpact(params, session) {
       // INSTITUTIONAL: All valid completed classes in CNE Schedule
       completedClasses++;
       totalDurationSeconds += durSec;
-      if (area) {
-        uniqueWardsMap[area.toLowerCase()] = true;
-      }
       if (staffArray.length > 0) {
         for (var s = 0; s < staffArray.length; s++) {
           uniqueStaffMap[staffArray[s]] = true;
@@ -4378,9 +4399,6 @@ function handleGetProgramImpact(params, session) {
       if (isResourcePerson || isParticipant) {
         completedClasses++;
         totalDurationSeconds += durSec;
-        if (area) {
-          uniqueWardsMap[area.toLowerCase()] = true;
-        }
         if (isResourcePerson) {
           if (staffArray.length > 0) {
             for (var sp = 0; sp < staffArray.length; sp++) {
@@ -4409,18 +4427,12 @@ function handleGetProgramImpact(params, session) {
     totalStaff = trainedOthers;
   }
   
-  var totalWards = Object.keys(uniqueWardsMap).length;
-  
   return {
     success: true,
     data: {
       totalCompletedClasses: completedClasses,
-      cneDuration: formatSecondsToDuration(totalDurationSeconds),
-      totalDuration: formatSecondsToDuration(totalDurationSeconds),
-      totalDurationSeconds: totalDurationSeconds,
+      cneDuration: formatDurationAsHoursPlus(totalDurationSeconds),
       uniqueStaffTrained: totalStaff,
-      uniqueWardsCount: totalWards,
-      attendanceComplianceRate: 'N/A', // CNE Schedule sheet contains no verification/compliance percentage column
       scope: isUserLoggedIn ? 'user' : 'institutional'
     }
   };

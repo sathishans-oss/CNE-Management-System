@@ -197,7 +197,7 @@ export const CNEQRModal: React.FC<CNEQRModalProps> = ({
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500">Resource Person:</span>
-                  <span className="font-semibold text-slate-700">{cne.resourcePersonName || cne.resourcePersonEmpId || 'Department Faculty'}</span>
+                  <span className="font-semibold text-slate-700">{cne.resourcePersonName || 'Department Faculty'}</span>
                 </div>
               </div>
 

@@ -33,14 +33,14 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div>
                 <div className="flex items-center gap-2">
                   <span className="font-bold text-base sm:text-lg text-slate-900 leading-none">
-                    CNE Management System
+                    Clinical Nursing Education (CNE) Portal
                   </span>
                   <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-teal-100 text-teal-800">
                     AIIMS Rishikesh
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 hidden sm:block mt-0.5">
-                  Nursing Services • Continuing Education Portal
+                  CNE Cell • Nursing Services
                 </p>
               </div>
             </div>

@@ -31,7 +31,8 @@ import {
   INITIAL_CHAIRPERSON_MESSAGE,
   INITIAL_NEWS_EVENTS,
   INITIAL_QUICK_LINKS,
-  INITIAL_COORDINATOR_DESK
+  INITIAL_COORDINATOR_DESK,
+  INITIAL_PROGRAM_IMPACT
 } from './initialData';
 
 let _inMemoryCNERecords: CNERecord[] = [...INITIAL_CNE_RECORDS, ...INITIAL_UPCOMING_CLASSES];
@@ -235,10 +236,6 @@ export class ApiService {
   /**
    * Get configured Google Apps Script Web App URL
    */
-  static isLiveBackendConnected(): boolean {
-    return !!this.getAppsScriptUrl();
-  }
-
   static getAppsScriptUrl(): string {
     const envUrl = (import.meta as any).env?.VITE_APPS_SCRIPT_URL;
     if (envUrl && typeof envUrl === 'string' && envUrl.trim() !== '') {
@@ -332,15 +329,8 @@ export class ApiService {
         return { success: true, data: [..._inMemoryQuickLinks] as any };
 
       case 'getProgramImpact': {
-        const completed = _inMemoryCNERecords.filter(c => c.status === 'Completed');
         const stats: ProgramImpactStats = {
-          totalCompletedClasses: completed.length,
-          cneDuration: '08:30:00',
-          totalDuration: '08:30:00',
-          totalDurationSeconds: 30600,
-          uniqueStaffTrained: 124,
-          uniqueWardsCount: 6,
-          attendanceComplianceRate: '94.2%',
+          ...INITIAL_PROGRAM_IMPACT,
           scope: session && session.employeeId ? 'user' : 'institutional'
         };
         return { success: true, data: stats as any };
@@ -569,20 +559,6 @@ export class ApiService {
     return null;
   }
 
-  static getCurrentUser(): SessionUser {
-    const user = this.getSessionUser();
-    if (user) return user;
-
-    // Default guest session for unauthenticated state
-    return {
-      employeeId: '',
-      name: 'Guest User',
-      designation: 'Visitor',
-      email: '',
-      role: 'EMPLOYEE',
-      token: ''
-    };
-  }
 
   static saveSessionUser(user: SessionUser) {
     if (!isValidAuthenticatedSessionUser(user)) {

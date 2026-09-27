@@ -647,7 +647,7 @@ runTest('Active API methods wired correctly & cleanup candidates audited', () =>
   const methodRegex = /static\s+(?:async\s+)?([a-zA-Z0-9_]+)\s*\(/g;
   const methods = [];
   while ((m = methodRegex.exec(apiTs)) !== null) {
-    if (!['isLiveBackendConnected', 'getAppsScriptUrl', 'executeLocalMockAction', 'executeAction', 'logout', 'getSessionUser', 'getCurrentUser', 'saveSessionUser', 'invalidateCache'].includes(m[1])) {
+    if (!['getAppsScriptUrl', 'executeLocalMockAction', 'executeAction', 'logout', 'getSessionUser', 'saveSessionUser', 'invalidateCache'].includes(m[1])) {
       methods.push(m[1]);
     }
   }
@@ -922,13 +922,23 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
     assert.ok(!content.includes('FNMDCNO'), `Real employee ID prefix FNMDCNO must be absent from ${file}`);
   }
 
-  // 7. handleGetCNERecords public response sanitization
+  // 7. handleGetCNERecords name-first privacy model
   assert.ok(
-    codeGs.includes('isPublicRequest') &&
-    codeGs.includes("resourcePersonEmpId: isPublicRequest ? '' : resourcePersonEmpId") &&
-    codeGs.includes("staffEmpIds: isPublicRequest ? [] : sanitizedStaffEmpIds"),
-    'handleGetCNERecords in Code.gs must sanitize sensitive employee IDs and rosters for unauthenticated public requests'
+    codeGs.includes("resourcePersonEmpIdForResponse = ''") &&
+    codeGs.includes("resourcePersonEmpIdForResponse = loggedInId") &&
+    codeGs.includes("staffEmpIdsForResponse = []") &&
+    codeGs.includes("staffNameList = staffArray.map") &&
+    codeGs.includes("proposedByEmpId: canSeeInternalManagementFields ? proposedBy : ''") &&
+    codeGs.includes("adminRemarks: canSeeInternalManagementFields ? adminRemarks : ''") &&
+    codeGs.includes("remarks: remarks"),
+    'handleGetCNERecords must show safe names/general remarks while keeping raw IDs and Admin Remarks restricted'
   );
+
+  assert.ok(!typesTs.includes('CNEReferenceIndexChunk'), 'Unused CNEReferenceIndexChunk type must be removed');
+  assert.ok(!apiTs.includes('static getCurrentUser('), 'Unused ApiService.getCurrentUser must be removed');
+  assert.ok(!apiTs.includes('static isLiveBackendConnected('), 'Unused ApiService.isLiveBackendConnected must be removed');
+  const officerLoaderTs = fs.readFileSync('src/services/officerLoader.ts', 'utf8');
+  assert.ok(!officerLoaderTs.includes('setCachedOfficers'), 'Unused setCachedOfficers helper must be removed');
 
   // 8. Final cleanup symbols & Chairperson API verification
   const utilsTs = fs.readFileSync('src/utils.ts', 'utf8');

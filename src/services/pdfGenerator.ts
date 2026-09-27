@@ -6,6 +6,7 @@ import { formatCneDateRangeDisplay, formatCneDateDisplay, formatCneDateTimeDispl
 export interface CNERecordPdfOptions {
   fromDate?: string;
   toDate?: string;
+  searchTerm?: string;
 }
 
 export function generateCNERecordsPdf(
@@ -19,26 +20,34 @@ export function generateCNERecordsPdf(
     format: 'a4'
   });
 
-  // Determine date period label
-  let periodLabel = 'All Available Records';
-  let dateRangeFilePart = '';
+  // Build the complete filter description shown in the PDF.
+  // Search and date filters are displayed independently so the document
+  // accurately describes the records included in the table.
+  const filterLines: string[] = [];
   if (options && typeof options === 'object') {
-    const { fromDate, toDate } = options;
+    const { fromDate, toDate, searchTerm } = options;
+    const cleanedSearch = (searchTerm || '').trim();
+
+    if (cleanedSearch) {
+      filterLines.push(`Search: ${cleanedSearch}`);
+    }
+
     if (fromDate && toDate) {
-      periodLabel = `Period: ${formatCneDateDisplay(fromDate)} – ${formatCneDateDisplay(toDate)}`;
-      dateRangeFilePart = `_${fromDate.replace(/[^0-9]/g, '')}_to_${toDate.replace(/[^0-9]/g, '')}`;
+      filterLines.push(`Period: ${formatCneDateDisplay(fromDate)} – ${formatCneDateDisplay(toDate)}`);
     } else if (fromDate) {
-      periodLabel = `From: ${formatCneDateDisplay(fromDate)}`;
-      dateRangeFilePart = `_from_${fromDate.replace(/[^0-9]/g, '')}`;
+      filterLines.push(`From: ${formatCneDateDisplay(fromDate)}`);
     } else if (toDate) {
-      periodLabel = `Up to: ${formatCneDateDisplay(toDate)}`;
-      dateRangeFilePart = `_upto_${toDate.replace(/[^0-9]/g, '')}`;
+      filterLines.push(`Up to: ${formatCneDateDisplay(toDate)}`);
     }
   } else if (typeof options === 'string' && options.trim()) {
-    periodLabel = options.trim();
+    filterLines.push(options.trim());
   }
 
-  // Calculate totals accurately
+  if (filterLines.length === 0) {
+    filterLines.push('All Available Records');
+  }
+
+  // Calculate totals accurately.
   let totalMinutes = 0;
   records.forEach((rec) => {
     const parts = (rec.duration || '1:00:00').split(':');
@@ -49,54 +58,61 @@ export function generateCNERecordsPdf(
 
   const totalHours = Math.floor(totalMinutes / 60);
   const remainingMins = totalMinutes % 60;
-  const durationSummaryStr = remainingMins > 0 
+  const durationSummaryStr = remainingMins > 0
     ? `${totalHours} Hours ${remainingMins} Mins`
     : `${totalHours} Hours`;
 
-  // 1. Institutional Header
+  // 1. Institutional header
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
-  doc.setTextColor(15, 23, 42); // slate-900
+  doc.setTextColor(15, 23, 42);
   doc.text('ALL INDIA INSTITUTE OF MEDICAL SCIENCES, RISHIKESH', 105, 16, { align: 'center' });
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9.5);
-  doc.setTextColor(71, 85, 105); // slate-600
-  doc.text('DEPARTMENT OF NURSING — CLINICAL NURSING EDUCATION (CNE)', 105, 22, { align: 'center' });
-
-  // 2. Professional PDF Document Heading
+  // 2. Document title
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(12);
-  doc.setTextColor(30, 41, 59); // slate-800
-  doc.text('CNE TRAINING RECORD', 105, 30, { align: 'center' });
+  doc.setFontSize(12.5);
+  doc.setTextColor(30, 41, 59);
+  doc.text('Clinical Nursing Education (CNE) Record', 105, 30, { align: 'center' });
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9.5);
-  doc.setTextColor(51, 65, 85);
-  doc.text(periodLabel, 105, 36, { align: 'center' });
-
-  // Top Divider
+  // Divider
   doc.setDrawColor(203, 213, 225);
   doc.setLineWidth(0.5);
   doc.line(14, 40, 196, 40);
 
-  // 3. EMPLOYEE INFORMATION SECTION (With Summary Metrics inside)
-  doc.setFillColor(248, 250, 252); // slate-50
-  doc.roundedRect(14, 44, 182, 34, 2, 2, 'F');
-  doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(14, 44, 182, 34, 2, 2, 'D');
+  // 3. Officer information & training summary
+  const cardX = 14;
+  const cardY = 44;
+  const cardWidth = 182;
+  const rightColumnX = 110;
+  const rightColumnWidth = 80;
 
-  // Section Header inside card
+  doc.setFontSize(8.2);
+  doc.setFont('helvetica', 'normal');
+  const wrappedFilterLines = filterLines.flatMap((line) => doc.splitTextToSize(line, rightColumnWidth));
+  const filterValueStartY = 62;
+  const filterLineHeight = 4.2;
+  const filterEndY = filterValueStartY + Math.max(0, wrappedFilterLines.length - 1) * filterLineHeight;
+  const sessionsY = filterEndY + 7;
+  const durationY = sessionsY + 7;
+  const minimumCardHeight = 34;
+  const requiredCardHeight = durationY - cardY + 6;
+  const cardHeight = Math.max(minimumCardHeight, requiredCardHeight);
+
+  doc.setFillColor(248, 250, 252);
+  doc.roundedRect(cardX, cardY, cardWidth, cardHeight, 2, 2, 'F');
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(cardX, cardY, cardWidth, cardHeight, 2, 2, 'D');
+
   doc.setFontSize(8.5);
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(100, 116, 139); // slate-500
-  doc.text('EMPLOYEE INFORMATION & TRAINING SUMMARY', 18, 50);
+  doc.setTextColor(100, 116, 139);
+  doc.text('OFFICER INFORMATION & TRAINING SUMMARY', 18, 50);
 
-  // Left Column: Employee Identity
+  // Left column: officer identity
   doc.setFontSize(8.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(51, 65, 85);
-  doc.text('Employee Name:', 18, 57);
+  doc.text('Name:', 18, 57);
   doc.text('Employee ID:', 18, 64);
   doc.text('Designation:', 18, 71);
 
@@ -106,26 +122,28 @@ export function generateCNERecordsPdf(
   doc.text(user.employeeId || 'N/A', 50, 64);
   doc.text(user.designation || 'N/A', 50, 71);
 
-  // Right Column: Summary Metrics (Total Sessions & Duration ABOVE Table)
+  // Right column: filter and summary metrics
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(51, 65, 85);
-  doc.text('Record Filter:', 110, 57);
-  doc.text('Total CNE Sessions:', 110, 64);
-  doc.text('Total Training Duration:', 110, 71);
+  doc.text('Record Filter:', rightColumnX, 57);
 
-  doc.setFont('helvetica', 'bold');
+  doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  doc.text(`${periodLabel.length > 28 ? periodLabel.slice(0, 28) + '...' : periodLabel}`, 154, 57);
-  doc.text(`${records.length} Sessions`, 154, 64);
-  doc.text(`${durationSummaryStr}`, 154, 71);
+  wrappedFilterLines.forEach((line, index) => {
+    doc.text(line, rightColumnX, filterValueStartY + index * filterLineHeight);
+  });
 
-  // 4. CNE DETAILS Header
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9.5);
-  doc.setTextColor(30, 41, 59);
-  doc.text('CNE DETAILS', 14, 84);
+  doc.setTextColor(51, 65, 85);
+  doc.text('CNE Sessions:', rightColumnX, sessionsY);
+  doc.text('Training Duration:', rightColumnX, durationY);
 
-  // Table Data Preparation
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(15, 23, 42);
+  doc.text(`${records.length} Sessions`, 154, sessionsY);
+  doc.text(durationSummaryStr, 154, durationY);
+
+  // 4. CNE records table
   const tableData = records.map((rec, index) => {
     const isResourcePerson = (rec.resourcePersonEmpId || '').toLowerCase().includes((user.employeeId || '').toLowerCase());
     const roleLabel = isResourcePerson ? 'Resource Person' : 'Participant';
@@ -142,17 +160,22 @@ export function generateCNERecordsPdf(
     ];
   });
 
+  const tableStartY = cardY + cardHeight + 9;
+
   autoTable(doc, {
-    startY: 87,
-    head: [['Sr', 'Date / Period', 'Area / Ward', 'CNE Topic / Skills', 'Mode', 'Role', 'Duration']],
-    body: tableData.length > 0 ? tableData : [['-', '-', 'No CNE activities recorded for the selected filters', '-', '-', '-', '-']],
+    startY: tableStartY,
+    head: [['sn.', 'Date', 'Area / Ward', 'CNE Topic', 'Mode', 'Role', 'Duration']],
+    body: tableData.length > 0
+      ? tableData
+      : [['-', '-', 'No CNE activities recorded for the selected filters', '-', '-', '-', '-']],
     theme: 'grid',
     headStyles: {
-      fillColor: [30, 41, 59], // Slate-800
+      fillColor: [30, 41, 59],
       textColor: [255, 255, 255],
-      fontSize: 8.5,
+      fontSize: 8,
       fontStyle: 'bold',
-      halign: 'center'
+      halign: 'center',
+      cellPadding: 2.1
     },
     columnStyles: {
       0: { cellWidth: 10, halign: 'center' },
@@ -164,11 +187,12 @@ export function generateCNERecordsPdf(
       6: { cellWidth: 16, halign: 'center' }
     },
     styles: {
-      fontSize: 8,
-      cellPadding: 2.5,
+      fontSize: 7.8,
+      cellPadding: 2.2,
       textColor: [15, 23, 42],
       lineColor: [226, 232, 240],
-      lineWidth: 0.2
+      lineWidth: 0.2,
+      valign: 'middle'
     },
     alternateRowStyles: {
       fillColor: [248, 250, 252]
@@ -176,14 +200,10 @@ export function generateCNERecordsPdf(
     margin: { left: 14, right: 14 }
   });
 
-  // Signatures Section:
-  // Left: "Signature of Nursing Officer"
-  // Right: "Signature of CNE Coordinator"
-  // Center (below): "Chairperson, CNE Committee / CNO"
+  // 5. Signatures
   const finalY = (doc as any).lastAutoTable.finalY + 12;
   const pageHeight = doc.internal.pageSize.getHeight();
 
-  // If close to page bottom, add new page
   if (finalY > pageHeight - 55) {
     doc.addPage();
   }
@@ -193,27 +213,28 @@ export function generateCNERecordsPdf(
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(71, 85, 105);
 
-  // Left: Signature of Nursing Officer
   doc.line(16, sigY, 76, sigY);
   doc.text('Signature of Nursing Officer', 16, sigY + 5);
-  doc.text(`(${user.name || 'Officer'})`, 16, sigY + 9);
+  doc.text(`(${user.name || 'Nursing Officer'})`, 16, sigY + 9);
 
-  // Right: Signature of CNE Coordinator
   doc.line(134, sigY, 194, sigY);
   doc.text('Signature of CNE Coordinator', 134, sigY + 5);
 
-  // Center (below): Chairperson, CNE Committee / CNO
   const sigY2 = sigY + 20;
   doc.line(75, sigY2, 135, sigY2);
   doc.text('Chairperson, CNE Committee / CNO', 105, sigY2 + 5, { align: 'center' });
   doc.text('AIIMS Rishikesh', 105, sigY2 + 9, { align: 'center' });
 
-  // Footer / Verification Stamp
+  // Footer
   doc.setFontSize(7.5);
   doc.setTextColor(148, 163, 184);
-  doc.text('This is a verified institutional record from the Clinical Nursing Education (CNE) Portal • AIIMS Rishikesh.', 105, pageHeight - 8, { align: 'center' });
+  doc.text(
+    'Generated from the Clinical Nursing Education (CNE) Portal • AIIMS Rishikesh',
+    105,
+    pageHeight - 8,
+    { align: 'center' }
+  );
 
-  // Trigger download
   const cleanName = (user.name || 'Officer').replace(/[^a-zA-Z0-9]/g, '_');
   doc.save(`CNE_Record_${user.employeeId}_${cleanName}.pdf`);
 }
@@ -256,12 +277,12 @@ export function generateCNESessionPdf(
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(71, 85, 105); // slate-600
-  doc.text('DEPARTMENT OF NURSING — CLINICAL NURSING EDUCATION (CNE)', 105, 22, { align: 'center' });
+  doc.text('Nursing Services — CNE Cell', 105, 22, { align: 'center' });
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(30, 41, 59);
-  doc.text('CNE SESSION & PARTICIPANT EVALUATION REPORT', 105, 29, { align: 'center' });
+  doc.text('CNE Session & Participant Evaluation Report', 105, 29, { align: 'center' });
 
   // Top Divider
   doc.setDrawColor(203, 213, 225);
@@ -277,7 +298,7 @@ export function generateCNESessionPdf(
   doc.setFontSize(8.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(100, 116, 139);
-  doc.text('CNE SESSION SPECIFICATIONS', 18, 42);
+  doc.text('CNE Session Specifications', 18, 42);
 
   // Left Column
   doc.setFontSize(8);
@@ -311,7 +332,7 @@ export function generateCNESessionPdf(
   doc.text('Total Attendees:', 116, 66);
   doc.text('Avg Post-Test Score:', 116, 72);
 
-  const resourcePersonDisplay = cne.resourcePersonName || cne.resourcePersonEmpId || 'Clinical Instructor';
+  const resourcePersonDisplay = cne.resourcePersonName || 'Clinical Instructor';
   const modeDisplay = cne.modeOfTeaching || 'Lecture / Discussion';
 
   doc.setFont('helvetica', 'normal');
@@ -333,7 +354,7 @@ export function generateCNESessionPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(30, 41, 59);
-  doc.text('ATTENDANCE & POST-TEST EVALUATION ROSTER', 14, 84);
+  doc.text('Attendance & Post-Test Evaluation Roster', 14, 84);
 
   const tableRows = participants.map((p, idx) => {
     const isManual = p.participantType === 'MANUAL';
@@ -414,7 +435,7 @@ export function generateCNESessionPdf(
   // Left: Signature of Resource Person
   doc.line(16, safeFinalY, 76, safeFinalY);
   doc.text('Signature of Resource Person', 16, safeFinalY + 5);
-  doc.text(`(${cne.resourcePersonName || cne.resourcePersonEmpId || 'Faculty / Instructor'})`, 16, safeFinalY + 9);
+  doc.text(`(${cne.resourcePersonName || 'Faculty / Instructor'})`, 16, safeFinalY + 9);
 
   // Right: Signature of CNE Incharge
   doc.line(134, safeFinalY, 194, safeFinalY);

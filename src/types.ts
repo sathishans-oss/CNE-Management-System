@@ -203,20 +203,6 @@ export interface CNELearningResourceMetadata {
   chunksCount?: number;
 }
 
-export interface CNEReferenceIndexChunk {
-  indexId: string;
-  sourceType: 'UPLOADED_CNE' | 'LOCAL_REFERENCE_LIB';
-  cneId: string;
-  driveFileId: string;
-  resourceTitle: string;
-  topic: string;
-  sectionHeading: string;
-  chunkIndex: number;
-  chunkText: string;
-  clinicalKeywords: string;
-  extractionStatus: 'SUCCESS' | 'FAILED';
-  updatedAt: string;
-}
 
 export interface CNENursingReferenceResource {
   resourceId: string;
@@ -343,12 +329,8 @@ export interface SheetAuditItem {
 
 export interface ProgramImpactStats {
   totalCompletedClasses: number;
-  cneDuration?: string;
-  totalDuration?: string;
-  totalDurationSeconds?: number;
+  cneDuration: string;
   uniqueStaffTrained: number;
-  uniqueWardsCount: number;
-  attendanceComplianceRate: string;
   scope: 'institutional' | 'user';
 }
 

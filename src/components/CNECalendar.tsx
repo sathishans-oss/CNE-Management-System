@@ -46,7 +46,7 @@ export const CNECalendar: React.FC = () => {
       date: r.fromDate || r.date,
       toDate: r.toDate,
       duration: r.duration,
-      instructor: r.resourcePersonName || r.resourcePersonEmpId,
+      instructor: r.resourcePersonName || 'Resource Person',
       mode: r.modeOfTeaching,
       type: r.status === 'Completed' ? 'RECORD' : 'UPCOMING',
       status: r.status,

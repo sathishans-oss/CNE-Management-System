@@ -73,7 +73,7 @@ export const AdminReports: React.FC<AdminReportsProps> = () => {
     modeCounts[r.modeOfTeaching] = (modeCounts[r.modeOfTeaching] || 0) + 1;
 
     // Instructor
-    const instName = r.resourcePersonName || resolveEmployeeName(r.resourcePersonEmpId, officers) || r.resourcePersonEmpId;
+    const instName = r.resourcePersonName || resolveEmployeeName(r.resourcePersonEmpId, officers, 'Resource Person') || 'Resource Person';
     if (instName) {
       instructorCounts[instName] = (instructorCounts[instName] || 0) + 1;
     }

@@ -460,7 +460,8 @@ export function validateCneDuration(
  */
 export function resolveEmployeeName(
   empId?: string | null,
-  officers?: Employee[]
+  officers?: Employee[],
+  fallbackLabel: string = 'Staff Member'
 ): string {
   if (!empId) return '';
   const trimmedId = empId.trim();
@@ -476,24 +477,25 @@ export function resolveEmployeeName(
     }
   }
 
-  return trimmedId;
+  return fallbackLabel;
 }
 
 /**
  * Resolves a comma/semicolon/newline-separated string or array of Employee IDs
  * to their corresponding Employee Names using the authoritative officers list.
- * Any ID that cannot be resolved safely falls back to its Employee ID.
+ * Unresolved IDs use a neutral display label rather than exposing the raw Employee ID.
  */
 export function resolveEmployeeNamesList(
   empIds?: string | string[] | null,
-  officers?: Employee[]
+  officers?: Employee[],
+  fallbackLabel: string = 'Staff Member'
 ): string[] {
   if (!empIds) return [];
   const list = Array.isArray(empIds) ? empIds : String(empIds).split(/[,;\n]+/);
   return list
     .map((id) => id.trim())
     .filter(Boolean)
-    .map((id) => resolveEmployeeName(id, officers));
+    .map((id) => resolveEmployeeName(id, officers, fallbackLabel));
 }
 
 /**
@@ -513,7 +515,7 @@ export function formatResourcePersonsDisplay(params: {
   let internalNames: string[] = [];
 
   if (officers && officers.length > 0 && resourcePersonEmpId) {
-    internalNames = resolveEmployeeNamesList(resourcePersonEmpId, officers);
+    internalNames = resolveEmployeeNamesList(resourcePersonEmpId, officers, 'Resource Person');
   } else if (resourcePersonName && resourcePersonName.trim()) {
     internalNames = resourcePersonName
       .split(/[,;\n]+/)

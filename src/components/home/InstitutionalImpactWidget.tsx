@@ -5,8 +5,6 @@ interface InstitutionalImpactWidgetProps {
   totalCompletedClasses: number;
   cneDuration?: string;
   uniqueStaffTrained: number;
-  uniqueWardsCount?: number;
-  attendanceComplianceRate?: string;
   accentColor?: 'emerald' | 'blue' | 'amber' | 'teal';
   horizontal?: boolean;
   loading?: boolean;
@@ -16,7 +14,7 @@ interface InstitutionalImpactWidgetProps {
 
 export const InstitutionalImpactWidget: React.FC<InstitutionalImpactWidgetProps> = ({
   totalCompletedClasses,
-  cneDuration = '00:00:00',
+  cneDuration = '0 Hrs',
   uniqueStaffTrained,
   accentColor = 'emerald',
   horizontal = false,
@@ -96,7 +94,7 @@ export const InstitutionalImpactWidget: React.FC<InstitutionalImpactWidgetProps>
               </div>
               <div className={`p-3 rounded-xl bg-white border border-slate-200 ${hoverBorder} transition-colors shadow-2xs`}>
                 <span className={`text-xl sm:text-2xl font-black ${numberColor} block font-mono`}>
-                  {cneDuration || '00:00:00'}
+                  {cneDuration || '0 Hrs'}
                 </span>
                 <span className="text-xs text-slate-600 font-semibold mt-0.5 block">CNE Duration</span>
               </div>
@@ -147,7 +145,7 @@ export const InstitutionalImpactWidget: React.FC<InstitutionalImpactWidgetProps>
             </div>
             <div className={`p-3 rounded-xl bg-white border border-slate-200 ${hoverBorder} transition-colors shadow-2xs`}>
               <span className={`text-xl sm:text-2xl font-black ${numberColor} block font-mono`}>
-                {cneDuration || '00:00:00'}
+                {cneDuration || '0 Hrs'}
               </span>
               <span className="text-xs text-slate-600 font-semibold mt-0.5 block">CNE Duration</span>
             </div>

@@ -165,7 +165,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
         <aside className="lg:col-span-5 space-y-6">
           <InstitutionalImpactWidget
             totalCompletedClasses={impactStats?.totalCompletedClasses ?? 0}
-            cneDuration={impactStats?.cneDuration || '00:00:00'}
+            cneDuration={impactStats?.cneDuration || '0 Hrs'}
             uniqueStaffTrained={impactStats?.uniqueStaffTrained ?? 0}
             loading={impactLoading}
             error={impactError}
@@ -320,11 +320,11 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
                 <span className="text-slate-500">Venue / Location:</span>
                 <span className="font-bold text-slate-900">{selectedClass.area || 'Clinical Skills Lab'}</span>
               </div>
-              {(selectedClass.resourcePersonName || selectedClass.resourcePersonEmpId) && (
+              {(selectedClass.resourcePersonName || 'Resource Person') && (
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500">Resource Person:</span>
                   <span className="font-bold text-slate-900">
-                    {selectedClass.resourcePersonName || selectedClass.resourcePersonEmpId}
+                    {selectedClass.resourcePersonName || 'Resource Person'}
                   </span>
                 </div>
               )}

@@ -85,220 +85,11 @@ export const INITIAL_AREAS: Area[] = [
   createdAt: '2026-01-01'
 }));
 
-export const INITIAL_CNE_RECORDS: CNERecord[] = [
-  {
-    cneId: "b41c5020",
-    dataId: "b41c5020",
-    area: "243B(IPD)-(Ophthal)",
-    fromDate: "2026-03-01",
-    toDate: "2026-03-01",
-    duration: "1:00:00",
-    topic: "Nursing management patient with Glaucoma (Skills: Instillation of Eye Drops)",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Clinical Nurse Specialist",
-    modeOfTeaching: "Lecture Cum Discussion",
-    staffEmpIds: [],
-    staffCount: 13,
-    status: "Completed",
-    remarks: "Practical demo included eye drop angle technique",
-    createdAt: "2026-03-01T10:00:00Z"
-  },
-  {
-    cneId: "CNE-2026-000102",
-    dataId: "CNE-2026-000102",
-    area: "235A(CCU)-(PICU)",
-    fromDate: "2026-02-18",
-    toDate: "2026-02-18",
-    duration: "1:30:00",
-    topic: "Pediatric Advanced Life Support & Emergency Resuscitation Algorithms",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Senior Nursing Instructor",
-    modeOfTeaching: "Hands-on Workshop",
-    staffEmpIds: [],
-    staffCount: 18,
-    status: "Completed",
-    remarks: "Simulation lab practicals on pediatric mannequins",
-    createdAt: "2026-02-18T14:30:00Z"
-  },
-  {
-    cneId: "CNE-2026-000103",
-    dataId: "CNE-2026-000103",
-    area: "313(ED)-(Yellow & Red Area)",
-    fromDate: "2026-02-05",
-    toDate: "2026-02-05",
-    duration: "1:00:00",
-    topic: "Triage Protocols & Rapid Response in Polytrauma Management",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Emergency Nurse Specialist",
-    modeOfTeaching: "Lecture Cum Discussion",
-    staffEmpIds: [],
-    staffCount: 22,
-    status: "Completed",
-    remarks: "ED workflow optimization",
-    createdAt: "2026-02-05T09:15:00Z"
-  },
-  {
-    cneId: "CNE-2026-000104",
-    dataId: "CNE-2026-000104",
-    area: "264A(CCU)-(Neuro Surgery)",
-    fromDate: "2026-01-22",
-    toDate: "2026-01-22",
-    duration: "1:00:00",
-    topic: "Intracranial Pressure (ICP) Monitoring and Post-Op Neuro-Care",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Clinical Nurse Specialist",
-    modeOfTeaching: "Clinical Case Discussion",
-    staffEmpIds: [],
-    staffCount: 15,
-    status: "Completed",
-    remarks: "EVD drainage & wave analysis",
-    createdAt: "2026-01-22T11:00:00Z"
-  },
-  {
-    cneId: "CNE-2026-000105",
-    dataId: "CNE-2026-000105",
-    area: "ICN&Quality Nursing(OPD)",
-    fromDate: "2026-01-10",
-    toDate: "2026-01-10",
-    duration: "2:00:00",
-    topic: "Hospital Acquired Infection Control, Bundles of Care & Hand Hygiene Audits",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Infection Control Nurse",
-    modeOfTeaching: "Hands-on Workshop",
-    staffEmpIds: [],
-    staffCount: 45,
-    status: "Completed",
-    remarks: "Institutional annual quality infection control update",
-    createdAt: "2026-01-10T14:00:00Z"
-  },
-  {
-    cneId: "CNE-2025-000089",
-    dataId: "CNE-2025-000089",
-    area: "254A(IPD)-(Cardiology)",
-    fromDate: "2025-11-14",
-    toDate: "2025-11-14",
-    duration: "1:00:00",
-    topic: "12-Lead ECG Interpretation & Lethal Arrhythmia Recognition for Nurses",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Senior Nursing Instructor",
-    modeOfTeaching: "Lecture Cum Discussion",
-    staffEmpIds: [],
-    staffCount: 20,
-    status: "Completed",
-    remarks: "Interactive strip readings",
-    createdAt: "2025-11-14T10:30:00Z"
-  }
-];
+export const INITIAL_CNE_RECORDS: CNERecord[] = [];
 
-export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [
-  {
-    cneId: "CLS-2026-001",
-    classId: "CLS-2026-001",
-    topic: "Comprehensive Ventilator Care & Weaning Protocols in Intensive Care",
-    area: "266(CCU)",
-    fromDate: "2026-09-08T14:00",
-    date: "2026-09-08T14:00",
-    toDate: "2026-09-08T15:30",
-    duration: "1:30:00",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Senior Nursing Instructor",
-    modeOfTeaching: "Hands-on Workshop",
-    description: "In-depth clinical workshop on ventilator modes, alarm troubleshooting, endotracheal suctioning techniques, and sedation vacation.",
-    maxParticipants: 35,
-    status: "Scheduled"
-  },
-  {
-    cneId: "CLS-2026-002",
-    classId: "CLS-2026-002",
-    topic: "Medication Administration Safety: High-Alert Drugs & Double-Check Standards",
-    area: "CNE Open Forum",
-    fromDate: "2026-09-15T11:00",
-    date: "2026-09-15T11:00",
-    toDate: "2026-09-15T12:00",
-    duration: "1:00:00",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Infection Control Nurse",
-    modeOfTeaching: "Lecture Cum Discussion",
-    description: "Guidelines on preventing look-alike sound-alike (LASA) errors, infusion pump calculations, and adverse event reporting.",
-    maxParticipants: 60,
-    status: "Scheduled"
-  },
-  {
-    cneId: "CLS-2026-003",
-    classId: "CLS-2026-003",
-    topic: "Neonatal Resuscitation Program (NRP) Skills Refresher",
-    area: "231A(NICU)-(Inborn)",
-    fromDate: "2026-09-22T15:00",
-    date: "2026-09-22T15:00",
-    toDate: "2026-09-22T16:30",
-    duration: "1:30:00",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Clinical Nurse Specialist",
-    modeOfTeaching: "Hands-on Workshop",
-    description: "Targeted refresher on T-piece resuscitator, chest compressions, and umbilical venous catheterization assistance.",
-    maxParticipants: 25,
-    status: "Scheduled"
-  },
-  {
-    cneId: "CLS-2026-004",
-    classId: "CLS-2026-004",
-    topic: "Chemotherapy Safe Handling, Extravasation Management & PPE Protocols",
-    area: "245(IPD)-(Med-Onco & Hemat)",
-    fromDate: "2026-09-29T14:00",
-    date: "2026-09-29T14:00",
-    toDate: "2026-09-29T15:00",
-    duration: "1:00:00",
-    resourcePersonEmpId: "",
-    resourcePersonName: "Emergency Nurse Specialist",
-    modeOfTeaching: "Lecture Cum Discussion",
-    description: "Hazardous drug preparation and disposal, spill kit usage, and prompt extravasation care steps.",
-    maxParticipants: 40,
-    status: "Scheduled"
-  }
-];
+export const INITIAL_UPCOMING_CLASSES: CNERecord[] = [];
 
-export const INITIAL_GALLERY: GalleryItem[] = [
-  {
-    id: "IMG-2026-001",
-    title: "Hands-on Pediatric Airway & Resuscitation Workshop",
-    description: "Nursing officers practicing bag-valve-mask and intubation assistance in PICU simulation lab.",
-    date: "2026-02-18",
-    imageUrl: "https://images.unsplash.com/photo-1579684385127-1ef15d508118?auto=format&fit=crop&w=800&q=80",
-    uploadedBy: "ADMIN",
-    uploadedAt: "2026-02-19T09:00:00Z",
-    isActive: true
-  },
-  {
-    id: "IMG-2026-002",
-    title: "Hospital Infection Control & Quality Audits Session",
-    description: "Annual infection control workshop conducted by CNO for senior nursing staff and supervisors.",
-    date: "2026-01-10",
-    imageUrl: "https://images.unsplash.com/photo-1584515979956-d9f6e5d09982?auto=format&fit=crop&w=800&q=80",
-    uploadedBy: "ADMIN",
-    uploadedAt: "2026-01-11T12:00:00Z",
-    isActive: true
-  },
-  {
-    id: "IMG-2026-003",
-    title: "12-Lead ECG Interpretation Interactive Lecture",
-    description: "Interactive rhythm analysis and telemetry monitoring session for cardiology and HDU nursing teams.",
-    date: "2025-11-14",
-    imageUrl: "https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?auto=format&fit=crop&w=800&q=80",
-    uploadedBy: "ADMIN",
-    uploadedAt: "2025-11-15T15:30:00Z",
-    isActive: true
-  },
-  {
-    id: "IMG-2026-004",
-    title: "Ophthalmic Nursing & Glaucoma Care Skill Station",
-    description: "Demonstration of sterile eye drop instillation and post-operative eye shield application.",
-    date: "2026-03-01",
-    imageUrl: "https://images.unsplash.com/photo-1581594693702-fbdc51b2763b?auto=format&fit=crop&w=800&q=80",
-    uploadedBy: "ADMIN",
-    uploadedAt: "2026-03-02T10:00:00Z",
-    isActive: true
-  }
-];
+export const INITIAL_GALLERY: GalleryItem[] = [];
 
 export const INITIAL_CHAIRPERSON_MESSAGE: ChairpersonMessageData = {
   name: "Dr. Anita Rani Kansal",
@@ -309,7 +100,7 @@ export const INITIAL_CHAIRPERSON_MESSAGE: ChairpersonMessageData = {
   message: [
     "Welcome to the Continuing Nursing Education (CNE) Portal of AIIMS Rishikesh. Continuing education is not merely a professional obligation; it is the cornerstone of patient safety, clinical excellence, and progressive nursing practice.",
     "In a tertiary healthcare and apex academic institution like AIIMS Rishikesh, our nursing fraternity stands on the frontlines of complex medical care, specialized surgical interventions, and intensive critical monitoring. Continuous upskilling ensures that every intervention delivered to our patients meets national and international benchmarks of evidence-based nursing care.",
-    "This centralized CNE portal serves as an institutional hub to democratize learning, maintain transparent training portfolios, and recognize the scholarly contributions of both our resource persons and enthusiastic learners. I encourage every nursing officer to take full ownership of their professional development and participate actively in our continuous education calendar."
+    "This centralized CNE portal serves as an institutional hub to democratize learning, maintain transparent training portfolios, and recognize the scholarly contributions of both our resource persons and enthusiastic learners. I encourage every nursing officer to take full ownership of their professional development and participate actively in our Clinical Nursing Education education calendar."
   ],
   keyHighlights: [
     "Institutional commitment to 100% evidence-based clinical protocols",
@@ -319,61 +110,7 @@ export const INITIAL_CHAIRPERSON_MESSAGE: ChairpersonMessageData = {
   ]
 };
 
-export const INITIAL_NEWS_EVENTS: NewsEventItem[] = [
-  {
-    id: "NEWS-2026-001",
-    title: "Notice: Annual CNE Credit Hour Guidelines 2026-27",
-    date: "2026-08-25",
-    category: "Circular",
-    summary: "Office memorandum outlining continuing nursing education guidelines for all Nursing Officers and Senior Nursing Officers for the academic year.",
-    content: "As per circular AIIMS/DNS/CNE/2026/104, all nursing personnel are encouraged to complete a minimum of 20 verified CNE training hours annually. Completed sessions automatically generate official summary reports for verification by CNE Coordinator & Chairperson.",
-    venue: "Office of the CNO / CNE Committee",
-    isImportant: true
-  },
-  {
-    id: "NEWS-2026-002",
-    title: "Upcoming 3-Day Advanced Airway & Mechanical Ventilation Masterclass",
-    date: "2026-09-08",
-    category: "Workshop",
-    summary: "Hands-on intensive masterclass on ventilator modes, lung-protective strategies, and troubleshooting patient-ventilator asynchrony.",
-    content: "Targeted at ICU, CCU, and HDU nursing officers. Hands-on skill stations with mechanical ventilators and simulation manikins in the Clinical Skills Simulation Center.",
-    venue: "Mini Auditorium & PICU Simulation Lab",
-    speaker: "Faculty from Critical Care & Nursing Services",
-    isImportant: true
-  },
-  {
-    id: "NEWS-2026-003",
-    title: "Regional Conference: Innovations in Infection Prevention & Sepsis Bundles",
-    date: "2026-09-22",
-    category: "Conference",
-    summary: "Annual institutional symposium on hospital acquired infections (HAI), central line bundles, and surgical site infection mitigation.",
-    content: "Featuring guest lectures from national infection control experts and clinical presentations by our infection control nurse specialists.",
-    venue: "Main Auditorium, AIIMS Rishikesh",
-    speaker: "Hospital Infection Control Committee (HICC)",
-    isImportant: false
-  },
-  {
-    id: "NEWS-2026-004",
-    title: "Training Session: Point-of-Care Ultrasound (POCUS) Vascular Access",
-    date: "2026-09-14",
-    category: "Training",
-    summary: "Skill station on ultrasound-guided peripheral IV cannulation and midline catheter placement in difficult access patients.",
-    content: "Hands-on ultrasound training stations allowing participants to practice vessel visualization and needle guidance techniques.",
-    venue: "Skills Lab, 4th Floor Medical College",
-    speaker: "Interventional Nursing Team",
-    isImportant: false
-  },
-  {
-    id: "NEWS-2026-005",
-    title: "System Update: CNE Self-Service Portal Features Instant PDF Generation",
-    date: "2026-08-12",
-    category: "Update",
-    summary: "Nursing staff can now access instant digital attendance records, class schedules, and export verified CNE records.",
-    content: "The portal supports real-time synchronization of scheduled classes and verified attendance across clinical areas.",
-    venue: "Institutional Web Portal",
-    isImportant: false
-  }
-];
+export const INITIAL_NEWS_EVENTS: NewsEventItem[] = [];
 
 export const INITIAL_QUICK_LINKS: QuickLinkItem[] = [
   {
@@ -428,7 +165,7 @@ export const INITIAL_QUICK_LINKS: QuickLinkItem[] = [
         "Leadership: Chaired by the Chief Nursing Officer (C.N.O) in coordination with Deputy Nursing Superintendents (D.N.S) and Assistant Nursing Superintendents (A.N.S).",
         "Coordinators: Ms. Ramya T and Ms. Suman Choudhary.",
         "Key Mandates: Curriculum design for clinical specialties, simulation-based resuscitation workshops, orientation programmes for newly recruited officers, and institutional continuous learning audits.",
-        "Contact: Nursing Education Cell, Room No. 214, Medical College Building, AIIMS Rishikesh."
+        "Contact: Nursing Education Cell, AIIMS Rishikesh."
       ]
     }
   },
@@ -478,13 +215,8 @@ export const INITIAL_COORDINATOR_DESK: CoordinatorDeskInfo = {
 };
 
 export const INITIAL_PROGRAM_IMPACT: ProgramImpactStats = {
-  totalCompletedClasses: 6,
-  cneDuration: '08:30:00',
-  totalDuration: '08:30:00',
-  totalDurationSeconds: 30600,
-  uniqueStaffTrained: 124,
-  uniqueWardsCount: 6,
-  attendanceComplianceRate: '94.2%',
+  totalCompletedClasses: 0,
+  cneDuration: '0 Hrs',
+  uniqueStaffTrained: 0,
   scope: 'institutional'
 };
-

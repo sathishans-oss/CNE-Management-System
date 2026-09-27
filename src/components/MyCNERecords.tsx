@@ -4,7 +4,6 @@ import {
   FileDown,
   Clock,
   X,
-  RefreshCw,
   CheckCircle2,
   Loader2
 } from 'lucide-react';
@@ -14,7 +13,8 @@ import { generateCNERecordsPdf } from '../services/pdfGenerator';
 import { useToast } from './Toast';
 import {
   formatCneDateRangeDisplay,
-  formatResourcePersonsDisplay
+  formatResourcePersonsDisplay,
+  parseToIsoDateString
 } from '../utils';
 import { SearchInput } from './SearchInput';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
@@ -58,29 +58,35 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
 
   // Filter logic: Search + Date Range (From Date / To Date)
   const filteredRecords = useMemo(() => {
-    return records.filter((rec) => {
-      // Date Range filter
-      if (startDate && rec.fromDate < startDate) return false;
-      if (endDate && rec.fromDate > endDate) return false;
+    return records
+      .filter((rec) => {
+        // Date Range filter
+        if (startDate && rec.fromDate < startDate) return false;
+        if (endDate && rec.fromDate > endDate) return false;
 
-      // Global Search
-      if (searchTerm.trim()) {
-        const q = searchTerm.toLowerCase();
-        const matchTopic = rec.topic.toLowerCase().includes(q);
-        const matchArea = rec.area.toLowerCase().includes(q);
-        const matchMode = rec.modeOfTeaching.toLowerCase().includes(q);
-        const rpDisplay = formatResourcePersonsDisplay({
-          resourcePersonEmpId: rec.resourcePersonEmpId,
-          resourcePersonName: rec.resourcePersonName,
-          externalResourcePersons: rec.externalResourcePersons
-        }).toLowerCase();
-        const matchRp = rpDisplay.includes(q) || (rec.resourcePersonEmpId || '').toLowerCase().includes(q);
-        const matchExtRp = rec.externalResourcePersons?.some(p => p.toLowerCase().includes(q));
-        if (!matchTopic && !matchArea && !matchMode && !matchRp && !matchExtRp) return false;
-      }
+        // Global Search
+        if (searchTerm.trim()) {
+          const q = searchTerm.toLowerCase();
+          const matchTopic = rec.topic.toLowerCase().includes(q);
+          const matchArea = rec.area.toLowerCase().includes(q);
+          const matchMode = rec.modeOfTeaching.toLowerCase().includes(q);
+          const rpDisplay = formatResourcePersonsDisplay({
+            resourcePersonEmpId: rec.resourcePersonEmpId,
+            resourcePersonName: rec.resourcePersonName,
+            externalResourcePersons: rec.externalResourcePersons
+          }).toLowerCase();
+          const matchRp = rpDisplay.includes(q) || (rec.resourcePersonEmpId || '').toLowerCase().includes(q);
+          const matchExtRp = rec.externalResourcePersons?.some(p => p.toLowerCase().includes(q));
+          if (!matchTopic && !matchArea && !matchMode && !matchRp && !matchExtRp) return false;
+        }
 
-      return true;
-    });
+        return true;
+      })
+      .sort((a, b) => {
+        const aFromDate = parseToIsoDateString(a.fromDate) || '';
+        const bFromDate = parseToIsoDateString(b.fromDate) || '';
+        return bFromDate.localeCompare(aFromDate);
+      });
   }, [records, startDate, endDate, searchTerm]);
 
   // Compute total duration
@@ -110,7 +116,8 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     try {
       generateCNERecordsPdf(user, filteredRecords, {
         fromDate: startDate || undefined,
-        toDate: endDate || undefined
+        toDate: endDate || undefined,
+        searchTerm: searchTerm.trim() || undefined
       });
       success('CNE Record PDF downloaded successfully.', 'PDF Generated');
     } catch (e: any) {
@@ -123,63 +130,10 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
 
   return (
     <div className="space-y-6 pb-12">
-      {/* Header Bar */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold text-slate-900">My CNE Activities</h1>
-            <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-emerald-100 text-emerald-800">
-              Personal CNE Portfolio
-            </span>
-          </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Official records of all Continuing Nursing Education sessions attended or conducted by {user.name} ({user.employeeId}).
-          </p>
-        </div>
-
-        {/* Action Button: Generate PDF */}
-        <div className="flex flex-col sm:items-end gap-1.5">
-          <div className="flex items-center gap-2">
-            <button
-              id="btn-refresh-my-cne"
-              onClick={loadMyRecords}
-              disabled={loading || isGeneratingPdf}
-              className="p-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors disabled:opacity-40"
-              title="Refresh records"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-
-            <button
-              id="btn-generate-cne-records-pdf"
-              onClick={handleGeneratePdf}
-              disabled={isGeneratingPdf || loading}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs sm:text-sm shadow-xs transition-all cursor-pointer disabled:opacity-50"
-            >
-              {isGeneratingPdf ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
-                  <span>Generating PDF...</span>
-                </>
-              ) : (
-                <>
-                  <FileDown className="w-4 h-4 text-emerald-400" />
-                  <span>Generate PDF</span>
-                </>
-              )}
-            </button>
-          </div>
-          <p className="text-[11px] text-slate-500 text-left sm:text-right">
-            Generate a PDF of the CNE records matching the selected filters.
-          </p>
-        </div>
-      </div>
-
-      {/* Filter & Metric Ribbon */}
-      <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {/* Search Box */}
-          <div>
+      {/* Compact Filter / Action Toolbar */}
+      <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-xs overflow-x-auto">
+        <div className="flex flex-nowrap items-center gap-3 min-w-max">
+          <div className="w-[280px] lg:w-[360px]">
             <SearchInput
               id="input-my-cne-search"
               value={searchTerm}
@@ -188,53 +142,65 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             />
           </div>
 
-          {/* From Date */}
-          <div>
+          <div className="w-[160px]">
             <ConfirmDatePicker
               id="my-cne-from-date"
               value={startDate}
               onChange={setStartDate}
-              placeholder="Filter From Date..."
+              placeholder="From Date"
               compact
             />
           </div>
 
-          {/* To Date */}
-          <div>
+          <div className="w-[160px]">
             <ConfirmDatePicker
               id="my-cne-to-date"
               value={endDate}
               onChange={setEndDate}
               minDate={startDate}
-              placeholder="Filter To Date..."
+              placeholder="To Date"
               compact
             />
           </div>
-        </div>
 
-        {/* Totals Summary Banner */}
-        <div className="flex flex-wrap items-center justify-between gap-4 pt-3 border-t border-slate-100 text-xs">
-          <div className="flex items-center gap-6">
-            <span className="text-slate-600">
-              Filtered Sessions: <strong className="text-slate-900">{filteredRecords.length}</strong>
-            </span>
-            <span className="text-slate-600">
-              Total Training Duration: <strong className="text-emerald-700">{totalDurationStats}</strong>
-            </span>
+          <div className="whitespace-nowrap rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-slate-600">
+            Training: <strong className="text-emerald-700">{totalDurationStats}</strong>
           </div>
 
           {(searchTerm || startDate || endDate) && (
             <button
+              type="button"
               onClick={() => {
                 setSearchTerm('');
                 setStartDate('');
                 setEndDate('');
               }}
-              className="text-xs text-rose-600 hover:text-rose-800 font-medium cursor-pointer"
+              className="inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors cursor-pointer"
+              title="Clear filters"
             >
-              Clear Filters
+              <X className="w-3.5 h-3.5" />
+              Clear
             </button>
           )}
+
+          <button
+            id="btn-generate-cne-records-pdf"
+            onClick={handleGeneratePdf}
+            disabled={isGeneratingPdf || loading}
+            className="ml-auto inline-flex h-9 items-center gap-2 whitespace-nowrap rounded-lg bg-slate-900 px-4 text-xs font-bold text-white shadow-xs transition-colors hover:bg-slate-800 cursor-pointer disabled:opacity-50"
+          >
+            {isGeneratingPdf ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                <span>Generating...</span>
+              </>
+            ) : (
+              <>
+                <FileDown className="w-4 h-4 text-emerald-400" />
+                <span>Generate PDF</span>
+              </>
+            )}
+          </button>
         </div>
       </div>
 

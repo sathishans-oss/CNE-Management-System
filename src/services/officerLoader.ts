@@ -69,14 +69,3 @@ export async function loadOfficersSingleFlight(force: boolean = false, cneId?: s
 
   return inFlightOfficersPromise;
 }
-
-/**
- * Allows updating the cached officers list when new officers are retrieved.
- */
-export function setCachedOfficers(officers: Employee[]): void {
-  syncOfficerCacheWithSession();
-  if (Array.isArray(officers) && officers.length > 0) {
-    cachedOfficers = officers;
-  }
-}
-

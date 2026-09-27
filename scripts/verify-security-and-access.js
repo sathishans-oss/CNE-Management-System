@@ -1073,16 +1073,25 @@ runTest('Frontend does not automatically fetch officer directory for every logge
     codeGs.indexOf('function handleCreateCNE(')
   );
   assert.ok(
-    getCneSection.includes("return officerMap[id] || (isAdmin ? id : 'Resource Person');"),
-    "handleGetCNERecords must fall back to neutral 'Resource Person' label rather than raw Employee ID for non-admin/public callers"
+    getCneSection.includes("return officerMap[id] || 'Resource Person';") &&
+    getCneSection.includes("return officerMap[id] || 'Staff Member';"),
+    'handleGetCNERecords must use neutral display labels rather than raw Employee IDs when roster names cannot be resolved'
   );
   assert.ok(
-    getCneSection.includes("resourcePersonEmpId: isPublicRequest ? '' : resourcePersonEmpId") &&
-    getCneSection.includes("proposedByEmpId: isPublicRequest ? '' : proposedBy") &&
-    getCneSection.includes("staffEmpIds: isPublicRequest ? [] : sanitizedStaffEmpIds") &&
-    getCneSection.includes("remarks: isPublicRequest ? '' : remarks") &&
-    getCneSection.includes("adminRemarks: isPublicRequest ? '' : remarks"),
-    'handleGetCNERecords must strip Resource Person IDs, Proposed By ID, participant IDs, and internal remarks from public responses'
+    getCneSection.includes("resourcePersonEmpIdForResponse = ''") &&
+    getCneSection.includes("resourcePersonEmpIdForResponse = loggedInId") &&
+    getCneSection.includes("staffEmpIdsForResponse = []") &&
+    getCneSection.includes("staffNameList = staffArray.map") &&
+    getCneSection.includes("proposedByEmpId: canSeeInternalManagementFields ? proposedBy : ''") &&
+    getCneSection.includes("proposedByName: proposedByName") &&
+    getCneSection.includes("remarks: remarks") &&
+    getCneSection.includes("adminRemarks: canSeeInternalManagementFields ? adminRemarks : ''"),
+    'handleGetCNERecords must expose safe names/general remarks while minimizing raw Employee IDs and restricting Admin Remarks'
+  );
+  assert.ok(
+    getCneSection.includes("var adminRemarksCol = colMap['adminremarks']") &&
+    getCneSection.includes("var remarksCol = colMap['remarks']"),
+    'handleGetCNERecords must read general Remarks separately from Admin Remarks'
   );
 
   const rpDisplaySection = utilsTs.substring(

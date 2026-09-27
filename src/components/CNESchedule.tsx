@@ -22,8 +22,7 @@ import {
   HelpCircle,
   ClipboardCheck,
   Building2,
-  GraduationCap,
-  Filter
+  GraduationCap
 } from 'lucide-react';
 import { SessionUser, CNERecord, CNEActivityProgress } from '../types';
 import { ApiService } from '../services/api';
@@ -64,7 +63,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [fromDateFilter, setFromDateFilter] = useState('');
   const [toDateFilter, setToDateFilter] = useState('');
-  const [isFilterOpen, setIsFilterOpen] = useState(true);
 
   // Schedule Class Modal State
   const [isScheduleChoiceOpen, setIsScheduleChoiceOpen] = useState(false);
@@ -723,22 +721,65 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     return true;
   });
 
-  const availableClasses = filteredClasses;
+  const availableClasses = [...filteredClasses].sort((a, b) => {
+    const aFromDate = parseToIsoDateString(a.fromDate) || '';
+    const bFromDate = parseToIsoDateString(b.fromDate) || '';
+    return bFromDate.localeCompare(aFromDate);
+  });
 
   return (
-    <div className="space-y-6 pb-12">
-      {/* Header Bar */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900">CNE Schedule</h1>
-          <p className="text-xs text-slate-500 mt-1">
-            Scheduled clinical skill stations, continuing nursing seminars, and simulation lab workshops.
-          </p>
-        </div>
+    <div className="space-y-4 pb-12">
+      {/* Compact CNE Schedule toolbar: Search | From Date | To Date | Clear | Schedule CNE */}
+      <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs overflow-x-auto">
+        <div className="flex items-center gap-3 min-w-max">
+          <div className="w-[300px] min-w-[220px]">
+            <SearchInput
+              id="filter-search"
+              placeholder="Search..."
+              value={searchTerm}
+              onChange={setSearchTerm}
+            />
+          </div>
 
-        {canScheduleCne && (
-          <div className="flex flex-wrap items-center gap-2.5">
-            {/* Unified Schedule CNE Button */}
+          <div className="flex items-center gap-2 shrink-0">
+            <label htmlFor="filter-from-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
+              From Date
+            </label>
+            <ConfirmDatePicker
+              id="filter-from-date"
+              value={fromDateFilter}
+              onChange={setFromDateFilter}
+              placeholder="From Date..."
+              compact
+            />
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <label htmlFor="filter-to-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
+              To Date
+            </label>
+            <ConfirmDatePicker
+              id="filter-to-date"
+              value={toDateFilter}
+              onChange={setToDateFilter}
+              minDate={fromDateFilter}
+              placeholder="To Date..."
+              compact
+            />
+          </div>
+
+          {hasActiveFilters && (
+            <button
+              type="button"
+              id="btn-clear-filters"
+              onClick={handleClearFilters}
+              className="px-3 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Clear
+            </button>
+          )}
+
+          {canScheduleCne && (
             <button
               id="btn-schedule-cne"
               type="button"
@@ -749,124 +790,17 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                   setIsDeptScheduleOpen(true);
                 }
               }}
-              className="flex items-center gap-1.5 px-3.5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs"
+              className="ml-auto flex items-center gap-1.5 px-3.5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs whitespace-nowrap shrink-0"
             >
               <PlusCircle className="w-4 h-4 text-teal-200" />
               <span>Schedule CNE</span>
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Main Content Area */}
       <div className="space-y-4">
-        {/* Filter Control & Panel (Search... | From Date | To Date) */}
-        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                id="btn-toggle-filter"
-                onClick={() => setIsFilterOpen((prev) => !prev)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${
-                  isFilterOpen
-                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                }`}
-                title="Toggle filter controls"
-              >
-                <Filter className="w-3.5 h-3.5" />
-                <span>Filter</span>
-                {hasActiveFilters && (
-                  <span className="w-2 h-2 rounded-full bg-teal-400" />
-                )}
-              </button>
-
-              {/* Result Count */}
-              <div id="cne-result-count" className="text-xs text-slate-600 font-medium">
-                {hasActiveFilters ? (
-                  <span>
-                    Showing <strong className="font-bold text-slate-900">{availableClasses.length}</strong> of{' '}
-                    <strong className="font-bold text-slate-900">{classes.length}</strong> CNEs
-                  </span>
-                ) : (
-                  <span>
-                    <strong className="font-bold text-slate-900">{classes.length}</strong> CNEs
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {hasActiveFilters && (
-              <button
-                type="button"
-                id="btn-clear-filters-header"
-                onClick={handleClearFilters}
-                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-                <span>Clear</span>
-              </button>
-            )}
-          </div>
-
-          {/* When opened, display exactly these three controls: Search... | From Date | To Date */}
-          {isFilterOpen && (
-            <div className="pt-3 border-t border-slate-100 flex flex-col md:flex-row items-stretch md:items-center gap-3">
-              {/* 1. Search */}
-              <div className="flex-1 min-w-[200px]">
-                <SearchInput
-                  id="filter-search"
-                  placeholder="Search..."
-                  value={searchTerm}
-                  onChange={setSearchTerm}
-                />
-              </div>
-
-              {/* 2. From Date */}
-              <div className="flex items-center gap-2">
-                <label htmlFor="filter-from-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
-                  From Date
-                </label>
-                <ConfirmDatePicker
-                  id="filter-from-date"
-                  value={fromDateFilter}
-                  onChange={setFromDateFilter}
-                  placeholder="From Date..."
-                  compact
-                />
-              </div>
-
-              {/* 3. To Date */}
-              <div className="flex items-center gap-2">
-                <label htmlFor="filter-to-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
-                  To Date
-                </label>
-                <ConfirmDatePicker
-                  id="filter-to-date"
-                  value={toDateFilter}
-                  onChange={setToDateFilter}
-                  minDate={fromDateFilter}
-                  placeholder="To Date..."
-                  compact
-                />
-              </div>
-
-              {/* Clear control */}
-              {hasActiveFilters && (
-                <button
-                  type="button"
-                  id="btn-clear-filters"
-                  onClick={handleClearFilters}
-                  className="px-3 py-1.5 text-xs font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-
         {loading ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
             <Loader2 className="w-8 h-8 animate-spin text-teal-600" />

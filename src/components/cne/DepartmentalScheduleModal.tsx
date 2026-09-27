@@ -345,7 +345,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
               <p className="text-xs text-slate-500">
                 {isAreaIncharge
                   ? `Schedule departmental CNE classes for ${user?.assignedArea || 'your department'}`
-                  : 'Schedule departmental continuing nursing education workshops'}
+                  : 'Schedule departmental clinical nursing education workshops'}
               </p>
             </div>
           </div>
