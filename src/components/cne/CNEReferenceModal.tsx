@@ -8,7 +8,6 @@ import {
   Save,
   Info,
   Upload,
-  User,
   ArrowRight,
   AlertCircle,
   Trash2
@@ -37,9 +36,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const savingRef = useRef(false);
 
-  // Content & Resource Person
+  // Learning material content
   const [unifiedContent, setUnifiedContent] = useState('');
-  const [resourcePerson, setResourcePerson] = useState(cne.resourcePersonName || cne.instructor || '');
   const [updatedBy, setUpdatedBy] = useState<string | undefined>(undefined);
   const [updatedAt, setUpdatedAt] = useState<string | undefined>(undefined);
 
@@ -84,9 +82,6 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
       if (resourceRes.success && resourceRes.data) {
         if (resourceRes.data.hasFile || resourceRes.data.driveFileId) {
           setExistingResource(resourceRes.data);
-          if (resourceRes.data.resourcePersonName && !resourcePerson) {
-            setResourcePerson(resourceRes.data.resourcePersonName);
-          }
         }
       }
     } catch (e: any) {
@@ -204,7 +199,6 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
           base64Data: base64Data,
           fileName: selectedFile.name,
           fileType: selectedFile.type || 'application/octet-stream',
-          resourcePersonName: resourcePerson.trim() || undefined,
           unifiedContent: unifiedContent.trim() || undefined
         });
 
@@ -325,22 +319,6 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
 
             {/* Scrollable Form Body */}
             <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-5 bg-slate-50/40">
-              {/* Resource Person Input */}
-              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5 mb-1.5">
-                  <User className="w-3.5 h-3.5 text-teal-600" />
-                  Resource Person / Speaker
-                </label>
-                <input
-                  type="text"
-                  value={resourcePerson}
-                  onChange={(e) => setResourcePerson(e.target.value)}
-                  disabled={!isAuthorized || isSaving}
-                  placeholder="e.g. Dr. A. Sharma / Sister In-Charge / Clinical Specialist"
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-800 focus:bg-white focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all disabled:opacity-60"
-                />
-              </div>
-
               {/* Upload Learning Resource File Section */}
               <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-3">
                 <div className="flex items-center justify-between">

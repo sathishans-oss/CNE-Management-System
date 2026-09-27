@@ -1,11 +1,14 @@
 import React from 'react';
 import { HeartHandshake, Users, Mail } from 'lucide-react';
+import { CoordinatorDeskInfo } from '../../types';
 
 interface CoordinatorDeskCardProps {
+  coordinatorDesk: CoordinatorDeskInfo;
   accentColor?: 'emerald' | 'blue' | 'amber' | 'teal';
 }
 
 export const CoordinatorDeskCard: React.FC<CoordinatorDeskCardProps> = ({
+  coordinatorDesk,
   accentColor = 'emerald'
 }) => {
   const iconColor = {
@@ -36,7 +39,7 @@ export const CoordinatorDeskCard: React.FC<CoordinatorDeskCardProps> = ({
         <span>CNE Coordinator Desk</span>
       </div>
       <p className="text-[11px] text-slate-500 leading-relaxed">
-        Have questions regarding class credits, attendance verification, or training schedules?
+        {coordinatorDesk.note}
       </p>
       <div className="pt-1 text-[11px] text-slate-800 space-y-2">
         <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 space-y-1.5">
@@ -45,14 +48,12 @@ export const CoordinatorDeskCard: React.FC<CoordinatorDeskCardProps> = ({
             <span>CNE Coordinators:</span>
           </div>
           <div className="text-slate-700 space-y-1 pl-1 font-medium">
-            <div className="flex items-center gap-1.5">
-              <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
-              <span>Ms. Ramya T</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
-              <span>Ms. Suman Choudhary</span>
-            </div>
+            {coordinatorDesk.coordinators.map((name, index) => (
+              <div key={`${name}-${index}`} className="flex items-center gap-1.5">
+                <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                <span>{name}</span>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -60,10 +61,10 @@ export const CoordinatorDeskCard: React.FC<CoordinatorDeskCardProps> = ({
           <div className="flex items-center gap-1.5 truncate text-slate-700 font-semibold">
             <Mail className={`w-3.5 h-3.5 ${iconColor} shrink-0`} />
             <a
-              href="mailto:training.nur@aiimsrishikesh.edu.in"
+              href={`mailto:${coordinatorDesk.email}`}
               className={`truncate ${linkHover} hover:underline`}
             >
-              training.nur@aiimsrishikesh.edu.in
+              {coordinatorDesk.email}
             </a>
           </div>
         </div>

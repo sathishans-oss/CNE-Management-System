@@ -380,10 +380,6 @@ function handleRequest(e, method) {
         output = handleGetNewsEvents(params);
         break;
         
-      case 'getChairpersonMessage':
-        output = handleGetChairpersonMessage(params);
-        break;
-        
       case 'getQuickLinks':
         output = handleGetQuickLinks(params);
         break;
@@ -2436,10 +2432,11 @@ function handleGetCNERecords(params, session) {
     var isResourcePerson = loggedInId ? (rpArray.indexOf(loggedInId) !== -1) : false;
     var isStaffParticipant = loggedInId ? (staffArray.indexOf(loggedInId) !== -1) : false;
 
-    if (isMyRecordsOnly) {
-      if (!isAdmin && !isResourcePerson && !isStaffParticipant) {
-        continue;
-      }
+    // My CNE Records is always personal, regardless of role.
+    // Admins and Incharges see only CNEs where they personally participated
+    // or were assigned as a Resource Person.
+    if (isMyRecordsOnly && !isResourcePerson && !isStaffParticipant) {
+      continue;
     }
 
     if (params) {
@@ -4031,49 +4028,13 @@ function handleDeleteNewsEvent(params, session) {
 }
 
 /**
- * 12. Chairperson Message Management (Public Read-Only)
+ * 13. Institutional Quick Links (Public Read, Admin Write)
+ * Stored in the CNE spreadsheet tab: "Quick Links".
+ * Legacy QUICK_LINKS_CUSTOM Script Property is used only once to seed/migrate
+ * an empty/new sheet, then the sheet becomes the authoritative source.
  */
-function handleGetChairpersonMessage(params) {
-  var props = PropertiesService.getScriptProperties();
-  var message = props.getProperty('CHAIRPERSON_MESSAGE');
-  var name = props.getProperty('CHAIRPERSON_NAME') || 'Dr. Anita Rani Kansal';
-  var designation = props.getProperty('CHAIRPERSON_DESIG') || 'Chief Nursing Officer (C.N.O) & Chairperson, CNE Committee';
-  var photoUrl = props.getProperty('CHAIRPERSON_PHOTO') || 'https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&w=600&q=80';
-  var driveFileId = props.getProperty('CHAIRPERSON_PHOTO_DRIVE_ID') || '';
-  
-  if (!message) {
-    message = 'Clinical Nursing Education is the bedrock of patient safety and clinical excellence. At AIIMS Rishikesh, our CNE cell is committed to providing evidence-based, continuous professional development to empower nursing professionals across all clinical wards.';
-  }
-  
-  return {
-    success: true,
-    data: {
-      name: name,
-      designation: designation,
-      photoUrl: photoUrl,
-      driveFileId: driveFileId,
-      driveUrl: driveFileId ? ('https://lh3.googleusercontent.com/d/' + driveFileId) : photoUrl,
-      message: message
-    }
-  };
-}
-
-/**
- * 13. Institutional Quick Links (Public Read-Only)
- */
-function handleGetQuickLinks(params) {
-  var props = PropertiesService.getScriptProperties();
-  var custom = props.getProperty('QUICK_LINKS_CUSTOM');
-  if (custom) {
-    try {
-      var parsed = JSON.parse(custom);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return { success: true, data: parsed };
-      }
-    } catch (e) {}
-  }
-
-  var defaultLinks = [
+function getDefaultQuickLinks_() {
+  return [
     {
       id: 'ql-cne-schedule',
       title: 'Upcoming CNE Schedule',
@@ -4132,7 +4093,97 @@ function handleGetQuickLinks(params) {
       url: 'https://indiannursingcouncil.org'
     }
   ];
-  return { success: true, data: defaultLinks };
+}
+
+function writeQuickLinkRow_(sheet, link, sortOrder, updatedBy) {
+  var modal = link && link.modalContent ? link.modalContent : null;
+  var modalBody = modal && Array.isArray(modal.body) ? modal.body.join('\n') : '';
+  sheet.appendRow([
+    sanitizeCellInput(link.id || ('ql-' + Date.now())),
+    sanitizeCellInput(link.title || ''),
+    sanitizeCellInput(link.description || ''),
+    sanitizeCellInput(link.iconName || 'Link'),
+    sanitizeCellInput(link.target || link.url || ''),
+    sanitizeCellInput(link.badge || ''),
+    sanitizeCellInput(link.actionType || 'navigate'),
+    sanitizeCellInput(link.url || ''),
+    sanitizeCellInput(modal && modal.title ? modal.title : ''),
+    sanitizeCellInput(modalBody),
+    'ACTIVE',
+    Number(sortOrder) || 0,
+    new Date().toISOString(),
+    sanitizeCellInput(updatedBy || 'SYSTEM')
+  ]);
+}
+
+function ensureQuickLinksSheetSeeded_() {
+  var ss = getSpreadsheet('CNE');
+  var existing = ss.getSheetByName('Quick Links');
+  var sheet = getOrCreateSheet('Quick Links');
+
+  // An existing sheet with any data rows is already authoritative, including
+  // rows marked INACTIVE after Admin deletions. Never re-seed it automatically.
+  if (existing && sheet.getLastRow() > 1) return sheet;
+
+  var seedLinks = null;
+  var legacy = PropertiesService.getScriptProperties().getProperty('QUICK_LINKS_CUSTOM');
+  if (legacy) {
+    try {
+      var parsed = JSON.parse(legacy);
+      if (Array.isArray(parsed) && parsed.length > 0) seedLinks = parsed;
+    } catch (e) {}
+  }
+  if (!seedLinks) seedLinks = getDefaultQuickLinks_();
+
+  if (sheet.getLastRow() <= 1) {
+    for (var i = 0; i < seedLinks.length; i++) {
+      writeQuickLinkRow_(sheet, seedLinks[i], i + 1, legacy ? 'MIGRATED_FROM_SCRIPT_PROPERTIES' : 'SYSTEM_DEFAULT');
+    }
+  }
+  return sheet;
+}
+
+function readQuickLinksFromSheet_() {
+  var sheet = ensureQuickLinksSheetSeeded_();
+  var data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return [];
+  var map = getHeaderMap(sheet);
+  var links = [];
+
+  for (var r = 1; r < data.length; r++) {
+    var row = data[r];
+    var id = String(row[map['id']] || '').trim();
+    var status = String(row[map['status']] || 'ACTIVE').toUpperCase().trim();
+    if (!id || status !== 'ACTIVE') continue;
+
+    var actionType = String(row[map['actiontype']] || 'navigate').trim();
+    var modalTitle = String(row[map['modaltitle']] || '').trim();
+    var modalBodyRaw = String(row[map['modalbody']] || '').trim();
+    var item = {
+      id: id,
+      title: String(row[map['title']] || ''),
+      description: String(row[map['description']] || ''),
+      iconName: String(row[map['iconname']] || 'Link'),
+      target: String(row[map['target']] || ''),
+      badge: String(row[map['badge']] || ''),
+      actionType: actionType,
+      url: String(row[map['url']] || '')
+    };
+    if (modalTitle || modalBodyRaw) {
+      item.modalContent = {
+        title: modalTitle,
+        body: modalBodyRaw ? modalBodyRaw.split(/\r?\n/).map(function(v) { return v.trim(); }).filter(Boolean) : []
+      };
+    }
+    links.push({ item: item, sortOrder: Number(row[map['sortorder']]) || (r + 1) });
+  }
+
+  links.sort(function(a, b) { return a.sortOrder - b.sortOrder; });
+  return links.map(function(entry) { return entry.item; });
+}
+
+function handleGetQuickLinks(params) {
+  return { success: true, data: readQuickLinksFromSheet_() };
 }
 
 function handleAddQuickLink(params, session) {
@@ -4150,8 +4201,13 @@ function handleAddQuickLink(params, session) {
   }
 
   try {
-    var currentLinksRes = handleGetQuickLinks({});
-    var links = currentLinksRes.data || [];
+    var sheet = ensureQuickLinksSheetSeeded_();
+    var map = getHeaderMap(sheet);
+    var data = sheet.getDataRange().getValues();
+    var maxSort = 0;
+    for (var r = 1; r < data.length; r++) {
+      maxSort = Math.max(maxSort, Number(data[r][map['sortorder']]) || 0);
+    }
 
     var newId = 'ql-' + Date.now();
     var newLink = {
@@ -4164,9 +4220,8 @@ function handleAddQuickLink(params, session) {
       actionType: params.actionType || (params.target && params.target.startsWith('http') ? 'external' : 'navigate'),
       url: sanitizeCellInput(params.url || (params.target && params.target.startsWith('http') ? params.target : ''))
     };
+    writeQuickLinkRow_(sheet, newLink, maxSort + 1, session.employeeId);
 
-    links.push(newLink);
-    PropertiesService.getScriptProperties().setProperty('QUICK_LINKS_CUSTOM', JSON.stringify(links));
     logAuditAction('ADD_QUICK_LINK', session.employeeId, 'Added Quick Link: ' + title, 'SUCCESS');
     return { success: true, message: 'Quick Link added successfully.', data: { id: newId } };
   } finally {
@@ -4189,27 +4244,34 @@ function handleUpdateQuickLink(params, session) {
   }
 
   try {
-    var currentLinksRes = handleGetQuickLinks({});
-    var links = currentLinksRes.data || [];
-    var found = false;
-
-    for (var i = 0; i < links.length; i++) {
-      if (links[i].id === id) {
-        if (params.title !== undefined) links[i].title = sanitizeCellInput(params.title);
-        if (params.description !== undefined) links[i].description = sanitizeCellInput(params.description);
-        if (params.iconName !== undefined) links[i].iconName = sanitizeCellInput(params.iconName);
-        if (params.target !== undefined) links[i].target = sanitizeCellInput(params.target);
-        if (params.badge !== undefined) links[i].badge = sanitizeCellInput(params.badge);
-        if (params.actionType !== undefined) links[i].actionType = params.actionType;
-        if (params.url !== undefined) links[i].url = sanitizeCellInput(params.url);
-        found = true;
+    var sheet = ensureQuickLinksSheetSeeded_();
+    var map = getHeaderMap(sheet);
+    var data = sheet.getDataRange().getValues();
+    var foundRow = -1;
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][map['id']] || '').trim() === id) {
+        foundRow = r + 1;
         break;
       }
     }
+    if (foundRow < 0) return { success: false, message: 'Quick link not found.' };
 
-    if (!found) return { success: false, message: 'Quick link not found.' };
+    function setIfProvided(paramName, headerKey, sanitize) {
+      if (params[paramName] === undefined || map[headerKey] === undefined) return;
+      var value = sanitize === false ? params[paramName] : sanitizeCellInput(params[paramName]);
+      sheet.getRange(foundRow, map[headerKey] + 1).setValue(value);
+    }
 
-    PropertiesService.getScriptProperties().setProperty('QUICK_LINKS_CUSTOM', JSON.stringify(links));
+    setIfProvided('title', 'title');
+    setIfProvided('description', 'description');
+    setIfProvided('iconName', 'iconname');
+    setIfProvided('target', 'target');
+    setIfProvided('badge', 'badge');
+    setIfProvided('actionType', 'actiontype');
+    setIfProvided('url', 'url');
+    if (map['updatedat'] !== undefined) sheet.getRange(foundRow, map['updatedat'] + 1).setValue(new Date().toISOString());
+    if (map['updatedby'] !== undefined) sheet.getRange(foundRow, map['updatedby'] + 1).setValue(session.employeeId);
+
     logAuditAction('UPDATE_QUICK_LINK', session.employeeId, 'Updated Quick Link ID: ' + id, 'SUCCESS');
     return { success: true, message: 'Quick link updated successfully.' };
   } finally {
@@ -4232,16 +4294,19 @@ function handleDeleteQuickLink(params, session) {
   }
 
   try {
-    var currentLinksRes = handleGetQuickLinks({});
-    var links = currentLinksRes.data || [];
-    var initialLen = links.length;
-    links = links.filter(function(l) { return l.id !== id; });
-
-    if (links.length === initialLen) return { success: false, message: 'Quick link not found.' };
-
-    PropertiesService.getScriptProperties().setProperty('QUICK_LINKS_CUSTOM', JSON.stringify(links));
-    logAuditAction('DELETE_QUICK_LINK', session.employeeId, 'Deleted Quick Link ID: ' + id, 'SUCCESS');
-    return { success: true, message: 'Quick link removed successfully.' };
+    var sheet = ensureQuickLinksSheetSeeded_();
+    var map = getHeaderMap(sheet);
+    var data = sheet.getDataRange().getValues();
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][map['id']] || '').trim() === id) {
+        sheet.getRange(r + 1, map['status'] + 1).setValue('INACTIVE');
+        if (map['updatedat'] !== undefined) sheet.getRange(r + 1, map['updatedat'] + 1).setValue(new Date().toISOString());
+        if (map['updatedby'] !== undefined) sheet.getRange(r + 1, map['updatedby'] + 1).setValue(session.employeeId);
+        logAuditAction('DELETE_QUICK_LINK', session.employeeId, 'Deactivated Quick Link ID: ' + id, 'SUCCESS');
+        return { success: true, message: 'Quick link removed successfully.' };
+      }
+    }
+    return { success: false, message: 'Quick link not found.' };
   } finally {
     lock.releaseLock();
   }
@@ -4249,21 +4314,90 @@ function handleDeleteQuickLink(params, session) {
 
 /**
  * 13a. Coordinator Desk (Public Read, Admin Write)
+ * Stored in the CNE spreadsheet tab: "Portal Content".
+ * Legacy COORDINATOR_* Script Properties are used only once to seed/migrate
+ * an empty/new sheet, then the sheet becomes the authoritative source.
  */
-function handleGetCoordinatorDesk(params) {
+function ensureCoordinatorContentSeeded_() {
+  var ss = getSpreadsheet('CNE');
+  var existing = ss.getSheetByName('Portal Content');
+  var sheet = getOrCreateSheet('Portal Content');
+
+  var map = getHeaderMap(sheet);
+  var data = sheet.getDataRange().getValues();
+  var hasCoordinatorRows = false;
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][map['section']] || '').toUpperCase().trim() === 'COORDINATOR') {
+      hasCoordinatorRows = true;
+      break;
+    }
+  }
+  if (hasCoordinatorRows) return sheet;
+
+  // If the sheet already existed with unrelated content, adding only missing
+  // Coordinator keys is safe and non-destructive.
   var props = PropertiesService.getScriptProperties();
   var note = props.getProperty('COORDINATOR_NOTE') || 'Have questions regarding class credits, attendance verification, or training schedules?';
+  var email = props.getProperty('COORDINATOR_EMAIL') || 'training.nur@aiimsrishikesh.edu.in';
+  var names = ['Ms. Ramya T', 'Ms. Suman Choudhary'];
   var namesRaw = props.getProperty('COORDINATOR_NAMES');
-  var coordinators = ['Ms. Ramya T', 'Ms. Suman Choudhary'];
   if (namesRaw) {
     try {
       var parsed = JSON.parse(namesRaw);
-      if (Array.isArray(parsed) && parsed.length > 0) coordinators = parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) names = parsed;
     } catch (e) {
-      coordinators = namesRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+      names = namesRaw.split(',').map(function(v) { return v.trim(); }).filter(Boolean);
     }
   }
-  var email = props.getProperty('COORDINATOR_EMAIL') || 'training.nur@aiimsrishikesh.edu.in';
+
+  var source = (props.getProperty('COORDINATOR_NOTE') || props.getProperty('COORDINATOR_EMAIL') || namesRaw)
+    ? 'MIGRATED_FROM_SCRIPT_PROPERTIES'
+    : 'SYSTEM_DEFAULT';
+  sheet.appendRow(['COORDINATOR', 'NAMES', names.join('\n'), new Date().toISOString(), source]);
+  sheet.appendRow(['COORDINATOR', 'EMAIL', sanitizeCellInput(email), new Date().toISOString(), source]);
+  sheet.appendRow(['COORDINATOR', 'NOTE', sanitizeCellInput(note), new Date().toISOString(), source]);
+  return sheet;
+}
+
+function getPortalContentValue_(sheet, section, key) {
+  var map = getHeaderMap(sheet);
+  var data = sheet.getDataRange().getValues();
+  section = String(section || '').toUpperCase().trim();
+  key = String(key || '').toUpperCase().trim();
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][map['section']] || '').toUpperCase().trim() === section &&
+        String(data[r][map['key']] || '').toUpperCase().trim() === key) {
+      return String(data[r][map['value']] || '');
+    }
+  }
+  return '';
+}
+
+function upsertPortalContentValue_(sheet, section, key, value, updatedBy) {
+  var map = getHeaderMap(sheet);
+  var data = sheet.getDataRange().getValues();
+  section = String(section || '').toUpperCase().trim();
+  key = String(key || '').toUpperCase().trim();
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][map['section']] || '').toUpperCase().trim() === section &&
+        String(data[r][map['key']] || '').toUpperCase().trim() === key) {
+      sheet.getRange(r + 1, map['value'] + 1).setValue(value);
+      sheet.getRange(r + 1, map['updatedat'] + 1).setValue(new Date().toISOString());
+      sheet.getRange(r + 1, map['updatedby'] + 1).setValue(updatedBy || 'SYSTEM');
+      return;
+    }
+  }
+  sheet.appendRow([section, key, value, new Date().toISOString(), updatedBy || 'SYSTEM']);
+}
+
+function handleGetCoordinatorDesk(params) {
+  var sheet = ensureCoordinatorContentSeeded_();
+  var namesRaw = getPortalContentValue_(sheet, 'COORDINATOR', 'NAMES');
+  var coordinators = namesRaw
+    ? namesRaw.split(/\r?\n|,/).map(function(v) { return v.trim(); }).filter(Boolean)
+    : [];
+  var email = getPortalContentValue_(sheet, 'COORDINATOR', 'EMAIL');
+  var note = getPortalContentValue_(sheet, 'COORDINATOR', 'NOTE');
 
   return {
     success: true,
@@ -4279,18 +4413,33 @@ function handleUpdateCoordinatorDesk(params, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
 
-  var props = PropertiesService.getScriptProperties();
-  if (params.note !== undefined) props.setProperty('COORDINATOR_NOTE', sanitizeCellInput(params.note));
-  if (params.email !== undefined) props.setProperty('COORDINATOR_EMAIL', sanitizeCellInput(params.email));
-  if (params.coordinators !== undefined) {
-    var coords = Array.isArray(params.coordinators) 
-      ? params.coordinators.map(function(c) { return sanitizeCellInput(c); }).filter(Boolean)
-      : [sanitizeCellInput(params.coordinators)];
-    props.setProperty('COORDINATOR_NAMES', JSON.stringify(coords));
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (e) {
+    return { success: false, message: 'Server is busy. Please try again.' };
   }
 
-  logAuditAction('UPDATE_COORDINATOR_DESK', session.employeeId, 'Updated Coordinator Desk info', 'SUCCESS');
-  return handleGetCoordinatorDesk(params);
+  try {
+    var sheet = ensureCoordinatorContentSeeded_();
+    if (params.note !== undefined) {
+      upsertPortalContentValue_(sheet, 'COORDINATOR', 'NOTE', sanitizeCellInput(params.note), session.employeeId);
+    }
+    if (params.email !== undefined) {
+      upsertPortalContentValue_(sheet, 'COORDINATOR', 'EMAIL', sanitizeCellInput(params.email), session.employeeId);
+    }
+    if (params.coordinators !== undefined) {
+      var coords = Array.isArray(params.coordinators)
+        ? params.coordinators.map(function(c) { return sanitizeCellInput(c); }).filter(Boolean)
+        : [sanitizeCellInput(params.coordinators)].filter(Boolean);
+      upsertPortalContentValue_(sheet, 'COORDINATOR', 'NAMES', coords.join('\n'), session.employeeId);
+    }
+
+    logAuditAction('UPDATE_COORDINATOR_DESK', session.employeeId, 'Updated Coordinator Desk info', 'SUCCESS');
+    return handleGetCoordinatorDesk(params);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /**
@@ -4478,7 +4627,7 @@ function getHeaderMap(sheet) {
 
 /**
  * Authoritative Centralized CNE Spreadsheet Headers
- * Defines the standard header structure for all 13 required CNE tabs.
+ * Defines the standard header structure for all required CNE tabs.
  */
 var CNE_SHEET_HEADERS = {
   'CNE Schedule': [
@@ -4491,6 +4640,8 @@ var CNE_SHEET_HEADERS = {
   'Role': ['Employee ID No.', 'Name of the Officers', 'Designation', 'Role', 'Department / Area'],
   'Gallery': ['Image ID', 'Title', 'Description', 'Date', 'Drive File ID', 'Image URL', 'Uploaded By', 'Uploaded At', 'Status'],
   'News and Events': ['Event ID', 'Title', 'Category', 'Date', 'Summary', 'Full Content', 'Status', 'CreatedAt', 'CreatedBy'],
+  'Portal Content': ['Section', 'Key', 'Value', 'Updated At', 'Updated By'],
+  'Quick Links': ['ID', 'Title', 'Description', 'Icon Name', 'Target', 'Badge', 'Action Type', 'URL', 'Modal Title', 'Modal Body', 'Status', 'Sort Order', 'Updated At', 'Updated By'],
   'User Credentials': ['Employee ID', 'Password Hash', 'Password Salt', 'Must Change Password', 'Created At', 'Updated At', 'Last Login At', 'Account Status'],
   'Audit Log': ['Timestamp', 'Action', 'Employee ID', 'Details', 'Status'],
   'CNE Post Test Questions': ['CNE ID', 'Question ID', 'Question Text', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option', 'Explanation', 'Is Finalized', 'Is Locked', 'Created At', 'Created By', 'Authoritative Source', 'Status'],
@@ -4577,7 +4728,7 @@ function getOrCreateSheet(sheetName, defaultHeaders) {
 
 /**
  * Single Authoritative Sheet Initializer & Header Verifier (Idempotent & Non-Destructive)
- * Verifies all 14 required CNE tabs and their headers.
+ * Verifies all required CNE tabs and their headers.
  * Never deletes or clears existing sheets or rows. Appends missing headers if needed.
  */
 function setupAndVerifyCNESheets(executorEmpId) {
@@ -4595,6 +4746,8 @@ function setupAndVerifyCNESheets(executorEmpId) {
       'Role',
       'Gallery',
       'News and Events',
+      'Portal Content',
+      'Quick Links',
       'User Credentials',
       'Audit Log',
       'CNE Post Test Questions',

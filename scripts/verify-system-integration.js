@@ -54,6 +54,8 @@ const addResourceModalTs = fs.readFileSync('src/components/cne/AddResourceModal.
 const learningResPageTs = fs.readFileSync('src/components/cne/LearningResourcesPage.tsx', 'utf8');
 const postTestModalTs = fs.readFileSync('src/components/cne/CNEPostTestModal.tsx', 'utf8');
 const cneQrModalTs = fs.readFileSync('src/components/cne/CNEQRModal.tsx', 'utf8');
+const cneReferenceModalTs = fs.readFileSync('src/components/cne/CNEReferenceModal.tsx', 'utf8');
+const cneHomeTs = fs.readFileSync('src/components/CneHomePage.tsx', 'utf8');
 const envExample = fs.readFileSync('.env.example', 'utf8');
 
 // Helper to recursively collect files
@@ -253,6 +255,31 @@ runTest('Canonical navigation IDs (cne-schedule, my-cne-records)', () => {
   const quickLinkMatch = codeGs.match(/\{\s*id:\s*'ql-cne-schedule'[\s\S]*?target:\s*'([^']+)'/);
   assert.ok(quickLinkMatch, "Backend default quick link 'ql-cne-schedule' must be defined in Code.gs");
   assert.strictEqual(quickLinkMatch[1], 'cne-schedule', "Backend default quick link target must be 'cne-schedule'");
+});
+
+runTest('My CNE Records remains personal for every role and Material modal does not repeat Resource Person', () => {
+  const recordsSection = codeGs.substring(
+    codeGs.indexOf('function handleGetCNERecords('),
+    codeGs.indexOf('function handleCreateCNE(')
+  );
+
+  assert.ok(
+    recordsSection.includes('if (isMyRecordsOnly && !isResourcePerson && !isStaffParticipant)'),
+    'my-cne-records must filter strictly to the logged-in user participation/RP records for every role'
+  );
+  assert.ok(
+    !recordsSection.includes('!isAdmin && !isResourcePerson && !isStaffParticipant'),
+    'Admin must not bypass personal-record filtering in my-cne-records scope'
+  );
+
+  assert.ok(
+    !cneReferenceModalTs.includes('Resource Person / Speaker'),
+    'CNE Schedule Material modal must not repeat the Resource Person field'
+  );
+  assert.ok(
+    !cneReferenceModalTs.includes('resourcePersonName: resourcePerson'),
+    'Material modal must not submit a separately edited Resource Person name'
+  );
 });
 
 // -----------------------------------------------------------------------------
@@ -963,15 +990,94 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
     'handleGetOfficersDropdown must enforce role-based authorization and return FORBIDDEN for unauthorized callers'
   );
 
-  // Unused Chairperson update API is completely removed while public read/display remains intact
+  // Chairperson content is intentionally static frontend content; no backend/API call or Script Property path remains.
   assert.ok(!apiTs.includes(deadChairpersonUpdate), 'Unused updateChairpersonMessage must be absent from src/services/api.ts');
   assert.ok(!codeGs.includes(deadChairpersonUpdate), 'Unused updateChairpersonMessage router case must be absent from Code.gs');
   assert.ok(!codeGs.includes(deadChairpersonHandler), 'Unused handleUpdateChairpersonMessage handler must be absent from Code.gs');
   assert.ok(
-    apiTs.includes('static async getChairpersonMessage(') &&
-    codeGs.includes("case 'getChairpersonMessage':") &&
-    codeGs.includes('function handleGetChairpersonMessage('),
-    'Public getChairpersonMessage read/display path must remain intact across frontend and backend'
+    !apiTs.includes('static async getChairpersonMessage(') &&
+    !codeGs.includes("case 'getChairpersonMessage':") &&
+    !codeGs.includes('function handleGetChairpersonMessage(') &&
+    cneHomeTs.includes('const cnoMessage = INITIAL_CHAIRPERSON_MESSAGE;') &&
+    !cneHomeTs.includes('ApiService.getChairpersonMessage('),
+    'Chairperson content must be served statically from INITIAL_CHAIRPERSON_MESSAGE with no Apps Script read path'
+  );
+  assert.ok(
+    !codeGs.includes('CHAIRPERSON_MESSAGE') &&
+    !codeGs.includes('CHAIRPERSON_NAME') &&
+    !codeGs.includes('CHAIRPERSON_DESIG') &&
+    !codeGs.includes('CHAIRPERSON_PHOTO') &&
+    !codeGs.includes('CHAIRPERSON_PHOTO_DRIVE_ID'),
+    'Chairperson Script Property dependencies must be absent from Code.gs'
+  );
+});
+
+runTest('Coordinator Desk and Quick Links use Google Sheet storage, not Script Properties', () => {
+  assert.ok(
+    codeGs.includes("'Portal Content': ['Section', 'Key', 'Value', 'Updated At', 'Updated By']"),
+    "CNE_SHEET_HEADERS must define the 'Portal Content' sheet"
+  );
+  assert.ok(
+    codeGs.includes("'Quick Links': ['ID', 'Title', 'Description', 'Icon Name', 'Target', 'Badge', 'Action Type', 'URL', 'Modal Title', 'Modal Body', 'Status', 'Sort Order', 'Updated At', 'Updated By']"),
+    "CNE_SHEET_HEADERS must define the 'Quick Links' sheet"
+  );
+  assert.ok(
+    codeGs.includes("'Portal Content',") && codeGs.includes("'Quick Links',"),
+    'setupAndVerifyCNESheets must include Portal Content and Quick Links tabs'
+  );
+  assert.ok(
+    codeGs.includes("getOrCreateSheet('Portal Content')") &&
+    codeGs.includes("getOrCreateSheet('Quick Links')"),
+    'Coordinator Desk and Quick Links must be backed by spreadsheet tabs'
+  );
+  assert.ok(
+    !codeGs.includes("setProperty('COORDINATOR_NOTE'") &&
+    !codeGs.includes("setProperty('COORDINATOR_EMAIL'") &&
+    !codeGs.includes("setProperty('COORDINATOR_NAMES'") &&
+    !codeGs.includes("setProperty('QUICK_LINKS_CUSTOM'"),
+    'Coordinator Desk and Quick Links must not write editable content to Script Properties'
+  );
+  assert.ok(
+    codeGs.includes("getProperty('COORDINATOR_NOTE')") &&
+    codeGs.includes("getProperty('COORDINATOR_EMAIL')") &&
+    codeGs.includes("getProperty('COORDINATOR_NAMES')") &&
+    codeGs.includes("getProperty('QUICK_LINKS_CUSTOM')"),
+    'Legacy content properties may only remain as one-time migration sources'
+  );
+  assert.ok(
+    codeGs.includes('function handleGetCoordinatorDesk(') &&
+    codeGs.includes('function handleUpdateCoordinatorDesk(') &&
+    codeGs.includes('function handleGetQuickLinks(') &&
+    codeGs.includes('function handleAddQuickLink(') &&
+    codeGs.includes('function handleUpdateQuickLink(') &&
+    codeGs.includes('function handleDeleteQuickLink('),
+    'Existing Coordinator Desk and Quick Link API contracts must remain intact'
+  );
+});
+
+
+runTest('Coordinator Desk homepage renders sheet-backed Admin content', () => {
+  const coordinatorCardTs = fs.readFileSync('src/components/home/CoordinatorDeskCard.tsx', 'utf8');
+
+  assert.ok(
+    cneHomeTs.includes("ApiService.getCoordinatorDesk()") &&
+    cneHomeTs.includes("setCoordinatorDesk(res.data)") &&
+    cneHomeTs.includes("<CoordinatorDeskCard coordinatorDesk={coordinatorDesk}"),
+    'CneHomePage must fetch Coordinator Desk data and pass it to the homepage card'
+  );
+
+  assert.ok(
+    coordinatorCardTs.includes('coordinatorDesk.note') &&
+    coordinatorCardTs.includes('coordinatorDesk.coordinators.map') &&
+    coordinatorCardTs.includes('coordinatorDesk.email'),
+    'CoordinatorDeskCard must render backend-provided note, coordinator names, and email'
+  );
+
+  assert.ok(
+    !coordinatorCardTs.includes('Ms. Ramya T') &&
+    !coordinatorCardTs.includes('Ms. Suman Choudhary') &&
+    !coordinatorCardTs.includes('training.nur@aiimsrishikesh.edu.in'),
+    'CoordinatorDeskCard must not hard-code editable Coordinator Desk content'
   );
 });
 

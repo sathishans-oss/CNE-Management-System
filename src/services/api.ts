@@ -3,7 +3,6 @@ import {
   Area,
   CNERecord,
   ProgramImpactStats,
-  ChairpersonMessageData,
   Employee,
   GalleryItem,
   NewsEventItem,
@@ -28,7 +27,6 @@ import {
   INITIAL_CNE_RECORDS,
   INITIAL_UPCOMING_CLASSES,
   INITIAL_GALLERY,
-  INITIAL_CHAIRPERSON_MESSAGE,
   INITIAL_NEWS_EVENTS,
   INITIAL_QUICK_LINKS,
   INITIAL_COORDINATOR_DESK,
@@ -51,7 +49,6 @@ const STORAGE_KEYS = {
  * permitted to persist in browser localStorage for UI hydration and offline fallback.
  */
 const PUBLIC_CACHEABLE_ACTIONS: ReadonlySet<string> = new Set([
-  'getChairpersonMessage',
   'getCoordinatorDesk',
   'getNewsEvents',
   'getQuickLinks',
@@ -318,9 +315,6 @@ export class ApiService {
 
       case 'getAreas':
         return { success: true, data: [..._inMemoryAreas] as any };
-
-      case 'getChairpersonMessage':
-        return { success: true, data: INITIAL_CHAIRPERSON_MESSAGE as any };
 
       case 'getNewsEvents':
         return { success: true, data: [..._inMemoryNews] as any };
@@ -793,13 +787,6 @@ export class ApiService {
 
   static async deleteNewsEvent(id: string): Promise<ApiResponse> {
     return this.executeAction('deleteNewsEvent', { id });
-  }
-
-  /**
-   * Chairperson Message & Institutional Content
-   */
-  static async getChairpersonMessage(): Promise<ApiResponse<ChairpersonMessageData>> {
-    return this.executeAction<ChairpersonMessageData>('getChairpersonMessage');
   }
 
   /**

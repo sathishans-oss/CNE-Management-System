@@ -893,7 +893,6 @@ runTest('Frontend consumes mustChangePassword & forced Change Password modal can
   assert.ok(allowlistMatch, 'PUBLIC_CACHEABLE_ACTIONS Set must be defined in api.ts');
   const allowlistedActions = eval(`[${allowlistMatch[1]}]`);
   const approvedPublicCmsActions = [
-    'getChairpersonMessage',
     'getCoordinatorDesk',
     'getNewsEvents',
     'getQuickLinks',

@@ -3,8 +3,8 @@ import {
   X
 } from 'lucide-react';
 import {
-  ChairpersonMessageData,
   CNERecord,
+  CoordinatorDeskInfo,
   NewsEventItem,
   ProgramImpactStats,
   QuickLinkItem,
@@ -14,6 +14,7 @@ import {
 import { ApiService } from '../services/api';
 import {
   INITIAL_CHAIRPERSON_MESSAGE,
+  INITIAL_COORDINATOR_DESK,
   INITIAL_UPCOMING_CLASSES,
   INITIAL_NEWS_EVENTS,
   INITIAL_QUICK_LINKS,
@@ -44,10 +45,11 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   const [upcomingClasses, setUpcomingClasses] = useState<CNERecord[]>(() => ApiService.getCachedData<CNERecord[]>('getCNERecords') || INITIAL_UPCOMING_CLASSES);
   const [newsEvents, setNewsEvents] = useState<NewsEventItem[]>(() => ApiService.getCachedData<NewsEventItem[]>('getNewsEvents') || INITIAL_NEWS_EVENTS);
   const [quickLinks, setQuickLinks] = useState<QuickLinkItem[]>(() => ApiService.getCachedData<QuickLinkItem[]>('getQuickLinks') || INITIAL_QUICK_LINKS);
+  const [coordinatorDesk, setCoordinatorDesk] = useState<CoordinatorDeskInfo>(() => ApiService.getCachedData<CoordinatorDeskInfo>('getCoordinatorDesk') || INITIAL_COORDINATOR_DESK);
   const [impactStats, setImpactStats] = useState<ProgramImpactStats | null>(() => ApiService.getCachedData<ProgramImpactStats>('getProgramImpact') || INITIAL_PROGRAM_IMPACT);
   const [impactLoading, setImpactLoading] = useState(false);
   const [impactError, setImpactError] = useState<string | null>(null);
-  const [cnoMessage, setCnoMessage] = useState<ChairpersonMessageData>(() => ApiService.getCachedData<ChairpersonMessageData>('getChairpersonMessage') || INITIAL_CHAIRPERSON_MESSAGE);
+  const cnoMessage = INITIAL_CHAIRPERSON_MESSAGE;
   
   const [classesLoading, setClassesLoading] = useState(false);
 
@@ -77,28 +79,28 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
       .catch((err) => console.warn('[Home Data] Upcoming classes error:', err))
       .finally(() => setClassesLoading(false));
 
-    // 2. Chairperson / CNO Message
-    ApiService.getChairpersonMessage()
-      .then((res) => {
-        if (res.success && res.data) setCnoMessage(res.data);
-      })
-      .catch((err) => console.warn('[Home Data] CNO message error:', err));
-
-    // 4. News & Circulars
+    // 2. News & Circulars
     ApiService.getNewsEvents()
       .then((res) => {
         if (res.success && res.data) setNewsEvents(res.data);
       })
       .catch((err) => console.warn('[Home Data] News error:', err));
 
-    // 5. Quick Links
+    // 3. Quick Links
     ApiService.getQuickLinks()
       .then((res) => {
         if (res.success && res.data) setQuickLinks(res.data);
       })
       .catch((err) => console.warn('[Home Data] Quick links error:', err));
 
-    // 6. Program Impact Metrics (heavier Data tab calculation, isolated so it never blocks other sections)
+    // 4. Coordinator Desk
+    ApiService.getCoordinatorDesk()
+      .then((res) => {
+        if (res.success && res.data) setCoordinatorDesk(res.data);
+      })
+      .catch((err) => console.warn('[Home Data] Coordinator desk error:', err));
+
+    // 5. Program Impact Metrics (heavier Data tab calculation, isolated so it never blocks other sections)
     ApiService.getProgramImpact()
       .then((res) => {
         if (res.success && res.data) {
@@ -183,7 +185,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             accentColor="teal"
           />
           <GuidelinesCard accentColor="teal" />
-          <CoordinatorDeskCard accentColor="teal" />
+          <CoordinatorDeskCard coordinatorDesk={coordinatorDesk} accentColor="teal" />
           <CertificationWorkflowWidget accentColor="teal" />
         </aside>
       </div>
