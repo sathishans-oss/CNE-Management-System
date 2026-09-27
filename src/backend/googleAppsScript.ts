@@ -388,6 +388,10 @@ function handleRequest(e, method) {
       case 'getQuickLinks':
         output = handleGetQuickLinks(params);
         break;
+
+      case 'getChairpersonPhoto':
+        output = handleGetChairpersonPhoto();
+        break;
         
       case 'getCoordinatorDesk':
         output = handleGetCoordinatorDesk(params);
@@ -4029,6 +4033,106 @@ function handleDeleteNewsEvent(params, session) {
     return { success: false, message: 'News item not found.' };
   } finally {
     lock.releaseLock();
+  }
+}
+
+/**
+ * 12a. Chairperson Photo (Public Read-Only)
+ *
+ * Name, designation and message remain static in the frontend. Only the photo
+ * is configurable via the CHAIRPERSON_PHOTO Script Property.
+ *
+ * Supported values:
+ * - Google Drive / googleusercontent URL containing /d/<fileId>
+ * - Google Drive URL containing ?id=<fileId>
+ * - Raw Google Drive file ID
+ * - Other publicly fetchable HTTPS image URL
+ *
+ * The response uses a data URL so the Cloudflare frontend does not depend on
+ * direct Google Drive hotlinking behavior.
+ */
+function extractChairpersonPhotoDriveId(value) {
+  var text = String(value || '').trim();
+  if (!text) return '';
+
+  var directId = text.match(/^[A-Za-z0-9_-]{20,}$/);
+  if (directId) return directId[0];
+
+  var slashMatch = text.match(/\\/d\\/([A-Za-z0-9_-]{20,})/);
+  if (slashMatch && slashMatch[1]) return slashMatch[1];
+
+  var queryMatch = text.match(/[?&]id=([A-Za-z0-9_-]{20,})/);
+  if (queryMatch && queryMatch[1]) return queryMatch[1];
+
+  return '';
+}
+
+function handleGetChairpersonPhoto() {
+  var configured = String(
+    PropertiesService.getScriptProperties().getProperty('CHAIRPERSON_PHOTO') || ''
+  ).trim();
+
+  if (!configured) {
+    return { success: true, data: { photoUrl: '' } };
+  }
+
+  try {
+    var blob = null;
+    var driveFileId = extractChairpersonPhotoDriveId(configured);
+
+    if (driveFileId) {
+      var file = DriveApp.getFileById(driveFileId);
+      blob = file.getBlob();
+    } else if (/^https:\\/\\//i.test(configured)) {
+      var response = UrlFetchApp.fetch(configured, {
+        muteHttpExceptions: true,
+        followRedirects: true
+      });
+      var statusCode = response.getResponseCode();
+      if (statusCode < 200 || statusCode >= 300) {
+        return {
+          success: false,
+          errorCode: 'CHAIRPERSON_PHOTO_FETCH_FAILED',
+          message: 'Chairperson photo could not be loaded from the configured URL.'
+        };
+      }
+      blob = response.getBlob();
+    } else {
+      return {
+        success: false,
+        errorCode: 'CHAIRPERSON_PHOTO_INVALID',
+        message: 'CHAIRPERSON_PHOTO must contain a Google Drive file ID or HTTPS image URL.'
+      };
+    }
+
+    var contentType = String(blob.getContentType() || '').toLowerCase();
+    if (contentType.indexOf('image/') !== 0) {
+      return {
+        success: false,
+        errorCode: 'CHAIRPERSON_PHOTO_INVALID_TYPE',
+        message: 'The configured Chairperson photo is not a valid image file.'
+      };
+    }
+
+    var bytes = blob.getBytes();
+    // Keep the public homepage response lightweight and predictable.
+    if (bytes.length > 2 * 1024 * 1024) {
+      return {
+        success: false,
+        errorCode: 'CHAIRPERSON_PHOTO_TOO_LARGE',
+        message: 'Chairperson photo must be 2 MB or smaller.'
+      };
+    }
+
+    var dataUrl = 'data:' + contentType + ';base64,' + Utilities.base64Encode(bytes);
+    return { success: true, data: { photoUrl: dataUrl } };
+  } catch (e) {
+    console.warn('Chairperson photo load error: ' + e.message);
+    return {
+      success: false,
+      errorCode: 'CHAIRPERSON_PHOTO_UNAVAILABLE',
+      message: 'Chairperson photo is currently unavailable.'
+    };
   }
 }
 

@@ -46,10 +46,14 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   const [newsEvents, setNewsEvents] = useState<NewsEventItem[]>(() => ApiService.getCachedData<NewsEventItem[]>('getNewsEvents') || INITIAL_NEWS_EVENTS);
   const [quickLinks, setQuickLinks] = useState<QuickLinkItem[]>(() => ApiService.getCachedData<QuickLinkItem[]>('getQuickLinks') || INITIAL_QUICK_LINKS);
   const [coordinatorDesk, setCoordinatorDesk] = useState<CoordinatorDeskInfo>(() => ApiService.getCachedData<CoordinatorDeskInfo>('getCoordinatorDesk') || INITIAL_COORDINATOR_DESK);
+  const [chairpersonPhotoUrl, setChairpersonPhotoUrl] = useState('');
   const [impactStats, setImpactStats] = useState<ProgramImpactStats | null>(() => ApiService.getCachedData<ProgramImpactStats>('getProgramImpact') || INITIAL_PROGRAM_IMPACT);
   const [impactLoading, setImpactLoading] = useState(false);
   const [impactError, setImpactError] = useState<string | null>(null);
-  const cnoMessage = INITIAL_CHAIRPERSON_MESSAGE;
+  const cnoMessage = {
+    ...INITIAL_CHAIRPERSON_MESSAGE,
+    photoUrl: chairpersonPhotoUrl
+  };
   
   const [classesLoading, setClassesLoading] = useState(false);
 
@@ -100,7 +104,14 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
       })
       .catch((err) => console.warn('[Home Data] Coordinator desk error:', err));
 
-    // 5. Program Impact Metrics (heavier Data tab calculation, isolated so it never blocks other sections)
+    // 5. Chairperson photo only (name/designation/message remain static in initialData.ts)
+    ApiService.getChairpersonPhoto()
+      .then((res) => {
+        if (res.success && res.data?.photoUrl) setChairpersonPhotoUrl(res.data.photoUrl);
+      })
+      .catch((err) => console.warn('[Home Data] Chairperson photo error:', err));
+
+    // 6. Program Impact Metrics (heavier Data tab calculation, isolated so it never blocks other sections)
     ApiService.getProgramImpact()
       .then((res) => {
         if (res.success && res.data) {

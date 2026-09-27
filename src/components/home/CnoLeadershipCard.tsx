@@ -5,7 +5,8 @@ import {
   CheckCircle2,
   Stethoscope,
   Activity,
-  Award
+  Award,
+  UserRound
 } from 'lucide-react';
 import { ChairpersonMessageData } from '../../types';
 
@@ -94,12 +95,17 @@ export const CnoLeadershipCard: React.FC<CnoLeadershipCardProps> = ({
           {/* CNO Portrait Photo (Fixed) */}
           <div className="relative shrink-0 mx-auto sm:mx-0">
             <div className={`w-24 h-28 sm:w-28 sm:h-32 rounded-2xl overflow-hidden border-2 ${photoBorder} shadow-md bg-slate-100 relative`}>
-              <img
-                src={cnoMessage.photoUrl || "https://lh3.googleusercontent.com/d/1kJlJauCym75Gl8-4pdvo8xCvbXsw8jQ0"}
-                alt={`Chief Nursing Officer - ${cnoMessage.name || 'Dr. Anita Rani Kansal'}`}
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover object-top"
-              />
+              {cnoMessage.photoUrl ? (
+                <img
+                  src={cnoMessage.photoUrl}
+                  alt={`Chief Nursing Officer - ${cnoMessage.name || 'Dr. Anita Rani Kansal'}`}
+                  className="w-full h-full object-cover object-top"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-slate-400 bg-slate-100">
+                  <UserRound className="w-10 h-10" />
+                </div>
+              )}
             </div>
 
             {/* Verified Badge */}

@@ -330,6 +330,9 @@ export class ApiService {
         return { success: true, data: stats as any };
       }
 
+      case 'getChairpersonPhoto':
+        return { success: true, data: { photoUrl: '' } as any };
+
       case 'getCoordinatorDesk':
         return { success: true, data: _inMemoryCoordinatorDesk as any };
 
@@ -787,6 +790,13 @@ export class ApiService {
 
   static async deleteNewsEvent(id: string): Promise<ApiResponse> {
     return this.executeAction('deleteNewsEvent', { id });
+  }
+
+  /**
+   * Chairperson photo (public read-only; source is CHAIRPERSON_PHOTO Script Property)
+   */
+  static async getChairpersonPhoto(): Promise<ApiResponse<{ photoUrl: string }>> {
+    return this.executeAction<{ photoUrl: string }>('getChairpersonPhoto');
   }
 
   /**

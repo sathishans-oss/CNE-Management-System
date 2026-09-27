@@ -990,7 +990,7 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
     'handleGetOfficersDropdown must enforce role-based authorization and return FORBIDDEN for unauthorized callers'
   );
 
-  // Chairperson content is intentionally static frontend content; no backend/API call or Script Property path remains.
+  // Chairperson name/designation/message remain static. Only the photo is allowed to use Script Properties.
   assert.ok(!apiTs.includes(deadChairpersonUpdate), 'Unused updateChairpersonMessage must be absent from src/services/api.ts');
   assert.ok(!codeGs.includes(deadChairpersonUpdate), 'Unused updateChairpersonMessage router case must be absent from Code.gs');
   assert.ok(!codeGs.includes(deadChairpersonHandler), 'Unused handleUpdateChairpersonMessage handler must be absent from Code.gs');
@@ -998,17 +998,21 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
     !apiTs.includes('static async getChairpersonMessage(') &&
     !codeGs.includes("case 'getChairpersonMessage':") &&
     !codeGs.includes('function handleGetChairpersonMessage(') &&
-    cneHomeTs.includes('const cnoMessage = INITIAL_CHAIRPERSON_MESSAGE;') &&
+    cneHomeTs.includes('...INITIAL_CHAIRPERSON_MESSAGE') &&
+    cneHomeTs.includes('ApiService.getChairpersonPhoto()') &&
     !cneHomeTs.includes('ApiService.getChairpersonMessage('),
-    'Chairperson content must be served statically from INITIAL_CHAIRPERSON_MESSAGE with no Apps Script read path'
+    'Chairperson text content must remain static while only the photo is loaded dynamically'
   );
   assert.ok(
     !codeGs.includes('CHAIRPERSON_MESSAGE') &&
     !codeGs.includes('CHAIRPERSON_NAME') &&
     !codeGs.includes('CHAIRPERSON_DESIG') &&
-    !codeGs.includes('CHAIRPERSON_PHOTO') &&
-    !codeGs.includes('CHAIRPERSON_PHOTO_DRIVE_ID'),
-    'Chairperson Script Property dependencies must be absent from Code.gs'
+    !codeGs.includes('CHAIRPERSON_PHOTO_DRIVE_ID') &&
+    codeGs.includes("case 'getChairpersonPhoto':") &&
+    codeGs.includes('function handleGetChairpersonPhoto()') &&
+    codeGs.includes("getProperty('CHAIRPERSON_PHOTO')") &&
+    apiTs.includes('static async getChairpersonPhoto'),
+    'Only the CHAIRPERSON_PHOTO photo-only endpoint may remain as a Chairperson backend dependency'
   );
 });
 
@@ -1087,6 +1091,7 @@ runTest('Coordinator Desk homepage renders sheet-backed Admin content', () => {
 console.log('\n========================================================');
 console.log(`Passed: ${passedTests}/${totalTests}`);
 console.log('ALL SYSTEM INTEGRATION TESTS PASSED!');
+
 console.log('========================================================\n');
 
 process.exit(0);

@@ -95,7 +95,7 @@ export const INITIAL_CHAIRPERSON_MESSAGE: ChairpersonMessageData = {
   name: "Dr. Anita Rani Kansal",
   designation: "Chief Nursing Officer (C.N.O) & Chairperson-CNE Cell",
   institution: "All India Institute of Medical Sciences (AIIMS), Rishikesh",
-  photoUrl: "https://lh3.googleusercontent.com/d/1JubdIDqy_apCuS9mlU8BB68k1hiC-gXE",
+  photoUrl: "",
   title: "Fostering Clinical Rigour, Compassion & Lifelong Learning in Nursing",
   message: [
     "Welcome to the Continuing Nursing Education (CNE) Portal of AIIMS Rishikesh. Continuing education is not merely a professional obligation; it is the cornerstone of patient safety, clinical excellence, and progressive nursing practice.",
