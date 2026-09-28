@@ -274,11 +274,6 @@ export function generateCNESessionPdf(
   doc.setTextColor(15, 23, 42); // slate-900
   doc.text('ALL INDIA INSTITUTE OF MEDICAL SCIENCES, RISHIKESH', 105, 16, { align: 'center' });
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
-  doc.setTextColor(71, 85, 105); // slate-600
-  doc.text('Nursing Services — CNE Cell', 105, 22, { align: 'center' });
-
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(30, 41, 59);
