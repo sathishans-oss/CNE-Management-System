@@ -10235,7 +10235,7 @@ function generateAiQuestionsInternal(params, session) {
     };
   }
 
-  var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-2.5-flash').trim();
+var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').trim();
 
   var blockedModels = [
     'gemini-3.1-pro-preview',
@@ -10287,7 +10287,6 @@ function generateAiQuestionsInternal(params, session) {
       }
     ],
     generationConfig: {
-      temperature: 0.2,
       responseMimeType: 'application/json',
       responseSchema: {
         type: 'OBJECT',
