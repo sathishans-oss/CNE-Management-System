@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { GraduationCap, Lock, User, AlertCircle, ArrowRight, HelpCircle, X } from 'lucide-react';
+import { GraduationCap, Lock, User, AlertCircle, ArrowRight, HelpCircle, X, Eye, EyeOff } from 'lucide-react';
 import { ApiService } from '../services/api';
 import { SessionUser } from '../types';
 import { useToast } from './Toast';
@@ -19,6 +19,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 }) => {
   const [employeeId, setEmployeeId] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -150,7 +151,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   required
                   value={employeeId}
                   onChange={(e) => setEmployeeId(e.target.value)}
-                  placeholder="example ID: EMP10001"
+                  placeholder="Example ID: RSNHO000001"
                   className="block w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 text-sm placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-700 focus:bg-white transition-all uppercase"
                 />
               </div>
@@ -180,13 +181,28 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 </div>
                 <input
                   id="input-password"
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="block w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 text-sm placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-700 focus:bg-white transition-all"
+                  className="block w-full pl-9 pr-11 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 text-sm placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-700 focus:bg-white transition-all"
                 />
+                <button
+                  id="btn-toggle-password-visibility"
+                  type="button"
+                  onClick={() => setShowPassword((visible) => !visible)}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-teal-700 transition-colors cursor-pointer"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  title={showPassword ? 'Hide password' : 'Show password'}
+                  aria-pressed={showPassword}
+                >
+                  {showPassword ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                </button>
               </div>
             </div>
 
