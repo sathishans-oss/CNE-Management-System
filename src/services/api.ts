@@ -44,6 +44,31 @@ const STORAGE_KEYS = {
   SESSION: 'cne_session_user'
 };
 
+export type PostTestParticipantVerificationRequest =
+  | {
+      qrToken: string;
+      participantType: 'INTERNAL';
+      employeeId: string;
+      dateOfJoining: string;
+    }
+  | {
+      qrToken: string;
+      participantType: 'EXTERNAL';
+      name: string;
+      email: string;
+    };
+
+export interface PostTestParticipantVerificationData {
+  cneId: string;
+  participantType: 'INTERNAL' | 'EXTERNAL';
+  participantId: string;
+  participantName: string;
+  employeeId?: string;
+  designation?: string;
+  email?: string;
+  verificationToken: string;
+}
+
 /**
  * Explicit allowlist of genuinely public, non-sensitive CMS/display actions
  * permitted to persist in browser localStorage for UI hydration and offline fallback.
@@ -63,6 +88,7 @@ const PUBLIC_CACHEABLE_ACTIONS: ReadonlySet<string> = new Set([
 const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getCNEQuestions',
   'getPostTestQuestions',
+  'verifyPostTestParticipant',
   'getCNEParticipants',
   'getRoles',
   'getQRToken',
@@ -282,6 +308,7 @@ export class ApiService {
       case 'getCNEParticipants':
       case 'submitPostTest':
       case 'getPostTestQuestions':
+      case 'verifyPostTestParticipant':
       case 'getQRToken':
       case 'saveCNEQuestions':
       case 'getCNEQuestions':
@@ -1080,17 +1107,34 @@ export class ApiService {
 
   /**
    * Participant Post-Test APIs
+   *
+   * Public QR participants must first be verified by the backend.
+   * - INTERNAL: Employee ID + Date of Joining (DOJ)
+   * - EXTERNAL: Name + Email registration
+   *
+   * The returned short-lived participantVerificationToken must be supplied when
+   * loading questions and submitting answers. This keeps identity verification
+   * authoritative on the server instead of trusting browser-only state.
    */
+  static async verifyPostTestParticipant(
+    params: PostTestParticipantVerificationRequest
+  ): Promise<ApiResponse<PostTestParticipantVerificationData>> {
+    return this.executeAction<PostTestParticipantVerificationData>('verifyPostTestParticipant', params);
+  }
+
   static async getPostTestQuestions(params: {
     cneId?: string;
     qrToken?: string;
     employeeId?: string;
+    participantVerificationToken?: string;
   }): Promise<ApiResponse<{
     alreadySubmitted: boolean;
     submission?: any;
     cneId: string;
     topic: string;
     area: string;
+    participantType?: 'INTERNAL' | 'EXTERNAL';
+    participantName?: string;
     questions?: CNEQuestion[];
   }>> {
     return this.executeAction('getPostTestQuestions', params);
@@ -1099,8 +1143,8 @@ export class ApiService {
   static async submitPostTest(params: {
     cneId?: string;
     qrToken?: string;
-    token?: string;
-    employeeId: string;
+    employeeId?: string;
+    participantVerificationToken?: string;
     answers: Record<string, string>;
   }): Promise<ApiResponse<PostTestSubmissionResult>> {
     return this.executeAction<PostTestSubmissionResult>('submitPostTest', params);

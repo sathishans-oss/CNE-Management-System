@@ -7,7 +7,6 @@ import {
   Lock,
   CheckCircle2,
   Loader2,
-  Save,
   HelpCircle,
   AlertTriangle,
   Edit3,
@@ -31,6 +30,44 @@ interface CNEQuestionsModalProps {
   onNavigateToQR?: () => void;
 }
 
+
+const normalizeQuestionStatus = (status?: string) => {
+  const normalized = String(status || 'ACTIVE').trim().toUpperCase();
+  return normalized === 'INACTIVE' || normalized === 'REPLACED' ? normalized : 'ACTIVE';
+};
+
+const isActiveQuestion = (q: CNEQuestion) => normalizeQuestionStatus(q.status) === 'ACTIVE';
+
+const isQuestionComplete = (q: CNEQuestion) => {
+  const options = q.options || ({} as CNEQuestion['options']);
+  return Boolean(
+    String(q.question || '').trim().length >= 8 &&
+    String(options.A || '').trim() &&
+    String(options.B || '').trim() &&
+    String(options.C || '').trim() &&
+    String(options.D || '').trim() &&
+    ['A', 'B', 'C', 'D'].includes(String(q.correctOption || '').trim().toUpperCase()) &&
+    String(q.explanation || '').trim().length >= 5 &&
+    String(q.authoritativeSource || '').trim().length >= 3
+  );
+};
+
+const isBlankUnsavedQuestion = (q: CNEQuestion) => {
+  const options = q.options || ({} as CNEQuestion['options']);
+  return !String(q.question || '').trim() &&
+    !String(options.A || '').trim() &&
+    !String(options.B || '').trim() &&
+    !String(options.C || '').trim() &&
+    !String(options.D || '').trim() &&
+    !String(q.explanation || '').trim() &&
+    !String(q.authoritativeSource || '').trim();
+};
+
+const isClosedCne = (cne: CNERecord) => {
+  const status = String(cne.status || '').trim().toLowerCase();
+  return status === 'completed' || status === 'canceled' || status === 'cancelled';
+};
+
 export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   cne,
   isAuthorized,
@@ -49,6 +86,19 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
 
+  // Request guards prevent an older CNE response from overwriting the currently open CNE.
+  const questionsRequestRef = useRef(0);
+  const quotaRequestRef = useRef(0);
+  const generationRequestRef = useRef(0);
+  const currentCneIdRef = useRef(cneId);
+  currentCneIdRef.current = cneId;
+
+  // Persisted IDs let us distinguish a saved question from a temporary draft.
+  // Saved-question edits create a new version ID and preserve the prior row as REPLACED.
+  const persistedQuestionIdsRef = useRef<Set<string>>(new Set());
+  const draftOriginSnapshotRef = useRef<Map<string, CNEQuestion>>(new Map());
+  const versionSequenceRef = useRef(0);
+
   // Real-time stage progress state for AI generation
   const [generationStage, setGenerationStage] = useState<{ title: string; subtitle: string } | null>(null);
 
@@ -59,70 +109,134 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const { success, error, warning } = useToast();
 
   useEffect(() => {
-    loadQuestions();
-    loadQuota();
+    // Reset all CNE-specific UI immediately so data from the previous CNE cannot flash or leak.
+    questionsRequestRef.current += 1;
+    quotaRequestRef.current += 1;
+    generationRequestRef.current += 1;
+    generatingRef.current = false;
+    savingRef.current = false;
+    setQuestions([]);
+    setQuotaInfo(null);
+    setHasMaterial(null);
+    setIsLocked(false);
+    setEditingIndex(null);
+    setShowHistory(false);
+    setGenerationStage(null);
+    setIsGenerating(false);
+    setIsSaving(false);
+    persistedQuestionIdsRef.current = new Set();
+    draftOriginSnapshotRef.current = new Map();
+
+    const questionRequestId = ++questionsRequestRef.current;
+    const quotaRequestId = ++quotaRequestRef.current;
+    void loadQuestions(questionRequestId, cneId);
+    void loadQuota(quotaRequestId, cneId);
+
+    return () => {
+      questionsRequestRef.current += 1;
+      quotaRequestRef.current += 1;
+      generationRequestRef.current += 1;
+    };
   }, [cneId]);
 
-  const loadQuestions = async () => {
+  const loadQuestions = async (requestId = ++questionsRequestRef.current, targetCneId = cneId) => {
     setLoading(true);
     try {
-      const res = await ApiService.getCNEQuestions(cneId);
+      const res = await ApiService.getCNEQuestions(targetCneId);
+      const isCurrent = requestId === questionsRequestRef.current && targetCneId === currentCneIdRef.current;
+      if (!isCurrent) return;
+
       if (res.success && res.data) {
-        setQuestions(res.data);
-        const locked = res.data.some((q) => q.isLocked);
-        setIsLocked(locked);
+        const normalized = res.data.map((q) => ({
+          ...q,
+          options: { ...q.options },
+          status: normalizeQuestionStatus(q.status) as CNEQuestion['status']
+        }));
+        setQuestions(normalized);
+        persistedQuestionIdsRef.current = new Set(normalized.map((q) => String(q.id || '')).filter(Boolean));
+        draftOriginSnapshotRef.current = new Map();
+        setIsLocked(normalized.some((q) => Boolean(q.isLocked)));
+      } else {
+        setQuestions([]);
+        persistedQuestionIdsRef.current = new Set();
+        setIsLocked(false);
       }
     } catch (e: any) {
-      console.warn('Failed to load CNE questions:', e);
+      if (requestId === questionsRequestRef.current && targetCneId === currentCneIdRef.current) {
+        console.warn('Failed to load CNE questions:', e);
+        setQuestions([]);
+        persistedQuestionIdsRef.current = new Set();
+      }
     } finally {
-      setLoading(false);
+      if (requestId === questionsRequestRef.current && targetCneId === currentCneIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
-  const loadQuota = async () => {
+  const loadQuota = async (requestId = ++quotaRequestRef.current, targetCneId = cneId) => {
     try {
-      const quotaRes = await ApiService.getAiQuota(cneId);
-      if (quotaRes.success && quotaRes.data) {
-        setQuotaInfo(quotaRes.data);
-      }
+      const quotaRes = await ApiService.getAiQuota(targetCneId);
+      const isCurrent = requestId === quotaRequestRef.current && targetCneId === currentCneIdRef.current;
+      if (!isCurrent) return;
+      setQuotaInfo(quotaRes.success && quotaRes.data ? quotaRes.data : null);
     } catch (e) {
-      console.warn('Failed to load AI quota:', e);
+      if (requestId === quotaRequestRef.current && targetCneId === currentCneIdRef.current) {
+        console.warn('Failed to load AI quota:', e);
+        setQuotaInfo(null);
+      }
     }
   };
 
   // Is the one-time initial AI generation already completed?
   const isAiGenerationUsed = Boolean(
-    quotaInfo && (quotaInfo.status === 'USED' || quotaInfo.attemptsUsed >= 1)
+    quotaInfo && (quotaInfo.status === 'USED' || quotaInfo.status === 'GENERATED' || quotaInfo.attemptsUsed >= 1)
   );
+  const isAiGenerationUnavailable = Boolean(quotaInfo && !quotaInfo.canGenerate && !isAiGenerationUsed);
+
+  const sessionClosed = isClosedCne(cne);
+  const canModify = isAuthorized && !sessionClosed && !isLocked;
 
   const handleGenerateAi = async () => {
-    if (generatingRef.current || isGenerating || isLocked || !isAuthorized) return;
+    if (generatingRef.current || isGenerating || !canModify) return;
 
-    generatingRef.current = true;
-    setIsGenerating(true);
-
-    // 1. One-time allowance check
+    // One successful AI generation is allowed per CNE. Failed generation does not consume the allowance.
     if (isAiGenerationUsed) {
-      generatingRef.current = false;
-      setIsGenerating(false);
-      setGenerationStage(null);
       error('AI question generation has already been completed for this CNE.');
       return;
     }
 
-    try {
-      setGenerationStage({
-        title: 'Generating MCQs',
-        subtitle: 'Synthesizing 5 clinical MCQs directly in Google Apps Script via Gemini Flash…'
-      });
+    const requestCneId = cneId;
+    const requestId = ++generationRequestRef.current;
+    const isCurrent = () => requestId === generationRequestRef.current && requestCneId === currentCneIdRef.current;
 
-      const res = await ApiService.generateCNEQuestions(cneId);
+    generatingRef.current = true;
+    setIsGenerating(true);
+    setGenerationStage({
+      title: 'Generating MCQs',
+      subtitle: 'Analyzing the saved CNE learning material and creating 5 clinical MCQs…'
+    });
+
+    try {
+      const res = await ApiService.generateCNEQuestions(requestCneId);
+      if (!isCurrent()) return;
 
       if (res && res.success && res.data && Array.isArray(res.data) && res.data.length === 5) {
-        setQuestions(res.data);
+        const generated = res.data.map((q) => ({
+          ...q,
+          options: { ...q.options },
+          status: normalizeQuestionStatus(q.status) as CNEQuestion['status']
+        }));
+        setQuestions(generated);
+        persistedQuestionIdsRef.current = new Set(generated.map((q) => String(q.id || '')).filter(Boolean));
+        draftOriginSnapshotRef.current = new Map();
         setHasMaterial(true);
-        success('Successfully generated and saved exactly 5 clinical MCQs via Gemini. Post-test is ready.');
-        await loadQuota();
+        setGenerationStage({
+          title: 'Questions Saved',
+          subtitle: '5 clinical MCQs were generated and saved successfully.'
+        });
+        success('Successfully generated and saved 5 clinical MCQs. Review them, then use Save & Next to open QR.');
+        await loadQuota(++quotaRequestRef.current, requestCneId);
         if (onUpdated) onUpdated();
       } else {
         const errMsg = res?.message || 'AI question generation failed. No AI generation allowance was consumed.';
@@ -130,122 +244,197 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           setHasMaterial(false);
         }
         error(errMsg);
-        await loadQuota();
+        await loadQuota(++quotaRequestRef.current, requestCneId);
       }
     } catch (e: any) {
-      error(e?.message || 'Error occurred during AI question generation.');
+      if (isCurrent()) error(e?.message || 'Error occurred during AI question generation.');
     } finally {
-      generatingRef.current = false;
-      setIsGenerating(false);
-      setGenerationStage(null);
+      if (isCurrent()) {
+        generatingRef.current = false;
+        setIsGenerating(false);
+        setGenerationStage(null);
+      }
     }
   };
 
   const handleFinalizeAll = () => {
-    if (isLocked || !isAuthorized) return;
+    if (!canModify) return;
+    const active = questions.filter(isActiveQuestion);
+    const incomplete = active.filter((q) => !isQuestionComplete(q));
+    if (incomplete.length > 0) {
+      error(`Complete all active questions before Finalize All. Incomplete: ${incomplete.length}`);
+      return;
+    }
     setQuestions((prev) =>
-      prev.map((q) => {
-        if (q.status === 'INACTIVE' || q.status === 'REPLACED') return q;
-        return { ...q, isFinalized: true };
-      })
+      prev.map((q) => (isActiveQuestion(q) ? { ...q, isFinalized: true } : q))
     );
-    success('All active questions marked as Finalized.');
+    success('All valid active questions marked as Finalized.');
+  };
+
+  const nextVersionId = (baseId?: string) => {
+    versionSequenceRef.current += 1;
+    const safeBase = String(baseId || 'question').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+    return `${safeBase}__v${Date.now()}_${versionSequenceRef.current}`;
+  };
+
+  const cloneQuestion = (q: CNEQuestion): CNEQuestion => ({
+    ...q,
+    options: { ...q.options },
+    status: normalizeQuestionStatus(q.status) as CNEQuestion['status']
+  });
+
+  /**
+   * Apply a content edit without overwriting a persisted question.
+   * The first edit to a saved question preserves the old row as REPLACED and creates a new version ID.
+   */
+  const updateQuestionWithVersioning = (idx: number, updated: Partial<CNEQuestion>) => {
+    if (!canModify) return;
+    const target = questions[idx];
+    if (!target || !isActiveQuestion(target)) return;
+
+    const persisted = persistedQuestionIdsRef.current.has(String(target.id || ''));
+    if (!persisted) {
+      setQuestions((prev) => {
+        const copy = [...prev];
+        if (!copy[idx]) return prev;
+        copy[idx] = { ...copy[idx], ...updated };
+        return copy;
+      });
+      return;
+    }
+
+    const originalSnapshot = cloneQuestion(target);
+    const versionId = nextVersionId(target.id);
+    const newVersion: CNEQuestion = {
+      ...cloneQuestion(target),
+      ...updated,
+      id: versionId,
+      status: 'ACTIVE',
+      isFinalized: false
+    };
+
+    draftOriginSnapshotRef.current.set(versionId, originalSnapshot);
+    setQuestions((prev) => {
+      const currentIndex = prev.findIndex((q) => q.id === target.id && isActiveQuestion(q));
+      if (currentIndex < 0) return prev;
+      const copy = [...prev];
+      copy[currentIndex] = { ...cloneQuestion(copy[currentIndex]), status: 'REPLACED', isFinalized: false };
+      copy.splice(currentIndex + 1, 0, newVersion);
+      return copy;
+    });
+    setEditingIndex(idx + 1);
   };
 
   const handleAddManualQuestion = () => {
-    if (isLocked || !isAuthorized) return;
+    if (!canModify) return;
     const newQ: CNEQuestion = {
-      id: `q_manual_${Date.now()}`,
+      id: `q_manual_${Date.now()}_${versionSequenceRef.current++}`,
       question: '',
-      options: {
-        A: '',
-        B: '',
-        C: '',
-        D: ''
-      },
+      options: { A: '', B: '', C: '', D: '' },
       correctOption: 'A',
       explanation: '',
       authoritativeSource: '',
       status: 'ACTIVE',
-      isFinalized: true
+      isFinalized: false
     };
     setQuestions((prev) => [...prev, newQ]);
     setEditingIndex(questions.length);
   };
 
   const handleReplaceQuestion = (idx: number) => {
-    if (isLocked || !isAuthorized) return;
+    if (!canModify) return;
     const targetQ = questions[idx];
-    if (!targetQ) return;
+    if (!targetQ || !isActiveQuestion(targetQ)) return;
 
-    // Mark current question as REPLACED and add a new replacement question
+    const replacementId = nextVersionId(targetQ.id);
     const replacementQ: CNEQuestion = {
-      id: `q_rep_${Date.now()}`,
+      id: replacementId,
       question: '',
-      options: {
-        A: '',
-        B: '',
-        C: '',
-        D: ''
-      },
+      options: { A: '', B: '', C: '', D: '' },
       correctOption: 'A',
       explanation: '',
       authoritativeSource: targetQ.authoritativeSource || '',
       status: 'ACTIVE',
-      isFinalized: true
+      isFinalized: false
     };
 
+    const isPersisted = persistedQuestionIdsRef.current.has(String(targetQ.id || ''));
+    if (!isPersisted) {
+      // Unsaved drafts have no historical value yet; replace them in place instead of creating fake history.
+      setQuestions((prev) => {
+        const copy = [...prev];
+        copy[idx] = replacementQ;
+        return copy;
+      });
+      setEditingIndex(idx);
+      return;
+    }
+
+    draftOriginSnapshotRef.current.set(replacementId, cloneQuestion(targetQ));
     setQuestions((prev) => {
       const copy = [...prev];
-      // Mark old question as REPLACED
-      copy[idx] = { ...copy[idx], status: 'REPLACED', isFinalized: false };
-      // Insert replacement question immediately after it
+      copy[idx] = { ...cloneQuestion(copy[idx]), status: 'REPLACED', isFinalized: false };
       copy.splice(idx + 1, 0, replacementQ);
       return copy;
     });
-
     setEditingIndex(idx + 1);
-    success('Previous question preserved in history as Replaced. Please configure replacement question.');
+    success('Previous saved question preserved in history. Complete the new version.');
   };
 
   const handleUpdateQuestion = (idx: number, updated: Partial<CNEQuestion>) => {
-    if (isLocked || !isAuthorized) return;
-    setQuestions((prev) => {
-      const copy = [...prev];
-      copy[idx] = { ...copy[idx], ...updated };
-      return copy;
-    });
+    updateQuestionWithVersioning(idx, updated);
   };
 
   const handleOptionChange = (idx: number, optKey: 'A' | 'B' | 'C' | 'D', value: string) => {
-    if (isLocked || !isAuthorized) return;
-    setQuestions((prev) => {
-      const copy = [...prev];
-      copy[idx] = {
-        ...copy[idx],
-        options: {
-          ...copy[idx].options,
-          [optKey]: value
-        }
-      };
-      return copy;
+    if (!canModify) return;
+    const target = questions[idx];
+    if (!target) return;
+    updateQuestionWithVersioning(idx, {
+      options: { ...target.options, [optKey]: value }
     });
   };
 
   const handleDeleteQuestion = (idx: number) => {
-    if (isLocked || !isAuthorized) return;
-    // Mark as REPLACED/INACTIVE to preserve question history
+    if (!canModify) return;
+    const target = questions[idx];
+    if (!target) return;
+
+    const targetId = String(target.id || '');
+    const isPersisted = persistedQuestionIdsRef.current.has(targetId);
+    if (!isPersisted) {
+      const originalSnapshot = draftOriginSnapshotRef.current.get(targetId);
+      setQuestions((prev) => {
+        const copy = prev.filter((_, i) => i !== idx);
+        if (originalSnapshot) {
+          const originIndex = copy.findIndex((q) => q.id === originalSnapshot.id);
+          if (originIndex >= 0) copy[originIndex] = cloneQuestion(originalSnapshot);
+        }
+        return copy;
+      });
+      draftOriginSnapshotRef.current.delete(targetId);
+      setEditingIndex(null);
+      warning(originalSnapshot ? 'Unsaved replacement discarded; previous saved version restored.' : 'Unsaved manual question removed.');
+      return;
+    }
+
+    // Persisted questions are never hard-deleted; preserve them as historical REPLACED rows.
     setQuestions((prev) => {
       const copy = [...prev];
       copy[idx] = { ...copy[idx], status: 'REPLACED', isFinalized: false };
       return copy;
     });
     if (editingIndex === idx) setEditingIndex(null);
-    warning('Question marked as Replaced/Inactive in history.');
+    warning('Saved question moved to Replaced Questions History.');
   };
 
   const handleToggleFinalized = (idx: number) => {
-    if (isLocked || !isAuthorized) return;
+    if (!canModify) return;
+    const target = questions[idx];
+    if (!target || !isActiveQuestion(target)) return;
+    if (!target.isFinalized && !isQuestionComplete(target)) {
+      error('Complete the question, all four options, rationale, and authoritative source before marking it Finalized.');
+      return;
+    }
     setQuestions((prev) => {
       const copy = [...prev];
       copy[idx] = { ...copy[idx], isFinalized: !copy[idx].isFinalized };
@@ -253,70 +442,43 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     });
   };
 
-  const performSaveQuestions = async (moveToQr: boolean = false) => {
-    if (savingRef.current || isSaving || isLocked || !isAuthorized) return;
+  const performSaveQuestions = async () => {
+    if (savingRef.current || isSaving || !canModify) return;
 
-    const activeQuestions = questions.filter(
-      (q) => q.status !== 'INACTIVE' && q.status !== 'REPLACED'
-    );
+    // Purely blank unsaved drafts are UI scratch rows, not question history. Drop them before save.
+    const payloadQuestions = questions.filter((q) => {
+      const persisted = persistedQuestionIdsRef.current.has(String(q.id || ''));
+      return persisted || !isBlankUnsavedQuestion(q);
+    });
+    const active = payloadQuestions.filter(isActiveQuestion);
+    const validFinalized = active.filter((q) => q.isFinalized && isQuestionComplete(q));
 
-    if (activeQuestions.length < 5) {
-      error(`A minimum of 5 active questions is required. Currently active: ${activeQuestions.length}`);
+    if (validFinalized.length < 5) {
+      error(`At least 5 valid finalized questions are required before opening QR. Currently ready: ${validFinalized.length}/5.`);
       return;
     }
 
-    // Save & Next requires at least 5 finalized questions
-    if (moveToQr) {
-      const activeFinalized = activeQuestions.filter((q) => q.isFinalized).length;
-      if (activeFinalized < 5) {
-        error(`At least 5 finalized questions are required before advancing to the QR page. Currently finalized: ${activeFinalized}`);
-        return;
-      }
-    }
-
-    // Validate that all active questions are complete
-    for (let i = 0; i < activeQuestions.length; i++) {
-      const q = activeQuestions[i];
-      if (!q.question.trim() || q.question.trim().length < 8) {
-        error(`Active Question #${i + 1} has insufficient text (minimum 8 characters).`);
-        return;
-      }
-      if (
-        !q.options.A.trim() ||
-        !q.options.B.trim() ||
-        !q.options.C.trim() ||
-        !q.options.D.trim()
-      ) {
-        error(`Active Question #${i + 1} must have all 4 options (A, B, C, D) filled.`);
-        return;
-      }
-      if (!q.explanation || q.explanation.trim().length < 5) {
-        error(`Active Question #${i + 1} requires a clinical explanation / rationale.`);
-        return;
-      }
-      if (!q.authoritativeSource || q.authoritativeSource.trim().length < 3) {
-        error(`Active Question #${i + 1} requires an authoritative clinical source based on local CNE material.`);
-        return;
-      }
+    const incompleteActive = active.filter((q) => !isQuestionComplete(q));
+    if (incompleteActive.length > 0) {
+      error(`Complete or remove the remaining ${incompleteActive.length} incomplete active question(s) before saving.`);
+      return;
     }
 
     savingRef.current = true;
     setIsSaving(true);
     try {
       const res = await ApiService.saveCNEQuestions({
-        cneId: cneId,
-        questions: questions
+        cneId,
+        questions: payloadQuestions
       });
 
       if (res.success) {
-        success(`Saved question set (${activeQuestions.length} active questions). Post-test is ready.`);
+        persistedQuestionIdsRef.current = new Set(payloadQuestions.map((q) => String(q.id || '')).filter(Boolean));
+        draftOriginSnapshotRef.current = new Map();
+        setQuestions(payloadQuestions);
+        success(`Saved question set (${validFinalized.length} valid finalized questions). Opening QR.`);
         if (onUpdated) onUpdated();
-
-        if (moveToQr) {
-          if (onNavigateToQR) {
-            onNavigateToQR();
-          }
-        }
+        if (onNavigateToQR) onNavigateToQR();
       } else {
         error(res.message || 'Failed to save question bank.');
       }
@@ -328,13 +490,11 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     }
   };
 
-  const activeQuestions = questions.filter(
-    (q) => q.status !== 'INACTIVE' && q.status !== 'REPLACED'
-  );
-  const replacedQuestions = questions.filter(
-    (q) => q.status === 'INACTIVE' || q.status === 'REPLACED'
-  );
-  const activeFinalizedCount = activeQuestions.filter((q) => q.isFinalized).length;
+  const activeQuestions = questions.filter(isActiveQuestion);
+  const replacedQuestions = questions.filter((q) => !isActiveQuestion(q));
+  const completeActiveCount = activeQuestions.filter(isQuestionComplete).length;
+  const validFinalizedCount = activeQuestions.filter((q) => q.isFinalized && isQuestionComplete(q)).length;
+  const incompleteActiveCount = activeQuestions.length - completeActiveCount;
 
   return (
     <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
@@ -358,12 +518,12 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 ) : (
                   <span
                     className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                      activeFinalizedCount >= 5
+                      validFinalizedCount >= 5
                         ? 'bg-emerald-100 text-emerald-800'
                         : 'bg-amber-100 text-amber-800'
                     }`}
                   >
-                    {activeFinalizedCount} of {activeQuestions.length} Active Finalized (Min 5)
+                    {validFinalizedCount} of {activeQuestions.length} Valid & Finalized (Min 5)
                   </span>
                 )}
               </div>
@@ -383,7 +543,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         </div>
 
         {/* Missing Material Inline Alert */}
-        {hasMaterial === false && !isLocked && isAuthorized && (
+        {hasMaterial === false && canModify && (
           <div className="px-6 py-2 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-3 text-xs text-amber-900 shrink-0">
             <div className="flex items-center gap-2">
               <FileWarning className="w-4 h-4 text-amber-600 shrink-0" />
@@ -395,7 +555,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         )}
 
         {/* AI & Manual Action Bar */}
-        {!isLocked && isAuthorized && (
+        {canModify && (
           <div className="px-6 py-3 bg-purple-50/60 border-b border-purple-100 flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
             <div className="space-y-0.5">
               <div className="flex items-center gap-2 text-xs text-purple-950 font-bold">
@@ -403,6 +563,19 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 <span>AI Question Synthesizer</span>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-200/80 text-purple-900 border border-purple-300">
                   1 AI generation allowed per CNE
+                </span>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                  isGenerating
+                    ? 'bg-indigo-100 text-indigo-800 border-indigo-200'
+                    : isAiGenerationUsed
+                    ? 'bg-slate-200 text-slate-700 border-slate-300'
+                    : isAiGenerationUnavailable
+                    ? 'bg-amber-100 text-amber-800 border-amber-200'
+                    : quotaInfo
+                    ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                    : 'bg-slate-100 text-slate-500 border-slate-200'
+                }`}>
+                  {isGenerating ? 'AI: Generating' : isAiGenerationUsed ? 'AI: Used' : isAiGenerationUnavailable ? 'AI: Unavailable' : quotaInfo ? 'AI: Available' : 'AI: Checking'}
                 </span>
               </div>
               <p className="text-slate-600 text-[11px]">
@@ -413,16 +586,16 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              {activeQuestions.length > 0 && activeFinalizedCount < activeQuestions.length && (
+              {activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && (
                 <button
                   type="button"
                   onClick={handleFinalizeAll}
-                  disabled={isGenerating || isSaving}
+                  disabled={isGenerating || isSaving || !canModify}
                   className="flex items-center gap-1 px-3 py-1.5 bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-700 rounded-lg font-bold text-xs cursor-pointer shadow-xs transition-colors"
                   title="Include all draft questions in post-test"
                 >
                   <CheckCheck className="w-3.5 h-3.5" />
-                  <span>Finalize All ({activeQuestions.length - activeFinalizedCount} Drafts)</span>
+                  <span>Finalize All ({completeActiveCount - validFinalizedCount} Drafts)</span>
                 </button>
               )}
 
@@ -430,10 +603,12 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <button
                 type="button"
                 onClick={() => handleGenerateAi()}
-                disabled={isGenerating || generatingRef.current || isSaving || isAiGenerationUsed || hasMaterial === false}
+                disabled={isGenerating || generatingRef.current || isSaving || !canModify || isAiGenerationUsed || isAiGenerationUnavailable || hasMaterial === false}
                 title={
                   isAiGenerationUsed
                     ? 'AI generation already completed for this CNE (Locked)'
+                    : isAiGenerationUnavailable
+                    ? 'AI generation is currently unavailable for this CNE'
                     : hasMaterial === false
                     ? 'Please enter or upload CNE Class Content first'
                     : 'AI Generate MCQs strictly from saved learning material and CNE Library resources'
@@ -468,7 +643,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <button
                 type="button"
                 onClick={handleAddManualQuestion}
-                disabled={isGenerating || isSaving}
+                disabled={isGenerating || isSaving || !canModify}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-lg font-bold text-xs cursor-pointer shadow-xs transition-colors"
                 title="Add a custom question manually (free, never consumes AI quota)"
               >
@@ -476,6 +651,13 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 <span>Manual Question</span>
               </button>
             </div>
+          </div>
+        )}
+
+        {sessionClosed && (
+          <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 text-xs text-slate-700 shrink-0">
+            <Lock className="w-4 h-4 text-slate-500 shrink-0" />
+            <span><strong>CNE Closed:</strong> Questions are view-only after completion/finalization or cancellation.</span>
           </div>
         )}
 
@@ -525,6 +707,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 {questions.map((q, idx) => {
                   if (q.status === 'INACTIVE' || q.status === 'REPLACED') return null;
                   const isEditing = editingIndex === idx;
+                  const activeOrdinal = questions.slice(0, idx + 1).filter(isActiveQuestion).length;
 
                   return (
                     <div
@@ -538,7 +721,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                       <div className="flex items-start justify-between gap-3 mb-2">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="w-5 h-5 rounded-full bg-purple-100 text-purple-800 font-bold flex items-center justify-center text-[11px] shrink-0">
-                            {idx + 1}
+                            {activeOrdinal}
                           </span>
                           {q.isFinalized ? (
                             <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
@@ -559,7 +742,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                           )}
                         </div>
 
-                        {!isLocked && isAuthorized && (
+                        {canModify && (
                           <div className="flex items-center gap-1">
                             <button
                               type="button"
@@ -604,7 +787,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                       </div>
 
                       {/* Question Text & Options */}
-                      {isEditing && !isLocked ? (
+                      {isEditing && canModify ? (
                         <div className="space-y-3 mt-3">
                           <div>
                             <label className="block text-[11px] font-bold text-slate-600 mb-1">
@@ -776,69 +959,50 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           )}
         </div>
 
-        {/* Footer */}
+        {/* Footer: one action only — Save & Next opens QR after 5 valid finalized questions */}
         <div className="px-6 py-3.5 border-t border-slate-200 bg-white flex items-center justify-between shrink-0">
           <div className="text-xs text-slate-500">
-            {activeQuestions.length < 5 ? (
-              <span className="text-rose-600 font-semibold">
-                ⚠ Minimum 5 active questions required. Currently active: {activeQuestions.length}
+            {sessionClosed ? (
+              <span className="text-slate-500 font-semibold">
+                This CNE is closed. Question modification and QR activation are disabled.
               </span>
-            ) : activeFinalizedCount < 5 ? (
+            ) : validFinalizedCount < 5 ? (
+              <span className="text-rose-600 font-semibold">
+                ⚠ Need 5 valid finalized questions before QR. Ready: {validFinalizedCount}/5
+                {incompleteActiveCount > 0 ? ` • Incomplete active: ${incompleteActiveCount}` : ''}
+              </span>
+            ) : incompleteActiveCount > 0 ? (
               <span className="text-amber-600 font-semibold">
-                ⚠ Please finalize at least 5 active questions for post-test activation. Finalized: {activeFinalizedCount}/5
+                ⚠ {incompleteActiveCount} incomplete active question(s) must be completed or removed before saving.
               </span>
             ) : (
               <span className="text-emerald-700 font-medium">
-                ✓ Evaluation ready: <strong>{activeFinalizedCount}</strong> active finalized questions ready for participant post-test
+                ✓ Ready for QR: <strong>{validFinalizedCount}</strong> valid finalized question{validFinalizedCount === 1 ? '' : 's'}
               </span>
             )}
           </div>
 
           <div className="flex items-center gap-2.5">
-            {!isLocked && isAuthorized && (
-              <>
-                {/* Button 1: Save (stays on Questions) */}
-                <button
-                  type="button"
-                  onClick={() => performSaveQuestions(false)}
-                  disabled={isSaving || isGenerating || activeQuestions.length < 5}
-                  className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold text-xs cursor-pointer transition-colors disabled:opacity-50"
-                  title="Save questions and remain on this page"
-                >
-                  {isSaving ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Saving...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Save className="w-3.5 h-3.5 text-slate-600" />
-                      <span>Save</span>
-                    </>
-                  )}
-                </button>
-
-                {/* Button 2: Save & Next (moves to QR) */}
-                <button
-                  type="button"
-                  onClick={() => performSaveQuestions(true)}
-                  disabled={isSaving || isGenerating || activeQuestions.length < 5 || activeFinalizedCount < 5}
-                  className="flex items-center gap-1.5 px-5 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl font-bold text-xs shadow-xs disabled:opacity-50 cursor-pointer transition-colors"
-                  title="Save questions and advance to QR stage"
-                >
-                  {isSaving ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Saving &amp; Moving...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Save &amp; Next</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </>
-                  )}
-                </button>
-              </>
+            {canModify && (
+              <button
+                type="button"
+                onClick={performSaveQuestions}
+                disabled={isSaving || isGenerating || validFinalizedCount < 5 || incompleteActiveCount > 0}
+                className="flex items-center gap-1.5 px-5 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl font-bold text-xs shadow-xs disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                title="Save the valid question set and open QR"
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Saving &amp; Moving...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Save &amp; Next</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </>
+                )}
+              </button>
             )}
           </div>
         </div>

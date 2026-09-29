@@ -9,13 +9,11 @@ import {
   Loader2,
   Search,
   CheckCircle2,
-  AlertCircle,
-  FileDown
+  AlertCircle
 } from 'lucide-react';
 import { CNERecord, CNEParticipantsSummary, Employee } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
-import { generateCNESessionPdf } from '../../services/pdfGenerator';
 import { getCachedOfficers, loadOfficersSingleFlight } from '../../services/officerLoader';
 
 interface CNEParticipantsModalProps {
@@ -34,6 +32,10 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
   onUpdated
 }) => {
   const cneId = cne.cneId || cne.classId || '';
+  const normalizedStatus = String(cne.status || 'Scheduled').trim().toLowerCase();
+  const isSessionClosed = normalizedStatus === 'completed' || normalizedStatus === 'canceled' || normalizedStatus === 'cancelled';
+  const canModifyAttendance = isAuthorized && !isSessionClosed;
+
   const [summary, setSummary] = useState<CNEParticipantsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -42,6 +44,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
   const [isAddingManual, setIsAddingManual] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const participantsRequestRef = useRef(0);
 
   // Officer list state & loading
   const [internalOfficers, setInternalOfficers] = useState<Employee[]>(() => {
@@ -63,7 +66,18 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
   const { success, error, warning } = useToast();
 
   useEffect(() => {
+    setSummary(null);
+    setSearchTerm('');
+    setIsAddingManual(false);
+    setSelectedStaffIds([]);
+    setExternalStaffList([]);
+    setExternalStaffInput('');
+    setStaffSearchQuery('');
     loadParticipants();
+
+    return () => {
+      participantsRequestRef.current += 1;
+    };
   }, [cneId]);
 
   // Sync or lazy load officers when the Add In-Person Attendee form is opened
@@ -84,7 +98,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
     }
 
     // Only load if form is opened by an authorized manager/RP and officers are not loaded yet
-    if (isAddingManual && isAuthorized) {
+    if (isAddingManual && canModifyAttendance) {
       let cancelled = false;
       setIsOfficersLoading(true);
       setOfficersLoadError(null);
@@ -116,23 +130,33 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
         cancelled = true;
       };
     }
-  }, [isAddingManual, officersList]);
+  }, [isAddingManual, officersList, canModifyAttendance, cneId]);
 
   const effectiveOfficers = (officersList && officersList.length > 0)
     ? officersList
     : (internalOfficers.length > 0 ? internalOfficers : (getCachedOfficers() || []));
 
   const loadParticipants = async () => {
+    const requestId = ++participantsRequestRef.current;
+    const requestedCneId = cneId;
     setLoading(true);
     try {
-      const res = await ApiService.getCNEParticipants(cneId);
+      const res = await ApiService.getCNEParticipants(requestedCneId);
+      if (requestId !== participantsRequestRef.current || requestedCneId !== cneId) return;
       if (res.success && res.data) {
         setSummary(res.data);
+      } else {
+        setSummary(null);
       }
     } catch (e: any) {
-      console.warn('Failed to load participants:', e);
+      if (requestId === participantsRequestRef.current && requestedCneId === cneId) {
+        console.warn('Failed to load participants:', e);
+        setSummary(null);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === participantsRequestRef.current && requestedCneId === cneId) {
+        setLoading(false);
+      }
     }
   };
 
@@ -151,7 +175,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
 
   const filteredStaffOptions = effectiveOfficers.filter((o) => {
     if (!staffSearchQuery.trim()) return true;
-    const q = staffSearchQuery.toLowerCase();
+    const q = staffSearchQuery.trim().toLowerCase();
     return (
       (o.employeeId || '').toLowerCase().includes(q) ||
       (o.name || '').toLowerCase().includes(q) ||
@@ -187,7 +211,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
 
   const handleSaveParticipants = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submittingRef.current || isSubmitting || !isAuthorized) return;
+    if (submittingRef.current || isSubmitting || !canModifyAttendance) return;
 
     if (selectedStaffIds.length === 0 && externalStaffList.length === 0) {
       warning('Please select at least one internal staff member or add an external participant.');
@@ -255,7 +279,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
 
   const filteredParticipants = (summary?.participants || []).filter((p) => {
     if (!searchTerm.trim()) return true;
-    const term = searchTerm.toLowerCase();
+    const term = searchTerm.trim().toLowerCase();
     return (
       p.employeeId?.toLowerCase().includes(term) ||
       p.name?.toLowerCase().includes(term) ||
@@ -263,15 +287,6 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
       p.designation?.toLowerCase().includes(term)
     );
   });
-
-  const handleDownloadPdf = () => {
-    try {
-      generateCNESessionPdf(cne, summary?.participants || [], summary?.averageScore ?? null);
-      success('CNE session report PDF generated successfully.');
-    } catch (e: any) {
-      error(e?.message || 'Failed to generate PDF report.');
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
@@ -285,7 +300,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-200">
-                  Attendance &amp; Evaluation Roster
+                  Attendance &amp; Completion
                 </span>
               </div>
               <h3 className="text-sm sm:text-base font-bold text-slate-900 mt-0.5 truncate max-w-2xl">
@@ -325,7 +340,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
           <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
             <span className="text-[11px] text-slate-500 font-medium">Average Score</span>
             <p className="text-lg font-bold text-emerald-700 mt-0.5">
-              {summary && summary.averageScore ? `${summary.averageScore}%` : '—'}
+              {summary?.averageScore !== null && summary?.averageScore !== undefined ? `${summary.averageScore}%` : '—'}
             </p>
           </div>
         </div>
@@ -343,7 +358,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
             />
           </div>
 
-          {isAuthorized && (
+          {canModifyAttendance && (
             <button
               type="button"
               onClick={() => setIsAddingManual(!isAddingManual)}
@@ -364,8 +379,15 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
           )}
         </div>
 
+        {isSessionClosed && (
+          <div className="px-6 py-2.5 border-b border-slate-200 bg-slate-50 text-[11px] text-slate-600 flex items-center gap-2 shrink-0">
+            <AlertCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+            <span>Attendance is read-only because this CNE is {normalizedStatus === 'completed' ? 'finalized' : 'canceled'}.</span>
+          </div>
+        )}
+
         {/* Form: Add Participants (Multi-Select Staff & External) */}
-        {isAddingManual && isAuthorized && (
+        {isAddingManual && canModifyAttendance && (
           <form
             onSubmit={handleSaveParticipants}
             className="px-6 py-4 bg-teal-50/60 border-b border-teal-100 text-xs space-y-3.5 shrink-0 max-h-[380px] overflow-y-auto"
@@ -636,7 +658,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                           )}
                         </td>
                         <td className="p-3 font-medium">
-                          {isPostTest && p.score !== null ? (
+                          {isPostTest && typeof p.score === 'number' ? (
                             <div className="flex items-center gap-1.5">
                               <span className="font-bold text-slate-900 font-mono">
                                 {p.score}/{p.totalQuestions}
@@ -680,14 +702,6 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
             Showing {filteredParticipants.length} attendee records
           </span>
           <div className="flex items-center gap-2.5">
-            <button
-              type="button"
-              onClick={handleDownloadPdf}
-              className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-colors"
-            >
-              <FileDown className="w-4 h-4" />
-              <span>Download Session Report (PDF)</span>
-            </button>
             <button
               type="button"
               onClick={onClose}

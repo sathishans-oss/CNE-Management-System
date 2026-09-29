@@ -12,8 +12,10 @@ import { ApiService } from '../services/api';
 import { generateCNERecordsPdf } from '../services/pdfGenerator';
 import { useToast } from './Toast';
 import {
-  formatCneDateRangeDisplay,
+  formatCneDateTimeDisplay,
   formatResourcePersonsDisplay,
+  isUserAssignedResourcePerson,
+  parseDurationToSeconds,
   parseToIsoDateString
 } from '../utils';
 import { SearchInput } from './SearchInput';
@@ -23,11 +25,66 @@ export interface MyCNERecordsProps {
   user: SessionUser;
 }
 
+const getDurationSeconds = (duration: unknown): number | null => {
+  const raw = String(duration ?? '').trim();
+  if (!raw) return null;
+  return parseDurationToSeconds(raw);
+};
+
+const formatDurationForDisplay = (duration: unknown): string => {
+  const seconds = getDurationSeconds(duration);
+  if (seconds === null) return '—';
+
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+
+  const parts: string[] = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (remainingSeconds > 0) parts.push(`${remainingSeconds}s`);
+  return parts.length > 0 ? parts.join(' ') : '0m';
+};
+
+const normalizeEmployeeId = (value: unknown): string => String(value ?? '').trim().toUpperCase();
+
+const splitEmployeeIds = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.map(normalizeEmployeeId).filter(Boolean);
+  }
+  return String(value ?? '')
+    .split(/[,;\n]+/)
+    .map(normalizeEmployeeId)
+    .filter(Boolean);
+};
+
+const isUserParticipantInRecord = (user: SessionUser, record: CNERecord): boolean => {
+  const employeeId = normalizeEmployeeId(user?.employeeId);
+  if (!employeeId) return false;
+
+  const participantIds = [
+    ...splitEmployeeIds(record?.staffEmpId),
+    ...splitEmployeeIds(record?.staffEmpIds)
+  ];
+
+  return participantIds.includes(employeeId);
+};
+
+const isUserResourcePersonInRecord = (user: SessionUser, record: CNERecord): boolean => {
+  const combinedIds = [
+    ...splitEmployeeIds(record?.resourcePersonEmpId),
+    ...splitEmployeeIds(record?.resourcePersonEmpIds)
+  ].join(',');
+
+  return isUserAssignedResourcePerson(user, combinedIds);
+};
+
 export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   const [records, setRecords] = useState<CNERecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const generatingPdfRef = useRef(false);
+  const recordsRequestIdRef = useRef(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -36,47 +93,93 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   const { success, error } = useToast();
 
   useEffect(() => {
-    loadMyRecords();
-  }, []);
-
-  const loadMyRecords = async () => {
+    // Every account/session change starts a fresh request and invalidates any older response.
+    // This prevents records from a previous user or a slower request from overwriting newer state.
+    const requestId = ++recordsRequestIdRef.current;
     setLoading(true);
+    setRecords([]);
+    setSelectedRecord(null);
 
-    try {
-      const res = await ApiService.getCNERecords({ myRecordsOnly: true, scope: 'my-cne-records' });
-      if (res.success && res.data) {
-        setRecords(res.data);
-      } else {
-        error(res.message || 'Failed to load CNE records.');
+    const loadMyRecords = async () => {
+      try {
+        const res = await ApiService.getCNERecords({
+          myRecordsOnly: true,
+          scope: 'my-cne-records',
+          status: 'Completed'
+        });
+
+        if (requestId !== recordsRequestIdRef.current) return;
+
+        if (res.success && Array.isArray(res.data)) {
+          // Defensive client-side enforcement: My CNE Records is a completed-history view only.
+          // Scheduled, Draft, Pending and Cancelled/Canceled CNEs must never be shown here.
+          const completedRecords = res.data.filter(
+            (record) => String(record?.status ?? '').trim().toLowerCase() === 'completed'
+          );
+          setRecords(completedRecords);
+        } else {
+          setRecords([]);
+          error(res.message || 'Failed to load CNE records.');
+        }
+      } catch (e: any) {
+        if (requestId !== recordsRequestIdRef.current) return;
+        setRecords([]);
+        error(e?.message || 'Error loading records.');
+      } finally {
+        if (requestId === recordsRequestIdRef.current) {
+          setLoading(false);
+        }
       }
-    } catch (e: any) {
-      error(e?.message || 'Error loading records.');
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+
+    void loadMyRecords();
+
+    return () => {
+      // Invalidate this request on unmount or before the next user/session effect runs.
+      if (recordsRequestIdRef.current === requestId) {
+        recordsRequestIdRef.current += 1;
+      }
+    };
+  }, [user.employeeId, user.token, error]);
 
   // Filter logic: Search + Date Range (From Date / To Date)
   const filteredRecords = useMemo(() => {
     return records
       .filter((rec) => {
-        // Date Range filter
-        if (startDate && rec.fromDate < startDate) return false;
-        if (endDate && rec.fromDate > endDate) return false;
+        // My CNE Records must remain completed-only even if a stale/cache response contains another status.
+        if (String(rec.status || '').trim().toLowerCase() !== 'completed') return false;
 
-        // Global Search
-        if (searchTerm.trim()) {
-          const q = searchTerm.toLowerCase();
-          const matchTopic = rec.topic.toLowerCase().includes(q);
-          const matchArea = rec.area.toLowerCase().includes(q);
-          const matchMode = rec.modeOfTeaching.toLowerCase().includes(q);
-          const rpDisplay = formatResourcePersonsDisplay({
-            resourcePersonEmpId: rec.resourcePersonEmpId,
-            resourcePersonName: rec.resourcePersonName,
-            externalResourcePersons: rec.externalResourcePersons
-          }).toLowerCase();
-          const matchRp = rpDisplay.includes(q) || (rec.resourcePersonEmpId || '').toLowerCase().includes(q);
-          const matchExtRp = rec.externalResourcePersons?.some(p => p.toLowerCase().includes(q));
+        // Date Range filter using canonical date parsing so date-time values compare correctly.
+        const recDate = parseToIsoDateString(rec.fromDate);
+        if (startDate && (!recDate || recDate < startDate)) return false;
+        if (endDate && (!recDate || recDate > endDate)) return false;
+
+        // Global Search: normalize once, then use null-safe string conversion for incomplete API data.
+        const q = searchTerm.trim().toLowerCase();
+        if (q) {
+          const searchable = (value: unknown) => String(value ?? '').toLowerCase();
+          const matchTopic = searchable(rec?.topic).includes(q);
+          const matchArea = searchable(rec?.area).includes(q);
+          const matchMode = searchable(rec?.modeOfTeaching).includes(q);
+          const rpDisplay = searchable(
+            formatResourcePersonsDisplay({
+              resourcePersonEmpId: rec?.resourcePersonEmpId,
+              resourcePersonName: rec?.resourcePersonName,
+              externalResourcePersons: Array.isArray(rec?.externalResourcePersons)
+                ? rec.externalResourcePersons
+                : []
+            })
+          );
+          const rpIds = [
+            rec?.resourcePersonEmpId,
+            ...(Array.isArray(rec?.resourcePersonEmpIds) ? rec.resourcePersonEmpIds : [])
+          ]
+            .map(searchable)
+            .join(' ');
+          const matchRp = rpDisplay.includes(q) || rpIds.includes(q);
+          const matchExtRp = Array.isArray(rec?.externalResourcePersons)
+            ? rec.externalResourcePersons.some((p) => searchable(p).includes(q))
+            : false;
           if (!matchTopic && !matchArea && !matchMode && !matchRp && !matchExtRp) return false;
         }
 
@@ -89,19 +192,26 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
       });
   }, [records, startDate, endDate, searchTerm]);
 
-  // Compute total duration
+  // Compute earned training time only for CNEs where the logged-in user participated.
+  // RP-only assignments remain visible in My CNE Records but do not count as participant training hours.
+  // If the same user was both a participant and an RP, participant status takes precedence and the duration is counted.
+  // Missing/invalid duration contributes zero; decimal-hour values such as 1.5 are parsed as 1 hour 30 minutes.
   const totalDurationStats = useMemo(() => {
-    let totalMinutes = 0;
-    filteredRecords.forEach((rec) => {
-      const parts = (rec.duration || '1:00:00').split(':');
-      const hours = parseInt(parts[0], 10) || 0;
-      const mins = parseInt(parts[1], 10) || 0;
-      totalMinutes += hours * 60 + mins;
-    });
-    const hrs = Math.floor(totalMinutes / 60);
-    const mins = totalMinutes % 60;
-    return `${hrs}h ${mins > 0 ? `${mins}m` : ''}`;
-  }, [filteredRecords]);
+    const totalSeconds = filteredRecords.reduce((sum, rec) => {
+      if (!isUserParticipantInRecord(user, rec)) return sum;
+      const seconds = getDurationSeconds(rec?.duration);
+      return sum + (seconds ?? 0);
+    }, 0);
+
+    const hrs = Math.floor(totalSeconds / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+
+    const parts = [`${hrs}h`];
+    if (mins > 0) parts.push(`${mins}m`);
+    if (secs > 0) parts.push(`${secs}s`);
+    return parts.join(' ');
+  }, [filteredRecords, user.employeeId]);
 
   const handleGeneratePdf = async () => {
     if (generatingPdfRef.current || isGeneratingPdf) return;
@@ -127,6 +237,13 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
       setIsGeneratingPdf(false);
     }
   };
+
+  const selectedRecordIsParticipant = selectedRecord
+    ? isUserParticipantInRecord(user, selectedRecord)
+    : false;
+  const selectedRecordIsResourcePerson = selectedRecord
+    ? isUserResourcePersonInRecord(user, selectedRecord)
+    : false;
 
   return (
     <div className="space-y-6 pb-12">
@@ -217,10 +334,10 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
               <Award className="w-6 h-6" />
             </div>
             <h3 className="text-sm font-bold text-slate-800">
-              No CNE sessions found for the selected period.
+              No completed CNE sessions found for the selected period.
             </h3>
             <p className="text-xs text-slate-500 max-w-sm mx-auto">
-              Check your date filters or contact the CNE In-charge if a session you attended is missing.
+              Only completed CNEs linked to your Employee ID are shown here. Check your filters or contact the CNE In-charge if a completed session is missing.
             </p>
           </div>
         ) : (
@@ -231,7 +348,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
                     <th className="py-3.5 px-4 w-12 text-center">Sr.</th>
-                    <th className="py-3.5 px-4">Date</th>
+                    <th className="py-3.5 px-4">Date &amp; Time</th>
                     <th className="py-3.5 px-4">Area / Ward</th>
                     <th className="py-3.5 px-4">Topic / Skills</th>
                     <th className="py-3.5 px-4">Role</th>
@@ -242,7 +359,8 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredRecords.map((rec, index) => {
-                    const isResourcePerson = (rec.resourcePersonEmpId || '').toLowerCase().includes((user.employeeId || '').toLowerCase());
+                    const isParticipant = isUserParticipantInRecord(user, rec);
+                    const isResourcePerson = isUserResourcePersonInRecord(user, rec);
                     return (
                       <tr
                         key={rec.cneId || rec.dataId || `rec-${index}`}
@@ -252,7 +370,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                           {index + 1}
                         </td>
                         <td className="py-3 px-4 whitespace-nowrap font-medium text-slate-800">
-                          {formatCneDateRangeDisplay(rec.fromDate, rec.toDate)}
+                          {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}
                         </td>
                         <td className="py-3 px-4">
                           <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
@@ -265,12 +383,14 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                         <td className="py-3 px-4">
                           <span
                             className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              isResourcePerson
+                              isParticipant
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : isResourcePerson
                                 ? 'bg-purple-100 text-purple-800'
-                                : 'bg-emerald-100 text-emerald-800'
+                                : 'bg-slate-100 text-slate-700'
                             }`}
                           >
-                            {isResourcePerson ? 'Resource Person' : 'Participant (You)'}
+                            {isParticipant ? 'Participant (You)' : isResourcePerson ? 'Resource Person' : 'Linked Record'}
                           </span>
                         </td>
                         <td className="py-3 px-4 text-slate-600">
@@ -282,7 +402,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                         </td>
                         <td className="py-3 px-4 whitespace-nowrap text-slate-700 flex items-center gap-1">
                           <Clock className="w-3.5 h-3.5 text-slate-400" />
-                          <span>{rec.duration || '1:00:00'}</span>
+                          <span>{formatDurationForDisplay(rec.duration)}</span>
                         </td>
                         <td className="py-3 px-4 text-right">
                           <button
@@ -303,19 +423,22 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             {/* Mobile Card List */}
             <div className="md:hidden divide-y divide-slate-100">
               {filteredRecords.map((rec, index) => {
-                const isResourcePerson = (rec.resourcePersonEmpId || '').toLowerCase() === (user.employeeId || '').toLowerCase();
+                const isParticipant = isUserParticipantInRecord(user, rec);
+                const isResourcePerson = isUserResourcePersonInRecord(user, rec);
                 return (
                   <div key={rec.cneId || rec.dataId || `mob-rec-${index}`} className="p-4 space-y-2">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-slate-500">#{index + 1} • {formatCneDateRangeDisplay(rec.fromDate, rec.toDate)}</span>
+                      <span className="font-semibold text-slate-500">#{index + 1} • {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}</span>
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          isResourcePerson
+                          isParticipant
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : isResourcePerson
                             ? 'bg-purple-100 text-purple-800'
-                            : 'bg-emerald-100 text-emerald-800'
+                            : 'bg-slate-100 text-slate-700'
                         }`}
                       >
-                        {isResourcePerson ? 'Resource Person' : 'Participant'}
+                        {isParticipant ? 'Participant' : isResourcePerson ? 'Resource Person' : 'Linked Record'}
                       </span>
                     </div>
 
@@ -329,7 +452,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                       </span>
                       <span className="flex items-center gap-1 text-slate-500">
                         <Clock className="w-3 h-3" />
-                        {rec.duration}
+                        {formatDurationForDisplay(rec.duration)}
                       </span>
                     </div>
 
@@ -374,7 +497,12 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
               </div>
               <div>
                 <h3 className="text-base font-bold text-slate-900">CNE Record</h3>
-                <span className="text-xs text-slate-500 font-mono">ID: {selectedRecord.cneId || selectedRecord.dataId}</span>
+                <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                  <span className="text-xs text-slate-500 font-mono">ID: {selectedRecord.cneId || selectedRecord.dataId}</span>
+                  <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                    Completed
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -390,9 +518,9 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                   <span className="font-semibold text-slate-900 mt-0.5 block">{selectedRecord.area}</span>
                 </div>
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                  <span className="block text-slate-500 font-semibold uppercase text-[10px]">Date & Duration</span>
+                  <span className="block text-slate-500 font-semibold uppercase text-[10px]">Date & Time / Duration</span>
                   <span className="font-semibold text-slate-900 mt-0.5 block">
-                    {formatCneDateRangeDisplay(selectedRecord.fromDate, selectedRecord.toDate)} ({selectedRecord.duration || '1 hr'})
+                    {formatCneDateTimeDisplay(selectedRecord.fromDate, selectedRecord.toDate)} ({formatDurationForDisplay(selectedRecord.duration)})
                   </span>
                 </div>
               </div>
@@ -421,14 +549,32 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                 </div>
               )}
 
-              {/* Privacy Notice */}
+              {/* Personal record relationship notice */}
               <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-emerald-900 flex items-start gap-2">
                 <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
                 <div>
-                  <span className="font-semibold">Participation Verified</span>
-                  <p className="text-[11px] text-emerald-800 mt-0.5">
-                    Your attendance is verified in the Nursing Services CNE database and certified for your professional training record.
-                  </p>
+                  {selectedRecordIsParticipant ? (
+                    <>
+                      <span className="font-semibold">Participation Verified</span>
+                      <p className="text-[11px] text-emerald-800 mt-0.5">
+                        Your attendance is verified in the Nursing Services CNE database and this session is included in your participant training hours.
+                      </p>
+                    </>
+                  ) : selectedRecordIsResourcePerson ? (
+                    <>
+                      <span className="font-semibold">Resource Person Assignment Verified</span>
+                      <p className="text-[11px] text-emerald-800 mt-0.5">
+                        You are recorded as an assigned Resource Person for this completed CNE. RP-only session duration is not added to your participant training hours.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-semibold">CNE Record Verified</span>
+                      <p className="text-[11px] text-emerald-800 mt-0.5">
+                        This completed CNE is linked to your personal CNE record.
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
             </div>

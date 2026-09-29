@@ -10,7 +10,8 @@ import {
   Upload,
   ArrowRight,
   AlertCircle,
-  Trash2
+  Trash2,
+  Lock
 } from 'lucide-react';
 import { CNERecord, CNELearningResourceMetadata } from '../../types';
 import { ApiService } from '../../services/api';
@@ -32,14 +33,24 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   onNavigateToQuestions
 }) => {
   const cneId = cne.cneId || cne.classId || '';
+  const normalizedStatus = String(cne.status || '').trim().toLowerCase();
+  const isClosed = normalizedStatus === 'completed' || normalizedStatus === 'finalized' || normalizedStatus === 'finalised' || normalizedStatus === 'canceled' || normalizedStatus === 'cancelled';
+  const canModify = isAuthorized && !isClosed;
+
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const savingRef = useRef(false);
 
   // Learning material content
   const [unifiedContent, setUnifiedContent] = useState('');
-  const [updatedBy, setUpdatedBy] = useState<string | undefined>(undefined);
   const [updatedAt, setUpdatedAt] = useState<string | undefined>(undefined);
+  const loadRequestRef = useRef(0);
+  const [indexingInfo, setIndexingInfo] = useState<{
+    status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'UNKNOWN';
+    message?: string;
+    errorCode?: string;
+    chunksCount?: number;
+  } | null>(null);
 
   // Existing Uploaded File Metadata
   const [existingResource, setExistingResource] = useState<CNELearningResourceMetadata | null>(null);
@@ -56,10 +67,20 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const { success, error, warning } = useToast();
 
   useEffect(() => {
+    setUnifiedContent('');
+    setUpdatedAt(undefined);
+    setExistingResource(null);
+    setSelectedFile(null);
+    setIndexingInfo(null);
+    setShowDeleteConfirm(false);
     loadAllReferenceData();
+    return () => {
+      loadRequestRef.current += 1;
+    };
   }, [cneId]);
 
   const loadAllReferenceData = async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     try {
       const [refRes, resourceRes] = await Promise.all([
@@ -67,32 +88,49 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         ApiService.getLearningResource(cneId)
       ]);
 
+      if (requestId !== loadRequestRef.current) return;
+
       if (refRes.success && refRes.data) {
         let content = refRes.data.unifiedContent || refRes.data.referenceText || '';
         if (!content && cne.description) {
           content = cne.description;
         }
         setUnifiedContent(content);
-        setUpdatedBy(refRes.data.updatedBy);
         setUpdatedAt(refRes.data.updatedAt);
       } else if (cne.description) {
         setUnifiedContent(cne.description);
       }
 
-      if (resourceRes.success && resourceRes.data) {
-        if (resourceRes.data.hasFile || resourceRes.data.driveFileId) {
-          setExistingResource(resourceRes.data);
+      if (resourceRes.success && resourceRes.data && (resourceRes.data.hasFile || resourceRes.data.driveFileId)) {
+        const resource = resourceRes.data;
+        setExistingResource(resource);
+        if (resource.indexingStatus) {
+          setIndexingInfo({
+            status: resource.indexingStatus,
+            message: resource.indexingMessage,
+            errorCode: resource.indexingErrorCode,
+            chunksCount: resource.chunksCount
+          });
+        } else {
+          setIndexingInfo({
+            status: 'UNKNOWN',
+            message: 'Indexing metadata was not returned for this previously uploaded PDF.'
+          });
         }
+      } else {
+        setExistingResource(null);
+        setIndexingInfo(null);
       }
     } catch (e: any) {
+      if (requestId !== loadRequestRef.current) return;
       console.warn('Failed to load reference material or learning resource:', e);
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
   };
 
   const handleDeleteResource = async () => {
-    if (isDeleting || isSaving || !isAuthorized) return;
+    if (isDeleting || isSaving || !canModify) return;
     setIsDeleting(true);
     try {
       const res = await ApiService.deleteLearningResource(cneId);
@@ -101,6 +139,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         setShowDeleteConfirm(false);
         setExistingResource(null);
         setSelectedFile(null);
+        setIndexingInfo(null);
         if (onUpdated) onUpdated();
         await loadAllReferenceData();
       } else {
@@ -114,6 +153,11 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   };
 
   const handleFileSelect = (file: File) => {
+    if (!canModify) {
+      warning('Learning materials are locked after CNE completion/finalization or cancellation.');
+      return;
+    }
+
     const validExtensions = ['.pdf'];
     const lowerName = file.name.toLowerCase();
     const isValidExt = validExtensions.some((ext) => lowerName.endsWith(ext));
@@ -135,6 +179,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!canModify) return;
     if (e.type === 'dragenter' || e.type === 'dragover') {
       setDragActive(true);
     } else if (e.type === 'dragleave') {
@@ -146,6 +191,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
+    if (!canModify) return;
 
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleFileSelect(e.dataTransfer.files[0]);
@@ -177,7 +223,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
    * returns true on success, false on failure
    */
   const performSave = async (): Promise<boolean> => {
-    if (savingRef.current || isSaving || !isAuthorized) return false;
+    if (savingRef.current || isSaving || !canModify) return false;
 
     const hasAnyFile = selectedFile !== null || (existingResource && existingResource.hasFile);
     const hasAnyText = unifiedContent.trim().length > 0;
@@ -209,6 +255,14 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
 
         setExistingResource(uploadRes.data || null);
         setSelectedFile(null);
+        if (uploadRes.data) {
+          setIndexingInfo({
+            status: uploadRes.data.indexingStatus || 'UNKNOWN',
+            message: uploadRes.data.indexingMessage,
+            errorCode: uploadRes.data.indexingErrorCode,
+            chunksCount: uploadRes.data.chunksCount
+          });
+        }
 
         if (uploadRes.data?.indexingStatus === 'FAILED') {
           warning(uploadRes.data?.indexingMessage || 'Unable to extract readable text from the uploaded material. The file has been saved, but its content could not be indexed.');
@@ -249,7 +303,6 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     const successResult = await performSave();
     if (successResult) {
       success('Learning resource saved successfully.');
-      loadAllReferenceData();
     }
   };
 
@@ -271,12 +324,24 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const charCount = unifiedContent.length;
   const wordCount = unifiedContent.trim() ? unifiedContent.trim().split(/\s+/).length : 0;
 
-  const isEmployeeId = (val?: string) => {
-    if (!val) return false;
-    const clean = val.trim();
-    return /^RSN/i.test(clean) || /^[A-Z]{2,}\d{3,}$/i.test(clean);
-  };
-  const displayUpdatedBy = updatedBy && !isEmployeeId(updatedBy) ? updatedBy : 'Coordinator';
+
+  const indexingLabel = indexingInfo?.status === 'SUCCESS'
+    ? 'Indexed'
+    : indexingInfo?.status === 'FAILED'
+    ? 'Indexing failed'
+    : indexingInfo?.status === 'PENDING'
+    ? 'Indexing pending'
+    : indexingInfo?.status === 'UNKNOWN'
+    ? 'Index status not reported'
+    : '';
+
+  const indexingBadgeClass = indexingInfo?.status === 'SUCCESS'
+    ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+    : indexingInfo?.status === 'FAILED'
+    ? 'bg-rose-100 text-rose-800 border-rose-200'
+    : indexingInfo?.status === 'PENDING'
+    ? 'bg-amber-100 text-amber-800 border-amber-200'
+    : 'bg-slate-100 text-slate-700 border-slate-200';
 
   return (
     <div id="cne-material-modal" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
@@ -317,6 +382,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
               </div>
             </div>
 
+            {isClosed && (
+              <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 text-xs text-slate-700 shrink-0">
+                <Lock className="w-4 h-4 text-slate-600 shrink-0" />
+                <span>Learning material is locked because this CNE is completed/finalized or canceled. Existing material remains viewable.</span>
+              </div>
+            )}
+
             {/* Scrollable Form Body */}
             <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-5 bg-slate-50/40">
               {/* Upload Learning Resource File Section */}
@@ -343,8 +415,12 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                           </div>
                           <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
                             <span>Size: <strong>{formatFileSize(existingResource.fileSize)}</strong></span>
-                            <span>&bull;</span>
-                            <span>Attached by: <strong>{existingResource.updatedBy || 'Coordinator'}</strong></span>
+                            {existingResource.updatedAt && (
+                              <>
+                                <span>&bull;</span>
+                                <span>Updated: <strong>{new Date(existingResource.updatedAt).toLocaleString()}</strong></span>
+                              </>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -354,7 +430,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                           <CheckCircle2 className="w-3 h-3" />
                           Attached
                         </span>
-                        {isAuthorized && (
+                        {canModify && (
                           <button
                             type="button"
                             onClick={() => setShowDeleteConfirm(true)}
@@ -409,11 +485,33 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                   </div>
                 )}
 
+                {existingResource?.hasFile && indexingInfo && (
+                  <div className="p-3.5 bg-white border border-slate-200 rounded-xl text-xs space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-bold text-slate-700">PDF Indexing Status</div>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-bold ${indexingBadgeClass}`}>
+                        {indexingInfo.status === 'SUCCESS' ? <CheckCircle2 className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
+                        {indexingLabel}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-600">
+                      <div>Indexed chunks: <strong className="text-slate-800">{typeof indexingInfo.chunksCount === 'number' ? indexingInfo.chunksCount : '—'}</strong></div>
+                      {indexingInfo.errorCode && <div>Error code: <strong className="text-rose-700">{indexingInfo.errorCode}</strong></div>}
+                    </div>
+                    {indexingInfo.message && (
+                      <div className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-2">
+                        {indexingInfo.message}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Dropzone / File Picker */}
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept=".pdf,application/pdf"
+                  disabled={!canModify}
                   onChange={(e) => {
                     if (e.target.files && e.target.files[0]) {
                       handleFileSelect(e.target.files[0]);
@@ -427,16 +525,20 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                   onDragLeave={handleDrag}
                   onDragOver={handleDrag}
                   onDrop={handleDrop}
-                  onClick={() => fileInputRef.current?.click()}
-                  className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-colors flex flex-col items-center justify-center gap-1.5 ${
-                    dragActive
-                      ? 'border-teal-500 bg-teal-50/50'
-                      : 'border-slate-300 hover:border-teal-400 bg-slate-50/60'
+                  onClick={() => { if (canModify) fileInputRef.current?.click(); }}
+                  className={`border-2 border-dashed rounded-xl p-5 text-center transition-colors flex flex-col items-center justify-center gap-1.5 ${
+                    !canModify
+                      ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed opacity-70'
+                      : dragActive
+                      ? 'border-teal-500 bg-teal-50/50 cursor-pointer'
+                      : 'border-slate-300 hover:border-teal-400 bg-slate-50/60 cursor-pointer'
                   }`}
                 >
                   <Upload className="w-6 h-6 text-teal-600 mb-0.5" />
                   <p className="text-xs font-semibold text-slate-800">
-                    {selectedFile ? (
+                    {!canModify ? (
+                      <span>File changes are locked for this closed CNE.</span>
+                    ) : selectedFile ? (
                       <span className="text-teal-700 font-bold">
                         Selected: {selectedFile.name} ({formatFileSize(selectedFile.size)})
                       </span>
@@ -457,6 +559,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setSelectedFile(null)}
+                      disabled={!canModify}
                       className="text-rose-600 hover:text-rose-700 font-bold cursor-pointer"
                     >
                       Remove
@@ -481,7 +584,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                 <textarea
                   value={unifiedContent}
                   onChange={(e) => setUnifiedContent(e.target.value)}
-                  disabled={!isAuthorized || isSaving}
+                  disabled={!canModify || isSaving}
                   placeholder={`Optional supplementary notes, key takeaways, or clinical references:
 • Learning Objectives & Core Competencies
 • Procedural Steps & Nursing Escalations
@@ -489,10 +592,9 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                   className="w-full min-h-[140px] p-3.5 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-800 leading-relaxed focus:bg-white focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all disabled:opacity-60 resize-y"
                 />
 
-                {(updatedBy || updatedAt) && (
-                  <div className="px-3 py-1.5 bg-slate-50 rounded-lg text-[11px] text-slate-400 flex items-center justify-between">
-                    <span>Last updated by: <strong className="text-slate-600">{displayUpdatedBy}</strong></span>
-                    <span>{updatedAt ? new Date(updatedAt).toLocaleString() : ''}</span>
+                {updatedAt && (
+                  <div className="px-3 py-1.5 bg-slate-50 rounded-lg text-[11px] text-slate-500">
+                    Last updated: <strong className="text-slate-700">{new Date(updatedAt).toLocaleString()}</strong>
                   </div>
                 )}
               </div>
@@ -501,7 +603,11 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             {/* Modal Footer with Save and Save & Next */}
             <div className="px-6 py-3.5 border-t border-slate-200 bg-white flex items-center justify-between gap-3 shrink-0">
               <div className="text-xs text-slate-500">
-                {selectedFile ? (
+                {isClosed ? (
+                  <span className="inline-flex items-center gap-1.5 text-slate-600 font-medium">
+                    <Lock className="w-3.5 h-3.5" /> Material modifications are locked
+                  </span>
+                ) : selectedFile ? (
                   <span className="text-teal-700 font-medium">
                     1 new file ready to be saved
                   </span>
@@ -516,7 +622,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                 )}
               </div>
 
-              {isAuthorized && (
+              {canModify && (
                 <div className="flex items-center gap-2.5">
                   {/* Button 1: Save (stays on Material) */}
                   <button

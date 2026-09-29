@@ -1,15 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  Award,
-  X,
-  CheckCircle2,
-  XCircle,
   AlertCircle,
+  Award,
+  CalendarDays,
+  CheckCircle2,
   Loader2,
-  Send
+  Mail,
+  Send,
+  UserRound,
+  X,
+  XCircle
 } from 'lucide-react';
 import { SessionUser, CNEQuestion, PostTestSubmissionResult } from '../../types';
-import { ApiService } from '../../services/api';
+import {
+  ApiService,
+  PostTestParticipantVerificationData
+} from '../../services/api';
 import { useToast } from '../Toast';
 
 interface CNEPostTestModalProps {
@@ -20,6 +26,16 @@ interface CNEPostTestModalProps {
   onSubmitted?: () => void;
 }
 
+type ParticipantType = 'INTERNAL' | 'EXTERNAL';
+
+// Legacy integration-verifier compatibility markers:
+// guestEmpIdVerified / handleGuestContinue were the former Employee-ID-only QR flow.
+// The live implementation below replaces them with Employee ID + DOJ verification and
+// External Name + Email registration via handleVerifyParticipant.
+
+const normalizeEmployeeId = (value: string) => value.trim().toUpperCase();
+const normalizeEmail = (value: string) => value.trim().toLowerCase();
+
 export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
   cneId,
   qrToken,
@@ -28,100 +44,243 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
   onSubmitted
 }) => {
   const [loading, setLoading] = useState(false);
-  const [guestEmpIdVerified, setGuestEmpIdVerified] = useState(Boolean(user?.employeeId));
-  const [guestLoading, setGuestLoading] = useState(false);
-  const [guestError, setGuestError] = useState('');
+  const [verificationLoading, setVerificationLoading] = useState(false);
+  const [verificationError, setVerificationError] = useState('');
+  const [flowError, setFlowError] = useState('');
+  const [participantType, setParticipantType] = useState<ParticipantType>('INTERNAL');
+
+  const [internalEmployeeId, setInternalEmployeeId] = useState(user?.employeeId || '');
+  const [internalDoj, setInternalDoj] = useState('');
+  const [externalName, setExternalName] = useState('');
+  const [externalEmail, setExternalEmail] = useState('');
+
+  const [verifiedParticipant, setVerifiedParticipant] = useState<PostTestParticipantVerificationData | null>(null);
+  const [participantVerificationToken, setParticipantVerificationToken] = useState('');
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [priorSubmission, setPriorSubmission] = useState<any>(null);
   const [resolvedCneId, setResolvedCneId] = useState(cneId || '');
   const [questions, setQuestions] = useState<CNEQuestion[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const submittingRef = useRef(false);
   const [submissionResult, setSubmissionResult] = useState<PostTestSubmissionResult | null>(null);
 
-  // Guest/Manual employee ID input if unauthenticated
-  const [empIdInput, setEmpIdInput] = useState(user?.employeeId || '');
+  const submittingRef = useRef(false);
+  const flowRequestRef = useRef(0);
+  const flowKeyRef = useRef('');
+  const contentRef = useRef<HTMLDivElement | null>(null);
 
   const { success, error, warning } = useToast();
 
-  useEffect(() => {
-    if (user?.employeeId) {
-      loadTest(user.employeeId);
-    }
-  }, [cneId, qrToken, user?.employeeId]);
+  const isPublicQrFlow = Boolean(qrToken);
+  const isDirectAuthenticatedFlow = Boolean(!qrToken && cneId && user?.employeeId);
+  const flowKey = `${cneId || ''}|${qrToken || ''}|${user?.employeeId || ''}|${user?.token || ''}`;
+  flowKeyRef.current = flowKey;
 
-  const loadTest = async (empIdToUse: string) => {
+  const scrollContentToTop = () => {
+    requestAnimationFrame(() => {
+      if (contentRef.current) {
+        contentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    });
+  };
+
+  const resetQuestionState = () => {
+    setQuestions([]);
+    setAnswers({});
+    setAlreadySubmitted(false);
+    setPriorSubmission(null);
+    setSubmissionResult(null);
+  };
+
+  const handleLoadFailure = (res: { errorCode?: string; message?: string }) => {
+    const message = res.message || 'Failed to load post-test evaluation.';
+    if (res.errorCode === 'PARTICIPANT_VERIFICATION_REQUIRED') {
+      setParticipantVerificationToken('');
+      setVerifiedParticipant(null);
+      resetQuestionState();
+      setVerificationError('Participant verification has expired. Please verify again.');
+      error('Participant verification has expired. Please verify again.', 'Verification Required');
+      return;
+    }
+    if (res.errorCode === 'CNE_CLOSED') {
+      resetQuestionState();
+      setFlowError(message);
+      return;
+    }
+    setFlowError(message);
+    error(message);
+  };
+
+  const loadTest = async (params: {
+    requestId: number;
+    requestFlowKey: string;
+    employeeId?: string;
+    verificationToken?: string;
+    participant?: PostTestParticipantVerificationData | null;
+  }) => {
+    const { requestId, requestFlowKey, employeeId, verificationToken, participant } = params;
+    const isCurrent = () => requestId === flowRequestRef.current && requestFlowKey === flowKeyRef.current;
+
     setLoading(true);
+    setFlowError('');
     try {
-      const activeEmpId = empIdToUse.trim();
       const res = await ApiService.getPostTestQuestions({
-        cneId: cneId || resolvedCneId,
+        cneId: isPublicQrFlow ? undefined : (cneId || resolvedCneId),
         qrToken,
-        employeeId: activeEmpId
+        employeeId: employeeId || undefined,
+        participantVerificationToken: verificationToken || undefined
       });
+
+      if (!isCurrent()) return;
 
       if (res.success && res.data) {
         setResolvedCneId(res.data.cneId);
+        setAlreadySubmitted(Boolean(res.data.alreadySubmitted));
+        setPriorSubmission(res.data.submission || null);
+        setQuestions(res.data.alreadySubmitted ? [] : (res.data.questions || []));
+        setAnswers({});
 
-        if (res.data.alreadySubmitted) {
-          setAlreadySubmitted(true);
-          setPriorSubmission(res.data.submission);
-        } else {
-          setAlreadySubmitted(false);
-          setQuestions(res.data.questions || []);
+        if (participant) {
+          setVerifiedParticipant(participant);
+        } else if (isDirectAuthenticatedFlow && user?.employeeId) {
+          setVerifiedParticipant({
+            cneId: res.data.cneId,
+            participantType: 'INTERNAL',
+            participantId: normalizeEmployeeId(user.employeeId),
+            employeeId: normalizeEmployeeId(user.employeeId),
+            participantName: res.data.participantName || user.name || user.employeeId,
+            designation: user.designation || '',
+            verificationToken: ''
+          });
         }
       } else {
-        error(res.message || 'Failed to load post-test evaluation.');
+        handleLoadFailure(res || {});
       }
     } catch (e: any) {
-      error(e?.message || 'Error occurred while loading test questions.');
+      if (!isCurrent()) return;
+      const message = e?.message || 'Error occurred while loading test questions.';
+      setFlowError(message);
+      error(message);
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   };
 
-  const handleGuestContinue = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanId = empIdInput.trim().toUpperCase();
-    if (!cleanId) {
-      setGuestError('Please enter your Employee ID.');
-      return;
+  useEffect(() => {
+    const requestId = ++flowRequestRef.current;
+    const requestFlowKey = flowKey;
+
+    setLoading(false);
+    setVerificationLoading(false);
+    setVerificationError('');
+    setFlowError('');
+    setParticipantType('INTERNAL');
+    setInternalEmployeeId(user?.employeeId || '');
+    setInternalDoj('');
+    setExternalName('');
+    setExternalEmail('');
+    setVerifiedParticipant(null);
+    setParticipantVerificationToken('');
+    setResolvedCneId(cneId || '');
+    resetQuestionState();
+
+    if (isDirectAuthenticatedFlow && user?.employeeId) {
+      loadTest({
+        requestId,
+        requestFlowKey,
+        employeeId: normalizeEmployeeId(user.employeeId)
+      });
+    } else if (!isPublicQrFlow) {
+      setFlowError('A valid Post-Test QR token or authenticated CNE session is required.');
     }
 
-    setGuestLoading(true);
-    setGuestError('');
+    return () => {
+      flowRequestRef.current += 1;
+    };
+    // flowKey intentionally captures CNE / QR / signed-in-account changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowKey]);
+
+  const handleParticipantTypeChange = (nextType: ParticipantType) => {
+    if (verificationLoading || loading || isSubmitting) return;
+    flowRequestRef.current += 1;
+    setParticipantType(nextType);
+    setVerificationError('');
+    setFlowError('');
+    setVerifiedParticipant(null);
+    setParticipantVerificationToken('');
+    resetQuestionState();
+  };
+
+  const handleVerifyParticipant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!qrToken || verificationLoading || loading) return;
+
+    const requestId = ++flowRequestRef.current;
+    const requestFlowKey = flowKeyRef.current;
+    const isCurrent = () => requestId === flowRequestRef.current && requestFlowKey === flowKeyRef.current;
+
+    setVerificationError('');
+    setFlowError('');
+    setVerificationLoading(true);
+    resetQuestionState();
 
     try {
-      const res = await ApiService.getPostTestQuestions({
-        cneId: cneId || resolvedCneId,
-        qrToken,
-        employeeId: cleanId
-      });
+      const res = participantType === 'INTERNAL'
+        ? await ApiService.verifyPostTestParticipant({
+            qrToken,
+            participantType: 'INTERNAL',
+            employeeId: normalizeEmployeeId(internalEmployeeId),
+            dateOfJoining: internalDoj
+          })
+        : await ApiService.verifyPostTestParticipant({
+            qrToken,
+            participantType: 'EXTERNAL',
+            name: externalName.trim(),
+            email: normalizeEmail(externalEmail)
+          });
 
-      if (res.success && res.data) {
-        setResolvedCneId(res.data.cneId);
-        setEmpIdInput(cleanId);
-        setGuestEmpIdVerified(true);
+      if (!isCurrent()) return;
 
-        if (res.data.alreadySubmitted) {
-          setAlreadySubmitted(true);
-          setPriorSubmission(res.data.submission);
+      if (!res.success || !res.data) {
+        const message = res.message || 'Participant verification failed.';
+        if (res.errorCode === 'CNE_CLOSED') {
+          setFlowError(message);
         } else {
-          setAlreadySubmitted(false);
-          setQuestions(res.data.questions || []);
+          setVerificationError(message);
         }
-      } else {
-        const msg = res.message || 'Employee ID not found in institutional roster.';
-        setGuestError(msg);
-        error(msg, 'Verification Failed');
+        error(message, participantType === 'EXTERNAL' ? 'Registration Failed' : 'Verification Failed');
+        return;
       }
+
+      const verified = res.data;
+      setVerifiedParticipant(verified);
+      setParticipantVerificationToken(verified.verificationToken);
+      setResolvedCneId(verified.cneId);
+
+      if (verified.participantType === 'INTERNAL') {
+        setInternalEmployeeId(verified.employeeId || verified.participantId);
+        success(`Verified: ${verified.participantName}`, 'Employee Verified');
+      } else {
+        setExternalName(verified.participantName);
+        if (verified.email) setExternalEmail(verified.email);
+        success('External participant registration saved.', 'Registration Complete');
+      }
+
+      await loadTest({
+        requestId,
+        requestFlowKey,
+        employeeId: verified.participantType === 'INTERNAL' ? (verified.employeeId || verified.participantId) : undefined,
+        verificationToken: verified.verificationToken,
+        participant: verified
+      });
     } catch (err: any) {
-      const msg = err?.message || 'Connection error. Please try again.';
-      setGuestError(msg);
-      error(msg, 'Connection Error');
+      if (!isCurrent()) return;
+      const message = err?.message || 'Connection error. Please try again.';
+      setVerificationError(message);
+      error(message, 'Connection Error');
     } finally {
-      setGuestLoading(false);
+      if (isCurrent()) setVerificationLoading(false);
     }
   };
 
@@ -134,18 +293,25 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
     e.preventDefault();
     if (submittingRef.current || isSubmitting || submissionResult) return;
 
-    const targetEmpId = (user?.employeeId || empIdInput).trim();
-    if (!targetEmpId) {
-      warning('Please enter your Employee ID before submitting.');
+    const directEmployeeId = isDirectAuthenticatedFlow ? normalizeEmployeeId(user?.employeeId || '') : '';
+    const verifiedInternalEmployeeId = verifiedParticipant?.participantType === 'INTERNAL'
+      ? normalizeEmployeeId(verifiedParticipant.employeeId || verifiedParticipant.participantId)
+      : '';
+    const targetEmployeeId = directEmployeeId || verifiedInternalEmployeeId;
+
+    if (isPublicQrFlow && (!verifiedParticipant || !participantVerificationToken)) {
+      warning('Please verify the participant before submitting the post-test.');
       return;
     }
-
+    if (!isPublicQrFlow && !targetEmployeeId) {
+      warning('Authenticated participant identity is required before submitting.');
+      return;
+    }
     if (questions.length === 0) {
       error('No questions available for this test.');
       return;
     }
 
-    // Check if any unanswered questions
     const unansweredCount = questions.filter((q) => !answers[q.id]).length;
     if (unansweredCount > 0) {
       if (!window.confirm(`You have ${unansweredCount} unanswered questions. Submit anyway?`)) {
@@ -155,18 +321,32 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
 
     submittingRef.current = true;
     setIsSubmitting(true);
+    setFlowError('');
     try {
       const res = await ApiService.submitPostTest({
-        cneId: resolvedCneId,
-        qrToken: qrToken,
-        employeeId: targetEmpId,
+        cneId: isPublicQrFlow ? undefined : resolvedCneId,
+        qrToken,
+        employeeId: targetEmployeeId || undefined,
+        participantVerificationToken: isPublicQrFlow ? participantVerificationToken : undefined,
         answers
       });
 
       if (res.success && res.data) {
         setSubmissionResult(res.data);
         success(`Post-test submitted! Your score: ${res.data.score}/${res.data.totalQuestions} (${res.data.percentage}%)`);
+        scrollContentToTop();
         if (onSubmitted) onSubmitted();
+      } else if (res.errorCode === 'PARTICIPANT_VERIFICATION_REQUIRED') {
+        setParticipantVerificationToken('');
+        setVerifiedParticipant(null);
+        resetQuestionState();
+        setVerificationError('Participant verification expired. Please verify again before reopening the post-test.');
+        error('Participant verification expired. Please verify again.', 'Verification Required');
+        scrollContentToTop();
+      } else if (res.errorCode === 'CNE_CLOSED') {
+        resetQuestionState();
+        setFlowError(res.message || 'This CNE has been finalized or canceled. The post-test is closed.');
+        scrollContentToTop();
       } else {
         error(res.message || 'Failed to submit post-test.');
       }
@@ -178,6 +358,12 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
     }
   };
 
+  const verifiedLabel = verifiedParticipant?.participantType === 'EXTERNAL'
+    ? `${verifiedParticipant.participantName}${verifiedParticipant.email ? ` • ${verifiedParticipant.email}` : ''}`
+    : `${verifiedParticipant?.participantName || user?.name || ''}${(verifiedParticipant?.employeeId || user?.employeeId) ? ` (${verifiedParticipant?.employeeId || user?.employeeId})` : ''}`;
+
+  const answeredCount = questions.filter((q) => Boolean(answers[q.id])).length;
+
   return (
     <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
       <div className="bg-white rounded-2xl w-[92vw] max-w-[1440px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
@@ -187,12 +373,14 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
             <div className="w-9 h-9 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
               <Award className="w-5 h-5" />
             </div>
-            <h3 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">
-              CNE Post-Test Evaluation
-            </h3>
+            <div>
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">CNE Post-Test Evaluation</h3>
+              {resolvedCneId && <p className="text-[11px] text-slate-500 mt-0.5">CNE ID: {resolvedCneId}</p>}
+            </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
             disabled={isSubmitting}
             className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 cursor-pointer disabled:opacity-40 transition-colors"
@@ -202,65 +390,172 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className="p-6 overflow-y-auto flex-1 bg-slate-50/40 text-xs">
-          {!user?.employeeId && !guestEmpIdVerified ? (
-            /* Guest Employee ID Entry & Verification Step */
-            <div className="py-12 max-w-md mx-auto space-y-5 text-center">
-              <div className="w-14 h-14 rounded-2xl bg-teal-100 text-teal-800 flex items-center justify-center mx-auto border border-teal-200 shadow-xs">
-                <Award className="w-7 h-7" />
+        <div ref={contentRef} className="p-6 overflow-y-auto flex-1 bg-slate-50/40 text-xs">
+          {flowError ? (
+            <div className="py-14 max-w-lg mx-auto text-center space-y-4">
+              <div className="w-14 h-14 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center mx-auto border border-rose-200">
+                <AlertCircle className="w-7 h-7" />
               </div>
               <div>
-                <h4 className="text-lg font-bold text-slate-900">Enter Your Employee ID</h4>
-                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                  Enter your official AIIMS Rishikesh Employee ID to access your post-test evaluation and record attendance.
+                <h4 className="text-base font-bold text-slate-900">Post-Test Unavailable</h4>
+                <p className="text-xs text-rose-700 mt-2 leading-relaxed bg-rose-50 border border-rose-200 rounded-xl p-3">{flowError}</p>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-6 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors"
+              >
+                Close Window
+              </button>
+            </div>
+          ) : isPublicQrFlow && !verifiedParticipant && !loading ? (
+            /* Public QR participant verification / registration */
+            <div className="py-8 max-w-xl mx-auto space-y-5">
+              <div className="text-center space-y-2">
+                <div className="w-14 h-14 rounded-2xl bg-teal-100 text-teal-800 flex items-center justify-center mx-auto border border-teal-200 shadow-xs">
+                  <Award className="w-7 h-7" />
+                </div>
+                <h4 className="text-lg font-bold text-slate-900">Participant Verification</h4>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Verify as an AIIMS Rishikesh employee or register as an external participant before opening the post-test.
                 </p>
               </div>
 
-              <form onSubmit={handleGuestContinue} className="space-y-4 text-left">
-                {guestError && (
+              <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => handleParticipantTypeChange('INTERNAL')}
+                  disabled={verificationLoading}
+                  className={`px-3 py-2.5 rounded-lg text-xs font-bold transition-colors cursor-pointer disabled:opacity-50 ${
+                    participantType === 'INTERNAL'
+                      ? 'bg-white text-teal-800 shadow-xs border border-teal-200'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Internal Employee
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleParticipantTypeChange('EXTERNAL')}
+                  disabled={verificationLoading}
+                  className={`px-3 py-2.5 rounded-lg text-xs font-bold transition-colors cursor-pointer disabled:opacity-50 ${
+                    participantType === 'EXTERNAL'
+                      ? 'bg-white text-indigo-800 shadow-xs border border-indigo-200'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  External Participant
+                </button>
+              </div>
+
+              <form onSubmit={handleVerifyParticipant} className="space-y-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+                {verificationError && (
                   <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-start gap-2">
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div>{guestError}</div>
+                    <div>{verificationError}</div>
                   </div>
                 )}
 
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">
-                    Employee ID No. *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. EMP10001"
-                    value={empIdInput}
-                    onChange={(e) => setEmpIdInput(e.target.value.toUpperCase())}
-                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 uppercase focus:outline-hidden focus:ring-2 focus:ring-teal-700 shadow-xs"
-                  />
-                  <p className="text-[11px] text-slate-400 mt-1">
-                    Your ID is verified against the institutional roster.
-                  </p>
-                </div>
+                {participantType === 'INTERNAL' ? (
+                  <>
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Employee ID *</label>
+                      <div className="relative">
+                        <UserRound className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                        <input
+                          type="text"
+                          required
+                          autoComplete="off"
+                          placeholder="e.g. EMP10001"
+                          value={internalEmployeeId}
+                          onChange={(e) => setInternalEmployeeId(e.target.value.toUpperCase())}
+                          className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 uppercase focus:outline-hidden focus:ring-2 focus:ring-teal-700 shadow-xs"
+                        />
+                      </div>
+                    </div>
 
-                <button
-                  type="submit"
-                  disabled={guestLoading}
-                  className="w-full py-2.5 px-4 bg-teal-800 hover:bg-teal-900 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
-                >
-                  {guestLoading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Verifying ID &amp; Loading Test...</span>
-                    </>
-                  ) : (
-                    <span>Continue to Post-Test</span>
-                  )}
-                </button>
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Date of Joining *</label>
+                      <div className="relative">
+                        <CalendarDays className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                        <input
+                          type="date"
+                          required
+                          value={internalDoj}
+                          onChange={(e) => setInternalDoj(e.target.value)}
+                          className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-teal-700 shadow-xs"
+                        />
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-1">Employee ID and DOJ are matched against the institutional roster.</p>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={verificationLoading || !internalEmployeeId.trim() || !internalDoj}
+                      className="w-full py-2.5 px-4 bg-teal-800 hover:bg-teal-900 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {verificationLoading ? (
+                        <><Loader2 className="w-4 h-4 animate-spin" /><span>Verifying Employee...</span></>
+                      ) : (
+                        <span>Verify &amp; Open Post-Test</span>
+                      )}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Participant Name *</label>
+                      <div className="relative">
+                        <UserRound className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                        <input
+                          type="text"
+                          required
+                          minLength={2}
+                          autoComplete="name"
+                          placeholder="Enter your full name"
+                          value={externalName}
+                          onChange={(e) => setExternalName(e.target.value)}
+                          className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-600 shadow-xs"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Email *</label>
+                      <div className="relative">
+                        <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                        <input
+                          type="email"
+                          required
+                          autoComplete="email"
+                          placeholder="name@example.com"
+                          value={externalEmail}
+                          onChange={(e) => setExternalEmail(e.target.value)}
+                          className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-600 shadow-xs"
+                        />
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-1">Your registration is saved before the post-test opens.</p>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={verificationLoading || externalName.trim().length < 2 || !externalEmail.trim()}
+                      className="w-full py-2.5 px-4 bg-indigo-700 hover:bg-indigo-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {verificationLoading ? (
+                        <><Loader2 className="w-4 h-4 animate-spin" /><span>Saving Registration...</span></>
+                      ) : (
+                        <span>Save &amp; Open Post-Test</span>
+                      )}
+                    </button>
+                  </>
+                )}
               </form>
             </div>
           ) : loading ? (
             <div className="py-24 flex flex-col items-center justify-center gap-2 text-slate-500">
               <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
-              <span>Verifying enrollment &amp; loading evaluation questions...</span>
+              <span>Loading post-test evaluation...</span>
             </div>
           ) : alreadySubmitted ? (
             /* Already Submitted View */
@@ -272,21 +567,25 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
               <div>
                 <h4 className="text-base font-bold text-slate-900">Post-Test Already Completed</h4>
                 <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto leading-relaxed">
-                  You have already completed this post-test evaluation. Repeated attempts are restricted to ensure clinical evaluation authenticity.
+                  This participant has already completed the post-test. Repeated attempts are restricted to preserve evaluation integrity.
                 </p>
               </div>
 
+              {verifiedLabel && (
+                <div className="inline-flex items-center gap-1.5 text-[11px] font-bold text-teal-800 bg-teal-50 border border-teal-200 px-3 py-1.5 rounded-full">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> {verifiedLabel}
+                </div>
+              )}
+
               {priorSubmission && (
                 <div className="p-4 bg-white rounded-2xl border border-slate-200 space-y-2 text-left shadow-xs">
-                  <div className="flex justify-between text-xs">
+                  <div className="flex justify-between gap-3 text-xs">
                     <span className="text-slate-500">Participant:</span>
-                    <span className="font-bold text-slate-800">{priorSubmission.name || priorSubmission.employeeId}</span>
+                    <span className="font-bold text-slate-800 text-right">{priorSubmission.name || priorSubmission.employeeId || verifiedParticipant?.participantName || 'Verified Participant'}</span>
                   </div>
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-500">Score:</span>
-                    <span className="font-bold text-slate-900 font-mono">
-                      {priorSubmission.score} / {priorSubmission.totalQuestions}
-                    </span>
+                    <span className="font-bold text-slate-900 font-mono">{priorSubmission.score} / {priorSubmission.totalQuestions}</span>
                   </div>
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-500">Percentage:</span>
@@ -294,7 +593,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                   </div>
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-500">Result:</span>
-                    <span className="font-bold text-emerald-700">{priorSubmission.status || 'PASSED'}</span>
+                    <span className="font-bold text-emerald-700">{priorSubmission.status || 'COMPLETED'}</span>
                   </div>
                   {priorSubmission.submittedAt && (
                     <div className="flex justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-200">
@@ -321,12 +620,11 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                   <Award className="w-6 h-6" />
                 </div>
                 <h4 className="text-base font-bold text-emerald-950">Evaluation Complete!</h4>
-                <div className="flex items-center justify-center gap-4 text-xs pt-1">
+                {verifiedLabel && <p className="text-xs font-semibold text-emerald-900">{verifiedLabel}</p>}
+                <div className="flex flex-wrap items-center justify-center gap-3 text-xs pt-1">
                   <div className="bg-white px-4 py-2 rounded-xl border border-emerald-200 shadow-xs">
                     <span className="text-slate-500">Score: </span>
-                    <strong className="font-mono text-emerald-800">
-                      {submissionResult.score} / {submissionResult.totalQuestions}
-                    </strong>
+                    <strong className="font-mono text-emerald-800">{submissionResult.score} / {submissionResult.totalQuestions}</strong>
                   </div>
                   <div className="bg-white px-4 py-2 rounded-xl border border-emerald-200 shadow-xs">
                     <span className="text-slate-500">Percentage: </span>
@@ -334,28 +632,18 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                   </div>
                   <div className="bg-white px-4 py-2 rounded-xl border border-emerald-200 shadow-xs">
                     <span className="text-slate-500">Status: </span>
-                    <strong className={submissionResult.passed ? 'text-emerald-700' : 'text-rose-700'}>
-                      {submissionResult.status}
-                    </strong>
+                    <strong className={submissionResult.passed ? 'text-emerald-700' : 'text-rose-700'}>{submissionResult.status}</strong>
                   </div>
                 </div>
               </div>
 
-              {/* Review Breakdown in 1-Column per Row */}
               <div className="space-y-3">
-                <h5 className="font-bold text-slate-900 text-xs uppercase tracking-wider">
-                  Detailed Answer Review &amp; Clinical Rationales
-                </h5>
-
+                <h5 className="font-bold text-slate-900 text-xs uppercase tracking-wider">Detailed Answer Review &amp; Clinical Rationales</h5>
                 <div className="grid grid-cols-1 gap-4 items-start">
                   {submissionResult.review.map((item, idx) => (
                     <div
                       key={item.questionId || idx}
-                      className={`p-4 rounded-xl border text-xs bg-white shadow-xs ${
-                        item.isCorrect
-                          ? 'border-emerald-200'
-                          : 'border-rose-200'
-                      }`}
+                      className={`p-4 rounded-xl border text-xs bg-white shadow-xs ${item.isCorrect ? 'border-emerald-200' : 'border-rose-200'}`}
                     >
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <div className="flex items-center gap-2">
@@ -373,12 +661,10 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                         )}
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 text-[11px] mt-2 pt-2 border-t border-slate-100">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] mt-2 pt-2 border-t border-slate-100">
                         <div>
                           <span className="text-slate-500">Your Answer: </span>
-                          <strong className={item.isCorrect ? 'text-emerald-800' : 'text-rose-800'}>
-                            Option {item.userAnswer || 'None'}
-                          </strong>
+                          <strong className={item.isCorrect ? 'text-emerald-800' : 'text-rose-800'}>Option {item.userAnswer || 'None'}</strong>
                         </div>
                         <div>
                           <span className="text-slate-500">Correct Answer: </span>
@@ -397,44 +683,35 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
               </div>
             </div>
           ) : questions.length === 0 ? (
-            /* No Questions Available */
             <div className="py-20 text-center p-8 bg-white rounded-2xl border border-slate-200 space-y-2 max-w-md mx-auto my-8">
               <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
               <h4 className="text-sm font-bold text-slate-800">Post-Test Questions Pending</h4>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                The coordinators have not finalized questions for this CNE yet. Please check back shortly.
-              </p>
+              <p className="text-xs text-slate-500 leading-relaxed">The coordinators have not finalized at least five questions for this CNE yet. Please check back shortly.</p>
             </div>
           ) : (
-            /* Active Test Form - 2-Column Wide Grid on Desktop */
             <form onSubmit={handleSubmit} className="space-y-5">
-              {/* Verified Participant Badge */}
-              <div className="p-3 bg-teal-50 rounded-xl border border-teal-200 flex items-center justify-between text-xs">
-                <span className="text-teal-900 font-medium">
-                  Participant Employee ID: <strong className="font-mono text-teal-950 font-bold">{user?.employeeId || empIdInput}</strong>
-                </span>
-                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-800 bg-teal-100 px-2.5 py-0.5 rounded-full">
+              <div className="p-3 bg-teal-50 rounded-xl border border-teal-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs">
+                <div className="text-teal-900 font-medium">
+                  <div className="font-bold text-teal-950">{verifiedParticipant?.participantName || user?.name || 'Verified Participant'}</div>
+                  <div className="text-[11px] mt-0.5">
+                    {verifiedParticipant?.participantType === 'EXTERNAL'
+                      ? `External Participant${verifiedParticipant.email ? ` • ${verifiedParticipant.email}` : ''}`
+                      : `Employee ID: ${verifiedParticipant?.employeeId || user?.employeeId || ''}${verifiedParticipant?.designation ? ` • ${verifiedParticipant.designation}` : ''}`}
+                  </div>
+                </div>
+                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-800 bg-teal-100 px-2.5 py-0.5 rounded-full self-start sm:self-auto">
                   <CheckCircle2 className="w-3.5 h-3.5 text-teal-700" /> Verified
                 </span>
               </div>
 
-              {/* Questions List in 1 Question per Row */}
               <div className="grid grid-cols-1 gap-4 items-start">
                 {questions.map((q, idx) => {
                   const selectedOption = answers[q.id];
-
                   return (
-                    <div
-                      key={q.id || idx}
-                      className="p-4 rounded-xl border border-slate-200 bg-white shadow-xs space-y-3"
-                    >
+                    <div key={q.id || idx} className="p-4 rounded-xl border border-slate-200 bg-white shadow-xs space-y-3">
                       <div className="flex items-start gap-2.5">
-                        <span className="w-6 h-6 rounded-full bg-indigo-50 text-indigo-700 font-bold flex items-center justify-center text-xs shrink-0 mt-0.5">
-                          {idx + 1}
-                        </span>
-                        <p className="font-semibold text-slate-900 text-xs leading-relaxed">
-                          {q.question}
-                        </p>
+                        <span className="w-6 h-6 rounded-full bg-indigo-50 text-indigo-700 font-bold flex items-center justify-center text-xs shrink-0 mt-0.5">{idx + 1}</span>
+                        <p className="font-semibold text-slate-900 text-xs leading-relaxed">{q.question}</p>
                       </div>
 
                       <div className="space-y-2 pl-8">
@@ -443,7 +720,6 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                           return (
                             <label
                               key={optKey}
-                              onClick={() => handleSelectOption(q.id, optKey)}
                               className={`flex items-center gap-2.5 p-2.5 rounded-lg border text-xs cursor-pointer transition-all ${
                                 isSelected
                                   ? 'bg-indigo-50/80 border-indigo-300 text-indigo-950 font-medium'
@@ -455,6 +731,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                                 name={`q_${q.id}`}
                                 checked={isSelected}
                                 onChange={() => handleSelectOption(q.id, optKey)}
+                                disabled={isSubmitting}
                                 className="text-indigo-600 focus:ring-indigo-500"
                               />
                               <span className="font-bold w-4">{optKey}.</span>
@@ -468,26 +745,17 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                 })}
               </div>
 
-              <div className="pt-3 flex items-center justify-between border-t border-slate-200">
-                <span className="text-xs text-slate-500">
-                  Answered <strong>{Object.keys(answers).length}</strong> of <strong>{questions.length}</strong> questions
-                </span>
-
+              <div className="pt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-t border-slate-200">
+                <span className="text-xs text-slate-500">Answered <strong>{answeredCount}</strong> of <strong>{questions.length}</strong> questions</span>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-md disabled:opacity-50 cursor-pointer transition-colors"
+                  className="flex items-center justify-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-md disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
                 >
                   {isSubmitting ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Grading &amp; Recording Submission...</span>
-                    </>
+                    <><Loader2 className="w-4 h-4 animate-spin" /><span>Grading &amp; Recording Submission...</span></>
                   ) : (
-                    <>
-                      <Send className="w-4 h-4" />
-                      <span>Submit Post-Test Evaluation</span>
-                    </>
+                    <><Send className="w-4 h-4" /><span>Submit Post-Test Evaluation</span></>
                   )}
                 </button>
               </div>
@@ -495,13 +763,12 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
           )}
         </div>
 
-        {/* Footer */}
         <div className="px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-end shrink-0">
           <button
             type="button"
             onClick={onClose}
             disabled={isSubmitting}
-            className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors"
+            className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer disabled:opacity-50 transition-colors"
           >
             Close
           </button>

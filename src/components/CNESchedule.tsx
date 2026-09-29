@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Sparkles,
   Calendar,
@@ -22,7 +22,8 @@ import {
   HelpCircle,
   ClipboardCheck,
   Building2,
-  GraduationCap
+  GraduationCap,
+  FileDown
 } from 'lucide-react';
 import { SessionUser, CNERecord, CNEActivityProgress } from '../types';
 import { ApiService } from '../services/api';
@@ -30,7 +31,7 @@ import { useToast } from './Toast';
 import {
   formatResourcePersonsDisplay,
   isCneAuthorized,
-  canManageCneActions,
+  isUserAssignedResourcePerson,
   getUserAssignedAreas,
   formatCneDateTimeDisplay,
   calculateCneDuration,
@@ -42,18 +43,31 @@ import { CNEReferenceModal } from './cne/CNEReferenceModal';
 import { CNEQuestionsModal } from './cne/CNEQuestionsModal';
 import { CNEQRModal } from './cne/CNEQRModal';
 import { CNEParticipantsModal } from './cne/CNEParticipantsModal';
-import { CNEPostTestModal } from './cne/CNEPostTestModal';
 import { CNEFinalizeModal } from './cne/CNEFinalizeModal';
+import { CNEPostTestModal } from './cne/CNEPostTestModal';
 import { DepartmentalScheduleModal } from './cne/DepartmentalScheduleModal';
 import { AddUnscheduledCneModal } from './cne/AddUnscheduledCneModal';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 import { CneDateTimeFields } from './cne/CneDateTimeFields';
 import { SearchInput } from './SearchInput';
 import { loadOfficersSingleFlight, getCachedOfficers } from '../services/officerLoader';
+import { generateCNESessionPdf } from '../services/pdfGenerator';
 
 interface CNEScheduleProps {
   user: SessionUser | null;
 }
+
+const getCneStatus = (cne?: CNERecord | null) =>
+  String(cne?.status || 'Scheduled').trim().toLowerCase();
+
+const isCneCompleted = (cne?: CNERecord | null) => getCneStatus(cne) === 'completed';
+
+const isCneCanceled = (cne?: CNERecord | null) => {
+  const status = getCneStatus(cne);
+  return status === 'canceled' || status === 'cancelled';
+};
+
+const isCneClosed = (cne?: CNERecord | null) => isCneCompleted(cne) || isCneCanceled(cne);
 
 export const CNESchedule: React.FC<CNEScheduleProps> = ({
   user
@@ -98,6 +112,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [activeQRCne, setActiveQRCne] = useState<CNERecord | null>(null);
   const [activeParticipantsCne, setActiveParticipantsCne] = useState<CNERecord | null>(null);
   const [activeFinalizeCne, setActiveFinalizeCne] = useState<CNERecord | null>(null);
+  const [cancelTargetCne, setCancelTargetCne] = useState<CNERecord | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [isCancellingCne, setIsCancellingCne] = useState(false);
+  const [isDownloadingReport, setIsDownloadingReport] = useState(false);
   const [activePostTest, setActivePostTest] = useState<{ cneId?: string; qrToken?: string } | null>(null);
 
   // CNE Activity Progress State
@@ -125,23 +143,104 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const editSubmittingRef = useRef(false);
 
   const { success, error } = useToast();
+  const dataRequestRef = useRef(0);
+  const activityRequestRef = useRef(0);
+  const selectedCneIdRef = useRef('');
+  selectedCneIdRef.current = selectedDetailCne?.cneId || selectedDetailCne?.classId || '';
+  const sessionKey = `${user?.employeeId || ''}:${user?.role || ''}:${user?.token || ''}`;
+  const sessionKeyRef = useRef(sessionKey);
+  sessionKeyRef.current = sessionKey;
+
   const isAdmin = user?.role === 'ADMIN';
   const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
   const canScheduleCne = isAdmin || isAreaIncharge;
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const isFromComplete = Boolean(scheduleFromDate && scheduleFromTime);
 
+  const isConcernedAreaIncharge = useCallback((cne: CNERecord) => {
+    if (!user || !(user.role === 'AREA_INCHARGE' || (user.role as string) === 'INCHARGE')) return false;
+    const targetArea = (cne.area || '').trim().toLowerCase();
+    if (!targetArea) return false;
+    return getUserAssignedAreas(user).some((area) => area.trim().toLowerCase() === targetArea);
+  }, [user]);
+
+  // Operational Progress permissions: Admin + concerned Area/Ward Incharge + assigned RP.
+  // Applies to both Central and Departmental CNEs.
+  const canOperateCne = useCallback((cne: CNERecord) => {
+    if (!user) return false;
+    if (user.role === 'ADMIN') return true;
+    if (isConcernedAreaIncharge(cne)) return true;
+    return isUserAssignedResourcePerson(user, [cne.resourcePersonEmpId, ...(cne.resourcePersonEmpIds || [])].filter(Boolean).join(','));
+  }, [user, isConcernedAreaIncharge]);
+
+
+  // Backward-compatible Post Test permission helper retained for the project's
+  // security verification. This is OPERATIONAL authority only; lifecycle
+  // actions (Edit / Cancel / Finalize) continue to use canManageLifecycle.
+  // Closed CNEs are always blocked here.
+  const canManageCneActions = useCallback((_sessionUser: SessionUser | null, cne: CNERecord) => {
+    if (!_sessionUser || !cne) return false;
+    return canOperateCne(cne) && !isCneClosed(cne);
+  }, [canOperateCne]);
+
+  // Edit / Cancel / Finalize lifecycle authority:
+  // - Central CNE: Admin only.
+  // - Departmental CNE: Admin + concerned Area/Ward Incharge.
+  // - Assigned Resource Persons never receive lifecycle authority.
+  const canManageLifecycle = useCallback((cne: CNERecord) => {
+    if (!user) return false;
+    if (user.role === 'ADMIN') return true;
+    if ((cne.cneType || 'CENTRAL').trim().toUpperCase() !== 'DEPARTMENTAL') return false;
+    return isConcernedAreaIncharge(cne);
+  }, [user, isConcernedAreaIncharge]);
+
+  // Scheduled CNEs are visible to every authenticated user. Historical records are restricted.
+  const canViewScheduleRecord = useCallback((cne: CNERecord) => {
+    if (!user?.employeeId) return false;
+    const status = getCneStatus(cne);
+    const isHistorical = status === 'completed' || status === 'canceled' || status === 'cancelled';
+    if (!isHistorical) return true;
+    if (user.role === 'ADMIN') return true;
+    if (isConcernedAreaIncharge(cne)) return true;
+    return isUserAssignedResourcePerson(user, [cne.resourcePersonEmpId, ...(cne.resourcePersonEmpIds || [])].filter(Boolean).join(','));
+  }, [user, isConcernedAreaIncharge]);
+
   useEffect(() => {
-    loadData();
-  }, [isAdmin]);
+    setClasses([]);
+    setAreasList([]);
+    setOfficersList(getCachedOfficers() || []);
+    setSelectedDetailCne(null);
+    setActiveReferenceCne(null);
+    setActiveQuestionsCne(null);
+    setActiveQRCne(null);
+    setActiveParticipantsCne(null);
+    setActiveFinalizeCne(null);
+    setActivePostTest(null);
+    setEditingCne(null);
+    setCancelTargetCne(null);
+    setIsAddClassOpen(false);
+    setIsDeptScheduleOpen(false);
+    setIsUnscheduledOpen(false);
+    setIsScheduleChoiceOpen(false);
+    if (user?.employeeId) loadData();
+    else setLoading(false);
+    return () => {
+      dataRequestRef.current += 1;
+      activityRequestRef.current += 1;
+    };
+  }, [sessionKey]);
 
   const fetchActivityProgress = useCallback((cneId: string) => {
+    const requestId = ++activityRequestRef.current;
+    const requestSession = sessionKeyRef.current;
+    const isCurrent = () => requestId === activityRequestRef.current && requestSession === sessionKeyRef.current && cneId === selectedCneIdRef.current;
     setIsActivityLoading(true);
     setActivityError(null);
     setActivityProgress(null);
 
     ApiService.getCNEActivityProgress(cneId)
       .then((res) => {
+        if (!isCurrent()) return;
         if (res && res.success && res.data) {
           setActivityProgress(res.data);
           setActivityError(null);
@@ -151,27 +250,33 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         }
       })
       .catch((err: any) => {
+        if (!isCurrent()) return;
         setActivityProgress(null);
         setActivityError(err?.message || 'Unable to load CNE progress');
       })
       .finally(() => {
-        setIsActivityLoading(false);
+        if (isCurrent()) setIsActivityLoading(false);
       });
   }, []);
 
   // Fetch real-time CNE Activity Progress whenever a CNE details modal is opened
   useEffect(() => {
-    if (!selectedDetailCne?.cneId) {
+    const selectedId = selectedDetailCne?.cneId || selectedDetailCne?.classId;
+    if (!selectedId) {
       setActivityProgress(null);
       setIsActivityLoading(false);
       setActivityError(null);
       return;
     }
 
-    fetchActivityProgress(selectedDetailCne.cneId);
-  }, [selectedDetailCne?.cneId, fetchActivityProgress]);
+    fetchActivityProgress(selectedId);
+    return () => { activityRequestRef.current += 1; };
+  }, [selectedDetailCne?.cneId, selectedDetailCne?.classId, fetchActivityProgress]);
 
   const loadData = async (): Promise<CNERecord[] | undefined> => {
+    const requestId = ++dataRequestRef.current;
+    const requestSession = sessionKey;
+    const isCurrent = () => requestId === dataRequestRef.current && requestSession === sessionKeyRef.current;
     setLoading(true);
     try {
       const [clsRes, areasRes] = await Promise.all([
@@ -179,6 +284,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         ApiService.getAreas()
       ]);
 
+      if (!isCurrent()) return;
+      if (!clsRes.success) throw new Error(clsRes.message || 'Failed to load CNE schedule.');
       if (clsRes.success && clsRes.data) {
         setClasses(clsRes.data);
       }
@@ -191,15 +298,15 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
       return clsRes.data;
     } catch (e: any) {
-      error(e?.message || 'Failed to load CNE schedule.');
+      if (isCurrent()) error(e?.message || 'Failed to load CNE schedule.');
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   };
 
   // On-demand fetch of officers when Central CNE Add or Edit modal opens for authorized roles if not yet loaded
   useEffect(() => {
-    if (canScheduleCne && (isAddClassOpen || Boolean(editingCne)) && officersList.length === 0 && !isResourcePersonsLoading) {
+    if (canScheduleCne && (isAddClassOpen || Boolean(editingCne)) && officersList.length === 0) {
       let cancelled = false;
       setIsResourcePersonsLoading(true);
       loadOfficersSingleFlight()
@@ -218,11 +325,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         cancelled = true;
       };
     }
-  }, [canScheduleCne, isAddClassOpen, editingCne, officersList.length, isResourcePersonsLoading]);
+  }, [canScheduleCne, isAddClassOpen, editingCne, officersList.length, sessionKey]);
 
   const handleChildModalUpdated = async (targetCneId?: string) => {
     const cneId = targetCneId || selectedDetailCne?.cneId || selectedDetailCne?.classId;
-    if (cneId) {
+    if (cneId && selectedCneIdRef.current === cneId) {
       // Immediately refresh activity progress so checks, readiness counter & progress bar update
       fetchActivityProgress(cneId);
     }
@@ -231,7 +338,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       if (cneId && freshClasses) {
         const fresh = freshClasses.find((c) => (c.cneId || c.classId) === cneId);
         if (fresh) {
-          setSelectedDetailCne(fresh);
+          setSelectedDetailCne((current) => current && (current.cneId || current.classId) === cneId ? fresh : current);
         }
       }
     } catch (err) {
@@ -369,11 +476,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       return;
     }
 
-    const todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0);
-    const checkFrom = new Date(dFrom);
-    checkFrom.setHours(0, 0, 0, 0);
-    if (checkFrom < todayDate) {
+    if (newDate.slice(0, 10) < todayStr) {
       error('Scheduled From Date cannot be in the past. Please select today or a future date.');
       return;
     }
@@ -475,6 +578,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   };
 
   const handleOpenEditModal = (cls: CNERecord) => {
+    if (!canManageLifecycle(cls) || isCneClosed(cls)) { error('This CNE cannot be edited.'); return; }
     setEditingCne(cls);
     setEditTopic(cls.topic || '');
     setEditArea(cls.area || '');
@@ -529,6 +633,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const handleUpdateClassSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingCne || editSubmittingRef.current || isEditSubmitting) return;
+    if (!canManageLifecycle(editingCne) || isCneClosed(editingCne)) { error('This CNE cannot be edited.'); return; }
 
     if (!editTopic.trim() || !editArea.trim() || !editDate.trim()) {
       error('Please fill in all required fields (Topic, Area, From Date & Time).');
@@ -652,7 +757,58 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setToDateFilter('');
   };
 
-  const filteredClasses = classes.filter((c) => {
+  const handleCancelCne = async () => {
+    if (!cancelTargetCne || isCancellingCne) return;
+    if (!canManageLifecycle(cancelTargetCne) || isCneClosed(cancelTargetCne)) {
+      error('You are not authorized to cancel this CNE.');
+      return;
+    }
+    if (!cancelReason.trim()) {
+      error('Please provide a reason for cancellation.');
+      return;
+    }
+
+    setIsCancellingCne(true);
+    try {
+      const targetId = cancelTargetCne.cneId || cancelTargetCne.classId || '';
+      const res = await ApiService.cancelCNE(targetId, cancelReason.trim());
+      if (!res.success) {
+        error(res.message || 'Failed to cancel CNE.');
+        return;
+      }
+      success('CNE session marked as Canceled.');
+      setCancelTargetCne(null);
+      setCancelReason('');
+      setSelectedDetailCne(null);
+      await loadData();
+    } catch (e: any) {
+      error(e?.message || 'Failed to cancel CNE.');
+    } finally {
+      setIsCancellingCne(false);
+    }
+  };
+
+  const handleDownloadSessionReport = async (cne: CNERecord) => {
+    if (isDownloadingReport || !isCneCompleted(cne) || !canOperateCne(cne)) return;
+    setIsDownloadingReport(true);
+    try {
+      const cneId = cne.cneId || cne.classId || '';
+      const res = await ApiService.getCNEParticipants(cneId);
+      if (!res.success || !res.data) {
+        error(res.message || 'Unable to load participant data for the session report.');
+        return;
+      }
+      generateCNESessionPdf(cne, res.data.participants || [], res.data.averageScore ?? null);
+      success('CNE session report PDF generated successfully.');
+    } catch (e: any) {
+      error(e?.message || 'Failed to generate CNE session report.');
+    } finally {
+      setIsDownloadingReport(false);
+    }
+  };
+
+  const filteredClasses = useMemo(() => classes.filter((c) => {
+    if (!canViewScheduleRecord(c)) return false;
     // 1. Search filter: case-insensitive partial-text search across required CNE fields
     if (searchTerm.trim()) {
       const q = searchTerm.trim().toLowerCase();
@@ -719,13 +875,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
 
     return true;
-  });
+  }), [classes, canViewScheduleRecord, searchTerm, fromDateFilter, toDateFilter, officersList]);
 
-  const availableClasses = [...filteredClasses].sort((a, b) => {
-    const aFromDate = parseToIsoDateString(a.fromDate) || '';
-    const bFromDate = parseToIsoDateString(b.fromDate) || '';
+  const availableClasses = useMemo(() => [...filteredClasses].sort((a, b) => {
+    const aFromDate = parseToIsoDateString(a.fromDate || a.date) || '';
+    const bFromDate = parseToIsoDateString(b.fromDate || b.date) || '';
     return bFromDate.localeCompare(aFromDate);
-  });
+  }), [filteredClasses]);
 
   return (
     <div className="space-y-4 pb-12">
@@ -1279,14 +1435,14 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                 <span className="text-slate-400 font-sans">•</span>
                 <span
                   className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
-                    selectedDetailCne.status === 'Completed'
+                    isCneCompleted(selectedDetailCne)
                       ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                      : selectedDetailCne.status === 'Canceled'
+                      : isCneCanceled(selectedDetailCne)
                       ? 'bg-rose-50 text-rose-800 border border-rose-200'
                       : 'bg-blue-50 text-blue-700 border border-blue-200'
                   }`}
                 >
-                  {selectedDetailCne.status || 'Scheduled'}
+                  {isCneCanceled(selectedDetailCne) ? 'Canceled' : selectedDetailCne.status || 'Scheduled'}
                 </span>
                 {selectedDetailCne.isLocked && (
                   <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 inline-flex items-center gap-1">
@@ -1297,25 +1453,57 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
               <div className="flex items-center gap-2">
                 {(() => {
-                  const canFinalize = isCneAuthorized(user, selectedDetailCne.area, selectedDetailCne.cneType);
-                  const isCompleted = selectedDetailCne.status === 'Completed';
-                  const isCanceled = selectedDetailCne.status === 'Canceled';
-                  const canEdit = canFinalize && !isCompleted && !isCanceled;
-
-                  if (!canEdit) return null;
+                  const isCompleted = isCneCompleted(selectedDetailCne);
+                  const isCanceled = isCneCanceled(selectedDetailCne);
+                  const canLifecycle = canManageLifecycle(selectedDetailCne);
+                  const canEditOrCancel = canLifecycle && !isCompleted && !isCanceled;
 
                   return (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleOpenEditModal(selectedDetailCne);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs"
-                      title="Edit CNE workshop details"
-                    >
-                      <Edit3 className="w-3.5 h-3.5 text-amber-700" />
-                      <span>Edit CNE</span>
-                    </button>
+                    <>
+                      {canOperateCne(selectedDetailCne) && (
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadSessionReport(selectedDetailCne)}
+                          disabled={isDownloadingReport || !isCompleted}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={isCompleted ? "Download finalized CNE session report" : "Available after finalization"}
+                        >
+                          {isDownloadingReport ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <FileDown className="w-3.5 h-3.5" />
+                          )}
+                          <span>Download Session Report</span>
+                        </button>
+                      )}
+
+                      {canEditOrCancel && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditModal(selectedDetailCne)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs"
+                            title="Edit CNE workshop details"
+                          >
+                            <Edit3 className="w-3.5 h-3.5 text-amber-700" />
+                            <span>Edit CNE</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCancelTargetCne(selectedDetailCne);
+                              setCancelReason('');
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs"
+                            title="Cancel CNE programme"
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5 text-rose-700" />
+                            <span>Cancel</span>
+                          </button>
+                        </>
+                      )}
+                    </>
                   );
                 })()}
 
@@ -1429,7 +1617,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                 {/* Right Column (5 cols): CNE Progress (Live Visual Status Tracker) */}
                 <div className="lg:col-span-5 flex flex-col">
                   <div className="bg-slate-50/70 p-4 rounded-xl border border-slate-200 h-full flex flex-col justify-between">
-                    {/* Header with Title and Dynamic "X of 6 Ready" */}
+                    {/* Header with Title and Dynamic "X of 5 Ready" */}
                     {(() => {
                       const isMaterialReady = activityProgress?.materialStatus === 'Added';
                       const isQuestionsReady = activityProgress?.questionsStatus === 'Generated';
@@ -1437,17 +1625,24 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       const isParticipantsReady = (activityProgress?.participantsCount || 0) > 0;
                       const isPostTestReady = activityProgress?.postTestStatus === 'Available' || activityProgress?.postTestStatus === 'Completed';
                       const isFinalizationReady = activityProgress?.finalizationStatus === 'Finalized';
+                      const isCancelled = isCneCanceled(selectedDetailCne);
+                      const isCompleted = isCneCompleted(selectedDetailCne);
+                      // Cancellation and finalization are intentionally separate states. A cancelled CNE must never render as Finalized.
+                      const isFinalized = !isCancelled && (isCompleted || isFinalizationReady);
+                      const isClosed = isCancelled || isFinalized;
+                      const isAttendanceCompletionReady = isParticipantsReady && isFinalized;
+                      const canOperate = canOperateCne(selectedDetailCne);
+                      const canLifecycle = canManageLifecycle(selectedDetailCne);
 
                       const readyCount = activityProgress
                         ? (isMaterialReady ? 1 : 0) +
                           (isQuestionsReady ? 1 : 0) +
                           (isQrReady ? 1 : 0) +
-                          (isParticipantsReady ? 1 : 0) +
                           (isPostTestReady ? 1 : 0) +
-                          (isFinalizationReady ? 1 : 0)
+                          (isAttendanceCompletionReady ? 1 : 0)
                         : 0;
 
-                      const readyPercentage = Math.round((readyCount / 6) * 100);
+                      const readyPercentage = Math.round((readyCount / 5) * 100);
 
                       return (
                         <>
@@ -1465,7 +1660,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                             {activityProgress && !isActivityLoading && (
                               <div
                                 className={`px-2.5 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 shadow-2xs ${
-                                  readyCount === 6
+                                  readyCount === 5
                                     ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
                                     : readyCount >= 4
                                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -1474,14 +1669,14 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                     : 'bg-rose-50 text-rose-700 border-rose-200'
                                 }`}
                               >
-                                {readyCount === 6 ? (
+                                {readyCount === 5 ? (
                                   <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
                                 ) : readyCount === 0 ? (
                                   <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
                                 ) : (
                                   <span className="w-2 h-2 rounded-full bg-amber-500" />
                                 )}
-                                <span className="whitespace-nowrap">{readyCount} of 6 Ready</span>
+                                <span className="whitespace-nowrap">{readyCount} of 5 Ready</span>
                               </div>
                             )}
                           </div>
@@ -1561,14 +1756,26 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                   <button
                                     type="button"
                                     onClick={() => {
+                                      if (!canOperate || isClosed) return;
                                       setActiveQRCne(selectedDetailCne);
                                     }}
-                                    title={isQrReady ? "QR Code ready • Click to view or print QR code" : "QR Code attention required • Click to generate QR code"}
-                                    aria-label={isQrReady ? "QR Code completed. Click to view or print QR code" : "QR Code attention required. Click to generate QR code"}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
-                                      isQrReady
-                                        ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
-                                        : 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
+                                    disabled={!canOperate || isClosed}
+                                    title={
+                                      isCancelled
+                                        ? 'QR Code is disabled because this CNE was canceled'
+                                        : isFinalized
+                                        ? 'QR Code is disabled after CNE finalization'
+                                        : isQrReady
+                                        ? 'QR Code ready • Click to view or print QR code'
+                                        : 'QR Code attention required • Click to generate QR code'
+                                    }
+                                    aria-label={isClosed ? 'QR Code disabled for closed CNE' : isQrReady ? 'QR Code completed. Click to view or print QR code' : 'QR Code attention required. Click to generate QR code'}
+                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left ${
+                                      (!canOperate || isClosed)
+                                        ? 'opacity-60 cursor-not-allowed bg-slate-50 border-slate-200 text-slate-400'
+                                        : isQrReady
+                                        ? 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
+                                        : 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
                                     }`}
                                   >
                                     <div className="flex items-center justify-between mb-1">
@@ -1598,8 +1805,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                   </div>
                                 </div>
 
-                                {/* Stage 2: Completion (Post Test, Participants, Finalization) */}
-                                <div className="grid grid-cols-3 gap-2">
+                                {/* Stage 2: Completion (Post Test + Attendance & Completion) */}
+                                <div className="grid grid-cols-2 gap-2">
                                   {/* 4. Post Test */}
                                   <button
                                     type="button"
@@ -1609,15 +1816,19 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                     }}
                                     disabled={!canManageCneActions(user, selectedDetailCne)}
                                     title={
-                                      !canManageCneActions(user, selectedDetailCne)
-                                        ? "Post Test management restricted to Admin, responsible Area Incharge, and assigned Resource Person"
+                                      isCancelled
+                                        ? "Post Test is disabled because this CNE was canceled"
+                                        : isFinalized
+                                        ? "Post Test is disabled after CNE finalization"
+                                        : !canOperate
+                                        ? "Post Test management restricted to Admin, concerned Area/Ward Incharge, and assigned Resource Person"
                                         : isPostTestReady
                                         ? "Post Test ready • Click to view or take evaluation test"
                                         : "Post Test attention required • Click to configure post test"
                                     }
                                     aria-label={isPostTestReady ? "Post Test ready. Click to view or take test" : "Post Test attention required. Click to configure"}
                                     className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left ${
-                                      !canManageCneActions(user, selectedDetailCne)
+                                      (!canOperate || isClosed)
                                         ? 'opacity-60 cursor-not-allowed bg-slate-50 border-slate-200 text-slate-400'
                                         : isPostTestReady
                                         ? 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
@@ -1639,71 +1850,84 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                     </div>
                                   </button>
 
-                                  {/* 5. Participants */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setActiveParticipantsCne(selectedDetailCne);
-                                    }}
-                                    title={isParticipantsReady ? `${activityProgress.participantsCount} participants registered • Click to view participants and attendance` : "0 participants registered • Click to view participants"}
-                                    aria-label={isParticipantsReady ? `${activityProgress.participantsCount} participants registered. Click to view` : "Attention required: 0 participants registered. Click to view"}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
-                                      isParticipantsReady
+                                  {/* 5. Attendance & Completion (Participants + Finalization merged) */}
+                                  <div
+                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left ${
+                                      isCancelled
+                                        ? 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
+                                        : isAttendanceCompletionReady
                                         ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
                                         : 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
                                     }`}
                                   >
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                                        <Users className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                        <span>Participants</span>
-                                      </span>
-                                    </div>
-                                    <div className="mt-auto flex items-center justify-between">
-                                      {isParticipantsReady ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => setActiveParticipantsCne(selectedDetailCne)}
+                                      title={
+                                        isCancelled
+                                          ? `${activityProgress.participantsCount || 0} participant(s) • CNE canceled • View attendance record`
+                                          : isFinalized
+                                          ? `Attendance & Completion finalized • ${activityProgress.participantsCount || 0} participant(s)`
+                                          : canOperate || canLifecycle
+                                          ? `${activityProgress.participantsCount || 0} participant(s) • Open attendance and completion`
+                                          : `${activityProgress.participantsCount || 0} participant(s) • View attendance and completion`
+                                      }
+                                      aria-label="Open Attendance and Completion"
+                                      className="w-full text-left cursor-pointer"
+                                    >
+                                      <div className="flex items-center justify-between mb-1">
+                                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                                          <Users className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                                          <span>Attendance &amp; Completion</span>
+                                        </span>
+                                      </div>
+                                      <div className="mt-auto flex items-center justify-between gap-2">
                                         <div className="flex items-center gap-1.5">
-                                          <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" aria-label="Completed" />
+                                          {isCancelled ? (
+                                            <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Canceled" />
+                                          ) : isAttendanceCompletionReady ? (
+                                            <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" aria-label="Completed" />
+                                          ) : (
+                                            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Attention required" />
+                                          )}
                                           <span className="font-mono text-xs font-bold text-slate-800">
-                                            ({activityProgress.participantsCount})
+                                            ({activityProgress.participantsCount || 0})
                                           </span>
                                         </div>
-                                      ) : (
-                                        <div className="flex items-center gap-1.5">
-                                          <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Attention required" />
-                                          <span className="font-mono text-xs font-bold text-slate-600">(0)</span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  </button>
+                                        <span
+                                          className={`text-[9px] font-bold uppercase tracking-wide ${
+                                            isCancelled
+                                              ? 'text-rose-700'
+                                              : isFinalized
+                                              ? 'text-emerald-700'
+                                              : 'text-slate-500'
+                                          }`}
+                                        >
+                                          {isCancelled ? 'Canceled' : isFinalized ? 'Finalized' : canLifecycle ? 'Finalize Pending' : 'In Progress'}
+                                        </span>
+                                      </div>
+                                    </button>
 
-                                  {/* 6. Finalization */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setActiveFinalizeCne(selectedDetailCne);
-                                    }}
-                                    title={isFinalizationReady ? "CNE Finalized • Click to view final record" : "CNE not finalized • Click to finalize CNE"}
-                                    aria-label={isFinalizationReady ? "Finalization completed. Click to view record" : "Finalization attention required. Click to finalize CNE"}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
-                                      isFinalizationReady
-                                        ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
-                                        : 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
-                                    }`}
-                                  >
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                                        <CheckCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                        <span>Finalization</span>
-                                      </span>
-                                    </div>
-                                    <div className="mt-auto flex items-center justify-between">
-                                      {isFinalizationReady ? (
-                                        <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" aria-label="Completed" />
-                                      ) : (
-                                        <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Attention required" />
-                                      )}
-                                    </div>
-                                  </button>
+                                    {canLifecycle && !isClosed && (
+                                      <button
+                                        type="button"
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          setActiveFinalizeCne(selectedDetailCne);
+                                        }}
+                                        disabled={!isParticipantsReady}
+                                        title={
+                                          !isParticipantsReady
+                                            ? 'Record at least one participant before finalization'
+                                            : 'Finalize and complete this CNE'
+                                        }
+                                        className="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                      >
+                                        <CheckCircle className="w-3.5 h-3.5" />
+                                        <span>Finalize CNE</span>
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
 
@@ -2113,7 +2337,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       {activeReferenceCne && (
         <CNEReferenceModal
           cne={activeReferenceCne}
-          isAuthorized={canManageCneActions(user, activeReferenceCne)}
+          isAuthorized={canOperateCne(activeReferenceCne) && !isCneClosed(activeReferenceCne)}
           onClose={() => setActiveReferenceCne(null)}
           onUpdated={() => handleChildModalUpdated(activeReferenceCne.cneId || activeReferenceCne.classId)}
           onNavigateToQuestions={() => {
@@ -2127,7 +2351,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       {activeQuestionsCne && (
         <CNEQuestionsModal
           cne={activeQuestionsCne}
-          isAuthorized={canManageCneActions(user, activeQuestionsCne)}
+          isAuthorized={canOperateCne(activeQuestionsCne) && !isCneClosed(activeQuestionsCne)}
           onClose={() => {
             setActiveQuestionsCne(null);
           }}
@@ -2135,7 +2359,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           onNavigateToQR={() => {
             const currentCne = activeQuestionsCne;
             setActiveQuestionsCne(null);
-            setActiveQRCne(currentCne);
+            if (canOperateCne(currentCne) && !isCneClosed(currentCne)) setActiveQRCne(currentCne);
           }}
         />
       )}
@@ -2143,7 +2367,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       {activeQRCne && (
         <CNEQRModal
           cne={activeQRCne}
-          isAuthorized={canManageCneActions(user, activeQRCne)}
+          isAuthorized={canOperateCne(activeQRCne) && !isCneClosed(activeQRCne)}
           onClose={() => {
             const targetId = activeQRCne.cneId || activeQRCne.classId;
             setActiveQRCne(null);
@@ -2154,6 +2378,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             handleChildModalUpdated(savedCneId);
           }}
           onOpenPostTest={(tok) => {
+            if (!canOperateCne(activeQRCne) || isCneClosed(activeQRCne)) return;
             const targetId = activeQRCne.cneId || activeQRCne.classId;
             setActiveQRCne(null);
             setActivePostTest({ cneId: targetId, qrToken: tok });
@@ -2164,10 +2389,23 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       {activeParticipantsCne && (
         <CNEParticipantsModal
           cne={activeParticipantsCne}
-          isAuthorized={canManageCneActions(user, activeParticipantsCne)}
+          isAuthorized={canOperateCne(activeParticipantsCne) && !isCneClosed(activeParticipantsCne)}
           officersList={officersList}
           onClose={() => setActiveParticipantsCne(null)}
           onUpdated={() => handleChildModalUpdated(activeParticipantsCne.cneId || activeParticipantsCne.classId)}
+        />
+      )}
+
+      {activeFinalizeCne && (
+        <CNEFinalizeModal
+          cne={activeFinalizeCne}
+          isAuthorized={canManageLifecycle(activeFinalizeCne) && !isCneClosed(activeFinalizeCne)}
+          onClose={() => setActiveFinalizeCne(null)}
+          onCompleted={() => {
+            const targetId = activeFinalizeCne.cneId || activeFinalizeCne.classId;
+            setActiveFinalizeCne(null);
+            handleChildModalUpdated(targetId);
+          }}
         />
       )}
 
@@ -2181,13 +2419,60 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         />
       )}
 
-      {activeFinalizeCne && (
-        <CNEFinalizeModal
-          cne={activeFinalizeCne}
-          isAuthorized={isCneAuthorized(user, activeFinalizeCne.area, activeFinalizeCne.cneType)}
-          onClose={() => setActiveFinalizeCne(null)}
-          onCompleted={() => handleChildModalUpdated(activeFinalizeCne.cneId || activeFinalizeCne.classId)}
-        />
+
+      {cancelTargetCne && (
+        <div className="fixed inset-0 z-[70] bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-xl bg-white rounded-2xl border border-rose-200 shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 bg-rose-50/70 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-rose-700">Cancel CNE</div>
+                <div className="text-sm font-bold text-slate-900 mt-0.5">{cancelTargetCne.topic}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setCancelTargetCne(null); setCancelReason(''); }}
+                disabled={isCancellingCne}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-white/80 disabled:opacity-50 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-slate-600 leading-relaxed">
+                This will mark the programme as <strong>Canceled</strong>. The record will remain available only to authorized users for audit and reporting.
+              </p>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">Cancellation Reason *</label>
+                <textarea
+                  rows={4}
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  placeholder="Enter the reason for cancellation..."
+                  className="w-full p-3 border border-slate-300 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400"
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => { setCancelTargetCne(null); setCancelReason(''); }}
+                  disabled={isCancellingCne}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl disabled:opacity-50 cursor-pointer"
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelCne}
+                  disabled={isCancellingCne || !cancelReason.trim()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {isCancellingCne ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlertTriangle className="w-3.5 h-3.5" />}
+                  <span>{isCancellingCne ? 'Cancelling...' : 'Confirm Cancellation'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {isDeptScheduleOpen && (

@@ -1,13 +1,76 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { CNERecord, SessionUser, CNEParticipant } from '../types';
-import { formatCneDateRangeDisplay, formatCneDateDisplay, formatCneDateTimeDisplay } from '../utils';
+import {
+  formatCneDateRangeDisplay,
+  formatCneDateDisplay,
+  formatCneDateTimeDisplay,
+  formatSecondsToDuration,
+  isUserAssignedResourcePerson,
+  parseDurationToSeconds
+} from '../utils';
 
 export interface CNERecordPdfOptions {
   fromDate?: string;
   toDate?: string;
   searchTerm?: string;
 }
+
+const normalizeEmployeeId = (value: unknown): string => String(value ?? '').trim().toUpperCase();
+
+const splitEmployeeIds = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.map(normalizeEmployeeId).filter(Boolean);
+  }
+  return String(value ?? '')
+    .split(/[,;\n]+/)
+    .map(normalizeEmployeeId)
+    .filter(Boolean);
+};
+
+const isUserParticipantInRecord = (user: SessionUser, record: CNERecord): boolean => {
+  const employeeId = normalizeEmployeeId(user?.employeeId);
+  if (!employeeId) return false;
+
+  const participantIds = [
+    ...splitEmployeeIds(record?.staffEmpId),
+    ...splitEmployeeIds(record?.staffEmpIds)
+  ];
+
+  return participantIds.includes(employeeId);
+};
+
+const isUserResourcePersonInRecord = (user: SessionUser, record: CNERecord): boolean => {
+  const combinedIds = [
+    ...splitEmployeeIds(record?.resourcePersonEmpId),
+    ...splitEmployeeIds(record?.resourcePersonEmpIds)
+  ].join(',');
+
+  return isUserAssignedResourcePerson(user, combinedIds);
+};
+
+const getDurationSeconds = (duration: unknown): number | null => {
+  const raw = String(duration ?? '').trim();
+  if (!raw) return null;
+  return parseDurationToSeconds(raw);
+};
+
+const formatDurationForPdf = (duration: unknown): string => {
+  const seconds = getDurationSeconds(duration);
+  return seconds === null ? '—' : formatSecondsToDuration(seconds);
+};
+
+const formatTrainingDurationSummary = (totalSeconds: number): string => {
+  const safeSeconds = Math.max(0, Math.round(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+
+  const parts = [`${hours}h`];
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0) parts.push(`${seconds}s`);
+  return parts.join(' ');
+};
 
 export function generateCNERecordsPdf(
   user: SessionUser,
@@ -47,20 +110,17 @@ export function generateCNERecordsPdf(
     filterLines.push('All Available Records');
   }
 
-  // Calculate totals accurately.
-  let totalMinutes = 0;
-  records.forEach((rec) => {
-    const parts = (rec.duration || '1:00:00').split(':');
-    const hours = parseInt(parts[0], 10) || 0;
-    const mins = parseInt(parts[1], 10) || 0;
-    totalMinutes += hours * 60 + mins;
-  });
+  // Match the My CNE Records screen exactly:
+  // - only participant attendance earns training time
+  // - RP-only assignments remain listed but do not add participant training hours
+  // - missing/invalid durations contribute zero
+  // - decimal hours such as 1.5 are parsed as 1h 30m
+  const totalTrainingSeconds = records.reduce((sum, rec) => {
+    if (!isUserParticipantInRecord(user, rec)) return sum;
+    return sum + (getDurationSeconds(rec.duration) ?? 0);
+  }, 0);
 
-  const totalHours = Math.floor(totalMinutes / 60);
-  const remainingMins = totalMinutes % 60;
-  const durationSummaryStr = remainingMins > 0
-    ? `${totalHours} Hours ${remainingMins} Mins`
-    : `${totalHours} Hours`;
+  const durationSummaryStr = formatTrainingDurationSummary(totalTrainingSeconds);
 
   // 1. Institutional header
   doc.setFont('helvetica', 'bold');
@@ -145,8 +205,10 @@ export function generateCNERecordsPdf(
 
   // 4. CNE records table
   const tableData = records.map((rec, index) => {
-    const isResourcePerson = (rec.resourcePersonEmpId || '').toLowerCase().includes((user.employeeId || '').toLowerCase());
-    const roleLabel = isResourcePerson ? 'Resource Person' : 'Participant';
+    const isParticipant = isUserParticipantInRecord(user, rec);
+    const isResourcePerson = isUserResourcePersonInRecord(user, rec);
+    // Participant takes precedence when the same employee was both participant and RP.
+    const roleLabel = isParticipant ? 'Participant' : isResourcePerson ? 'Resource Person' : 'Linked Record';
     const dateDisplay = formatCneDateRangeDisplay(rec.fromDate, rec.toDate);
 
     return [
@@ -156,7 +218,7 @@ export function generateCNERecordsPdf(
       rec.topic || 'Clinical Nursing Topic',
       rec.modeOfTeaching || 'Lecture',
       roleLabel,
-      rec.duration || '1:00:00'
+      formatDurationForPdf(rec.duration)
     ];
   });
 
@@ -285,10 +347,16 @@ export function generateCNESessionPdf(
   doc.line(14, 33, 196, 33);
 
   // 2. Session Metadata Card
+  // Keep Date & Time inside the left metadata column even for multi-day ranges.
+  const scheduleText = formatCneDateTimeDisplay(cne.date || cne.fromDate, cne.toDate);
+  const durText = formatDurationForPdf(cne.duration) !== '—' ? ` (${formatDurationForPdf(cne.duration)})` : '';
+  const wrappedScheduleText = doc.splitTextToSize(`${scheduleText}${durText}`, 61);
+  const metadataCardHeight = Math.max(42, 42 + Math.max(0, wrappedScheduleText.length - 1) * 4.2);
+
   doc.setFillColor(248, 250, 252);
-  doc.roundedRect(14, 36, 182, 42, 2, 2, 'F');
+  doc.roundedRect(14, 36, 182, metadataCardHeight, 2, 2, 'F');
   doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(14, 36, 182, 42, 2, 2, 'D');
+  doc.roundedRect(14, 36, 182, metadataCardHeight, 2, 2, 'D');
 
   doc.setFontSize(8.5);
   doc.setFont('helvetica', 'bold');
@@ -314,9 +382,7 @@ export function generateCNESessionPdf(
   const cleanTopic = (cne.topic || 'Clinical Nursing Topic').slice(0, 48);
   doc.text(cleanTopic, 48, 60);
   doc.text(cne.area || 'General Clinical Area', 48, 66);
-  const scheduleText = formatCneDateTimeDisplay(cne.date, cne.toDate);
-  const durText = cne.duration ? ` (${cne.duration})` : '';
-  doc.text(`${scheduleText}${durText}`, 48, 72);
+  doc.text(wrappedScheduleText, 48, 72, { lineHeightFactor: 1.15 });
 
   // Right Column
   doc.setFont('helvetica', 'bold');
@@ -349,28 +415,28 @@ export function generateCNESessionPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(30, 41, 59);
-  doc.text('Attendance & Post-Test Evaluation Roster', 14, 84);
+  const rosterTitleY = 36 + metadataCardHeight + 6;
+  doc.text('Attendance & Post-Test Evaluation Roster', 14, rosterTitleY);
 
   const tableRows = participants.map((p, idx) => {
     const isManual = p.participantType === 'MANUAL';
-    // Manual participants MUST NOT receive a fake post-test score!
+    // Manual participants MUST NOT receive a fake post-test score.
     const scoreStr = isManual
       ? '— (Manual Attendance)'
       : (p.score !== null && p.totalQuestions !== null ? `${p.score}/${p.totalQuestions} (${p.percentage}%)` : '—');
-    
+
     const statusStr = isManual
       ? 'ATTENDED'
       : (p.percentage !== null && p.percentage >= 50 ? 'PASSED' : 'COMPLETED');
 
-    const formattedSubmittedAt = p.submittedAt ? formatCneDateDisplay(p.submittedAt) : '—';
+    // Standard date-time display; the Date & Time column is deliberately wide enough to wrap.
+    const formattedSubmittedAt = p.submittedAt ? formatCneDateTimeDisplay(p.submittedAt) : '—';
 
     return [
       (idx + 1).toString(),
       p.employeeId || '—',
       p.name || 'Officer',
       p.designation || 'Nursing Officer',
-      p.department || cne.area || '—',
-      isManual ? 'MANUAL' : 'POST-TEST',
       scoreStr,
       statusStr,
       formattedSubmittedAt
@@ -378,9 +444,10 @@ export function generateCNESessionPdf(
   });
 
   autoTable(doc, {
-    startY: 87,
-    head: [['Sr', 'Emp ID', 'Officer Name', 'Designation', 'Area/Dept', 'Source', 'Score / %', 'Status', 'Date']],
-    body: tableRows.length > 0 ? tableRows : [['-', '-', 'No participants recorded yet', '-', '-', '-', '-', '-', '-']],
+    startY: rosterTitleY + 3,
+    // Area/Dept and Source are intentionally removed from the session report.
+    head: [['Sr', 'Emp ID', 'Officer Name', 'Designation', 'Score / %', 'Status', 'Date & Time']],
+    body: tableRows.length > 0 ? tableRows : [['-', '-', 'No participants recorded yet', '-', '-', '-', '-']],
     theme: 'grid',
     headStyles: {
       fillColor: [30, 41, 59],
@@ -391,21 +458,21 @@ export function generateCNESessionPdf(
     },
     columnStyles: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 16, halign: 'center' },
-      2: { cellWidth: 34 },
-      3: { cellWidth: 26 },
-      4: { cellWidth: 22 },
-      5: { cellWidth: 18, halign: 'center' },
-      6: { cellWidth: 26, halign: 'center' },
-      7: { cellWidth: 16, halign: 'center' },
-      8: { cellWidth: 16, halign: 'center' }
+      1: { cellWidth: 18, halign: 'center' },
+      2: { cellWidth: 38 },
+      3: { cellWidth: 34 },
+      4: { cellWidth: 32, halign: 'center' },
+      5: { cellWidth: 20, halign: 'center' },
+      6: { cellWidth: 32, halign: 'center' }
     },
     styles: {
       fontSize: 7.5,
       cellPadding: 2,
       textColor: [15, 23, 42],
       lineColor: [226, 232, 240],
-      lineWidth: 0.2
+      lineWidth: 0.2,
+      overflow: 'linebreak',
+      valign: 'middle'
     },
     alternateRowStyles: {
       fillColor: [248, 250, 252]
