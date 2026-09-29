@@ -14,6 +14,7 @@ import {
 } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
+import { formatCneDateTimeDisplay } from '../../utils';
 
 interface AddResourceModalProps {
   isOpen: boolean;
@@ -51,39 +52,76 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const cneLoadRequestRef = useRef(0);
+  const driveLoadRequestRef = useRef(0);
+  const submitRef = useRef(false);
 
   const { success, error, warning } = useToast();
 
+  const resetFormState = () => {
+    setSelectedFile(null);
+    setDragActive(false);
+    setSelectedCneId('');
+    setResourcePerson('');
+    setNotes('');
+    setSelectedDriveFileId('');
+    setResourceTitle('');
+    setRefMode('upload');
+  };
+
   useEffect(() => {
-    if (isOpen) {
-      setResourceType(initialType);
-      setSelectedFile(null);
-      loadCneClasses();
-      loadDriveFiles();
+    if (!isOpen) {
+      cneLoadRequestRef.current += 1;
+      driveLoadRequestRef.current += 1;
+      return;
     }
+
+    resetFormState();
+    setResourceType(initialType);
+    loadCneClasses();
+    loadDriveFiles();
+
+    return () => {
+      cneLoadRequestRef.current += 1;
+      driveLoadRequestRef.current += 1;
+    };
   }, [isOpen, initialType]);
 
   const loadCneClasses = async () => {
+    const requestId = ++cneLoadRequestRef.current;
     setLoadingClasses(true);
     try {
       const res = await ApiService.getCNERecords();
+      if (requestId !== cneLoadRequestRef.current) return;
       if (res.success && Array.isArray(res.data)) {
-        setUpcomingClasses(res.data);
+        const openClasses = res.data.filter((c) => {
+          const status = String(c.status || 'Scheduled').trim().toLowerCase();
+          return status !== 'completed' && status !== 'finalized' && status !== 'canceled' && status !== 'cancelled';
+        });
+        setUpcomingClasses(openClasses);
+      } else {
+        setUpcomingClasses([]);
       }
     } catch {
+      if (requestId === cneLoadRequestRef.current) setUpcomingClasses([]);
       // Non-critical background fetch
     } finally {
-      setLoadingClasses(false);
+      if (requestId === cneLoadRequestRef.current) setLoadingClasses(false);
     }
   };
 
   const loadDriveFiles = async () => {
+    const requestId = ++driveLoadRequestRef.current;
     try {
       const res = await ApiService.listNursingReferenceResources();
+      if (requestId !== driveLoadRequestRef.current) return;
       if (res.success && res.data?.driveFiles) {
         setDriveFiles(res.data.driveFiles);
+      } else {
+        setDriveFiles([]);
       }
     } catch {
+      if (requestId === driveLoadRequestRef.current) setDriveFiles([]);
       // Non-critical
     }
   };
@@ -93,11 +131,9 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
     const matched = upcomingClasses.find(
       (c) => (c.cneId || c.classId) === cneId
     );
-    if (matched) {
-      if (!resourcePerson || resourcePerson.trim() === '') {
-        setResourcePerson(matched.resourcePersonName || matched.instructor || '');
-      }
-    }
+    // Always synchronize the metadata with the newly selected CNE so a previous
+    // session's RP cannot leak into the next upload.
+    setResourcePerson(matched ? (matched.resourcePersonName || matched.instructor || '') : '');
   };
 
   const handleFileSelect = (file: File) => {
@@ -157,6 +193,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitRef.current || isSubmitting) return;
 
     if (resourceType === 'CNE_LEARNING_MATERIAL') {
       if (!selectedCneId) {
@@ -167,7 +204,13 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
         error('Please select a document file to upload for this CNE session.');
         return;
       }
+      const selectedCne = upcomingClasses.find((c) => (c.cneId || c.classId) === selectedCneId);
+      if (!selectedCne) {
+        error('The selected CNE is no longer available for material upload. Please choose an open CNE again.');
+        return;
+      }
 
+      submitRef.current = true;
       setIsSubmitting(true);
       try {
         const base64 = await fileToBase64(selectedFile);
@@ -193,6 +236,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
       } catch (err: any) {
         error(err?.message || 'Error occurred while uploading learning material.');
       } finally {
+        submitRef.current = false;
         setIsSubmitting(false);
       }
     } else {
@@ -207,6 +251,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
           return;
         }
 
+        submitRef.current = true;
         setIsSubmitting(true);
         try {
           const base64 = await fileToBase64(selectedFile);
@@ -229,6 +274,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
         } catch (err: any) {
           error(err?.message || 'Error occurred while uploading reference resource.');
         } finally {
+          submitRef.current = false;
           setIsSubmitting(false);
         }
       } else {
@@ -238,6 +284,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
           return;
         }
 
+        submitRef.current = true;
         setIsSubmitting(true);
         try {
           const res = await ApiService.indexNursingReferenceResource({
@@ -259,6 +306,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
         } catch (err: any) {
           error(err?.message || 'Error indexing reference file.');
         } finally {
+          submitRef.current = false;
           setIsSubmitting(false);
         }
       }
@@ -307,6 +355,8 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                 onClick={() => {
                   setResourceType('CNE_LEARNING_MATERIAL');
                   setSelectedFile(null);
+                  setSelectedDriveFileId('');
+                  setResourceTitle('');
                 }}
                 className={`p-3.5 rounded-xl border text-left flex items-start gap-3 transition-all cursor-pointer ${
                   resourceType === 'CNE_LEARNING_MATERIAL'
@@ -338,6 +388,9 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                 onClick={() => {
                   setResourceType('NURSING_REFERENCE_LIB');
                   setSelectedFile(null);
+                  setSelectedCneId('');
+                  setResourcePerson('');
+                  setNotes('');
                 }}
                 className={`p-3.5 rounded-xl border text-left flex items-start gap-3 transition-all cursor-pointer ${
                   resourceType === 'NURSING_REFERENCE_LIB'
@@ -382,18 +435,23 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                   <option value="">-- Choose scheduled CNE session --</option>
                   {upcomingClasses.map((c) => {
                     const id = c.cneId || c.classId || '';
+                    const when = formatCneDateTimeDisplay(c.date, c.toDate);
                     return (
                       <option key={id} value={id}>
-                        {c.topic} {c.date ? `(${new Date(c.date).toLocaleDateString()})` : ''} - {c.area || 'All Hospital'}
+                        {c.topic} {when ? `(${when})` : ''} - {c.area || 'All Hospital'}
                       </option>
                     );
                   })}
                 </select>
-                {loadingClasses && (
+                {loadingClasses ? (
                   <p className="text-[10px] text-slate-400 mt-1 flex items-center gap-1">
                     <Loader2 className="w-3 h-3 animate-spin" /> Loading available CNE sessions...
                   </p>
-                )}
+                ) : upcomingClasses.length === 0 ? (
+                  <p className="text-[10px] text-amber-600 mt-1">
+                    No open CNE session is currently available for material upload.
+                  </p>
+                ) : null}
               </div>
 
               <div>
@@ -627,8 +685,8 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
-              className="inline-flex items-center gap-2 px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+              disabled={isSubmitting || (resourceType === 'CNE_LEARNING_MATERIAL' && upcomingClasses.length === 0)}
+              className="inline-flex items-center gap-2 px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? (
                 <>

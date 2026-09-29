@@ -54,10 +54,15 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   onSuccess
 }) => {
   const { success, error } = useToast();
-  const isAreaIncharge = user?.role === 'AREA_INCHARGE';
+  const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
   const assignedAreas = getUserAssignedAreas(user);
   const defaultArea = (isAreaIncharge && assignedAreas.length > 0) ? assignedAreas[0] : (areasList[0] || '');
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
 
   // Initially show exactly 1 blank CNE schedule row
   const [rows, setRows] = useState<DepartmentalScheduleRow[]>([
@@ -68,9 +73,12 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
     return getCachedOfficers() || [];
   });
   const [isResourcePersonsLoading, setIsResourcePersonsLoading] = useState<boolean>(() => {
-    if ((officersList && officersList.length > 0) || getCachedOfficers()) return false;
+    const cached = getCachedOfficers() || [];
+    if ((officersList && officersList.length > 0) || cached.length > 0) return false;
     return isOfficersLoadingProp ?? isOfficersInFlight();
   });
+  const onOfficersLoadedRef = useRef(onOfficersLoaded);
+  onOfficersLoadedRef.current = onOfficersLoaded;
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const [extRpInputMap, setExtRpInputMap] = useState<Record<string, string>>({});
@@ -86,7 +94,8 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
 
   // Sync loading state if passed from parent
   React.useEffect(() => {
-    if (isOfficersLoadingProp !== undefined && (!officersList || officersList.length === 0) && !getCachedOfficers()) {
+    const cached = getCachedOfficers() || [];
+    if (isOfficersLoadingProp !== undefined && (!officersList || officersList.length === 0) && cached.length === 0) {
       setIsResourcePersonsLoading(isOfficersLoadingProp);
     }
   }, [isOfficersLoadingProp, officersList]);
@@ -114,10 +123,11 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
       .then((officers) => {
         if (!cancelled && officers && officers.length > 0) {
           setInternalOfficers(officers);
-          if (onOfficersLoaded) {
-            onOfficersLoaded(officers);
-          }
+          onOfficersLoadedRef.current?.(officers);
         }
+      })
+      .catch(() => {
+        // Keep the modal usable for External Resource Person entry even if the officer directory fails.
       })
       .finally(() => {
         if (!cancelled) {
@@ -128,7 +138,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
     return () => {
       cancelled = true;
     };
-  }, [isOpen, officersList, onOfficersLoaded]);
+  }, [isOpen, officersList]);
 
   const effectiveOfficers = (officersList && officersList.length > 0)
     ? officersList
@@ -215,10 +225,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
     e.preventDefault();
     if (submittingRef.current || isSubmitting) return;
 
-    // Validation
-    const todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0);
-
+    // Validation. Use the India-local calendar date rather than UTC so the rule is stable before 05:30 IST.
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       const rowNum = i + 1;
@@ -230,7 +237,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         error(`Row #${rowNum}: Area/Department is required.`);
         return;
       }
-      if (isAreaIncharge && assignedAreas.length > 0 && !assignedAreas.some((a) => a.toLowerCase() === r.area.trim().toLowerCase())) {
+      if (isAreaIncharge && assignedAreas.length > 0 && !assignedAreas.some((a) => String(a || '').trim().toLowerCase() === r.area.trim().toLowerCase())) {
         error(`Row #${rowNum}: You are not authorized to schedule for "${r.area}". Authorized areas: ${assignedAreas.join(', ')}`);
         return;
       }
@@ -254,9 +261,8 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         return;
       }
 
-      const checkFrom = new Date(dFrom);
-      checkFrom.setHours(0, 0, 0, 0);
-      if (checkFrom < todayDate) {
+      const fromDatePart = parseDateTimeParts(r.date).date;
+      if (fromDatePart && fromDatePart < todayStr) {
         error(`Row #${rowNum}: Scheduled From Date cannot be in the past.`);
         return;
       }
@@ -267,7 +273,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         return;
       }
 
-      const hasInternalRp = (r.resourcePersonEmpIds && r.resourcePersonEmpIds.length > 0) || !!r.resourcePersonEmpId.trim();
+      const hasInternalRp = (r.resourcePersonEmpIds && r.resourcePersonEmpIds.length > 0) || !!String(r.resourcePersonEmpId || '').trim();
       const hasExtRp = (r.externalResourcePersons && r.externalResourcePersons.length > 0);
       if (!hasInternalRp && !hasExtRp) {
         error(`Row #${rowNum}: Please assign at least one Resource Person (Internal or External).`);
@@ -281,12 +287,12 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
       const payload = rows.map((r) => {
         const rpIds = (r.resourcePersonEmpIds && r.resourcePersonEmpIds.length > 0)
           ? r.resourcePersonEmpIds
-          : r.resourcePersonEmpId
+          : String(r.resourcePersonEmpId || '')
               .split(',')
               .map((id) => id.trim())
               .filter(Boolean);
         const rpNames = rpIds.map((id) => {
-          const off = officersList.find((o) => o.employeeId === id);
+          const off = effectiveOfficers.find((o) => o.employeeId === id);
           return off ? off.name : id;
         });
         if (r.externalResourcePersons && r.externalResourcePersons.length > 0) {
@@ -370,10 +376,14 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
               const selectedRowRpIds = (row.resourcePersonEmpIds && row.resourcePersonEmpIds.length > 0)
                 ? row.resourcePersonEmpIds
                 : (row.resourcePersonEmpId ? row.resourcePersonEmpId.split(',').map((s) => s.trim()).filter(Boolean) : []);
-              const search = (rpSearchMap[row.id] || '').toLowerCase().trim();
-              const filteredOfficers = effectiveOfficers.filter(
-                (o) => !search || o.employeeId.toLowerCase().includes(search) || o.name.toLowerCase().includes(search)
-              );
+              const search = (rpSearchMap[row.id] || '').trim().toLowerCase();
+              const filteredOfficers = effectiveOfficers.filter((o) => {
+                if (!search) return true;
+                const employeeId = String(o?.employeeId || '').toLowerCase();
+                const name = String(o?.name || '').toLowerCase();
+                const designation = String(o?.designation || '').toLowerCase();
+                return employeeId.includes(search) || name.includes(search) || designation.includes(search);
+              });
 
               return (
                 <div

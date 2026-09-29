@@ -15,6 +15,15 @@ import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { getCachedOfficers, loadOfficersSingleFlight } from '../../services/officerLoader';
 import { CneDateTimeFields } from './CneDateTimeFields';
+import { validateCneDuration } from '../../utils';
+
+const getIndiaToday = (): string =>
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
 
 interface AddUnscheduledCneModalProps {
   isOpen: boolean;
@@ -35,25 +44,20 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
 }) => {
   const { success, error, warning } = useToast();
   const submittingRef = useRef(false);
+  const officerLoadRequestRef = useRef(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form State
   const [cneType, setCneType] = useState<'CENTRAL' | 'DEPARTMENTAL'>('CENTRAL');
   const [topic, setTopic] = useState('');
   const [area, setArea] = useState('');
-  const [fromDate, setFromDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [fromDate, setFromDate] = useState(() => getIndiaToday());
   const [fromTime, setFromTime] = useState('09:00');
-  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [toDate, setToDate] = useState(() => getIndiaToday());
   const [toTime, setToTime] = useState('10:00');
   const [duration, setDuration] = useState('01:00:00');
-  const [fullFromDate, setFullFromDate] = useState(() => {
-    const today = new Date().toISOString().split('T')[0];
-    return `${today}T09:00`;
-  });
-  const [fullToDate, setFullToDate] = useState(() => {
-    const today = new Date().toISOString().split('T')[0];
-    return `${today}T10:00`;
-  });
+  const [fullFromDate, setFullFromDate] = useState(() => `${getIndiaToday()}T09:00`);
+  const [fullToDate, setFullToDate] = useState(() => `${getIndiaToday()}T10:00`);
   const [modeOfTeaching, setModeOfTeaching] = useState('Lecture Cum Discussion');
   const [description, setDescription] = useState('');
   const adminRemarks = '';
@@ -79,33 +83,64 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   const [isOfficersLoading, setIsOfficersLoading] = useState(false);
 
   useEffect(() => {
-    if (isOpen) {
-      if (!internalOfficers || internalOfficers.length === 0) {
-        setIsOfficersLoading(true);
-        loadOfficersSingleFlight()
-          .then((offs) => {
-            if (offs && offs.length > 0) setInternalOfficers(offs);
-          })
-          .catch((err) => console.warn('Failed to load officers for unscheduled modal:', err))
-          .finally(() => setIsOfficersLoading(false));
-      }
-      if (areasList.length > 0 && !area) {
-        setArea(areasList[0]);
-      }
+    const requestId = ++officerLoadRequestRef.current;
+
+    if (!isOpen) {
+      setIsOfficersLoading(false);
+      return;
     }
-  }, [isOpen, areasList]);
+
+    if (areasList.length > 0 && (!area || !areasList.includes(area))) {
+      setArea(areasList[0]);
+    }
+
+    if (officersList && officersList.length > 0) {
+      setInternalOfficers(officersList);
+      setIsOfficersLoading(false);
+      return;
+    }
+
+    const cached = getCachedOfficers();
+    if (cached && cached.length > 0) {
+      setInternalOfficers(cached);
+      setIsOfficersLoading(false);
+      return;
+    }
+
+    setIsOfficersLoading(true);
+    loadOfficersSingleFlight()
+      .then((offs) => {
+        if (requestId !== officerLoadRequestRef.current) return;
+        setInternalOfficers(Array.isArray(offs) ? offs : []);
+      })
+      .catch((err) => {
+        if (requestId !== officerLoadRequestRef.current) return;
+        console.warn('Failed to load officers for unscheduled modal:', err);
+      })
+      .finally(() => {
+        if (requestId === officerLoadRequestRef.current) {
+          setIsOfficersLoading(false);
+        }
+      });
+
+    return () => {
+      if (officerLoadRequestRef.current === requestId) {
+        officerLoadRequestRef.current += 1;
+      }
+    };
+  }, [isOpen, areasList, officersList.length]);
 
   if (!isOpen) return null;
 
   // Filtered Officers for Resource Persons
   const filteredRpOfficers = internalOfficers
     .filter((o) => {
-      if (!rpSearchQuery.trim()) return true;
-      const q = rpSearchQuery.toLowerCase();
+      const q = rpSearchQuery.trim().toLowerCase();
+      if (!q) return true;
       return (
-        o.name.toLowerCase().includes(q) ||
-        o.employeeId.toLowerCase().includes(q) ||
-        (o.designation && o.designation.toLowerCase().includes(q))
+        String(o?.name || '').toLowerCase().includes(q) ||
+        String(o?.employeeId || '').toLowerCase().includes(q) ||
+        String(o?.designation || '').toLowerCase().includes(q)
       );
     })
     .slice(0, 8);
@@ -113,12 +148,12 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   // Filtered Officers for Staff Participants
   const filteredStaffOfficers = internalOfficers
     .filter((o) => {
-      if (!staffSearchQuery.trim()) return true;
-      const q = staffSearchQuery.toLowerCase();
+      const q = staffSearchQuery.trim().toLowerCase();
+      if (!q) return true;
       return (
-        o.name.toLowerCase().includes(q) ||
-        o.employeeId.toLowerCase().includes(q) ||
-        (o.designation && o.designation.toLowerCase().includes(q))
+        String(o?.name || '').toLowerCase().includes(q) ||
+        String(o?.employeeId || '').toLowerCase().includes(q) ||
+        String(o?.designation || '').toLowerCase().includes(q)
       );
     })
     .slice(0, 10);
@@ -132,7 +167,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   const handleAddExternalRp = () => {
     const trimmed = externalRpInput.trim();
     if (!trimmed) return;
-    if (externalRpList.includes(trimmed)) {
+    if (externalRpList.some((name) => name.trim().toLowerCase() === trimmed.toLowerCase())) {
       warning('This external resource person is already in the list.');
       return;
     }
@@ -153,7 +188,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   const handleAddExternalStaff = () => {
     const trimmed = externalStaffInput.trim();
     if (!trimmed) return;
-    if (externalStaffList.includes(trimmed)) {
+    if (externalStaffList.some((name) => name.trim().toLowerCase() === trimmed.toLowerCase())) {
       warning('This attendee is already added.');
       return;
     }
@@ -168,6 +203,11 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submittingRef.current || isSubmitting) return;
+
+    if (user?.role !== 'ADMIN') {
+      error('Only Administrators can record and finalize unscheduled CNE data.');
+      return;
+    }
 
     if (!topic.trim()) {
       error('CNE Topic is required.');
@@ -185,8 +225,36 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       error('Conducted To (Date & Time) is required.');
       return;
     }
+
+    const dFrom = new Date(fullFromDate);
+    const dTo = new Date(fullToDate);
+    if (Number.isNaN(dFrom.getTime()) || Number.isNaN(dTo.getTime())) {
+      error('Please enter valid Conducted From and Conducted To date/time values.');
+      return;
+    }
+    if (dTo < dFrom) {
+      error('Conducted To date/time cannot be earlier than Conducted From date/time.');
+      return;
+    }
+
+    const todayIndia = getIndiaToday();
+    if (fromDate > todayIndia || toDate > todayIndia) {
+      error('Unscheduled completed CNE data cannot be recorded for a future date.');
+      return;
+    }
+
+    const durationValidation = validateCneDuration(duration.trim(), fullFromDate, fullToDate);
+    if (!durationValidation.isValid) {
+      error(durationValidation.message);
+      return;
+    }
+
     if (selectedRpEmpIds.length === 0 && externalRpList.length === 0) {
       error('Please select at least one Resource Person (Internal or External).');
+      return;
+    }
+    if (selectedStaffIds.length === 0 && externalStaffList.length === 0) {
+      error('At least one attended participant is required before recording this CNE as Completed.');
       return;
     }
 
@@ -209,7 +277,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
         fromDate: fullFromDate,
         toDate: fullToDate,
         date: fullFromDate,
-        duration: duration.trim() || '01:00:00',
+        duration: duration.trim(),
         resourcePersonEmpId: selectedRpEmpIds.join(', '),
         resourcePersonEmpIds: selectedRpEmpIds,
         resourcePersonName: rpNames.join(', '),
@@ -437,7 +505,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                       className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                       title="Duration (HH:MM:SS)"
                     />
-                    <span className="text-[10px] text-slate-500 mt-1 block">Past dates are fully valid for unscheduled CNE</span>
+                    <span className="text-[10px] text-slate-500 mt-1 block">Past dates are fully valid for unscheduled CNE. Today is also allowed; future dates are not allowed for a completed CNE.</span>
                   </div>
                 </div>
 

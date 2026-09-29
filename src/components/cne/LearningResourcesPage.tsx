@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   BookOpen,
   Library,
@@ -7,7 +7,6 @@ import {
   Eye,
   Loader2,
   Calendar,
-  User,
   Building2,
   RefreshCw,
   X,
@@ -36,7 +35,7 @@ export interface UnifiedResourceItem {
   sourceType: 'CNE_LEARNING_MATERIAL' | 'NURSING_REFERENCE_LIB';
   title: string;
   subtitle?: string;
-  authorOrSpeaker: string;
+  authorOrSpeaker?: string;
   fileName: string;
   fileType: string;
   fileSize?: number;
@@ -52,6 +51,9 @@ export interface UnifiedResourceItem {
   version?: string;
   active?: boolean;
   chunksCount?: number;
+  indexingStatus?: 'SUCCESS' | 'FAILED' | 'PENDING';
+  indexingErrorCode?: string;
+  indexingMessage?: string;
 }
 
 export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
@@ -86,18 +88,43 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
   } | null>(null);
 
   const { success, error } = useToast();
+  const resourceRequestRef = useRef(0);
+  const sessionKey = `${user?.employeeId || ''}:${user?.role || ''}:${user?.token || ''}`;
+  const sessionKeyRef = useRef(sessionKey);
+  sessionKeyRef.current = sessionKey;
 
   useEffect(() => {
-    loadAllResources();
-  }, []);
+    setCneResources([]);
+    setNursingResources([]);
+    setDriveFiles([]);
+    setPreviewItem((current) => {
+      if (current?.blobUrl) URL.revokeObjectURL(current.blobUrl);
+      return null;
+    });
+    if (user?.employeeId) loadAllResources();
+    else setLoading(false);
+
+    return () => {
+      resourceRequestRef.current += 1;
+    };
+  }, [sessionKey]);
+
+  useEffect(() => () => {
+    if (previewItem?.blobUrl) URL.revokeObjectURL(previewItem.blobUrl);
+  }, [previewItem?.blobUrl]);
 
   const loadAllResources = async () => {
+    const requestId = ++resourceRequestRef.current;
+    const requestSession = sessionKeyRef.current;
+    const isCurrent = () => requestId === resourceRequestRef.current && requestSession === sessionKeyRef.current;
     setLoading(true);
     try {
       const [cneRes, nursingRes] = await Promise.all([
         ApiService.listLearningResources(),
         ApiService.listNursingReferenceResources()
       ]);
+
+      if (!isCurrent()) return;
 
       if (cneRes.success && Array.isArray(cneRes.data)) {
         setCneResources(cneRes.data);
@@ -112,9 +139,9 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
         console.warn('Nursing reference library load notice:', nursingRes.message);
       }
     } catch (e: any) {
-      error(e?.message || 'Error occurred while loading resources.');
+      if (isCurrent()) error(e?.message || 'Error occurred while loading resources.');
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   };
 
@@ -126,7 +153,9 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
       sourceType: 'CNE_LEARNING_MATERIAL' as const,
       title: item.topic || 'CNE Session Material',
       subtitle: `CNE ID: ${item.cneId}`,
-      authorOrSpeaker: item.resourcePersonName || 'Department Faculty',
+      // Do not surface Resource Person names on CNE material cards/rows.
+      // The original filename is intentionally preserved and may contain the RP name.
+      authorOrSpeaker: undefined,
       fileName: item.fileName || `CNE_${item.cneId}_Material`,
       fileType: item.fileType || 'application/pdf',
       fileSize: item.fileSize,
@@ -135,7 +164,10 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
       updatedBy: item.updatedBy,
       cneId: item.cneId,
       driveFileId: item.driveFileId,
-      chunksCount: item.chunksCount
+      chunksCount: item.chunksCount,
+      indexingStatus: item.indexingStatus,
+      indexingErrorCode: item.indexingErrorCode,
+      indexingMessage: item.indexingMessage
     })),
 
     // 2. Nursing Reference Library
@@ -176,6 +208,38 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
       label: 'PDF',
       bg: 'bg-rose-50 text-rose-700 border-rose-200',
       iconColor: 'text-rose-600'
+    };
+  };
+
+  const getIndexingDisplay = (item: UnifiedResourceItem) => {
+    if (item.sourceType !== 'CNE_LEARNING_MATERIAL') return null;
+
+    const status = String(item.indexingStatus || '').trim().toUpperCase();
+    if (status === 'SUCCESS') {
+      return {
+        label: item.chunksCount !== undefined ? `Indexed • ${item.chunksCount} chunks` : 'Indexed',
+        className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+        title: item.indexingMessage || 'PDF text indexing completed successfully.'
+      };
+    }
+    if (status === 'FAILED') {
+      return {
+        label: 'Indexing failed',
+        className: 'bg-rose-50 text-rose-700 border-rose-200',
+        title: [item.indexingErrorCode, item.indexingMessage].filter(Boolean).join(' • ') || 'PDF text indexing failed.'
+      };
+    }
+    if (status === 'PENDING') {
+      return {
+        label: 'Indexing pending',
+        className: 'bg-amber-50 text-amber-700 border-amber-200',
+        title: item.indexingMessage || 'PDF text indexing is pending.'
+      };
+    }
+    return {
+      label: 'Index status not reported',
+      className: 'bg-slate-50 text-slate-600 border-slate-200',
+      title: 'The resource exists, but the list API has not reported its indexing status.'
     };
   };
 
@@ -264,11 +328,14 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
           const blob = base64ToBlob(res.data.fileBase64, mimeType);
           const blobUrl = URL.createObjectURL(blob);
 
-          setPreviewItem({
-            id: item.id,
-            title: item.title,
-            fileName: res.data.fileName || item.fileName || 'Resource.pdf',
-            blobUrl: blobUrl
+          setPreviewItem((current) => {
+            if (current?.blobUrl) URL.revokeObjectURL(current.blobUrl);
+            return {
+              id: item.id,
+              title: item.title,
+              fileName: res.data.fileName || item.fileName || 'Resource.pdf',
+              blobUrl: blobUrl
+            };
           });
         } else {
           error(res.message || 'Failed to load PDF preview.');
@@ -283,11 +350,14 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
           const blob = base64ToBlob(res.data.fileBase64, mimeType);
           const blobUrl = URL.createObjectURL(blob);
 
-          setPreviewItem({
-            id: item.id,
-            title: item.title,
-            fileName: res.data.fileName || item.fileName || 'Reference.pdf',
-            blobUrl: blobUrl
+          setPreviewItem((current) => {
+            if (current?.blobUrl) URL.revokeObjectURL(current.blobUrl);
+            return {
+              id: item.id,
+              title: item.title,
+              fileName: res.data.fileName || item.fileName || 'Reference.pdf',
+              blobUrl: blobUrl
+            };
           });
         } else {
           error(res.message || 'Failed to load reference preview.');
@@ -337,7 +407,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
 
   // Admin: Delete confirmation and execution
   const handleDeleteConfirm = async () => {
-    if (!itemToDelete) return;
+    if (!isAdmin || !itemToDelete) return;
     setIsDeleting(true);
 
     try {
@@ -382,7 +452,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
       const matchSearch =
         (item.title || '').toLowerCase().includes(q) ||
         (item.subtitle || '').toLowerCase().includes(q) ||
-        (item.authorOrSpeaker || '').toLowerCase().includes(q) ||
+        (item.sourceType === 'NURSING_REFERENCE_LIB' && (item.authorOrSpeaker || '').toLowerCase().includes(q)) ||
         (item.fileName || '').toLowerCase().includes(q) ||
         (item.cneId || '').toLowerCase().includes(q);
       if (!matchSearch) return false;
@@ -473,7 +543,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by title, speaker/author, or file name..."
+            placeholder="Search by title, CNE ID, author, or file name..."
             className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all"
           />
           {searchQuery && (
@@ -538,7 +608,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
               <thead>
                 <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-600">
                   <th className="py-3.5 px-4 sm:px-6">Resource Title & Category</th>
-                  <th className="py-3.5 px-4">Instructor / Author</th>
+                  <th className="py-3.5 px-4">Indexing / Author</th>
                   <th className="py-3.5 px-4">File Format & Size</th>
                   <th className="py-3.5 px-4">Uploaded / Updated</th>
                   <th className="py-3.5 px-4 sm:px-6 text-right">Actions</th>
@@ -552,6 +622,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                     (item.fileName || '').toLowerCase().endsWith('.pdf');
                   const isBusyDownload = downloadingId === item.id;
                   const isBusyReindex = reindexingId === item.id;
+                  const indexingDisplay = getIndexingDisplay(item);
 
                   return (
                     <tr key={item.id} className="hover:bg-slate-50/60 transition-colors">
@@ -580,18 +651,32 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                         </div>
                       </td>
 
-                      {/* Instructor / Author */}
+                      {/* CNE indexing status / Library author */}
                       <td className="py-4 px-4">
-                        <div className="flex items-center gap-1.5 text-slate-700 font-medium">
-                          {item.sourceType === 'CNE_LEARNING_MATERIAL' ? (
-                            <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          ) : (
+                        {item.sourceType === 'CNE_LEARNING_MATERIAL' ? (
+                          indexingDisplay && (
+                            <div className="space-y-1">
+                              <span
+                                className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${indexingDisplay.className}`}
+                                title={indexingDisplay.title}
+                              >
+                                {indexingDisplay.label}
+                              </span>
+                              {item.indexingStatus === 'FAILED' && item.indexingMessage && (
+                                <p className="text-[10px] text-rose-600 max-w-[220px] line-clamp-2" title={item.indexingMessage}>
+                                  {item.indexingMessage}
+                                </p>
+                              )}
+                            </div>
+                          )
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-slate-700 font-medium">
                             <Building2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                          )}
-                          <span className="truncate max-w-[180px]" title={item.authorOrSpeaker}>
-                            {item.authorOrSpeaker}
-                          </span>
-                        </div>
+                            <span className="truncate max-w-[180px]" title={item.authorOrSpeaker}>
+                              {item.authorOrSpeaker || '—'}
+                            </span>
+                          </div>
+                        )}
                       </td>
 
                       {/* File Format & Size */}
@@ -617,7 +702,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                       <td className="py-4 px-4 text-slate-500">
                         <div className="flex items-center gap-1 text-[11px]">
                           <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span>{item.uploadedAt ? new Date(item.uploadedAt).toLocaleDateString() : '—'}</span>
+                          <span>{item.uploadedAt ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(item.uploadedAt)) : '—'}</span>
                         </div>
                         {item.updatedBy && (
                           <div className="text-[10px] text-slate-400 mt-0.5">
