@@ -92,19 +92,20 @@ export const CneDateTimeFields: React.FC<CneDateTimeFieldsProps> = ({
 }) => {
   const isFromComplete = Boolean(fromDate && fromTime);
 
+  // CNE date/time values are stored as institution-local wall-clock values
+  // (YYYY-MM-DD / HH:mm). Compare those canonical strings directly instead of
+  // reparsing them through the browser timezone before calling the shared
+  // duration helper. This keeps validation deterministic for the form fields.
+  const buildDateTime = (date: string, time: string): string =>
+    date && time ? `${date}T${time}` : '';
+
   const calculateDuration = (fDate: string, fTime: string, tDate: string, tTime: string): string => {
-    if (!fDate || !fTime || !tDate || !tTime) {
+    const fullFrom = buildDateTime(fDate, fTime);
+    const fullTo = buildDateTime(tDate, tTime);
+    if (!fullFrom || !fullTo || fullTo < fullFrom) {
       return '00:00:00';
     }
-    const fullFrom = `${fDate}T${fTime}`;
-    const fullTo = `${tDate}T${tTime}`;
-    const dFrom = new Date(fullFrom);
-    const dTo = new Date(fullTo);
-    if (!isNaN(dFrom.getTime()) && !isNaN(dTo.getTime()) && dTo >= dFrom) {
-      const dur = calculateCneDuration(fullFrom, fullTo);
-      return dur || '00:00:00';
-    }
-    return '00:00:00';
+    return calculateCneDuration(fullFrom, fullTo) || '00:00:00';
   };
 
   const handleFromDateChange = (val: string) => {
@@ -121,8 +122,8 @@ export const CneDateTimeFields: React.FC<CneDateTimeFieldsProps> = ({
     }
 
     const calculatedDuration = calculateDuration(val, fromTime, updatedToDate, updatedToTime);
-    const fullFrom = val && fromTime ? `${val}T${fromTime}` : '';
-    const fullTo = updatedToDate && updatedToTime ? `${updatedToDate}T${updatedToTime}` : '';
+    const fullFrom = buildDateTime(val, fromTime);
+    const fullTo = buildDateTime(updatedToDate, updatedToTime);
 
     onChange({
       fromDate: val,
@@ -143,8 +144,8 @@ export const CneDateTimeFields: React.FC<CneDateTimeFieldsProps> = ({
     }
 
     const calculatedDuration = calculateDuration(fromDate, val, toDate, updatedToTime);
-    const fullFrom = fromDate && val ? `${fromDate}T${val}` : '';
-    const fullTo = toDate && updatedToTime ? `${toDate}T${updatedToTime}` : '';
+    const fullFrom = buildDateTime(fromDate, val);
+    const fullTo = buildDateTime(toDate, updatedToTime);
 
     onChange({
       fromDate,
@@ -158,20 +159,23 @@ export const CneDateTimeFields: React.FC<CneDateTimeFieldsProps> = ({
   };
 
   const handleToDateChange = (val: string) => {
+    // ConfirmDatePicker already applies minDate, but keep a programmatic guard
+    // here too so an earlier To Date can never enter component state.
+    const updatedToDate = fromDate && val && val < fromDate ? fromDate : val;
     let updatedToTime = toTime;
 
-    if (val === fromDate && updatedToTime && fromTime && updatedToTime < fromTime) {
+    if (updatedToDate === fromDate && updatedToTime && fromTime && updatedToTime < fromTime) {
       updatedToTime = fromTime;
     }
 
-    const calculatedDuration = calculateDuration(fromDate, fromTime, val, updatedToTime);
-    const fullFrom = fromDate && fromTime ? `${fromDate}T${fromTime}` : '';
-    const fullTo = val && updatedToTime ? `${val}T${updatedToTime}` : '';
+    const calculatedDuration = calculateDuration(fromDate, fromTime, updatedToDate, updatedToTime);
+    const fullFrom = buildDateTime(fromDate, fromTime);
+    const fullTo = buildDateTime(updatedToDate, updatedToTime);
 
     onChange({
       fromDate,
       fromTime,
-      toDate: val,
+      toDate: updatedToDate,
       toTime: updatedToTime,
       fullFrom,
       fullTo,
@@ -180,15 +184,19 @@ export const CneDateTimeFields: React.FC<CneDateTimeFieldsProps> = ({
   };
 
   const handleToTimeChange = (val: string) => {
-    const calculatedDuration = calculateDuration(fromDate, fromTime, toDate, val);
-    const fullFrom = fromDate && fromTime ? `${fromDate}T${fromTime}` : '';
-    const fullTo = toDate && val ? `${toDate}T${val}` : '';
+    // Native input[min] participates in form validity but does not guarantee
+    // that every programmatic/browser change is clamped. Enforce it here too.
+    const updatedToTime =
+      toDate === fromDate && fromTime && val && val < fromTime ? fromTime : val;
+    const calculatedDuration = calculateDuration(fromDate, fromTime, toDate, updatedToTime);
+    const fullFrom = buildDateTime(fromDate, fromTime);
+    const fullTo = buildDateTime(toDate, updatedToTime);
 
     onChange({
       fromDate,
       fromTime,
       toDate,
-      toTime: val,
+      toTime: updatedToTime,
       fullFrom,
       fullTo,
       calculatedDuration

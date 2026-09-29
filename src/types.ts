@@ -1,4 +1,14 @@
-export type UserRole = 'ADMIN' | 'AREA_INCHARGE' | 'EMPLOYEE';
+export type UserRole = 'ADMIN' | 'AREA_INCHARGE' | 'INCHARGE' | 'RESOURCE_PERSON' | 'EMPLOYEE';
+
+export type CNEStatus =
+  | 'Scheduled'
+  | 'Completed'
+  | 'Canceled'
+  | 'Cancelled'
+  | 'Finalized'
+  | 'Finalised'
+  | 'Draft'
+  | 'Pending';
 
 export type ViewMode =
   | 'home'
@@ -103,7 +113,7 @@ export interface CNERecord {
   modeOfTeaching: string;
   description?: string;
   maxParticipants?: number;
-  status: 'Scheduled' | 'Completed' | 'Canceled' | 'Draft' | 'Pending';
+  status: CNEStatus;
   cneType?: 'CENTRAL' | 'DEPARTMENTAL';
   proposedByEmpId?: string;
   proposedByName?: string;
@@ -192,7 +202,9 @@ export interface CNELearningResourceMetadata {
   fileName: string;
   fileType: string;
   fileSize: number;
-  resourcePersonName: string;
+  resourcePersonName?: string;
+  area?: string;
+  cneType?: 'CENTRAL' | 'DEPARTMENTAL';
   uploadedAt?: string;
   updatedAt?: string;
   updatedBy?: string;
@@ -201,6 +213,7 @@ export interface CNELearningResourceMetadata {
   indexingErrorCode?: string;
   indexingMessage?: string;
   chunksCount?: number;
+  indexedAt?: string;
 }
 
 
@@ -265,13 +278,15 @@ export interface CNEParticipantsSummary {
   totalParticipants: number;
   postTestCount: number;
   manualCount: number;
-  averageScore: number;
+  averageScore: number | null;
   participants: CNEParticipant[];
 }
 
 export interface PostTestSubmissionResult {
   participantId: string;
   cneId: string;
+  participantType?: 'INTERNAL' | 'EXTERNAL';
+  participantName?: string;
   score: number;
   totalQuestions: number;
   percentage: number;

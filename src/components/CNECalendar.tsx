@@ -10,12 +10,40 @@ import {
 } from 'lucide-react';
 import { CNERecord } from '../types';
 import { ApiService } from '../services/api';
-import { formatCneDateTimeDisplay } from '../utils';
+import { formatCneDateTimeDisplay, parseToIsoDateString } from '../utils';
 
 type CalendarViewMode = 'month' | 'week' | 'agenda';
 
+type CalendarEventType = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
+
+const getIndiaCalendarDate = () => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const year = Number(values.year);
+  const month = Number(values.month);
+  const day = Number(values.day);
+  return {
+    year: Number.isFinite(year) ? year : new Date().getFullYear(),
+    month: Number.isFinite(month) ? month : new Date().getMonth() + 1,
+    day: Number.isFinite(day) ? day : new Date().getDate()
+  };
+};
+
+const getCalendarEventType = (status?: string | null): CalendarEventType => {
+  const normalized = String(status || 'Scheduled').trim().toLowerCase();
+  if (normalized === 'completed' || normalized === 'finalized') return 'COMPLETED';
+  if (normalized === 'canceled' || normalized === 'cancelled') return 'CANCELED';
+  return 'UPCOMING';
+};
+
 export const CNECalendar: React.FC = () => {
-  const [currentDate, setCurrentDate] = useState<Date>(new Date(2026, 8, 1)); // Sep 2026 or current
+  const indiaToday = getIndiaCalendarDate();
+  const [currentDate, setCurrentDate] = useState<Date>(() => new Date(indiaToday.year, indiaToday.month - 1, 1));
   const [viewMode, setViewMode] = useState<CalendarViewMode>('month');
   const [cneRecords, setCneRecords] = useState<CNERecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,7 +76,7 @@ export const CNECalendar: React.FC = () => {
       duration: r.duration,
       instructor: r.resourcePersonName || 'Resource Person',
       mode: r.modeOfTeaching,
-      type: r.status === 'Completed' ? 'RECORD' : 'UPCOMING',
+      type: getCalendarEventType(r.status),
       status: r.status,
       cneType: r.cneType || 'CENTRAL',
       raw: r
@@ -79,11 +107,12 @@ export const CNECalendar: React.FC = () => {
   const eventsByDay = useMemo(() => {
     const map: { [day: number]: any[] } = {};
     allEvents.forEach((ev) => {
-      const d = new Date(ev.date);
-      if (d.getFullYear() === year && d.getMonth() === month) {
-        const dayNum = d.getDate();
-        if (!map[dayNum]) map[dayNum] = [];
-        map[dayNum].push(ev);
+      const isoDate = parseToIsoDateString(ev.date);
+      if (!isoDate) return;
+      const [eventYear, eventMonth, eventDay] = isoDate.split('-').map(Number);
+      if (eventYear === year && eventMonth === month + 1) {
+        if (!map[eventDay]) map[eventDay] = [];
+        map[eventDay].push(ev);
       }
     });
     return map;
@@ -173,6 +202,10 @@ export const CNECalendar: React.FC = () => {
           <span className="w-2.5 h-2.5 rounded-full bg-purple-500" />
           <span>Upcoming Scheduled Classes</span>
         </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+          <span>Canceled CNE Sessions</span>
+        </div>
       </div>
 
       {/* Monthly Grid View */}
@@ -201,9 +234,9 @@ export const CNECalendar: React.FC = () => {
               const dayNum = i + 1;
               const dayEvents = eventsByDay[dayNum] || [];
               const isToday =
-                new Date().getFullYear() === year &&
-                new Date().getMonth() === month &&
-                new Date().getDate() === dayNum;
+                indiaToday.year === year &&
+                indiaToday.month === month + 1 &&
+                indiaToday.day === dayNum;
 
               return (
                 <div
@@ -236,6 +269,8 @@ export const CNECalendar: React.FC = () => {
                         className={`w-full text-left p-1 rounded text-[10px] font-semibold truncate block transition-all ${
                           ev.type === 'UPCOMING'
                             ? 'bg-purple-100 text-purple-900 hover:bg-purple-200 border-l-2 border-purple-600'
+                            : ev.type === 'CANCELED'
+                            ? 'bg-rose-100 text-rose-900 hover:bg-rose-200 border-l-2 border-rose-600'
                             : 'bg-emerald-100 text-emerald-900 hover:bg-emerald-200 border-l-2 border-emerald-600'
                         }`}
                       >
@@ -264,7 +299,7 @@ export const CNECalendar: React.FC = () => {
         <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6">
           <div className="divide-y divide-slate-100">
             {allEvents
-              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+              .sort((a, b) => (parseToIsoDateString(b.date) || '').localeCompare(parseToIsoDateString(a.date) || ''))
               .map((ev) => (
                 <div
                   key={ev.id}
@@ -277,10 +312,12 @@ export const CNECalendar: React.FC = () => {
                         className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                           ev.type === 'UPCOMING'
                             ? 'bg-purple-100 text-purple-800'
+                            : ev.type === 'CANCELED'
+                            ? 'bg-rose-100 text-rose-800'
                             : 'bg-emerald-100 text-emerald-800'
                         }`}
                       >
-                        {ev.type === 'UPCOMING' ? 'Upcoming Class' : 'Completed CNE'}
+                        {ev.type === 'UPCOMING' ? 'Upcoming Class' : ev.type === 'CANCELED' ? 'Canceled CNE' : 'Completed CNE'}
                       </span>
                       <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
                         <MapPin className="w-3.5 h-3.5" />
@@ -316,6 +353,8 @@ export const CNECalendar: React.FC = () => {
                   className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
                     selectedEvent.type === 'UPCOMING'
                       ? 'bg-purple-100 text-purple-700'
+                      : selectedEvent.type === 'CANCELED'
+                      ? 'bg-rose-100 text-rose-700'
                       : 'bg-emerald-100 text-emerald-700'
                   }`}
                 >
@@ -326,10 +365,16 @@ export const CNECalendar: React.FC = () => {
                     className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
                       selectedEvent.type === 'UPCOMING'
                         ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                        : selectedEvent.type === 'CANCELED'
+                        ? 'bg-rose-100 text-rose-800 border border-rose-200'
                         : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                     }`}
                   >
-                    {selectedEvent.type === 'UPCOMING' ? 'Upcoming Class' : 'Completed CNE Session'}
+                    {selectedEvent.type === 'UPCOMING'
+                      ? 'Upcoming Class'
+                      : selectedEvent.type === 'CANCELED'
+                      ? 'Canceled CNE Session'
+                      : 'Completed CNE Session'}
                   </span>
                   <h3 className="text-base font-bold text-slate-900 mt-1">
                     {selectedEvent.title}
@@ -371,7 +416,7 @@ export const CNECalendar: React.FC = () => {
 
                 <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between shadow-xs md:col-span-2">
                   <span className="text-slate-500 font-semibold">Session Duration</span>
-                  <span className="font-bold text-slate-900">{selectedEvent.duration}</span>
+                  <span className="font-bold text-slate-900">{selectedEvent.duration || '—'}</span>
                 </div>
               </div>
             </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X
 } from 'lucide-react';
@@ -20,7 +20,7 @@ import {
   INITIAL_QUICK_LINKS,
   INITIAL_PROGRAM_IMPACT
 } from '../services/initialData';
-import { formatCneDateTimeDisplay } from '../utils';
+import { formatCneDateTimeDisplay, parseToIsoDateString } from '../utils';
 
 // Modular Child Widgets
 import { UpcomingClassesWidget } from './home/UpcomingClassesWidget';
@@ -55,7 +55,9 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
     photoUrl: chairpersonPhotoUrl
   };
   
-  const [classesLoading, setClassesLoading] = useState(false);
+  const [classesLoading, setClassesLoading] = useState(true);
+  const homeRequestRef = useRef(0);
+  const sessionKey = `${user?.employeeId || ''}:${user?.role || ''}:${user?.token || ''}`;
 
   // Modals state
   const [selectedNews, setSelectedNews] = useState<NewsEventItem | null>(null);
@@ -63,74 +65,101 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   const [selectedClass, setSelectedClass] = useState<CNERecord | null>(null);
 
   useEffect(() => {
-    // Reset/rehydrate impact statistics for user scope change
+    const requestId = ++homeRequestRef.current;
+    let active = true;
+    const isCurrent = () => active && requestId === homeRequestRef.current;
+
+    // Clear user-specific modal state immediately so an account change cannot retain
+    // details opened under the previous session.
+    setSelectedNews(null);
+    setSelectedQuickLink(null);
+    setSelectedClass(null);
+
     const cachedImpact = ApiService.getCachedData<ProgramImpactStats>('getProgramImpact');
-    setImpactStats(cachedImpact);
+    setImpactStats(cachedImpact || null);
     setImpactLoading(!cachedImpact);
     setImpactError(null);
-    loadHomeData();
-  }, [user?.employeeId]);
+    setClassesLoading(true);
 
-  const loadHomeData = () => {
-    // All independent initial read requests execute concurrently in parallel
-    // and render each section progressively as its data arrives.
-
-    // 1. Upcoming Classes
+    // All independent initial reads execute concurrently and update only if this
+    // request still belongs to the current account/session.
     ApiService.getCNERecords({ status: 'Scheduled' })
       .then((res) => {
-        if (res.success && res.data) setUpcomingClasses(res.data);
-      })
-      .catch((err) => console.warn('[Home Data] Upcoming classes error:', err))
-      .finally(() => setClassesLoading(false));
-
-    // 2. News & Circulars
-    ApiService.getNewsEvents()
-      .then((res) => {
-        if (res.success && res.data) setNewsEvents(res.data);
-      })
-      .catch((err) => console.warn('[Home Data] News error:', err));
-
-    // 3. Quick Links
-    ApiService.getQuickLinks()
-      .then((res) => {
-        if (res.success && res.data) setQuickLinks(res.data);
-      })
-      .catch((err) => console.warn('[Home Data] Quick links error:', err));
-
-    // 4. Coordinator Desk
-    ApiService.getCoordinatorDesk()
-      .then((res) => {
-        if (res.success && res.data) setCoordinatorDesk(res.data);
-      })
-      .catch((err) => console.warn('[Home Data] Coordinator desk error:', err));
-
-    // 5. Chairperson photo only (name/designation/message remain static in initialData.ts)
-    ApiService.getChairpersonPhoto()
-      .then((res) => {
-        if (res.success && res.data?.photoUrl) setChairpersonPhotoUrl(res.data.photoUrl);
-      })
-      .catch((err) => console.warn('[Home Data] Chairperson photo error:', err));
-
-    // 6. Program Impact Metrics (heavier Data tab calculation, isolated so it never blocks other sections)
-    ApiService.getProgramImpact()
-      .then((res) => {
+        if (!isCurrent()) return;
         if (res.success && res.data) {
-          setImpactStats(res.data);
-          setImpactError(null);
+          setUpcomingClasses(res.data);
         } else {
-          if (!impactStats) {
-            setImpactError(res.message || 'Unable to load impact metrics');
-          }
+          setUpcomingClasses([]);
         }
       })
       .catch((err) => {
-        console.warn('[Home Data] Impact error:', err);
-        if (!impactStats) {
-          setImpactError('Unable to load impact metrics');
+        if (!isCurrent()) return;
+        console.warn('[Home Data] Upcoming classes error:', err);
+        setUpcomingClasses([]);
+      })
+      .finally(() => {
+        if (isCurrent()) setClassesLoading(false);
+      });
+
+    ApiService.getNewsEvents()
+      .then((res) => {
+        if (isCurrent() && res.success && res.data) setNewsEvents(res.data);
+      })
+      .catch((err) => {
+        if (isCurrent()) console.warn('[Home Data] News error:', err);
+      });
+
+    ApiService.getQuickLinks()
+      .then((res) => {
+        if (isCurrent() && res.success && res.data) setQuickLinks(res.data);
+      })
+      .catch((err) => {
+        if (isCurrent()) console.warn('[Home Data] Quick links error:', err);
+      });
+
+    ApiService.getCoordinatorDesk()
+      .then((res) => {
+        if (isCurrent() && res.success && res.data) setCoordinatorDesk(res.data);
+      })
+      .catch((err) => {
+        if (isCurrent()) console.warn('[Home Data] Coordinator desk error:', err);
+      });
+
+    ApiService.getChairpersonPhoto()
+      .then((res) => {
+        if (!isCurrent()) return;
+        setChairpersonPhotoUrl(res.success && res.data?.photoUrl ? res.data.photoUrl : '');
+      })
+      .catch((err) => {
+        if (!isCurrent()) return;
+        console.warn('[Home Data] Chairperson photo error:', err);
+        setChairpersonPhotoUrl('');
+      });
+
+    ApiService.getProgramImpact()
+      .then((res) => {
+        if (!isCurrent()) return;
+        if (res.success && res.data) {
+          setImpactStats(res.data);
+          setImpactError(null);
+        } else if (!cachedImpact) {
+          setImpactError(res.message || 'Unable to load impact metrics');
         }
       })
-      .finally(() => setImpactLoading(false));
-  };
+      .catch((err) => {
+        if (!isCurrent()) return;
+        console.warn('[Home Data] Impact error:', err);
+        if (!cachedImpact) setImpactError('Unable to load impact metrics');
+      })
+      .finally(() => {
+        if (isCurrent()) setImpactLoading(false);
+      });
+
+    return () => {
+      active = false;
+      homeRequestRef.current += 1;
+    };
+  }, [sessionKey]);
 
   const handleQuickLinkClick = (item: QuickLinkItem) => {
     if (!item) return;
@@ -147,8 +176,17 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
     }
   };
 
-  // Scheduled upcoming classes filter: maximum 5 classes displayed on home card
-  const scheduledClasses = upcomingClasses.filter((c) => c.status === 'Scheduled');
+  // Scheduled upcoming classes filter: maximum 5 classes displayed on home card.
+  // Normalize status and order by canonical CNE date so backend casing/order cannot
+  // make completed/cancelled records appear in the public upcoming preview.
+  const scheduledClasses = upcomingClasses
+    .filter((c) => String(c?.status || '').trim().toLowerCase() === 'scheduled')
+    .sort((a, b) => {
+      const aDate = parseToIsoDateString(a?.date) || '';
+      const bDate = parseToIsoDateString(b?.date) || '';
+      if (aDate !== bDate) return aDate.localeCompare(bDate);
+      return String(a?.date || '').localeCompare(String(b?.date || ''));
+    });
   const openClasses = scheduledClasses.slice(0, 5);
   const totalScheduledCount = scheduledClasses.length;
 
@@ -305,7 +343,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-800">
-                    {selectedClass.duration || '2:00'} Hrs CNE Duration
+                    {selectedClass.duration ? `${selectedClass.duration} CNE Duration` : 'Duration not recorded'}
                   </span>
                   <span className="text-xs text-slate-400">{selectedClass.area}</span>
                 </div>
@@ -327,7 +365,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Duration:</span>
-                <span className="font-bold text-slate-900">{selectedClass.duration || 'N/A'}</span>
+                <span className="font-bold text-slate-900">{selectedClass.duration || '—'}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Venue / Location:</span>

@@ -381,11 +381,13 @@ export function getCalendarDaysTouched(fromDtStr: string, toDtStr: string): numb
  *   - intermediate full calendar days contribute a maximum of 8 hours each
  */
 export function calculateCneDuration(fromDtStr: string, toDtStr: string): string {
-  if (!fromDtStr || !toDtStr) return '01:00:00';
+  // Never invent training time. Missing/invalid ranges must contribute zero duration;
+  // callers can then require the user to correct the dates instead of silently saving 1 hour.
+  if (!fromDtStr || !toDtStr) return '00:00:00';
   const d1 = new Date(fromDtStr);
   const d2 = new Date(toDtStr);
   if (isNaN(d1.getTime()) || isNaN(d2.getTime()) || d2 < d1) {
-    return '01:00:00';
+    return '00:00:00';
   }
 
   const daysTouched = getCalendarDaysTouched(fromDtStr, toDtStr);
@@ -425,6 +427,18 @@ export function validateCneDuration(
   fromDtStr: string,
   toDtStr: string
 ): { isValid: boolean; error?: string; message: string; maxDurationStr: string } {
+  const from = fromDtStr ? new Date(fromDtStr) : null;
+  const to = toDtStr ? new Date(toDtStr) : null;
+  if (!from || !to || isNaN(from.getTime()) || isNaN(to.getTime()) || to < from) {
+    const err = 'Please enter a valid From Date & Time and To Date & Time before setting duration.';
+    return {
+      isValid: false,
+      error: err,
+      message: err,
+      maxDurationStr: '00:00:00'
+    };
+  }
+
   const daysTouched = getCalendarDaysTouched(fromDtStr, toDtStr);
   const maxSeconds = daysTouched * 8 * 3600;
   const maxDurationStr = formatSecondsToDuration(maxSeconds);
@@ -571,67 +585,76 @@ export function getUserAssignedAreas(user?: SessionUser | null): string[] {
 }
 
 /**
- * Checks if a user is authorized to manage a CNE session (Reference material, Questions, QR, Attendance, Finalization).
- * Admin = full control over Central and Departmental CNEs.
- * Area Incharge = Departmental CNE only within their assigned area(s)/ward(s). Supports multiple assigned areas.
- * Normal users = no administrative control.
+ * Checks whether an Area/Ward Incharge is responsible for the CNE's area.
+ *
+ * This is an AREA-SCOPE helper only. It must not be used to grant Edit/Cancel/Finalize
+ * lifecycle authority. Operational Progress actions may use it for both Central and
+ * Departmental CNEs; lifecycle rules stay stricter in the Schedule/backend layers.
  */
 export function isCneAuthorized(
   user?: SessionUser | null,
   cneArea?: string,
-  cneType?: string
+  _cneType?: string
 ): boolean {
   if (!user) return false;
   if (user.role === 'ADMIN') return true;
-  if (user.role === 'AREA_INCHARGE') {
-    const type = (cneType || '').trim().toUpperCase();
-    if (type !== 'DEPARTMENTAL') return false;
-    if (!cneArea) return false;
-    const targetArea = cneArea.trim().toLowerCase();
-    const assigned = getUserAssignedAreas(user);
-    return assigned.some((a) => a.toLowerCase() === targetArea);
-  }
-  return false;
+
+  const normalizedRole = String(user.role || '').trim().toUpperCase();
+  if (normalizedRole !== 'AREA_INCHARGE' && normalizedRole !== 'INCHARGE') return false;
+  if (!cneArea) return false;
+
+  const targetArea = cneArea.trim().toLowerCase();
+  if (!targetArea) return false;
+  return getUserAssignedAreas(user).some((area) => area.trim().toLowerCase() === targetArea);
 }
 
 /**
  * Checks if the user is an assigned Resource Person for a specific CNE.
- * Normalizes and checks against comma- or semicolon-separated resource person employee IDs.
+ * Accepts a single ID, delimited IDs, or an array of IDs and compares case-insensitively.
  */
 export function isUserAssignedResourcePerson(
   user?: SessionUser | null,
-  resourcePersonEmpId?: string | null
+  resourcePersonEmpId?: string | string[] | null
 ): boolean {
   if (!user?.employeeId || !resourcePersonEmpId) return false;
   const userEmpId = user.employeeId.trim().toUpperCase();
-  const rpList = resourcePersonEmpId
-    .split(/[,;\n]+/)
-    .map((s) => s.trim().toUpperCase())
+  const rawList = Array.isArray(resourcePersonEmpId)
+    ? resourcePersonEmpId
+    : String(resourcePersonEmpId).split(/[,;\n]+/);
+  const rpList = rawList
+    .map((s) => String(s || '').trim().toUpperCase())
     .filter(Boolean);
   return rpList.includes(userEmpId);
 }
 
 /**
- * Checks if the user is authorized for operational CNE actions:
- * Material, Questions, QR Code, Take Post Test, Participants.
+ * Shared operational CNE Progress authorization.
  *
- * Allowed:
+ * Allowed for Material, Questions, QR, Post-Test management and Attendance:
  * 1. Admin
- * 2. Responsible Area Incharge (Departmental CNE in their assigned area)
- * 3. Resource Person ONLY when assigned to THIS particular CNE
+ * 2. Concerned Area/Ward Incharge for the CNE area (Central or Departmental)
+ * 3. Resource Person assigned to this specific CNE
  *
- * Forbidden:
- * - Other Resource Persons not assigned to this CNE
- * - Ordinary staff
+ * This helper intentionally does NOT grant Edit/Cancel/Finalize lifecycle authority.
  */
 export function canManageCneActions(
   user?: SessionUser | null,
-  cne?: { area?: string; cneType?: string; resourcePersonEmpId?: string | null } | null
+  cne?: {
+    area?: string;
+    cneType?: string;
+    resourcePersonEmpId?: string | null;
+    resourcePersonEmpIds?: string[] | null;
+  } | null
 ): boolean {
   if (!user || !cne) return false;
   if (user.role === 'ADMIN') return true;
   if (isCneAuthorized(user, cne.area, cne.cneType)) return true;
-  if (isUserAssignedResourcePerson(user, cne.resourcePersonEmpId)) return true;
-  return false;
+
+  const assignedRpIds = [
+    ...(cne.resourcePersonEmpIds || []),
+    ...(cne.resourcePersonEmpId ? String(cne.resourcePersonEmpId).split(/[,;\n]+/) : [])
+  ];
+  return isUserAssignedResourcePerson(user, assignedRpIds);
 }
+
 

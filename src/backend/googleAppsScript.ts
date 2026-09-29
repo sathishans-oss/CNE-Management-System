@@ -864,7 +864,7 @@ function checkCNEActionAuthorized(session, record) {
   }
 
   if (record) {
-    // 1. Check if authenticated user is an assigned Resource Person for THIS PARTICULAR CNE
+    // 1. Check if authenticated user is an assigned Resource Person for THIS PARTICULAR CNE.
     var loggedInId = normalizeEmpId(session.employeeId);
     var rawRp = record.instructor || record.resourcePersonEmpId || '';
     var rpList = String(rawRp).split(/[,;\\n]+/).map(function(s) {
@@ -875,17 +875,43 @@ function checkCNEActionAuthorized(session, record) {
       return null; // Assigned Resource Person for this specific CNE
     }
 
-    // 2. Check if responsible Area Incharge for this Departmental CNE
-    var areaAuth = checkCNEAuthorized(session, record.area, record.cneType);
-    if (areaAuth === null) {
-      return null; // Responsible Area Incharge
+    // 2. Operational Progress actions are allowed to the concerned Area/Ward Incharge
+    // for BOTH Central and Departmental CNEs. Lifecycle authority is intentionally
+    // stricter and remains enforced separately by checkCNEAuthorized().
+    if (role === 'AREA_INCHARGE' || role === 'INCHARGE') {
+      var assignedAreas = [];
+      if (session.assignedAreas && Array.isArray(session.assignedAreas)) {
+        for (var a = 0; a < session.assignedAreas.length; a++) {
+          var assigned = String(session.assignedAreas[a] || '').trim();
+          if (assigned) assignedAreas.push(assigned);
+        }
+      }
+      if (assignedAreas.length === 0) {
+        var rawAssigned = String(session.assignedArea || (session.employeeId ? getUserRoleInfo(session.employeeId).assignedArea : '') || '').trim();
+        if (rawAssigned) {
+          var assignedParts = rawAssigned.split(/[,;\\n]+/);
+          for (var ap = 0; ap < assignedParts.length; ap++) {
+            var assignedTrimmed = assignedParts[ap].trim();
+            if (assignedTrimmed) assignedAreas.push(assignedTrimmed);
+          }
+        }
+      }
+
+      var targetArea = String(record.area || '').trim().toLowerCase();
+      if (targetArea) {
+        for (var ai = 0; ai < assignedAreas.length; ai++) {
+          if (String(assignedAreas[ai] || '').trim().toLowerCase() === targetArea) {
+            return null; // Concerned Area/Ward Incharge for this CNE, regardless of CNE type
+          }
+        }
+      }
     }
   }
 
   return {
     success: false,
     errorCode: 'FORBIDDEN',
-    message: 'Permission denied. Only Administrators, the responsible Area Incharge, or assigned Resource Persons for this CNE may perform this action.'
+    message: 'Permission denied. Only Administrators, the concerned Area/Ward Incharge, or assigned Resource Persons for this CNE may perform this action.'
   };
 }
 
@@ -1016,6 +1042,35 @@ function isValidDateParts(year, month, day) {
 
 function padTwo(n) {
   return n < 10 ? '0' + n : String(n);
+}
+
+/**
+ * Canonical current calendar date for CNE scheduling rules in India.
+ * Uses an explicit Asia/Kolkata timezone so backend validation does not depend
+ * on the Apps Script project/server timezone.
+ */
+function getIndiaTodayString() {
+  try {
+    if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
+      return Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd');
+    }
+  } catch (e) {}
+
+  // Deterministic fallback for non-Apps-Script verification environments.
+  var indiaNow = new Date(Date.now() + (330 * 60 * 1000));
+  return indiaNow.getUTCFullYear() + '-' + padTwo(indiaNow.getUTCMonth() + 1) + '-' + padTwo(indiaNow.getUTCDate());
+}
+
+/**
+ * Extract a canonical YYYY-MM-DD day from CNE date/date-time input.
+ */
+function getCNECanonicalDay(value) {
+  if (value === null || value === undefined) return '';
+  var text = String(value).trim();
+  if (!text) return '';
+  var isoPrefix = text.match(/^(\\d{4})-(\\d{2})-(\\d{2})/);
+  if (isoPrefix) return isoPrefix[1] + '-' + isoPrefix[2] + '-' + isoPrefix[3];
+  return normalizeDateForComparison(value);
 }
 
 /**
@@ -2280,77 +2335,84 @@ function handleUpdateArea(params, session) {
  * Note: Duration can exceed 24 hours (e.g. 25:00:00, 120:00:00). It must NEVER be converted to a JavaScript Date object.
  */
 function formatDurationValue(rawValue, displayValue) {
-  // 1. Prefer Google Sheets display value if available and valid duration
-  if (displayValue !== null && displayValue !== undefined) {
-    var disp = String(displayValue).trim();
-    if (disp) {
-      var durMatch = disp.match(/^(\\d+):([0-5]?\\d)(?::([0-5]?\\d))?$/);
-      if (durMatch) {
-        var h0 = durMatch[1].length === 1 ? '0' + durMatch[1] : durMatch[1];
-        if (durMatch[3] !== undefined) {
-          var m1 = durMatch[2].length === 1 ? '0' + durMatch[2] : durMatch[2];
-          var s1 = durMatch[3].length === 1 ? '0' + durMatch[3] : durMatch[3];
-          return h0 + ':' + m1 + ':' + s1;
-        }
-        var m0 = durMatch[2].length === 1 ? '0' + durMatch[2] : durMatch[2];
-        return h0 + ':' + m0 + ':00';
-      }
-    }
+  function secondsToDuration_(totalSeconds) {
+    if (!isFinite(totalSeconds) || totalSeconds < 0) return '';
+    totalSeconds = Math.round(totalSeconds);
+    var hours = Math.floor(totalSeconds / 3600);
+    var minutes = Math.floor((totalSeconds % 3600) / 60);
+    var seconds = totalSeconds % 60;
+    var hh = hours < 10 ? '0' + hours : String(hours);
+    var mm = minutes < 10 ? '0' + minutes : String(minutes);
+    var ss = seconds < 10 ? '0' + seconds : String(seconds);
+    return hh + ':' + mm + ':' + ss;
   }
 
-  // 2. Safe numeric day-fraction conversion (Google Sheets serial value)
-  if (typeof rawValue === 'number' && !isNaN(rawValue)) {
-    var totalSeconds = Math.round(rawValue * 86400);
-    if (totalSeconds >= 0) {
-      var nHours = Math.floor(totalSeconds / 3600);
-      var nMinutes = Math.floor((totalSeconds % 3600) / 60);
-      var nSeconds = totalSeconds % 60;
-      var padNh = nHours < 10 ? '0' + nHours : nHours;
-      return padNh + ':' + (nMinutes < 10 ? '0' : '') + nMinutes + ':' + (nSeconds < 10 ? '0' : '') + nSeconds;
-    }
+  function parseColonDuration_(value) {
+    if (value === null || value === undefined) return '';
+    var str = String(value).trim();
+    if (!str) return '';
+    var match = str.match(/^(\\d+):([0-5]?\\d)(?::([0-5]?\\d))?$/);
+    if (!match) return '';
+    var hours = Number(match[1]);
+    var minutes = Number(match[2]);
+    var seconds = match[3] === undefined ? 0 : Number(match[3]);
+    if (!isFinite(hours) || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59) return '';
+    return secondsToDuration_((hours * 3600) + (minutes * 60) + seconds);
   }
 
-  // If rawValue is a duration string (e.g. "1:30:00" or "25:00:00")
+  // 1. Prefer a valid Google Sheets display value when it is already a duration string.
+  // Do not interpret a plain decimal display value here because a numeric Sheet cell may
+  // be a day fraction (e.g. 0.0625 = 1.5 hours); the raw numeric value below handles that safely.
+  var displayDuration = parseColonDuration_(displayValue);
+  if (displayDuration) return displayDuration;
+
+  // 2. Google Sheets stores time/duration-formatted numeric cells as day fractions.
+  if (typeof rawValue === 'number' && isFinite(rawValue) && rawValue >= 0) {
+    return secondsToDuration_(rawValue * 86400);
+  }
+
+  // 3. Strings may be HH:MM[:SS] or decimal hours (e.g. "1.5" = 01:30:00).
   if (typeof rawValue === 'string') {
     var str = rawValue.trim();
-    var durMatchStr = str.match(/^(\\d+):([0-5]?\\d)(?::([0-5]?\\d))?$/);
-    if (durMatchStr) {
-      var hStr2 = durMatchStr[1].length === 1 ? '0' + durMatchStr[1] : durMatchStr[1];
-      if (durMatchStr[3] !== undefined) {
-        var m2 = durMatchStr[2].length === 1 ? '0' + durMatchStr[2] : durMatchStr[2];
-        var s2 = durMatchStr[3].length === 1 ? '0' + durMatchStr[3] : durMatchStr[3];
-        return hStr2 + ':' + m2 + ':' + s2;
+    if (!str) return '';
+
+    var stringDuration = parseColonDuration_(str);
+    if (stringDuration) return stringDuration;
+
+    var decimalHoursMatch = str.match(/^(\\d+(?:\\.\\d+)?)\\s*(?:h|hr|hrs|hour|hours)?$/i);
+    if (decimalHoursMatch) {
+      var decimalHours = Number(decimalHoursMatch[1]);
+      if (isFinite(decimalHours) && decimalHours >= 0) {
+        return secondsToDuration_(decimalHours * 3600);
       }
-      var m3 = durMatchStr[2].length === 1 ? '0' + durMatchStr[2] : durMatchStr[2];
-      return hStr2 + ':' + m3 + ':00';
     }
 
-    // If string is an 1899 Date string representation
+    // Google Sheets/Apps Script can sometimes serialize time cells as 1899/GMT date strings.
     if (str.indexOf('1899') !== -1 || str.indexOf('GMT') !== -1) {
       var parsedDate = new Date(str);
       if (!isNaN(parsedDate.getTime())) {
-        var pdHours = parsedDate.getHours();
-        var pdMinutes = parsedDate.getMinutes();
-        var pdSeconds = parsedDate.getSeconds();
-        var padPdh = pdHours < 10 ? '0' + pdHours : pdHours;
-        return padPdh + ':' + (pdMinutes < 10 ? '0' : '') + pdMinutes + ':' + (pdSeconds < 10 ? '0' : '') + pdSeconds;
+        return secondsToDuration_(
+          (parsedDate.getHours() * 3600) +
+          (parsedDate.getMinutes() * 60) +
+          parsedDate.getSeconds()
+        );
       }
     }
   }
 
-  // If rawValue is an 1899 Date object (Google Sheets returns Date for time-formatted cells under 24 hrs when read without display value)
+  // 4. Google Sheets can also return an actual Date object for time-formatted cells under 24 hours.
   if (Object.prototype.toString.call(rawValue) === '[object Date]' || (rawValue instanceof Date)) {
     if (!isNaN(rawValue.getTime())) {
-      var dHours = rawValue.getHours();
-      var dMinutes = rawValue.getMinutes();
-      var dSeconds = rawValue.getSeconds();
-      var padDh = dHours < 10 ? '0' + dHours : dHours;
-      return padDh + ':' + (dMinutes < 10 ? '0' : '') + dMinutes + ':' + (dSeconds < 10 ? '0' : '') + dSeconds;
+      return secondsToDuration_(
+        (rawValue.getHours() * 3600) +
+        (rawValue.getMinutes() * 60) +
+        rawValue.getSeconds()
+      );
     }
   }
 
-  // 3. Safe fallback handling
-  return '01:00:00';
+  // Missing or invalid duration must never fabricate training time.
+  return '';
 }
 
 /**
@@ -2444,6 +2506,30 @@ function handleGetCNERecords(params, session) {
 
     var isResourcePerson = loggedInId ? (rpArray.indexOf(loggedInId) !== -1) : false;
     var isStaffParticipant = loggedInId ? (staffArray.indexOf(loggedInId) !== -1) : false;
+
+    // CNE Schedule visibility is enforced server-side as well as in the UI:
+    // - Scheduled/non-historical records remain available for the public upcoming preview and all authenticated users.
+    // - Completed/Canceled records are visible in CNE Schedule only to Admin, the concerned Area/Ward Incharge,
+    //   or an assigned Resource Person for that CNE.
+    // - My CNE Records is handled separately below so an employee can still see their own completed participation.
+    var normalizedStatusForVisibility = String(status || '').trim().toLowerCase();
+    var isHistoricalScheduleRecord = normalizedStatusForVisibility === 'completed' || normalizedStatusForVisibility === 'canceled' || normalizedStatusForVisibility === 'cancelled';
+    if (!isMyRecordsOnly && isHistoricalScheduleRecord) {
+      if (!session) {
+        continue;
+      }
+      if (!isAdmin) {
+        var scheduleVisibilityRecord = {
+          area: area,
+          cneType: cneType,
+          resourcePersonEmpId: resourcePersonEmpId,
+          instructor: resourcePersonEmpId
+        };
+        if (checkCNEActionAuthorized(session, scheduleVisibilityRecord) !== null) {
+          continue;
+        }
+      }
+    }
 
     // My CNE Records is always personal, regardless of role.
     // Admins and Incharges see only CNEs where they personally participated
@@ -2558,6 +2644,15 @@ function handleCreateCNE(params, session) {
   var isAdmin = session.role === 'ADMIN';
   var isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
 
+  // Retrospective Record & Finalize is an Admin-only lifecycle operation.
+  if (isUnscheduled && !isAdmin) {
+    return {
+      success: false,
+      errorCode: 'FORBIDDEN',
+      message: 'Permission denied. Only Administrators can record and finalize an unscheduled CNE.'
+    };
+  }
+
   // Authorization check: Central CNE requires Admin; Departmental requires Admin or Area Incharge
   if (cneType === 'CENTRAL' && !isAdmin) {
     return {
@@ -2601,25 +2696,27 @@ function handleCreateCNE(params, session) {
     return { success: false, message: 'To Date & Time must be equal to or later than From Date & Time.' };
   }
 
+  var fromDay = getCNECanonicalDay(fromDate);
+  var todayIndia = getIndiaTodayString();
+  if (!fromDay) {
+    return { success: false, message: 'Invalid From Date.' };
+  }
   if (!isUnscheduled) {
-    var todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0);
-    var checkFromDate = new Date(dFrom);
-    checkFromDate.setHours(0, 0, 0, 0);
-    if (checkFromDate < todayDate) {
+    if (fromDay < todayIndia) {
       return { success: false, message: 'Past dates are not allowed. Please select today or a future date.' };
     }
+  } else if (fromDay > todayIndia) {
+    return { success: false, message: 'A completed unscheduled CNE cannot be recorded for a future date.' };
   }
 
-  // Duration Validation
+  // Duration is authoritative data and must never be fabricated.
   var duration = String(params.duration || '').trim();
-  if (duration && !isUnscheduled) {
-    var durValidation = validateCneDuration(duration, fromDate, toDate);
-    if (!durValidation.isValid) {
-      return { success: false, message: durValidation.message };
-    }
-  } else if (!duration) {
-    duration = '01:00:00';
+  if (!duration) {
+    return { success: false, message: 'Duration is required.' };
+  }
+  var durValidation = validateCneDuration(duration, fromDate, toDate);
+  if (!durValidation.isValid) {
+    return { success: false, message: durValidation.message };
   }
 
   // Validate internal Resource Person IDs individually
@@ -2713,6 +2810,10 @@ function handleCreateCNE(params, session) {
   var staffString = staffClean.join(', ');
   var totalStaffCount = staffClean.length + extStaffClean.length;
 
+  if (isUnscheduled && totalStaffCount < 1) {
+    return { success: false, message: 'At least one participant is required before an unscheduled CNE can be recorded as Completed.' };
+  }
+
   var status = isUnscheduled ? 'Completed' : normalizeCNEStatus(params.status || 'Scheduled');
 
   var lock = LockService.getScriptLock();
@@ -2724,7 +2825,7 @@ function handleCreateCNE(params, session) {
 
   try {
     var sheet = getOrCreateSheet('CNE Schedule');
-    var curYear = new Date().getFullYear();
+    var curYear = parseInt(getIndiaTodayString().slice(0, 4), 10) || new Date().getFullYear();
     var timestampSuffix = Date.now().toString().slice(-4);
     var randSuffix = ('000' + Math.floor(Math.random() * 1000)).slice(-3);
     var cneId = 'CLS-' + curYear + '-' + (cneType === 'DEPARTMENTAL' ? 'D-' : '') + (isUnscheduled ? 'U-' : '') + timestampSuffix + randSuffix;
@@ -2816,12 +2917,20 @@ function handleUpdateCNE(params, session) {
   var authErr = checkCNEAuthorized(session, record.area, record.cneType);
   if (authErr) return authErr;
 
-  // Fix 2: Lock finalized/completed CNEs against ordinary editing
+  // Closed CNEs are immutable through Edit CNE.
+  var normalizedRecordStatus = normalizeCNEStatus(record.status);
   if (normalizeCNEStatus(record.status) === 'Completed') {
     return {
       success: false,
       errorCode: 'CNE_ALREADY_FINALIZED',
       message: 'This CNE has already been finalized. Details cannot be modified.'
+    };
+  }
+  if (normalizedRecordStatus === 'Canceled') {
+    return {
+      success: false,
+      errorCode: 'CNE_ALREADY_CANCELED',
+      message: 'This CNE has been canceled. Details cannot be modified.'
     };
   }
 
@@ -2901,14 +3010,19 @@ function handleUpdateCNE(params, session) {
           if (dTo < dFrom) {
             return { success: false, message: 'To Date & Time must be equal to or later than From Date & Time.' };
           }
+          var editFromDay = getCNECanonicalDay(effDate);
+          if (!editFromDay || editFromDay < getIndiaTodayString()) {
+            return { success: false, message: 'Scheduled CNE date cannot be in the past.' };
+          }
         }
 
         if (params.duration !== undefined || params.date !== undefined || params.fromDate !== undefined || params.toDate !== undefined) {
-          if (effDuration) {
-            var durVal = validateCneDuration(effDuration, effDate, effToDate);
-            if (!durVal.isValid) {
-              return { success: false, message: durVal.message };
-            }
+          if (!effDuration) {
+            return { success: false, message: 'Duration is required and cannot be blank.' };
+          }
+          var durVal = validateCneDuration(effDuration, effDate, effToDate);
+          if (!durVal.isValid) {
+            return { success: false, message: durVal.message };
           }
         }
 
@@ -3195,7 +3309,7 @@ function handleAddDepartmentalSchedule(params, session) {
     return { success: false, errorCode: 'FORBIDDEN', message: 'Only an Administrator or designated Area Incharge can schedule Departmental CNEs.' };
   }
 
-  var todayStr = new Date().toISOString().split('T')[0];
+  var todayStr = getIndiaTodayString();
   var validatedList = [];
 
   for (var i = 0; i < rawClasses.length; i++) {
@@ -3224,11 +3338,8 @@ function handleAddDepartmentalSchedule(params, session) {
       return { success: false, message: 'Row ' + (i + 1) + ': To Date & Time must be equal to or later than From Date & Time.' };
     }
 
-    var todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0);
-    var checkFromDate = new Date(dFrom);
-    checkFromDate.setHours(0, 0, 0, 0);
-    if (checkFromDate < todayDate) {
+    var rowDay = getCNECanonicalDay(date);
+    if (!rowDay || rowDay < todayStr) {
       return { success: false, message: 'Row ' + (i + 1) + ': Scheduled date cannot be in the past.' };
     }
 
@@ -6282,6 +6393,11 @@ function handleListLearningResources(params, session) {
   var fileTypeCol = colMap['filetype'];
   var rpNameCol = colMap['resourcepersonname'];
   var fileSizeCol = colMap['filesize'];
+  var indexingStatusCol = colMap['indexingstatus'];
+  var indexingErrorCodeCol = colMap['indexingerrorcode'];
+  var indexingMessageCol = colMap['indexingmessage'];
+  var chunksCountCol = colMap['chunkscount'];
+  var indexedAtCol = colMap['indexedat'];
 
   // Efficient batched read of CNE Schedule sheet (single read instead of N+1)
   var ss = getSpreadsheet('CNE');
@@ -6340,6 +6456,32 @@ function handleListLearningResources(params, session) {
     var fileType = fileTypeCol !== undefined ? String(data[r][fileTypeCol] || '').trim() : '';
     var rpName = rpNameCol !== undefined ? String(data[r][rpNameCol] || '').trim() : '';
     var fileSize = fileSizeCol !== undefined ? (Number(data[r][fileSizeCol]) || 0) : 0;
+    var indexingStatus = indexingStatusCol !== undefined ? String(data[r][indexingStatusCol] || '').trim().toUpperCase() : '';
+    var indexingErrorCode = indexingErrorCodeCol !== undefined ? String(data[r][indexingErrorCodeCol] || '').trim() : '';
+    var indexingMessage = indexingMessageCol !== undefined ? String(data[r][indexingMessageCol] || '').trim() : '';
+    var chunksCount = chunksCountCol !== undefined ? (Number(data[r][chunksCountCol]) || 0) : 0;
+    var indexedAt = indexedAtCol !== undefined ? String(data[r][indexedAtCol] || '').trim() : '';
+
+    // Backward-compatible migration for resources uploaded before indexing metadata
+    // was persisted in CNE_Reference. Infer from CNE_Reference_Index once encountered
+    // and persist the result so subsequent list requests are inexpensive and stable.
+    if (driveFileId && !indexingStatus) {
+      var inferredIndexing = getLearningResourceIndexingInfoFromIndex(cneId, driveFileId);
+      if (inferredIndexing) {
+        indexingStatus = inferredIndexing.indexingStatus || '';
+        indexingErrorCode = inferredIndexing.indexingErrorCode || '';
+        indexingMessage = inferredIndexing.indexingMessage || '';
+        chunksCount = Number(inferredIndexing.chunksCount) || 0;
+        indexedAt = inferredIndexing.indexedAt || '';
+
+        if (indexingStatusCol !== undefined) sheet.getRange(r + 1, indexingStatusCol + 1).setValue(indexingStatus);
+        if (indexingErrorCodeCol !== undefined) sheet.getRange(r + 1, indexingErrorCodeCol + 1).setValue(indexingErrorCode);
+        if (indexingMessageCol !== undefined) sheet.getRange(r + 1, indexingMessageCol + 1).setValue(indexingMessage);
+        if (chunksCountCol !== undefined) sheet.getRange(r + 1, chunksCountCol + 1).setValue(chunksCount);
+        if (indexedAtCol !== undefined) sheet.getRange(r + 1, indexedAtCol + 1).setValue(indexedAt);
+      }
+    }
+
     var rawUpdatedBy = String(data[r][byCol] || '').trim();
     var displayName = 'Coordinator';
     if (rawUpdatedBy) {
@@ -6367,7 +6509,12 @@ function handleListLearningResources(params, session) {
       resourcePersonName: resolvedRpName || 'Department Faculty',
       updatedAt: String(data[r][updatedCol] || ''),
       updatedBy: displayName,
-      hasFile: true
+      hasFile: true,
+      indexingStatus: indexingStatus,
+      indexingErrorCode: indexingErrorCode || undefined,
+      indexingMessage: indexingMessage,
+      chunksCount: chunksCount,
+      indexedAt: indexedAt
     });
   }
 

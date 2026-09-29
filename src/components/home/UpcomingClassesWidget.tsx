@@ -1,7 +1,7 @@
 import React from 'react';
 import { Sparkles, Calendar, Clock, ChevronRight, Loader2 } from 'lucide-react';
 import { CNERecord, ViewMode } from '../../types';
-import { formatCneDateTimeDisplay } from '../../utils';
+import { formatCneDateTimeDisplay, parseToIsoDateString } from '../../utils';
 
 interface UpcomingClassesWidgetProps {
   openClasses: CNERecord[];
@@ -22,7 +22,10 @@ export const UpcomingClassesWidget: React.FC<UpcomingClassesWidgetProps> = ({
   accentColor = 'emerald',
   compact = false
 }) => {
-  const effectiveTotal = totalCount !== undefined ? totalCount : openClasses.length;
+  const scheduledClasses = openClasses.filter((item) =>
+    String(item.status || 'Scheduled').trim().toLowerCase() === 'scheduled'
+  );
+  const effectiveTotal = totalCount !== undefined ? totalCount : scheduledClasses.length;
   const hasMoreThanFive = effectiveTotal > 5;
   const iconColor = {
     emerald: 'text-emerald-400',
@@ -84,21 +87,29 @@ export const UpcomingClassesWidget: React.FC<UpcomingClassesWidgetProps> = ({
             <Loader2 className={`w-5 h-5 animate-spin ${iconColor}`} />
             <span className="text-xs font-medium">Loading data</span>
           </div>
-        ) : openClasses.length === 0 ? (
+        ) : scheduledClasses.length === 0 ? (
           <div className="py-8 text-center px-4 space-y-2">
             <Calendar className="w-8 h-8 text-slate-300 mx-auto" />
-            <p className="text-xs font-semibold text-slate-700">No Open Classes Today</p>
+            <p className="text-xs font-semibold text-slate-700">No Upcoming CNE Sessions</p>
             <p className="text-[11px] text-slate-500 leading-relaxed">
-              Check back soon or consult the interactive annual calendar for next month's schedule.
+              Check back soon or open the CNE Calendar for the full schedule.
             </p>
           </div>
         ) : (
-          openClasses.map((item) => {
-            const dateObj = new Date(item.date);
-            const monthName = isNaN(dateObj.getTime())
-              ? 'UP'
-              : dateObj.toLocaleString('en-US', { month: 'short' }).toUpperCase();
-            const dayNum = isNaN(dateObj.getTime()) ? '01' : dateObj.getDate();
+          scheduledClasses.map((item) => {
+            const isoDate = parseToIsoDateString(item.fromDate || item.date);
+            let monthName = '—';
+            let dayNum: string | number = '—';
+            if (isoDate) {
+              const [year, month, day] = isoDate.split('-').map(Number);
+              if (year && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+                monthName = new Intl.DateTimeFormat('en-US', {
+                  month: 'short',
+                  timeZone: 'Asia/Kolkata'
+                }).format(new Date(Date.UTC(year, month - 1, 1))).toUpperCase();
+                dayNum = String(day).padStart(2, '0');
+              }
+            }
 
             return (
               <div key={item.cneId || item.classId} className="py-3 first:pt-1 last:pb-1 space-y-2 group">
@@ -116,7 +127,7 @@ export const UpcomingClassesWidget: React.FC<UpcomingClassesWidgetProps> = ({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 mb-1">
                       <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${durationBadgeBg}`}>
-                        {item.duration || '01:30:00'}
+                        {item.duration?.trim() || '—'}
                       </span>
                       <span className="text-[10px] text-slate-400 truncate">{item.area}</span>
                     </div>

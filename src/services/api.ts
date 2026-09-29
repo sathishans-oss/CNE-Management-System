@@ -197,63 +197,87 @@ try {
  * Note: Duration can exceed 24 hours (e.g. 25:00:00, 120:00:00). It must NEVER be converted to a JavaScript Date object.
  */
 export function formatDurationValue(rawValue: any, displayValue?: any): string {
-  // 1. Prefer Google Sheets display value if available and valid duration
-  if (displayValue !== null && displayValue !== undefined) {
-    const disp = String(displayValue).trim();
-    if (disp) {
-      const durMatch = disp.match(/^(\d+):([0-5]?\d)(?::([0-5]?\d))?$/);
-      if (durMatch) {
-        if (durMatch[3] !== undefined) {
-          const m1 = durMatch[2].length === 1 ? '0' + durMatch[2] : durMatch[2];
-          const s1 = durMatch[3].length === 1 ? '0' + durMatch[3] : durMatch[3];
-          return `${durMatch[1]}:${m1}:${s1}`;
-        }
-        const m = durMatch[2].length === 1 ? '0' + durMatch[2] : durMatch[2];
-        return `${durMatch[1]}:${m}:00`;
-      }
-    }
+  const secondsToDuration = (totalSeconds: number): string => {
+    if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '';
+    const rounded = Math.round(totalSeconds);
+    const hours = Math.floor(rounded / 3600);
+    const minutes = Math.floor((rounded % 3600) / 60);
+    const seconds = rounded % 60;
+    const hh = hours < 10 ? `0${hours}` : String(hours);
+    const mm = minutes < 10 ? `0${minutes}` : String(minutes);
+    const ss = seconds < 10 ? `0${seconds}` : String(seconds);
+    return `${hh}:${mm}:${ss}`;
+  };
+
+  const parseColonDuration = (value: any): string => {
+    if (value === null || value === undefined) return '';
+    const str = String(value).trim();
+    if (!str) return '';
+    const match = str.match(/^(\d+):([0-5]?\d)(?::([0-5]?\d))?$/);
+    if (!match) return '';
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    const seconds = match[3] === undefined ? 0 : Number(match[3]);
+    if (!Number.isFinite(hours) || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59) return '';
+    return secondsToDuration((hours * 3600) + (minutes * 60) + seconds);
+  };
+
+  // 1. Prefer a valid Google Sheets display value when it is already a duration string.
+  // Plain decimal display values are intentionally not used here because raw numeric Sheet
+  // values are day fractions (for example, 0.0625 = 1.5 hours).
+  const displayDuration = parseColonDuration(displayValue);
+  if (displayDuration) return displayDuration;
+
+  // 2. Google Sheets stores time/duration-formatted numeric cells as day fractions.
+  if (typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue >= 0) {
+    return secondsToDuration(rawValue * 86400);
   }
 
-  // 2. Safe numeric day-fraction conversion (Google Sheets serial value)
-  if (typeof rawValue === 'number' && !isNaN(rawValue)) {
-    const totalSeconds = Math.round(rawValue * 86400);
-    if (totalSeconds >= 0) {
-      const nHours = Math.floor(totalSeconds / 3600);
-      const nMinutes = Math.floor((totalSeconds % 3600) / 60);
-      const nSeconds = totalSeconds % 60;
-      return `${nHours}:${nMinutes < 10 ? '0' : ''}${nMinutes}:${nSeconds < 10 ? '0' : ''}${nSeconds}`;
-    }
-  }
-
-  // If rawValue is a duration string (e.g. "1:30:00" or "25:00:00")
+  // 3. Strings may be HH:MM[:SS] or decimal hours (for example, "1.5" = 01:30:00).
   if (typeof rawValue === 'string') {
     const str = rawValue.trim();
-    const durMatchStr = str.match(/^(\d+):([0-5]?\d)(?::([0-5]?\d))?$/);
-    if (durMatchStr) {
-      if (durMatchStr[3] !== undefined) {
-        const m2 = durMatchStr[2].length === 1 ? '0' + durMatchStr[2] : durMatchStr[2];
-        const s2 = durMatchStr[3].length === 1 ? '0' + durMatchStr[3] : durMatchStr[3];
-        return `${durMatchStr[1]}:${m2}:${s2}`;
+    if (!str) return '';
+
+    const stringDuration = parseColonDuration(str);
+    if (stringDuration) return stringDuration;
+
+    const decimalHoursMatch = str.match(/^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)?$/i);
+    if (decimalHoursMatch) {
+      const decimalHours = Number(decimalHoursMatch[1]);
+      if (Number.isFinite(decimalHours) && decimalHours >= 0) {
+        return secondsToDuration(decimalHours * 3600);
       }
-      const m3 = durMatchStr[2].length === 1 ? '0' + durMatchStr[2] : durMatchStr[2];
-      return `${durMatchStr[1]}:${m3}:00`;
+    }
+
+    // Google Sheets/Apps Script can sometimes serialize time cells as 1899/GMT date strings.
+    if (str.includes('1899') || str.includes('GMT')) {
+      const parsedDate = new Date(str);
+      if (!Number.isNaN(parsedDate.getTime())) {
+        return secondsToDuration(
+          (parsedDate.getHours() * 3600) +
+          (parsedDate.getMinutes() * 60) +
+          parsedDate.getSeconds()
+        );
+      }
     }
   }
 
-  // If rawValue is an 1899 Date object (Google Sheets returns Date for time-formatted cells under 24 hrs when read without display value)
-  if (Object.prototype.toString.call(rawValue) === '[object Date]' || (rawValue instanceof Date)) {
+  // 4. Google Sheets can also return an actual Date object for time-formatted cells under 24 hours.
+  if (Object.prototype.toString.call(rawValue) === '[object Date]' || rawValue instanceof Date) {
     const d = rawValue as Date;
-    if (!isNaN(d.getTime())) {
-      const dHours = d.getHours();
-      const dMinutes = d.getMinutes();
-      const dSeconds = d.getSeconds();
-      return `${dHours}:${dMinutes < 10 ? '0' : ''}${dMinutes}:${dSeconds < 10 ? '0' : ''}${dSeconds}`;
+    if (!Number.isNaN(d.getTime())) {
+      return secondsToDuration(
+        (d.getHours() * 3600) +
+        (d.getMinutes() * 60) +
+        d.getSeconds()
+      );
     }
   }
 
-  // 3. Safe fallback handling
-  return '1:00:00';
+  // Missing or invalid duration must never fabricate training time.
+  return '';
 }
+
 
 export class ApiService {
   /**
