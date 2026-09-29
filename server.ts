@@ -14,6 +14,7 @@
 
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 
 // Safely load local .env variables into process.env if available in Node runtime
@@ -25,7 +26,9 @@ try {
   // .env file is optional in containerized environments where env vars are injected directly
 }
 
-const PORT = 3000;
+// In Cloud Run and container environments, listen on the port injected by the environment ($PORT).
+// Defaults to 3000 in local development and iframe preview.
+const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer() {
   const app = express();
@@ -55,7 +58,11 @@ async function startServer() {
     next();
   });
 
-  // Health check
+  // Container & Cloud Run health check endpoints
+  app.get('/health', (req, res) => {
+    res.status(200).send('OK');
+  });
+
   app.get('/api/health', (req, res) => {
     res.json({
       status: 'ok',
@@ -65,7 +72,7 @@ async function startServer() {
   });
 
   // Catch-all route for unhandled /api calls to prevent HTML fall-through
-  app.all('/api/*all', (req, res) => {
+  app.use('/api', (req, res) => {
     res.status(404).json({
       success: false,
       errorCode: 'NOT_FOUND',
@@ -73,24 +80,40 @@ async function startServer() {
     });
   });
 
-  // Vite middleware setup for local development
-  if (process.env.NODE_ENV !== 'production') {
+  const distPath = path.join(process.cwd(), 'dist');
+  const hasDist = fs.existsSync(distPath) && fs.existsSync(path.join(distPath, 'index.html'));
+  const isProduction = process.env.NODE_ENV === 'production' || !!process.env.K_SERVICE || (!process.env.DEV && hasDist);
+
+  // In production / containerized environments with built assets, serve static build directly
+  if (isProduction && hasDist) {
+    app.use(express.static(distPath));
+    app.use((req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
+    // Vite middleware setup for local development
     const vite = await createViteServer({
       server: { middlewareMode: true, host: '0.0.0.0', port: PORT },
       appType: 'spa'
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*all', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`CNE Management System server running on http://localhost:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`CNE Management System server running on http://0.0.0.0:${PORT}`);
   });
+
+  // Graceful shutdown on Cloud Run container termination signals
+  const shutdown = () => {
+    console.log('Received termination signal. Closing server...');
+    server.close(() => {
+      console.log('HTTP server closed.');
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 startServer();
