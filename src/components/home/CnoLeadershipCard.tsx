@@ -99,6 +99,7 @@ export const CnoLeadershipCard: React.FC<CnoLeadershipCardProps> = ({
                 <img
                   src={cnoMessage.photoUrl}
                   alt={`Chief Nursing Officer - ${cnoMessage.name || 'Dr. Anita Rani Kansal'}`}
+                  decoding="async"
                   className="w-full h-full object-cover object-top"
                 />
               ) : (

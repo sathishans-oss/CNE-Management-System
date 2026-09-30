@@ -473,390 +473,240 @@ runTest('Valid public QR token flow is required and permitted for attendees', ()
     'Post test submission must reject duplicate submissions from same employee'
   );
   assert.ok(
-    submitSection.includes("qSheet.getRange(questionRowsToLock[k], cols.isLocked + 1).setValue('YES')"),
-    'First successful submission must lock questions'
+    submitSection.includes("qSheet.getRange(questionRowsToLock[k], cols.isLocked + 1).setValue('YES')") ||
+      (submitSection.includes('lockQuestionRowsBatch_') &&
+        codeGs.includes("qSheet.getRangeList(a1).setValue('YES')")),
+    'First successful submission must lock questions using a direct write or batched RangeList write'
   );
 });
 
 // -----------------------------------------------------------------------------
-// 7. Password Security & First-Login Enforcement
+// 7. Password Security, Registered-Email OTP & Versioned Session Invalidation
 // -----------------------------------------------------------------------------
-runTest('Password hashing and first-login enforcement structure intact', () => {
-  assert.ok(codeGs.includes('computePasswordHash'), 'computePasswordHash must exist');
+runTest('Password hashing and Password Version session invalidation structure intact', () => {
+  assert.ok(codeGs.includes('function computePasswordHash('), 'computePasswordHash must exist');
   assert.ok(codeGs.includes('PASSWORD_PEPPER'), 'Password hashing must require server-side pepper');
-  assert.ok(codeGs.includes('mustChangePass'), 'Login handler must check mustChangePass flag');
-  assert.ok(
-    codeGs.includes('function handleChangePassword('),
-    'handleChangePassword must exist to clear mustChangePass flag'
+  assert.ok(codeGs.includes("'Password Version'"), 'Auth_Credentials must persist Password Version');
+
+  const tokenSection = codeGs.substring(
+    codeGs.indexOf('function generateSessionToken('),
+    codeGs.indexOf('function timingSafeEqual(')
+  );
+  const verifySection = codeGs.substring(
+    codeGs.indexOf('function verifySession('),
+    codeGs.indexOf('/**\n * 1. Reusable ADMIN Authorization Helper')
   );
   assert.ok(
-    codeGs.includes('pwd_change_'),
-    'Password change must invalidate previously issued session tokens'
+    tokenSection.includes("payload = normId + ':' + timestamp + ':' + nonce + ':' + passwordVersion"),
+    'Session token payload must include persistent Password Version'
+  );
+  assert.ok(
+    verifySection.includes("tokenPasswordVersion = parseInt(parts[3], 10)") &&
+    verifySection.includes("parseInt(secState.passwordVersion || '0',10) !== tokenPasswordVersion"),
+    'verifySession must reject tokens whose Password Version no longer matches Auth_Credentials'
+  );
+
+  const upsertSection = codeGs.substring(
+    codeGs.indexOf('function upsertPasswordCredential('),
+    codeGs.indexOf('function handleLogin(')
+  );
+  assert.ok(
+    upsertSection.includes('record.passwordVersion + 1') &&
+    upsertSection.includes('clearCredentialSecurityCache(cleanId)'),
+    'Password creation/change must increment Password Version and clear credential security cache'
   );
 });
 
-runTest('handleLogin reads Account Status & explicit INACTIVE login is rejected without token', () => {
+runTest('Login uses Officers data, requires a personal password, rate-limits failures, and rejects inactive accounts', () => {
   const loginSection = codeGs.substring(
     codeGs.indexOf('function handleLogin('),
     codeGs.indexOf('function handleChangePassword(')
   );
 
   assert.ok(
-    loginSection.includes("accountStatus === 'INACTIVE'") || loginSection.includes("ACCOUNT_INACTIVE"),
-    'handleLogin must check accountStatus and reject INACTIVE accounts'
+    loginSection.includes('findOfficerById(employeeId)') && loginSection.includes('Officers data'),
+    'handleLogin must resolve Employee ID from Officers data'
   );
   assert.ok(
+    loginSection.includes("errorCode: 'PASSWORD_NOT_SET'") &&
+    loginSection.includes('Create / Reset Password'),
+    'Accounts without a personal password must be directed to Create / Reset Password'
+  );
+  assert.ok(
+    !loginSection.includes("pass1234"),
+    'Normal login must not accept the legacy shared pass1234 password'
+  );
+  assert.ok(
+    loginSection.includes("record.accountStatus === 'INACTIVE'") &&
     loginSection.includes("errorCode: 'ACCOUNT_INACTIVE'"),
-    "handleLogin must return errorCode 'ACCOUNT_INACTIVE' for inactive accounts"
+    'handleLogin must reject INACTIVE accounts'
   );
 
-  // Must reject before generating token
   const inactiveIndex = loginSection.indexOf("errorCode: 'ACCOUNT_INACTIVE'");
-  const tokenGenIndex = loginSection.indexOf('generateSessionToken(');
+  const tokenGenIndex = loginSection.indexOf('generateSessionToken(employeeId)');
   assert.ok(
     inactiveIndex !== -1 && tokenGenIndex !== -1 && inactiveIndex < tokenGenIndex,
-    'handleLogin must reject INACTIVE accounts before generating a session token'
+    'Inactive account rejection must occur before session-token issuance'
+  );
+
+  assert.ok(
+    loginSection.includes('record.failedLoginCount + 1') &&
+    loginSection.includes('failures >= 5') &&
+    loginSection.includes("errorCode: failures >= 5 ? 'RATE_LIMITED' : 'INVALID_CREDENTIALS'") &&
+    loginSection.includes('15 * 60 * 1000'),
+    'Normal login must enforce 5 failed attempts followed by a 15-minute lock'
+  );
+  assert.ok(
+    loginSection.includes('getRange(record.rowIndex, 9).setValue(0)') &&
+    loginSection.includes("getRange(record.rowIndex, 10).setValue('')"),
+    'Successful login must clear the failed-login counter and lock timestamp'
   );
 });
 
-runTest('Normal login enforces 5-attempt / 15-minute rate limiting & clears counter on success', () => {
-  const loginSection = codeGs.substring(
-    codeGs.indexOf('function handleLogin('),
-    codeGs.indexOf('function handleChangePassword(')
+runTest('Registered-email password OTP flow is rate-limited, hashed, single-use, and Officers-data authoritative', () => {
+  assert.ok(codeGs.includes("var OTP_PURPOSE_PASSWORD = 'PASSWORD_CREATE_RESET'"), 'Password OTP purpose must be explicit');
+  assert.ok(codeGs.includes('function handleRequestPasswordOtp('), 'requestPasswordOtp backend handler must exist');
+  assert.ok(codeGs.includes('function handleVerifyPasswordOtp('), 'verifyPasswordOtp backend handler must exist');
+  assert.ok(codeGs.includes('function handleSetPasswordWithOtp('), 'setPasswordWithOtp backend handler must exist');
+
+  const requestSection = codeGs.substring(
+    codeGs.indexOf('function handleRequestPasswordOtp('),
+    codeGs.indexOf('function handleVerifyPasswordOtp(')
+  );
+  assert.ok(
+    requestSection.includes('findOfficerById(employeeId)') &&
+    requestSection.includes('var email = String(officer.email || \'\').trim().toLowerCase()'),
+    'Password OTP email must be resolved from the employee record in Officers data, not supplied by the browser'
+  );
+  assert.ok(
+    requestSection.includes('countRecentOtpSends(OTP_PURPOSE_PASSWORD') &&
+    requestSection.includes('OTP_MAX_SENDS_PER_HOUR') &&
+    requestSection.includes("errorCode: 'OTP_RATE_LIMITED'"),
+    'Password OTP requests must enforce a per-employee hourly send limit'
+  );
+  assert.ok(
+    requestSection.includes('MailApp.getRemainingDailyQuota()') &&
+    requestSection.includes("errorCode: 'EMAIL_QUOTA_EXHAUSTED'"),
+    'Password OTP sending must check Apps Script email quota'
+  );
+  assert.ok(
+    requestSection.includes('computeOtpHash(challengeId, otp)') &&
+    requestSection.includes('otpSheet.appendRow([') &&
+    !requestSection.includes('otpSheet.appendRow([\n    challengeId, OTP_PURPOSE_PASSWORD, \'INTERNAL\', employeeId, email, otp,'),
+    'OTP_Verification must store a hash rather than the plaintext OTP'
+  );
+  assert.ok(
+    requestSection.includes('OTP_RESEND_COOLDOWN_SECONDS') && requestSection.includes("cache.put(cooldownKey, '1'"),
+    'Password OTP requests must enforce resend cooldown'
   );
 
-  assert.ok(
-    loginSection.includes("login_fail_"),
-    "handleLogin must maintain cache key 'login_fail_<id>'"
+  const verifyOtpSection = codeGs.substring(
+    codeGs.indexOf('function handleVerifyPasswordOtp('),
+    codeGs.indexOf('function handleSetPasswordWithOtp(')
   );
   assert.ok(
-    loginSection.includes("failCount >= 5") || loginSection.includes("failCount >= 5"),
-    'handleLogin must enforce rate limiting at 5 failed attempts'
+    verifyOtpSection.includes('/^\\d{6}$/.test(otp)') &&
+    verifyOtpSection.includes('challenge.attempts >= challenge.maxAttempts') &&
+    verifyOtpSection.includes('timingSafeEqual(suppliedHash, challenge.otpHash)'),
+    'OTP verification must enforce 6 digits, maximum attempts, and timing-safe hashed comparison'
   );
   assert.ok(
-    loginSection.includes("errorCode: 'RATE_LIMITED'"),
-    "handleLogin must return errorCode 'RATE_LIMITED' when threshold reached"
+    verifyOtpSection.includes("setValue('VERIFIED')") &&
+    verifyOtpSection.includes('generateOtpVerificationToken('),
+    'Successful OTP verification must mark the challenge VERIFIED and issue a short-lived verification token'
+  );
+
+  const setPasswordSection = codeGs.substring(
+    codeGs.indexOf('function handleSetPasswordWithOtp('),
+    codeGs.indexOf('/**\n * Legacy reset endpoint intentionally disabled.')
   );
   assert.ok(
-    loginSection.includes("cache.remove(cacheKey)") || loginSection.includes("cache.remove('login_fail_'"),
-    'handleLogin must clear failure counter upon successful credentials verification'
+    setPasswordSection.includes('verifyOtpVerificationToken(') &&
+    setPasswordSection.includes("challenge.status !== 'VERIFIED'") &&
+    setPasswordSection.includes('challenge.consumedAt'),
+    'Password setup must require a valid, unconsumed verified OTP challenge'
+  );
+  assert.ok(
+    setPasswordSection.includes('upsertPasswordCredential(employeeId, newPassword)') &&
+    setPasswordSection.includes("setValue('CONSUMED')"),
+    'Setting a password must update the versioned credential and consume the OTP challenge exactly once'
   );
 });
 
-runTest('First default-password login establishes persistent User Credentials row with Must Change Password = YES', () => {
-  const loginSection = codeGs.substring(
-    codeGs.indexOf('function handleLogin('),
-    codeGs.indexOf('function handleChangePassword(')
-  );
-
-  assert.ok(
-    loginSection.includes("pass1234"),
-    'handleLogin must recognize default first-time password pass1234'
-  );
-  assert.ok(
-    loginSection.includes("authSheet.appendRow([employeeId, defaultHash, defaultSalt, 'YES'") ||
-    (loginSection.includes("defaultHash") && loginSection.includes("'YES'")),
-    "First login must establish User Credentials record with Must Change Password = YES and hashed password"
-  );
-
-  // 1. Concurrent first-login protection remains under ScriptLock and re-reads User Credentials
-  assert.ok(
-    loginSection.includes('var lock = LockService.getScriptLock();') &&
-    loginSection.includes('lock.waitLock(10000);'),
-    'First-login setup must acquire ScriptLock via LockService.getScriptLock().waitLock(10000)'
-  );
-  assert.ok(
-    loginSection.includes('var freshData = authSheet.getDataRange().getValues();') &&
-    loginSection.includes('if (existingRow > 0)'),
-    'First-login setup must re-read User Credentials under lock and inspect existing row rather than duplicating'
-  );
-
-  // 1b. Existing populated credential rows are NOT blindly overwritten under lock
-  assert.ok(
-    loginSection.includes('var existingHash = String(existingRowData[1] || \'\').trim();') &&
-    loginSection.includes('var existingSalt = String(existingRowData[2] || \'\').trim();') &&
-    loginSection.includes('var existingMustChange = String(existingRowData[3] || \'\').trim().toUpperCase();') &&
-    loginSection.includes('var existingAccountStatus = String(existingRowData[7] || \'\').trim().toUpperCase();'),
-    'First-login lock section must inspect existingHash, existingSalt, existingMustChange, and existingAccountStatus before writing'
-  );
-
-  // 1c. Explicit INACTIVE status discovered under lock aborts with ACCOUNT_INACTIVE and does NOT overwrite to ACTIVE
-  assert.ok(
-    loginSection.includes("if (existingAccountStatus === 'INACTIVE')") &&
-    loginSection.includes("errorCode: 'ACCOUNT_INACTIVE'"),
-    'Explicit INACTIVE status discovered under lock must abort with ACCOUNT_INACTIVE instead of setting ACTIVE'
-  );
-
-  // 1d. Existing Must Change Password = NO causes stale first-login request to abort with CREDENTIAL_STATE_CHANGED
-  assert.ok(
-    loginSection.includes("if (existingMustChange === 'NO')") &&
-    loginSection.includes("errorCode: 'CREDENTIAL_STATE_CHANGED'") &&
-    loginSection.includes("message: 'Your account credentials changed while signing in. Please sign in again with your current password.'"),
-    'Existing Must Change Password = NO under lock must abort stale first-login request with CREDENTIAL_STATE_CHANGED'
-  );
-
-  // 1e. Only blank existingHash and existingSalt may initialize an existing row with new defaultHash/defaultSalt
-  assert.ok(
-    loginSection.includes('if (!existingHash && !existingSalt)'),
-    'Existing row may only be initialized with a new default password hash when both existingHash and existingSalt are blank'
-  );
-
-  // 1f. Concurrent already-created default credentials with Must Change Password = YES are reused rather than regenerated
-  assert.ok(
-    loginSection.includes("if (computePasswordHash('pass1234', existingSalt) === existingHash && existingMustChange === 'YES')") &&
-    loginSection.includes('expectedHash = existingHash;') &&
-    loginSection.includes('expectedSalt = existingSalt;'),
-    'Concurrent default-password row with Must Change Password = YES must be reused without regenerating salt or overwriting hash'
-  );
-
-  // 1g. Populated hash that no longer matches pass1234 aborts with CREDENTIAL_STATE_CHANGED and logs FIRST_LOGIN_STATE_CHANGED
-  assert.ok(
-    loginSection.includes("logAuditAction('FIRST_LOGIN_STATE_CHANGED'"),
-    'Stale concurrent credential state change must log FIRST_LOGIN_STATE_CHANGED audit event'
-  );
-
-  // 2. Lock failure is not silently swallowed; releaseLock() is only called after lock is acquired
-  assert.ok(
-    loginSection.includes('Server is busy completing account setup. Please try again.'),
-    'Lock acquisition failure must return temporary busy message'
-  );
-  const waitLockIdx = loginSection.indexOf('lock.waitLock(10000);');
-  const busyMsgIdx = loginSection.indexOf('Server is busy completing account setup. Please try again.');
-  const releaseLockIdx = loginSection.indexOf('lock.releaseLock();');
-  assert.ok(
-    waitLockIdx !== -1 && busyMsgIdx !== -1 && releaseLockIdx !== -1 &&
-    waitLockIdx < busyMsgIdx && busyMsgIdx < releaseLockIdx,
-    'Lock failure must return before entering the try/finally block that calls lock.releaseLock()'
-  );
-
-  // 3. No empty or silent catch block that allows falling through to token generation
-  assert.ok(
-    !loginSection.includes('Fallback if lock busy'),
-    'handleLogin must not contain silent fallback catch comment'
-  );
-  const emptyCatchPattern = /catch\s*\([^)]*\)\s*\{\s*(\/\/[^\n]*\s*)*\}/;
-  assert.ok(
-    !emptyCatchPattern.test(loginSection),
-    'handleLogin must not contain any empty or comment-only catch block'
-  );
-
-  // 4. Persistence confirmation and CREDENTIAL_SETUP_FAILED error response
-  assert.ok(
-    loginSection.includes('SpreadsheetApp.flush();') &&
-    loginSection.includes('var persistedData = authSheet.getDataRange().getValues();') &&
-    loginSection.includes('if (!persistedSuccessfully || verifiedRowCount !== 1)'),
-    'First-login setup must flush and re-read User Credentials to confirm exactly one valid row was persisted'
-  );
-  assert.ok(
-    loginSection.includes("logAuditAction('FIRST_LOGIN_SETUP_FAILED'"),
-    'First-login setup failure must log FIRST_LOGIN_SETUP_FAILED audit event'
-  );
-  assert.ok(
-    loginSection.includes("errorCode: 'CREDENTIAL_SETUP_FAILED'") &&
-    loginSection.includes("message: 'Your account security setup could not be completed. Please try again.'"),
-    'Credential persistence failure must return CREDENTIAL_SETUP_FAILED with safe user message'
-  );
-  assert.ok(
-    !loginSection.includes('setupErr.message') && !loginSection.includes('lockErr.message'),
-    'First-login error responses must not expose technical exception details to the user'
-  );
-
-  // 5. Token generation and security cache update occur ONLY after authoritative under-lock state is accepted
-  const setupErrorReturnIdx = loginSection.lastIndexOf("errorCode: 'CREDENTIAL_SETUP_FAILED'");
-  const stateChangedReturnIdx = loginSection.lastIndexOf("errorCode: 'CREDENTIAL_STATE_CHANGED'");
-  const credSecCacheIdx = loginSection.indexOf("cache.put('cred_sec_'");
-  const tokenGenIdx = loginSection.indexOf('generateSessionToken(employeeId)');
-  assert.ok(
-    setupErrorReturnIdx !== -1 && stateChangedReturnIdx !== -1 && credSecCacheIdx !== -1 && tokenGenIdx !== -1 &&
-    setupErrorReturnIdx < credSecCacheIdx && stateChangedReturnIdx < credSecCacheIdx && credSecCacheIdx < tokenGenIdx,
-    'All under-lock state checks, persistence checks, and error returns must complete before updating cred_sec_ cache or calling generateSessionToken()'
-  );
-});
-
-runTest('Backend protected actions enforce MUST_CHANGE_PASSWORD while changePassword remains allowed', () => {
-  assert.ok(
-    codeGs.includes("function getUserCredentialSecurityState("),
-    'Code.gs must define getUserCredentialSecurityState helper'
-  );
-  assert.ok(
-    codeGs.includes("errorCode: 'MUST_CHANGE_PASSWORD'"),
-    "handleRequest must return errorCode 'MUST_CHANGE_PASSWORD' for sessions requiring password change"
-  );
-
-  const routerSection = codeGs.substring(
-    codeGs.indexOf('function handleRequest('),
-    codeGs.indexOf('switch (action)')
-  );
-  assert.ok(
-    routerSection.includes("secState.mustChangePassword") && routerSection.includes("action !== 'changePassword'"),
-    "handleRequest must enforce MUST_CHANGE_PASSWORD while explicitly permitting 'changePassword'"
-  );
-
-  // Authenticated protected actions reject secState.accountStatus === 'INACTIVE' BEFORE MUST_CHANGE_PASSWORD
-  assert.ok(
-    routerSection.includes("if (secState.accountStatus === 'INACTIVE')") &&
-    routerSection.includes("errorCode: 'ACCOUNT_INACTIVE'") &&
-    routerSection.includes("message: 'Your CNE account is inactive. Please contact Nursing Administration.'"),
-    "handleRequest must reject authenticated sessions when secState.accountStatus === 'INACTIVE'"
-  );
-  const inactiveCheckIdx = routerSection.indexOf("if (secState.accountStatus === 'INACTIVE')");
-  const mustChangeCheckIdx = routerSection.indexOf("if (secState.mustChangePassword && action !== 'changePassword')");
-  assert.ok(
-    inactiveCheckIdx !== -1 && mustChangeCheckIdx !== -1 && inactiveCheckIdx < mustChangeCheckIdx,
-    "ACCOUNT_INACTIVE enforcement must occur strictly before MUST_CHANGE_PASSWORD enforcement"
-  );
-
-  // changePassword bypasses MUST_CHANGE_PASSWORD only, NOT ACCOUNT_INACTIVE
-  const outerGuardLine = routerSection.substring(
-    routerSection.indexOf('if (session && !isPublicQrAction'),
-    inactiveCheckIdx
-  );
-  assert.ok(
-    !outerGuardLine.includes("action !== 'changePassword'"),
-    "changePassword must NOT bypass the outer security guard that enforces ACCOUNT_INACTIVE"
-  );
-});
-
-runTest('Password change clears Must Change Password flag and returns fresh valid session', () => {
-  const changeSection = codeGs.substring(
-    codeGs.indexOf('function handleChangePassword('),
-    codeGs.indexOf('function handleResetPassword(')
-  );
+runTest('Legacy password reset is disabled and admin reset invalidates sessions without assigning a shared password', () => {
   const resetSection = codeGs.substring(
     codeGs.indexOf('function handleResetPassword('),
     codeGs.indexOf('function handleAdminResetPassword(')
   );
+  assert.ok(
+    resetSection.includes("errorCode: 'OTP_REQUIRED'") && resetSection.includes('registered-email verification'),
+    'Legacy resetPassword endpoint must be disabled in favor of registered-email OTP'
+  );
+
   const adminResetSection = codeGs.substring(
     codeGs.indexOf('function handleAdminResetPassword('),
     codeGs.indexOf('function handleGetAreas(')
   );
-
   assert.ok(
-    changeSection.includes("authSheet.getRange(i + 1, 4).setValue('NO')") || changeSection.includes("'NO'"),
-    'handleChangePassword must set Must Change Password to NO'
+    adminResetSection.includes('record.passwordVersion + 1') &&
+    adminResetSection.includes("sheet.getRange(record.rowIndex, 2).setValue('')") &&
+    adminResetSection.includes("sheet.getRange(record.rowIndex, 3).setValue('')"),
+    'Admin reset must clear password hash/salt and increment Password Version'
   );
   assert.ok(
-    changeSection.includes("generateSessionToken("),
-    'handleChangePassword must generate a fresh session token'
-  );
-  assert.ok(
-    changeSection.includes("mustChangePassword: false") && changeSection.includes("isFirstLogin: false"),
-    'handleChangePassword must return SessionUser data with mustChangePassword = false'
-  );
-
-  // 1. handleChangePassword does NOT write ACTIVE to Column 8 of an existing credential row and rejects INACTIVE under lock
-  assert.ok(
-    !changeSection.includes("getRange(i + 1, 8).setValue('ACTIVE')"),
-    'handleChangePassword must not overwrite Column 8 (Account Status) to ACTIVE on an existing row'
-  );
-  assert.ok(
-    changeSection.includes("if (rawStatus === 'INACTIVE')") &&
-    changeSection.includes("logAuditAction('PASSWORD_CHANGE_BLOCKED', empId, 'Account inactive', 'BLOCKED')") &&
-    changeSection.includes("errorCode: 'ACCOUNT_INACTIVE'"),
-    'handleChangePassword must re-read Account Status under ScriptLock and reject INACTIVE accounts with ACCOUNT_INACTIVE'
-  );
-  const changeInactiveReturnIdx = changeSection.indexOf("errorCode: 'ACCOUNT_INACTIVE'");
-  const changeWriteIdx = changeSection.indexOf("authSheet.getRange(i + 1, 2).setValue(hashStr)");
-  const changeTokenIdx = changeSection.indexOf("generateSessionToken(empId)");
-  assert.ok(
-    changeInactiveReturnIdx !== -1 && changeWriteIdx !== -1 && changeTokenIdx !== -1 &&
-    changeInactiveReturnIdx < changeWriteIdx && changeInactiveReturnIdx < changeTokenIdx,
-    'handleChangePassword must abort on INACTIVE before writing password hash or issuing a new session token'
-  );
-  assert.ok(
-    changeSection.includes("authSheet.appendRow([empId, hashStr, salt, 'NO', now, now, now, 'ACTIVE'])"),
-    'handleChangePassword may still initialize genuinely new credential rows as ACTIVE'
-  );
-
-  // 2. handleResetPassword (Forgot Password) does NOT change an existing INACTIVE account to ACTIVE and rejects INACTIVE under lock
-  assert.ok(
-    !resetSection.includes("getRange(i + 1, 8).setValue('ACTIVE')"),
-    'handleResetPassword must not overwrite Column 8 (Account Status) to ACTIVE on an existing row'
-  );
-  assert.ok(
-    resetSection.includes("if (rawStatus === 'INACTIVE')") &&
-    resetSection.includes("logAuditAction('PASSWORD_RESET_BLOCKED', employeeId, 'Account inactive', 'BLOCKED')") &&
-    resetSection.includes("errorCode: 'ACCOUNT_INACTIVE'"),
-    'handleResetPassword must re-read Account Status under ScriptLock and reject INACTIVE accounts with ACCOUNT_INACTIVE'
-  );
-  const resetLockIdx = resetSection.indexOf('lock.waitLock(10000);');
-  const resetInactiveReturnIdx = resetSection.indexOf("errorCode: 'ACCOUNT_INACTIVE'");
-  const resetWriteIdx = resetSection.indexOf("authSheet.getRange(i + 1, 2).setValue(hashStr)");
-  assert.ok(
-    resetLockIdx !== -1 && resetInactiveReturnIdx !== -1 && resetWriteIdx !== -1 &&
-    resetLockIdx < resetInactiveReturnIdx && resetInactiveReturnIdx < resetWriteIdx,
-    'handleResetPassword must check INACTIVE status while holding ScriptLock and abort before modifying credentials'
-  );
-  assert.ok(
-    resetSection.includes("authSheet.appendRow([employeeId, hashStr, salt, 'NO', now, now, now, 'ACTIVE'])"),
-    'handleResetPassword may still initialize genuinely new credential rows as ACTIVE'
-  );
-
-  // 3. handleAdminResetPassword preserves existing Account Status (including INACTIVE) and does NOT write ACTIVE to Column 8
-  assert.ok(
-    !adminResetSection.includes("getRange(i + 1, 8).setValue('ACTIVE')"),
-    'handleAdminResetPassword must not overwrite Column 8 (Account Status) to ACTIVE on an existing row'
-  );
-  assert.ok(
-    adminResetSection.includes("preservedAccountStatus = (rawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';"),
-    'handleAdminResetPassword must read and preserve existing Account Status (INACTIVE vs ACTIVE) under ScriptLock'
-  );
-  assert.ok(
-    adminResetSection.includes("authSheet.appendRow([targetEmpId, defaultHash, salt, 'YES', now, now, now, 'ACTIVE'])"),
-    'handleAdminResetPassword may initialize genuinely new credential rows as ACTIVE'
-  );
-
-  // 4. cred_sec_ cache is never blindly set to ACTIVE when authoritative status is INACTIVE
-  assert.ok(
-    changeSection.includes("CacheService.getScriptCache().remove('cred_sec_' + empId)") &&
-    resetSection.includes("CacheService.getScriptCache().remove('cred_sec_' + employeeId)"),
-    'Blocked password operations on INACTIVE accounts must clear stale cred_sec_ cache entries'
-  );
-  assert.ok(
-    adminResetSection.includes("accountStatus: preservedAccountStatus"),
-    'handleAdminResetPassword must cache preservedAccountStatus in cred_sec_ rather than hardcoded ACTIVE'
+    !adminResetSection.includes('pass1234') &&
+    adminResetSection.includes('invalidateOpenOtpChallenges(OTP_PURPOSE_PASSWORD, targetEmpId)'),
+    'Admin reset must not assign a shared password and must invalidate pending password OTP challenges'
   );
 });
 
-runTest('Frontend consumes mustChangePassword & forced Change Password modal cannot be dismissed before success', () => {
-  assert.ok(
-    appTs.includes("isForcedPasswordChange"),
-    'App.tsx must define isForcedPasswordChange mode'
-  );
-  assert.ok(
-    appTs.includes("forced={isForcedPasswordChange}"),
-    'App.tsx must pass forced={isForcedPasswordChange} to ChangePasswordModal'
-  );
-  assert.ok(
-    appTs.includes("!isForcedPasswordChange && (") && appTs.includes("<TopToolbar"),
-    'App.tsx must hide TopToolbar while isForcedPasswordChange is true'
-  );
-  assert.ok(
-    changePasswordModalTs.includes("!forced && (") && changePasswordModalTs.includes("<X className="),
-    'ChangePasswordModal must hide X close button when forced is true'
-  );
-  assert.ok(
-    changePasswordModalTs.includes("e.key === 'Escape' && !forced"),
-    'ChangePasswordModal must prevent Escape dismissal when forced is true'
-  );
-  assert.ok(
-    changePasswordModalTs.includes("You must set your personal password before continuing to the CNE Portal"),
-    'ChangePasswordModal must inform user that personal password is required'
-  );
-
-  // Verify frontend authentication fails closed without Google Apps Script and removes mock/preview fallbacks
+runTest('Frontend Create / Reset Password flow uses the new OTP APIs and authentication fails closed', () => {
   const apiTs = fs.readFileSync('src/services/api.ts', 'utf8');
   const loginModalTs = fs.readFileSync('src/components/LoginModal.tsx', 'utf8');
+  const forgotPasswordModalTs = fs.readFileSync('src/components/ForgotPasswordModal.tsx', 'utf8');
+
+  assert.ok(
+    loginModalTs.includes('Create / Reset Password') &&
+    loginModalTs.includes("response.errorCode === 'PASSWORD_NOT_SET'"),
+    'LoginModal must direct first-time/no-password users to Create / Reset Password'
+  );
+  assert.ok(
+    !loginModalTs.includes('pass1234'),
+    'LoginModal must not expose or instruct users to use the legacy shared password'
+  );
+  assert.ok(
+    forgotPasswordModalTs.includes('ApiService.requestPasswordOtp(') &&
+    forgotPasswordModalTs.includes('ApiService.verifyPasswordOtp(') &&
+    forgotPasswordModalTs.includes('ApiService.setPasswordWithOtp('),
+    'Create / Reset Password modal must use Send OTP -> Verify OTP -> Set Password APIs'
+  );
+  assert.ok(
+    !forgotPasswordModalTs.includes('Date of Joining') &&
+    !forgotPasswordModalTs.includes('dateOfJoining') &&
+    !forgotPasswordModalTs.includes('resetPassword('),
+    'Create / Reset Password modal must not retain the old DOJ/resetPassword flow'
+  );
+
+  assert.ok(
+    apiTs.includes("'requestPasswordOtp'") &&
+    apiTs.includes("'verifyPasswordOtp'") &&
+    apiTs.includes("'setPasswordWithOtp'"),
+    'api.ts must expose the three password OTP actions'
+  );
+  assert.ok(
+    !apiTs.includes('static async resetPassword('),
+    'Legacy resetPassword frontend API must be removed after OTP migration'
+  );
 
   assert.ok(
     !apiTs.includes("? 'ADMIN' : 'ADMIN'"),
-    'api.ts must not contain ADMIN fallback (? \'ADMIN\' : \'ADMIN\') for unknown Employee IDs'
+    'api.ts must not contain ADMIN fallback for unknown Employee IDs'
   );
   assert.ok(
     !apiTs.includes("token: 'preview-token-'") &&
     !apiTs.includes("token: currentUser.token || 'mock_token_'") &&
     !apiTs.includes('Authentication successful (Preview Mode)'),
-    'api.ts must not generate preview-token-* or mock_token_* or authenticate in preview mode'
+    'api.ts must not generate preview/mock sessions or authenticate in preview mode'
   );
   assert.ok(
     apiTs.includes("errorCode: 'BACKEND_NOT_CONFIGURED'") &&
@@ -866,99 +716,75 @@ runTest('Frontend consumes mustChangePassword & forced Change Password modal can
   assert.ok(
     apiTs.includes("storedToken.startsWith('preview-token-')") &&
     apiTs.includes("storedToken.startsWith('mock_token_')"),
-    'api.ts must purge legacy stored sessions whose token starts with preview-token- or mock_token_'
+    'api.ts must purge legacy preview/mock stored sessions'
   );
   assert.ok(
     loginModalTs.includes('response.success === true') &&
     loginModalTs.includes('sessionData.token.trim().length > 0') &&
     loginModalTs.includes('sessionData.employeeId.trim().length > 0') &&
     loginModalTs.includes('validRoles.includes(sessionData.role.trim().toUpperCase())'),
-    'LoginModal must validate response.success, non-empty server token, employeeId, and recognized role before calling onLoginSuccess'
+    'LoginModal must validate success, server token, Employee ID, and recognized role before accepting login'
   );
 
-  // Verify frontend API caching security: explicit public allowlist, no generic action.startsWith('get')
+  // Frontend API caching security: explicit public allowlist, no generic action.startsWith('get').
   assert.ok(
     !apiTs.includes("action.startsWith('get')"),
-    'api.ts must NOT use generic action.startsWith(\'get\') for browser localStorage caching or offline fallback'
+    'api.ts must NOT use generic action.startsWith(\'get\') for localStorage caching/offline fallback'
   );
   assert.ok(
     apiTs.includes('function isPublicCacheableAction(action: string): boolean') &&
     apiTs.includes('PUBLIC_CACHEABLE_ACTIONS') &&
     apiTs.includes('NEVER_CACHEABLE_PROTECTED_ACTIONS'),
-    'api.ts must define isPublicCacheableAction with explicit PUBLIC_CACHEABLE_ACTIONS allowlist and NEVER_CACHEABLE_PROTECTED_ACTIONS denylist'
+    'api.ts must use an explicit public-cache allowlist and protected-action denylist'
   );
 
-  // Extract PUBLIC_CACHEABLE_ACTIONS entries and verify only approved public CMS data can persist
   const allowlistMatch = apiTs.match(/const\s+PUBLIC_CACHEABLE_ACTIONS[\s\S]*?new\s+Set\(\[([\s\S]*?)\]\)/);
   assert.ok(allowlistMatch, 'PUBLIC_CACHEABLE_ACTIONS Set must be defined in api.ts');
   const allowlistedActions = eval(`[${allowlistMatch[1]}]`);
-  const approvedPublicCmsActions = [
-    'getCoordinatorDesk',
-    'getNewsEvents',
-    'getQuickLinks',
-    'getGallery'
-  ];
+  const approvedPublicCmsActions = ['getCoordinatorDesk', 'getNewsEvents', 'getQuickLinks', 'getGallery'];
   assert.deepStrictEqual(
     allowlistedActions.slice().sort(),
     approvedPublicCmsActions.slice().sort(),
-    'Only explicitly approved public CMS actions may be in PUBLIC_CACHEABLE_ACTIONS'
+    'Only approved public CMS actions may be persisted in browser cache'
   );
 
-  // Explicit answer-key & protected-read regression assertions
   const protectedExcludedReads = [
-    'getCNEQuestions',
-    'getPostTestQuestions',
-    'getCNEParticipants',
-    'getRoles',
-    'getQRToken',
-    'getAiQuota',
-    'getCNEActivityProgress',
-    'getLearningResource',
-    'getReferenceMaterial',
-    'getCNERecords'
+    'getCNEQuestions', 'getPostTestQuestions', 'getCNEParticipants', 'getRoles',
+    'getQRToken', 'getAiQuota', 'getCNEActivityProgress', 'getLearningResource',
+    'getReferenceMaterial', 'getCNERecords'
   ];
   const denylistMatch = apiTs.match(/const\s+NEVER_CACHEABLE_PROTECTED_ACTIONS[\s\S]*?new\s+Set\(\[([\s\S]*?)\]\)/);
   assert.ok(denylistMatch, 'NEVER_CACHEABLE_PROTECTED_ACTIONS Set must be defined in api.ts');
   const denylistedActions = eval(`[${denylistMatch[1]}]`);
   for (const protectedAction of protectedExcludedReads) {
-    assert.ok(
-      !allowlistedActions.includes(protectedAction),
-      `Protected action '${protectedAction}' must NEVER be present in PUBLIC_CACHEABLE_ACTIONS`
-    );
-    assert.ok(
-      denylistedActions.includes(protectedAction),
-      `Protected action '${protectedAction}' must be explicitly listed in NEVER_CACHEABLE_PROTECTED_ACTIONS`
-    );
+    assert.ok(!allowlistedActions.includes(protectedAction), `Protected action '${protectedAction}' must not be publicly cacheable`);
+    assert.ok(denylistedActions.includes(protectedAction), `Protected action '${protectedAction}' must be explicitly never-cacheable`);
   }
 
-  // Answer-key protection: getCNEQuestions can never be written to localStorage or served from offline fallback
   const execActionSection = apiTs.substring(
     apiTs.indexOf('static async executeAction'),
     apiTs.indexOf('static async login')
   );
   assert.ok(
     execActionSection.includes('if (result.success && result.data && isPublicCacheableAction(action))'),
-    'executeAction must gate localStorage writes strictly with isPublicCacheableAction(action)'
+    'executeAction must gate localStorage writes with isPublicCacheableAction(action)'
   );
   const fallbackChecks = execActionSection.match(/if\s*\(\s*isPublicCacheableAction\(action\)\s*\)/g) || [];
   assert.strictEqual(
     fallbackChecks.length,
     2,
-    'Both HTTP error and network error offline fallbacks in executeAction must be gated strictly by isPublicCacheableAction(action)'
+    'HTTP-error and network-error offline fallbacks must both be gated by isPublicCacheableAction(action)'
   );
 
-  // getCachedData enforces the same allowlist
   const getCachedSection = apiTs.substring(
     apiTs.indexOf('static getCachedData'),
     apiTs.indexOf('static async getOfficersDropdown')
   );
   assert.ok(
-    getCachedSection.includes('if (!isPublicCacheableAction(action))') &&
-    getCachedSection.includes('return null;'),
-    'ApiService.getCachedData must enforce isPublicCacheableAction(action) and return null for non-public actions'
+    getCachedSection.includes('if (!isPublicCacheableAction(action))') && getCachedSection.includes('return null;'),
+    'ApiService.getCachedData must return null for non-public actions'
   );
 
-  // Logout removes all cne_cache_* entries and session
   const logoutSection = apiTs.substring(
     apiTs.indexOf('static logout()'),
     apiTs.indexOf('static getSessionUser()')
@@ -967,7 +793,7 @@ runTest('Frontend consumes mustChangePassword & forced Change Password modal can
     logoutSection.includes("k.startsWith('cne_cache_')") &&
     logoutSection.includes('localStorage.removeItem(k)') &&
     logoutSection.includes('localStorage.removeItem(STORAGE_KEYS.SESSION)'),
-    'ApiService.logout() must remove all cne_cache_* keys in addition to STORAGE_KEYS.SESSION'
+    'ApiService.logout() must remove all cne_cache_* entries and the session'
   );
 });
 
@@ -980,13 +806,14 @@ runTest('Officer directory access is restricted to Admin, Area Incharge/Incharge
     codeGs.indexOf('function getOfficerNameMap(')
   );
 
+  const compactOfficerDirectorySection = officersDropdownSection.replace(/\s+/g, '');
   assert.ok(
-    officersDropdownSection.includes("role === 'ADMIN' || role === 'AREA_INCHARGE' || role === 'INCHARGE'"),
+    compactOfficerDirectorySection.includes("role==='ADMIN'||role==='AREA_INCHARGE'||role==='INCHARGE'"),
     'handleGetOfficersDropdown must explicitly check for ADMIN, AREA_INCHARGE, or INCHARGE roles'
   );
   assert.ok(
-    officersDropdownSection.includes("errorCode: 'FORBIDDEN'") &&
-    officersDropdownSection.includes("message: 'You are not authorized to access the officer directory.'"),
+    compactOfficerDirectorySection.includes("errorCode:'FORBIDDEN'") &&
+    compactOfficerDirectorySection.includes("message:'Youarenotauthorizedtoaccesstheofficerdirectory.'"),
     'handleGetOfficersDropdown must return FORBIDDEN with authorization message for ordinary employees'
   );
 

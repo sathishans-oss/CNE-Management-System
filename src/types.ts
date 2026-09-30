@@ -324,8 +324,6 @@ export interface SessionUser {
   assignedArea?: string;
   assignedAreas?: string[];
   token: string;
-  isFirstLogin?: boolean;
-  mustChangePassword?: boolean;
 }
 
 export interface ApiResponse<T = any> {
@@ -353,5 +351,13 @@ export interface CoordinatorDeskInfo {
   note: string;
   coordinators: string[];
   email: string;
+}
+
+export interface HomeDashboardData {
+  upcomingClasses: CNERecord[];
+  newsEvents: NewsEventItem[];
+  quickLinks: QuickLinkItem[];
+  coordinatorDesk: CoordinatorDeskInfo;
+  impactStats: ProgramImpactStats;
 }
 

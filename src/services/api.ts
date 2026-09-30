@@ -3,6 +3,7 @@ import {
   Area,
   CNERecord,
   ProgramImpactStats,
+  HomeDashboardData,
   Employee,
   GalleryItem,
   NewsEventItem,
@@ -44,12 +45,18 @@ const STORAGE_KEYS = {
   SESSION: 'cne_session_user'
 };
 
-export type PostTestParticipantVerificationRequest =
+/**
+ * Public QR Post-Test identity flow.
+ *
+ * INTERNAL participants identify themselves with Employee ID only. The backend
+ * resolves the registered EmailID from Officers data and sends the OTP there.
+ * EXTERNAL participants supply Name + Email and prove ownership of that email.
+ */
+export type PostTestOtpRequest =
   | {
       qrToken: string;
       participantType: 'INTERNAL';
       employeeId: string;
-      dateOfJoining: string;
     }
   | {
       qrToken: string;
@@ -57,6 +64,31 @@ export type PostTestParticipantVerificationRequest =
       name: string;
       email: string;
     };
+
+export type PostTestOtpVerificationRequest =
+  | {
+      qrToken: string;
+      participantType: 'INTERNAL';
+      employeeId: string;
+      challengeId: string;
+      otp: string;
+    }
+  | {
+      qrToken: string;
+      participantType: 'EXTERNAL';
+      name: string;
+      email: string;
+      challengeId: string;
+      otp: string;
+    };
+
+export interface PostTestOtpRequestData {
+  challengeId: string;
+  participantType: 'INTERNAL' | 'EXTERNAL';
+  maskedEmail: string;
+  expiresInSeconds: number;
+  resendAfterSeconds: number;
+}
 
 export interface PostTestParticipantVerificationData {
   cneId: string;
@@ -66,7 +98,25 @@ export interface PostTestParticipantVerificationData {
   employeeId?: string;
   designation?: string;
   email?: string;
+  maskedEmail?: string;
   verificationToken: string;
+}
+
+export interface PasswordOtpRequestData {
+  challengeId: string;
+  maskedEmail: string;
+  expiresInSeconds: number;
+  resendAfterSeconds: number;
+  employeeName?: string;
+}
+
+export interface PasswordOtpVerificationData {
+  verificationToken: string;
+  expiresInSeconds: number;
+}
+
+export interface PasswordSetupResult {
+  passwordVersion: number;
 }
 
 /**
@@ -81,6 +131,19 @@ const PUBLIC_CACHEABLE_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Truly public endpoints should not carry a logged-in user's session token.
+ * This avoids unnecessary verifySession / credential-state work on public CMS reads.
+ * Actions whose response changes by identity (for example getCNERecords and
+ * getProgramImpact) are intentionally excluded.
+ */
+const PUBLIC_UNAUTHENTICATED_ACTIONS: ReadonlySet<string> = new Set([
+  'getCoordinatorDesk',
+  'getNewsEvents',
+  'getQuickLinks',
+  'getChairpersonPhoto'
+]);
+
+/**
  * Explicit denylist of protected, user-specific, management, participant,
  * question/answer-key, token, and quota read actions that must NEVER be
  * written to or served from browser localStorage.
@@ -88,7 +151,11 @@ const PUBLIC_CACHEABLE_ACTIONS: ReadonlySet<string> = new Set([
 const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getCNEQuestions',
   'getPostTestQuestions',
-  'verifyPostTestParticipant',
+  'requestPostTestOtp',
+  'verifyPostTestOtp',
+  'requestPasswordOtp',
+  'verifyPasswordOtp',
+  'setPasswordWithOtp',
   'getCNEParticipants',
   'getRoles',
   'getQRToken',
@@ -307,7 +374,9 @@ export class ApiService {
     switch (action) {
       case 'login':
       case 'changePassword':
-      case 'resetPassword':
+      case 'requestPasswordOtp':
+      case 'verifyPasswordOtp':
+      case 'setPasswordWithOtp':
       case 'adminResetPassword':
         return {
           success: false,
@@ -332,7 +401,8 @@ export class ApiService {
       case 'getCNEParticipants':
       case 'submitPostTest':
       case 'getPostTestQuestions':
-      case 'verifyPostTestParticipant':
+      case 'requestPostTestOtp':
+      case 'verifyPostTestOtp':
       case 'getQRToken':
       case 'saveCNEQuestions':
       case 'getCNEQuestions':
@@ -381,6 +451,22 @@ export class ApiService {
         return { success: true, data: stats as any };
       }
 
+      case 'getHomeDashboard': {
+        const stats: ProgramImpactStats = {
+          ...INITIAL_PROGRAM_IMPACT,
+          scope: session && session.employeeId ? 'user' : 'institutional'
+        };
+        const dashboard: HomeDashboardData = {
+          upcomingClasses: [..._inMemoryCNERecords].filter((c) => String(c.status || '').toLowerCase() === 'scheduled'),
+          newsEvents: [..._inMemoryNews],
+          quickLinks: [..._inMemoryQuickLinks],
+          coordinatorDesk: { ..._inMemoryCoordinatorDesk },
+          impactStats: stats,
+          chairpersonPhotoUrl: ''
+        };
+        return { success: true, data: dashboard as any };
+      }
+
       case 'getChairpersonPhoto':
         return { success: true, data: { photoUrl: '' } as any };
 
@@ -416,42 +502,63 @@ export class ApiService {
       return this.executeLocalMockAction<T>(action, params, session);
     }
 
+    const shouldSendSession = !PUBLIC_UNAUTHENTICATED_ACTIONS.has(action);
     const payload = {
       action,
       ...params,
-      token: session?.token,
-      loggedInEmployeeId: session?.employeeId
+      ...(shouldSendSession && session?.token
+        ? { token: session.token, loggedInEmployeeId: session.employeeId }
+        : {})
     };
 
-    try {
-      const controller = new AbortController();
-      const timeoutMs = action === 'generateCNEQuestions' ? 120000 : 45000; // 120-sec timeout for Gemini generation in GAS, 45-sec for standard requests
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    // Explicit SERVER_BUSY means the Apps Script mutation lock was NOT acquired,
+    // so no protected mutation was committed. A small jittered retry is therefore
+    // safe and prevents brief lock contention from surfacing to users. We do NOT
+    // retry network/timeout failures because their server-side outcome is ambiguous.
+    const maxServerBusyRetries = 2;
 
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8'
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal
-      });
+    for (let busyAttempt = 0; busyAttempt <= maxServerBusyRetries; busyAttempt += 1) {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-      clearTimeout(timeoutId);
+      try {
+        const controller = new AbortController();
+        const timeoutMs = action === 'generateCNEQuestions' ? 120000 : 45000;
+        timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-      if (response.ok) {
-        const result = await response.json();
-        // Check for session expiry/invalid token
-        if (result.errorCode === 'UNAUTHORIZED' && session) {
-          this.logout();
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8'
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = undefined;
+
+        if (response.ok) {
+          const result = await response.json();
+
+          if (result?.errorCode === 'SERVER_BUSY' && busyAttempt < maxServerBusyRetries) {
+            const baseDelayMs = 180 * Math.pow(2, busyAttempt);
+            const jitterMs = Math.floor(Math.random() * 180);
+            await new Promise(resolve => setTimeout(resolve, baseDelayMs + jitterMs));
+            continue;
+          }
+
+          // Check for session expiry/invalid token
+          if (result.errorCode === 'UNAUTHORIZED' && session) {
+            this.logout();
+          }
+          if (result.success && result.data && isPublicCacheableAction(action)) {
+            try {
+              localStorage.setItem(`cne_cache_${action}`, JSON.stringify(result.data));
+            } catch (e) {}
+          }
+          return result as ApiResponse<T>;
         }
-        if (result.success && result.data && isPublicCacheableAction(action)) {
-          try {
-            localStorage.setItem(`cne_cache_${action}`, JSON.stringify(result.data));
-          } catch (e) {}
-        }
-        return result as ApiResponse<T>;
-      } else {
+
         // Only explicitly allowlisted public CMS actions may fall back to cached browser data
         if (isPublicCacheableAction(action)) {
           console.warn(`[CNE Service] HTTP ${response.status} on ${action}. Serving cached public dataset.`);
@@ -468,29 +575,36 @@ export class ApiService {
           errorCode: 'HTTP_ERROR',
           message: `Server returned HTTP error status ${response.status}. Please check Google Apps Script deployment.`
         };
-      }
-    } catch (err: any) {
-      console.warn(`[CNE Service] Network notice executing ${action} against ${apiUrl}:`, err);
-      const isTimeout = err?.name === 'AbortError';
+      } catch (err: any) {
+        if (timeoutId) clearTimeout(timeoutId);
+        console.warn(`[CNE Service] Network notice executing ${action} against ${apiUrl}:`, err);
+        const isTimeout = err?.name === 'AbortError';
 
-      // Only explicitly allowlisted public CMS actions may fall back to cached browser data
-      if (isPublicCacheableAction(action)) {
-        try {
-          const cached = localStorage.getItem(`cne_cache_${action}`);
-          if (cached) {
-            return { success: true, data: JSON.parse(cached), message: 'Loaded from local cache' } as ApiResponse<T>;
-          }
-        } catch (e) {}
-      }
+        // Only explicitly allowlisted public CMS actions may fall back to cached browser data
+        if (isPublicCacheableAction(action)) {
+          try {
+            const cached = localStorage.getItem(`cne_cache_${action}`);
+            if (cached) {
+              return { success: true, data: JSON.parse(cached), message: 'Loaded from local cache' } as ApiResponse<T>;
+            }
+          } catch (e) {}
+        }
 
-      return {
-        success: false,
-        errorCode: 'BACKEND_UNAVAILABLE',
-        message: isTimeout
-          ? 'Backend connection timed out. Please check your internet connection or Google Apps Script performance.'
-          : 'Backend connection is unavailable. Please check your network and Google Apps Script configuration.'
-      };
+        return {
+          success: false,
+          errorCode: 'BACKEND_UNAVAILABLE',
+          message: isTimeout
+            ? 'Backend connection timed out. Please check your internet connection or Google Apps Script performance.'
+            : 'Backend connection is unavailable. Please check your network and Google Apps Script configuration.'
+        };
+      }
     }
+
+    return {
+      success: false,
+      errorCode: 'SERVER_BUSY',
+      message: 'Server is temporarily busy. Please try again.'
+    };
   }
 
   /**
@@ -539,7 +653,7 @@ export class ApiService {
     return res;
   }
 
-  static async changePassword(newPassword: string): Promise<ApiResponse<SessionUser>> {
+  static async changePassword(currentPassword: string, newPassword: string): Promise<ApiResponse<SessionUser>> {
     if (!this.getAppsScriptUrl()) {
       return {
         success: false,
@@ -547,14 +661,26 @@ export class ApiService {
         message: 'CNE authentication service is not configured. Please contact the system administrator.'
       };
     }
-    const res = await this.executeAction<SessionUser>('changePassword', { newPassword });
+
+    const res = await this.executeAction<SessionUser>('changePassword', {
+      currentPassword,
+      newPassword
+    });
     if (res.success && isValidAuthenticatedSessionUser(res.data)) {
       this.saveSessionUser(res.data);
     }
     return res;
   }
 
-  static async resetPassword(employeeId: string, doj: string, newPassword: string): Promise<ApiResponse> {
+  /**
+   * Begin Create / Reset Password flow.
+   * Employee enters only Employee ID; backend resolves the registered email from Officers data.
+   */
+  static async requestPasswordOtp(employeeId: string): Promise<ApiResponse<PasswordOtpRequestData>> {
+    const cleanEmpId = String(employeeId || '').trim().toUpperCase();
+    if (!cleanEmpId) {
+      return { success: false, message: 'Employee ID is required.' };
+    }
     if (!this.getAppsScriptUrl()) {
       return {
         success: false,
@@ -562,8 +688,76 @@ export class ApiService {
         message: 'CNE authentication service is not configured. Please contact the system administrator.'
       };
     }
-    return this.executeAction('resetPassword', { employeeId, dateOfJoining: doj, doj, newPassword });
+    return this.executeAction<PasswordOtpRequestData>('requestPasswordOtp', {
+      employeeId: cleanEmpId
+    });
   }
+
+  /**
+   * Verify the 6-digit password-setup OTP returned for a specific challenge.
+   * The resulting short-lived verification token is required to create/reset the password.
+   */
+  static async verifyPasswordOtp(
+    employeeId: string,
+    challengeId: string,
+    otp: string
+  ): Promise<ApiResponse<PasswordOtpVerificationData>> {
+    const cleanEmpId = String(employeeId || '').trim().toUpperCase();
+    const cleanChallengeId = String(challengeId || '').trim();
+    const cleanOtp = String(otp || '').trim();
+
+    if (!cleanEmpId || !cleanChallengeId || !/^\d{6}$/.test(cleanOtp)) {
+      return {
+        success: false,
+        message: 'Employee ID, OTP challenge, and a valid 6-digit verification code are required.'
+      };
+    }
+    if (!this.getAppsScriptUrl()) {
+      return {
+        success: false,
+        errorCode: 'BACKEND_NOT_CONFIGURED',
+        message: 'CNE authentication service is not configured. Please contact the system administrator.'
+      };
+    }
+    return this.executeAction<PasswordOtpVerificationData>('verifyPasswordOtp', {
+      employeeId: cleanEmpId,
+      challengeId: cleanChallengeId,
+      otp: cleanOtp
+    });
+  }
+
+  /**
+   * Create or reset the employee password after registered-email OTP verification.
+   */
+  static async setPasswordWithOtp(
+    employeeId: string,
+    verificationToken: string,
+    newPassword: string
+  ): Promise<ApiResponse<PasswordSetupResult>> {
+    const cleanEmpId = String(employeeId || '').trim().toUpperCase();
+    const cleanVerificationToken = String(verificationToken || '').trim();
+    const password = String(newPassword || '');
+
+    if (!cleanEmpId || !cleanVerificationToken || !password) {
+      return {
+        success: false,
+        message: 'Employee ID, verified OTP session, and new password are required.'
+      };
+    }
+    if (!this.getAppsScriptUrl()) {
+      return {
+        success: false,
+        errorCode: 'BACKEND_NOT_CONFIGURED',
+        message: 'CNE authentication service is not configured. Please contact the system administrator.'
+      };
+    }
+    return this.executeAction<PasswordSetupResult>('setPasswordWithOtp', {
+      employeeId: cleanEmpId,
+      verificationToken: cleanVerificationToken,
+      newPassword: password
+    });
+  }
+
 
   static async adminResetPassword(targetEmployeeId: string): Promise<ApiResponse> {
     if (!this.getAppsScriptUrl()) {
@@ -832,15 +1026,21 @@ export class ApiService {
   }
 
   static async addNewsEvent(item: Partial<NewsEventItem>): Promise<ApiResponse<{ id: string }>> {
-    return this.executeAction<{ id: string }>('addNewsEvent', item);
+    const res = await this.executeAction<{ id: string }>('addNewsEvent', item);
+    if (res.success) this.invalidateCache('getNewsEvents');
+    return res;
   }
 
   static async updateNewsEvent(id: string, data: Partial<NewsEventItem>): Promise<ApiResponse> {
-    return this.executeAction('updateNewsEvent', { id, ...data });
+    const res = await this.executeAction('updateNewsEvent', { id, ...data });
+    if (res.success) this.invalidateCache('getNewsEvents');
+    return res;
   }
 
   static async deleteNewsEvent(id: string): Promise<ApiResponse> {
-    return this.executeAction('deleteNewsEvent', { id });
+    const res = await this.executeAction('deleteNewsEvent', { id });
+    if (res.success) this.invalidateCache('getNewsEvents');
+    return res;
   }
 
   /**
@@ -858,7 +1058,9 @@ export class ApiService {
   }
 
   static async updateCoordinatorDesk(data: Partial<CoordinatorDeskInfo>): Promise<ApiResponse<CoordinatorDeskInfo>> {
-    return this.executeAction<CoordinatorDeskInfo>('updateCoordinatorDesk', data);
+    const res = await this.executeAction<CoordinatorDeskInfo>('updateCoordinatorDesk', data);
+    if (res.success) this.invalidateCache('getCoordinatorDesk');
+    return res;
   }
 
   /**
@@ -869,15 +1071,37 @@ export class ApiService {
   }
 
   static async addQuickLink(item: Partial<QuickLinkItem>): Promise<ApiResponse<{ id: string }>> {
-    return this.executeAction<{ id: string }>('addQuickLink', item);
+    const res = await this.executeAction<{ id: string }>('addQuickLink', item);
+    if (res.success) this.invalidateCache('getQuickLinks');
+    return res;
   }
 
   static async updateQuickLink(id: string, data: Partial<QuickLinkItem>): Promise<ApiResponse> {
-    return this.executeAction('updateQuickLink', { id, ...data });
+    const res = await this.executeAction('updateQuickLink', { id, ...data });
+    if (res.success) this.invalidateCache('getQuickLinks');
+    return res;
   }
 
   static async deleteQuickLink(id: string): Promise<ApiResponse> {
-    return this.executeAction('deleteQuickLink', { id });
+    const res = await this.executeAction('deleteQuickLink', { id });
+    if (res.success) this.invalidateCache('getQuickLinks');
+    return res;
+  }
+
+  /**
+   * Optimized home bootstrap: one Apps Script request returns all homepage datasets.
+   * This avoids multiple network round-trips / Apps Script executions on first render.
+   */
+  static async getHomeDashboard(): Promise<ApiResponse<HomeDashboardData>> {
+    const res = await this.executeAction<HomeDashboardData>('getHomeDashboard');
+    if (res.success && res.data) {
+      try {
+        localStorage.setItem('cne_cache_getNewsEvents', JSON.stringify(res.data.newsEvents || []));
+        localStorage.setItem('cne_cache_getQuickLinks', JSON.stringify(res.data.quickLinks || []));
+        localStorage.setItem('cne_cache_getCoordinatorDesk', JSON.stringify(res.data.coordinatorDesk || INITIAL_COORDINATOR_DESK));
+      } catch {}
+    }
+    return res;
   }
 
   /**
@@ -931,7 +1155,6 @@ export class ApiService {
     fileName: string;
     fileType?: string;
     extension?: string;
-    resourcePersonName?: string;
     unifiedContent?: string;
     referenceText?: string;
   }): Promise<ApiResponse<CNELearningResourceMetadata>> {
@@ -1099,8 +1322,8 @@ export class ApiService {
   /**
    * CNE Activity Progress (Real data check across Material, Questions, QR, Participants, Post-Test, Finalization)
    */
-  static async getCNEActivityProgress(cneId: string): Promise<ApiResponse<CNEActivityProgress>> {
-    return this.executeAction<CNEActivityProgress>('getCNEActivityProgress', { cneId });
+  static async getCNEActivityProgress(cneId: string, forceFresh = false): Promise<ApiResponse<CNEActivityProgress>> {
+    return this.executeAction<CNEActivityProgress>('getCNEActivityProgress', { cneId, forceFresh });
   }
 
   /**
@@ -1132,19 +1355,29 @@ export class ApiService {
   /**
    * Participant Post-Test APIs
    *
-   * Public QR participants must first be verified by the backend.
-   * - INTERNAL: Employee ID + Date of Joining (DOJ)
-   * - EXTERNAL: Name + Email registration
+   * Public QR participants use a two-step email OTP flow:
+   * 1) requestPostTestOtp()
+   *    - INTERNAL: Employee ID -> registered Officers data EmailID
+   *    - EXTERNAL: Name + Email
+   * 2) verifyPostTestOtp()
+   *    -> returns a short-lived CNE-bound participant verification token.
    *
-   * The returned short-lived participantVerificationToken must be supplied when
-   * loading questions and submitting answers. This keeps identity verification
-   * authoritative on the server instead of trusting browser-only state.
+   * That token must then be supplied to getPostTestQuestions() and
+   * submitPostTest(). The server remains authoritative for identity, CNE status,
+   * OTP validity, and duplicate-submission protection.
    */
-  static async verifyPostTestParticipant(
-    params: PostTestParticipantVerificationRequest
-  ): Promise<ApiResponse<PostTestParticipantVerificationData>> {
-    return this.executeAction<PostTestParticipantVerificationData>('verifyPostTestParticipant', params);
+  static async requestPostTestOtp(
+    params: PostTestOtpRequest
+  ): Promise<ApiResponse<PostTestOtpRequestData>> {
+    return this.executeAction<PostTestOtpRequestData>('requestPostTestOtp', params);
   }
+
+  static async verifyPostTestOtp(
+    params: PostTestOtpVerificationRequest
+  ): Promise<ApiResponse<PostTestParticipantVerificationData>> {
+    return this.executeAction<PostTestParticipantVerificationData>('verifyPostTestOtp', params);
+  }
+
 
   static async getPostTestQuestions(params: {
     cneId?: string;

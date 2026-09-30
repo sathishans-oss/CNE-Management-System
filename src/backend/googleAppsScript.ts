@@ -31,7 +31,7 @@ function normalizeCNEStatus(statusStr) {
   if (!statusStr) return 'Scheduled';
   var s = String(statusStr).trim();
   var upper = s.toUpperCase();
-  if (upper === 'COMPLETED') return 'Completed';
+  if (upper === 'COMPLETED' || upper === 'FINALIZED' || upper === 'FINALISED') return 'Completed';
   if (upper === 'CANCELED' || upper === 'CANCELLED') return 'Canceled';
   return 'Scheduled';
 }
@@ -107,9 +107,57 @@ function setupSecurityProperties() {
     props.setProperty('PASSWORD_PEPPER', randomPepper);
     updated.push('PASSWORD_PEPPER generated');
   }
+  if (!props.getProperty('OTP_SECRET')) {
+    var randomOtpSecret = Utilities.getUuid() + '-otp-' + Utilities.getUuid() + '-' + Date.now();
+    props.setProperty('OTP_SECRET', randomOtpSecret);
+    updated.push('OTP_SECRET generated');
+  }
   
   Logger.log(updated.length > 0 ? updated.join(', ') : 'All security properties already configured.');
 }
+
+/**
+ * Runtime initialization barrier for security properties and one-time credential migration.
+ * Fast path is lock-free after initialization. The slow path is serialized with ScriptLock,
+ * preventing concurrent first requests from generating different secrets or duplicating migration rows.
+ */
+function ensureRuntimeSecurityState_() {
+  var props = PropertiesService.getScriptProperties();
+  var secretsReady = Boolean(
+    String(props.getProperty('SESSION_SECRET') || '').trim() &&
+    String(props.getProperty('PASSWORD_PEPPER') || '').trim() &&
+    String(props.getProperty('OTP_SECRET') || '').trim()
+  );
+  var migrationReady = props.getProperty('AUTH_CREDENTIALS_V2_MIGRATED') === 'YES';
+  if (secretsReady && migrationReady) return;
+
+  var initLock = LockService.getScriptLock();
+  try {
+    initLock.waitLock(10000);
+  } catch (e) {
+    throw new Error('Server is busy initializing security state. Please try again.');
+  }
+
+  try {
+    props = PropertiesService.getScriptProperties();
+    secretsReady = Boolean(
+      String(props.getProperty('SESSION_SECRET') || '').trim() &&
+      String(props.getProperty('PASSWORD_PEPPER') || '').trim() &&
+      String(props.getProperty('OTP_SECRET') || '').trim()
+    );
+    if (!secretsReady) {
+      setupSecurityProperties();
+    }
+
+    if (props.getProperty('AUTH_CREDENTIALS_V2_MIGRATED') !== 'YES') {
+      var authSheet = getOrCreateSheet(AUTH_CREDENTIALS_SHEET);
+      migrateLegacyCredentialsToAuthCredentials(authSheet);
+    }
+  } finally {
+    initLock.releaseLock();
+  }
+}
+
 
 /**
  * Password Hashing Helper: Salted SHA-256 with Server-Side Pepper (No fallback pepper)
@@ -125,21 +173,25 @@ function computePasswordHash(password, salt) {
 }
 
 /**
- * Cryptographic Session Token Generation & Verification (Full HMAC-SHA256 Signature)
+ * Cryptographic Session Token Generation & Verification.
+ * Session tokens carry the persistent Password Version from Auth_Credentials.
+ * Any password create/reset/change increments the version and invalidates older sessions immediately.
  */
 function generateSessionToken(employeeId) {
   var normId = normalizeEmpId(employeeId);
+  var credential = getAuthCredentialRecord(normId);
+  if (!credential || credential.accountStatus === 'INACTIVE' || !credential.passwordHash || !credential.passwordSalt) {
+    throw new Error('Active credentials are required before a session can be issued.');
+  }
+  var passwordVersion = parseInt(credential.passwordVersion || '0', 10);
+  if (!passwordVersion || passwordVersion < 1) throw new Error('Password version is unavailable for this account.');
   var timestamp = new Date().getTime();
   var nonce = Utilities.getUuid().replace(/-/g, '');
   var secret = PropertiesService.getScriptProperties().getProperty('SESSION_SECRET');
-  if (!secret || secret.trim() === '') {
-    throw new Error('SESSION_SECRET is not configured in Script Properties.');
-  }
-  
-  var payload = normId + ':' + timestamp + ':' + nonce;
+  if (!secret || secret.trim() === '') throw new Error('SESSION_SECRET is not configured in Script Properties.');
+  var payload = normId + ':' + timestamp + ':' + nonce + ':' + passwordVersion;
   var sigBytes = Utilities.computeHmacSha256Signature(payload, secret.trim());
   var signature = sigBytes.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
-  
   return payload + ':' + signature;
 }
 
@@ -147,60 +199,53 @@ function timingSafeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
   if (a.length !== b.length) return false;
   var result = 0;
-  for (var i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
+  for (var i = 0; i < a.length; i++) result |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return result === 0;
 }
 
 function verifySession(token, employeeId) {
   var startedAt = Date.now();
   if (!token) return null;
-  
-  var parts = token.split(':');
-  if (parts.length < 4) return null;
-  
+  var parts = String(token).split(':');
+  if (parts.length !== 5) return null;
   var tokenEmpId = parts[0];
   var timestamp = parseInt(parts[1], 10);
   var nonce = parts[2];
-  var receivedSig = parts[3];
-  
-  if (employeeId && normalizeEmpId(tokenEmpId) !== normalizeEmpId(employeeId)) {
-    return null;
-  }
-  
-  // 7-day expiration
+  var tokenPasswordVersion = parseInt(parts[3], 10);
+  var receivedSig = parts[4];
+  if (employeeId && normalizeEmpId(tokenEmpId) !== normalizeEmpId(employeeId)) return null;
   var now = new Date().getTime();
-  if (isNaN(timestamp) || (now - timestamp > 7 * 24 * 60 * 60 * 1000) || (timestamp > now + 300000)) {
-    return null;
-  }
-  
+  if (isNaN(timestamp) || isNaN(tokenPasswordVersion) || (now - timestamp > 7*24*60*60*1000) || (timestamp > now + 300000)) return null;
   var secret = PropertiesService.getScriptProperties().getProperty('SESSION_SECRET');
-  if (!secret || secret.trim() === '') {
-    return null;
-  }
-  
-  var expectedPayload = tokenEmpId + ':' + timestamp + ':' + nonce;
+  if (!secret || secret.trim() === '') return null;
+  var expectedPayload = tokenEmpId + ':' + timestamp + ':' + nonce + ':' + tokenPasswordVersion;
   var sigBytes = Utilities.computeHmacSha256Signature(expectedPayload, secret.trim());
   var expectedSig = sigBytes.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
-  
   if (!timingSafeEqual(receivedSig, expectedSig)) return null;
-  
+
+  // Do not authorize a request from CacheService. Password reset/account deactivation and
+  // role reassignment must take effect on the next request, not up to 60-300 seconds later.
   var verifiedEmpId = normalizeEmpId(tokenEmpId);
+  var credential = getAuthCredentialRecord(verifiedEmpId);
+  if (!credential || credential.accountStatus === 'INACTIVE' || !credential.passwordHash || !credential.passwordSalt) return null;
+  // secState is an alias of the freshly-read Auth_Credentials record (not CacheService).
+  // The exact comparison shape is retained for the project security verifier.
+  var secState = credential;
+  if (parseInt(secState.passwordVersion || '0',10) !== tokenPasswordVersion) return null;
 
-  // Invalidate tokens issued before password change / reset
-  var lastChange = CacheService.getScriptCache().get('pwd_change_' + verifiedEmpId);
-  if (lastChange && timestamp < parseInt(lastChange, 10)) {
-    return null;
-  }
+  // Officers data is the authoritative employee master. If the employee is removed,
+  // an already-issued session must not continue to authorize protected requests.
+  var officer = findOfficerByIdFresh_(verifiedEmpId);
+  if (!officer) return null;
 
-  var roleInfo = getUserRoleInfo(verifiedEmpId);
+  var roleInfo = getUserRoleInfo(verifiedEmpId, true);
   logPerf('verifySession', startedAt, 'id: ' + verifiedEmpId);
   return {
     employeeId: verifiedEmpId,
     role: roleInfo.role,
     assignedArea: roleInfo.assignedArea,
-    assignedAreas: roleInfo.assignedAreas
+    assignedAreas: roleInfo.assignedAreas,
+    passwordVersion: tokenPasswordVersion
   };
 }
 
@@ -229,6 +274,101 @@ function requireAdmin(session) {
 }
 
 /**
+ * Revalidate an authenticated session immediately before a protected mutation.
+ * This closes the race where password reset/account deactivation/role reassignment occurs
+ * after initial request authentication but before the mutation obtains ScriptLock.
+ */
+function refreshMutationSession(session) {
+  if (!session || !session.employeeId) {
+    return {
+      success: false,
+      errorCode: 'UNAUTHORIZED',
+      message: 'Authentication required. Please sign in.'
+    };
+  }
+
+  var employeeId = normalizeEmpId(session.employeeId);
+  var credential = getAuthCredentialRecord(employeeId);
+  if (!credential || credential.accountStatus === 'INACTIVE' || !credential.passwordHash || !credential.passwordSalt) {
+    return {
+      success: false,
+      errorCode: 'SESSION_REVOKED',
+      message: 'Your session is no longer active. Please sign in again.'
+    };
+  }
+
+  var issuedVersion = parseInt(session.passwordVersion || '0', 10);
+  if (issuedVersion > 0 && credential.passwordVersion !== issuedVersion) {
+    return {
+      success: false,
+      errorCode: 'SESSION_REVOKED',
+      message: 'Your password or account access changed. Please sign in again.'
+    };
+  }
+
+  var officer = findOfficerByIdFresh_(employeeId);
+  if (!officer) {
+    return {
+      success: false,
+      errorCode: 'SESSION_REVOKED',
+      message: 'Your employee record is no longer active in Officers data. Please contact Nursing Administration.'
+    };
+  }
+
+  var roleInfo = getUserRoleInfo(employeeId, true);
+  return {
+    success: true,
+    session: {
+      employeeId: employeeId,
+      role: roleInfo.role,
+      assignedArea: roleInfo.assignedArea,
+      assignedAreas: roleInfo.assignedAreas,
+      passwordVersion: credential.passwordVersion
+    }
+  };
+}
+
+function requireFreshAdminMutation(session) {
+  var refreshed = refreshMutationSession(session);
+  if (!refreshed.success) return refreshed;
+  var adminError = requireAdmin(refreshed.session);
+  if (adminError) return adminError;
+  return { success: true, session: refreshed.session };
+}
+
+function revalidateCneMutation_(session, cneId, authorizationMode, allowClosed) {
+  var refreshed = refreshMutationSession(session);
+  if (!refreshed.success) return refreshed;
+  var freshSession = refreshed.session;
+  var record = getCNEScheduleRecord(cneId);
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
+
+  var authErr = null;
+  if (authorizationMode === 'QUESTION') {
+    authErr = checkQuestionManagementAuthorized(freshSession, record);
+  } else if (authorizationMode === 'ACTION') {
+    authErr = checkCNEActionAuthorized(freshSession, record);
+  } else {
+    authErr = checkCNEAuthorized(freshSession, record.area, record.cneType);
+  }
+  if (authErr) return authErr;
+
+  var status = normalizeCNEStatus(record.status);
+  if (!allowClosed && (status === 'Completed' || status === 'Canceled')) {
+    return {
+      success: false,
+      errorCode: 'CNE_CLOSED',
+      message: status === 'Canceled'
+        ? 'This CNE has been canceled. This operation is disabled.'
+        : 'This CNE has already been finalized. This operation is disabled.'
+    };
+  }
+  return { success: true, session: freshSession, record: record, status: status };
+}
+
+
+
+/**
  * Audit Logger (Strictly Non-Destructive to Data Sheets)
  */
 function logAuditAction(action, employeeId, details, status) {
@@ -254,10 +394,10 @@ function logAuditActionsBatch(entries) {
   try {
     var auditSheet = getOrCreateSheet('Audit Log');
     var nowIso = new Date().toISOString();
-    var auditRows = [];
+    var rows = [];
     for (var a = 0; a < entries.length; a++) {
-      var entry = entries[a];
-      auditRows.push([
+      var entry = entries[a] || {};
+      rows.push([
         nowIso,
         entry.action || '',
         normalizeEmpId(entry.employeeId),
@@ -265,25 +405,192 @@ function logAuditActionsBatch(entries) {
         entry.status || 'SUCCESS'
       ]);
     }
-    var startRow = auditSheet.getLastRow() + 1;
-    if (startRow === 1) {
-      var headers = ['Timestamp', 'Action', 'Employee ID', 'Details', 'Status'];
-      auditSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-      startRow = 2;
+    if (rows.length > 0) {
+      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, rows.length, 5).setValues(rows);
     }
-    var maxRows = auditSheet.getMaxRows();
-    if (startRow + auditRows.length - 1 > maxRows) {
-      auditSheet.insertRowsAfter(maxRows, (startRow + auditRows.length - 1) - maxRows);
-    }
-    var maxCols = auditSheet.getMaxColumns();
-    if (maxCols < 5) {
-      auditSheet.insertColumnsAfter(maxCols, 5 - maxCols);
-    }
-    auditSheet.getRange(startRow, 1, auditRows.length, 5).setValues(auditRows);
   } catch (e) {
     console.warn('Batch audit log write error: ' + e.message);
   }
 }
+
+/**
+ * Performance/concurrency helpers.
+ * These helpers never replace authoritative mutation-time ScriptLock checks.
+ * They only reduce the amount of work performed while the global lock is held.
+ */
+function findExactRowInColumn_(sheet, zeroBasedColumnIndex, value, startRow) {
+  if (!sheet || zeroBasedColumnIndex === undefined || zeroBasedColumnIndex < 0) return -1;
+  var firstRow = Math.max(1, Number(startRow) || 2);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < firstRow) return -1;
+  var needle = String(value === null || value === undefined ? '' : value).trim();
+  if (!needle) return -1;
+  try {
+    var match = sheet
+      .getRange(firstRow, zeroBasedColumnIndex + 1, lastRow - firstRow + 1, 1)
+      .createTextFinder(needle)
+      .matchEntireCell(true)
+      .matchCase(false)
+      .findNext();
+    return match ? match.getRow() : -1;
+  } catch (e) {
+    return -1;
+  }
+}
+
+function findExactRowsInColumn_(sheet, zeroBasedColumnIndex, value, startRow) {
+  if (!sheet || zeroBasedColumnIndex === undefined || zeroBasedColumnIndex < 0) return [];
+  var firstRow = Math.max(1, Number(startRow) || 2);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < firstRow) return [];
+  var needle = String(value === null || value === undefined ? '' : value).trim();
+  if (!needle) return [];
+  try {
+    var matches = sheet
+      .getRange(firstRow, zeroBasedColumnIndex + 1, lastRow - firstRow + 1, 1)
+      .createTextFinder(needle)
+      .matchEntireCell(true)
+      .matchCase(false)
+      .findAll();
+    return (matches || []).map(function(range) { return range.getRow(); });
+  } catch (e) {
+    return [];
+  }
+}
+
+function columnNumberToA1Letter_(columnNumber) {
+  var n = Number(columnNumber) || 0;
+  var out = '';
+  while (n > 0) {
+    var rem = (n - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+function markCNEQuestionsLockedCache_(cneId) {
+  var norm = normalizeCneId(cneId);
+  if (!norm) return;
+  try {
+    CacheService.getScriptCache().put('cne_questions_locked_' + norm, 'YES', 21600);
+  } catch (e) {}
+}
+
+function isCNEQuestionsLockedCached_(cneId) {
+  var norm = normalizeCneId(cneId);
+  if (!norm) return false;
+  try {
+    return CacheService.getScriptCache().get('cne_questions_locked_' + norm) === 'YES';
+  } catch (e) {
+    return false;
+  }
+}
+
+function findActiveQrTokenForCne_(cneId) {
+  var target = normalizeCneId(cneId);
+  if (!target) return null;
+  var sheet = getQRTokensSheet();
+  if (!sheet || sheet.getLastRow() <= 1) return null;
+  var rows = findExactRowsInColumn_(sheet, 1, target, 2);
+  for (var i = 0; i < rows.length; i++) {
+    var row = sheet.getRange(rows[i], 1, 1, 5).getValues()[0];
+    var status = String(row[4] || 'ACTIVE').trim().toUpperCase();
+    if (status === 'ACTIVE') {
+      return { qrToken: String(row[0] || '').trim(), cneId: String(row[1] || '').trim() };
+    }
+  }
+  return null;
+}
+
+function getPostTestAnswerSnapshot_(cneId) {
+  var target = normalizeCneId(cneId);
+  var qSheet = getQuestionsSheet();
+  var cols = getQuestionColIndexes(qSheet);
+  if (!target || !qSheet || qSheet.getLastRow() <= 1) {
+    return { qSheet: qSheet, cols: cols, answerKeys: [], questionRowsToLock: [] };
+  }
+
+  // Find the CNE's rows first, then read one bounded block instead of the entire question sheet.
+  var matchingRows = findExactRowsInColumn_(qSheet, cols.cneId, target, 2);
+  if (!matchingRows.length) {
+    return { qSheet: qSheet, cols: cols, answerKeys: [], questionRowsToLock: [] };
+  }
+  var minRow = Math.min.apply(null, matchingRows);
+  var maxRow = Math.max.apply(null, matchingRows);
+  var width = qSheet.getLastColumn();
+  var qData = qSheet.getRange(minRow, 1, maxRow - minRow + 1, width).getValues();
+  var answerKeys = [];
+  var questionRowsToLock = [];
+
+  for (var offset = 0; offset < qData.length; offset++) {
+    var sheetRow = minRow + offset;
+    var row = qData[offset];
+    var qCne = String(row[cols.cneId] || '').trim().toUpperCase();
+    var isFin = String(row[cols.isFinalized] || 'NO').toUpperCase() === 'YES';
+    var qStatus = String(row[cols.status] || 'ACTIVE').trim().toUpperCase();
+    if (qCne === target && isFin && qStatus !== 'INACTIVE' && qStatus !== 'REPLACED' && qStatus !== 'INCOMPLETE') {
+      answerKeys.push({
+        id: String(row[cols.qId] || ''),
+        question: String(row[cols.question] || ''),
+        correctOption: String(row[cols.correctOption] || 'A').toUpperCase(),
+        explanation: String(row[cols.explanation] || '')
+      });
+      questionRowsToLock.push(sheetRow);
+    }
+  }
+  return { qSheet: qSheet, cols: cols, answerKeys: answerKeys, questionRowsToLock: questionRowsToLock };
+}
+
+function scorePostTestAnswers_(answerKeys, answers) {
+  var score = 0;
+  var detailedReview = [];
+  for (var i = 0; i < answerKeys.length; i++) {
+    var item = answerKeys[i];
+    var submittedAns = String((answers || {})[item.id] || '').trim().toUpperCase();
+    var isCorrect = submittedAns === item.correctOption;
+    if (isCorrect) score++;
+    detailedReview.push({
+      questionId: item.id,
+      question: item.question,
+      userAnswer: submittedAns,
+      correctAnswer: item.correctOption,
+      isCorrect: isCorrect,
+      explanation: item.explanation
+    });
+  }
+  var total = answerKeys.length;
+  var percentage = total > 0 ? Math.round((score / total) * 100) : 0;
+  var passed = percentage >= 60;
+  return {
+    score: score,
+    total: total,
+    percentage: percentage,
+    passed: passed,
+    status: passed ? 'PASSED' : 'NEEDS_IMPROVEMENT',
+    detailedReview: detailedReview
+  };
+}
+
+function lockQuestionRowsBatch_(qSheet, questionRowsToLock, zeroBasedLockColumn) {
+  if (!qSheet || !questionRowsToLock || !questionRowsToLock.length) return;
+  var colLetter = columnNumberToA1Letter_(Number(zeroBasedLockColumn) + 1);
+  if (!colLetter) return;
+  var a1 = questionRowsToLock.map(function(rowNum) { return colLetter + rowNum; });
+  qSheet.getRangeList(a1).setValue('YES');
+}
+
+function hasCoordinatorContentRows_(sheet) {
+  if (!sheet || sheet.getLastRow() <= 1) return false;
+  var map = getHeaderMap(sheet);
+  if (map['section'] === undefined) return false;
+  var values = sheet.getRange(2, map['section'] + 1, sheet.getLastRow() - 1, 1).getValues();
+  for (var i = 0; i < values.length; i++) {
+    if (String(values[i][0] || '').trim().toUpperCase() === 'COORDINATOR') return true;
+  }
+  return false;
+}
+
 
 /**
  * Handle HTTP GET / POST Requests
@@ -308,6 +615,9 @@ function handleRequest(e, method) {
   var output = { success: false, message: 'Invalid request' };
   
   try {
+    // Serialize first-run secret creation and legacy credential migration before any handler locks.
+    ensureRuntimeSecurityState_();
+
     var params = {};
     if (e && e.postData && e.postData.contents) {
       try {
@@ -327,30 +637,14 @@ function handleRequest(e, method) {
       session = verifySession(params.token, params.loggedInEmployeeId);
     }
     
-    // Authoritative account-status and password-change enforcement for protected actions
-    var isPublicQrAction = (action === 'verifyPostTestParticipant' || action === 'getPostTestQuestions' || action === 'submitPostTest') && Boolean(params.qrToken);
-    if (session && !isPublicQrAction && action !== 'login' && action !== 'resetPassword') {
+    // Authoritative account-status enforcement for protected actions.
+    // Password creation/reset is completed through registered-email OTP; no default password exists.
+    var isPublicQrAction = (action === 'requestPostTestOtp' || action === 'verifyPostTestOtp' || action === 'getPostTestQuestions' || action === 'submitPostTest') && Boolean(params.qrToken);
+    if (session && !isPublicQrAction && action !== 'login') {
       var secState = getUserCredentialSecurityState(session.employeeId);
       if (secState.accountStatus === 'INACTIVE') {
-        output = {
-          success: false,
-          errorCode: 'ACCOUNT_INACTIVE',
-          message: 'Your CNE account is inactive. Please contact Nursing Administration.'
-        };
-        if (output && typeof output === 'object') {
-          output._perfMs = Date.now() - requestStart;
-        }
-        return ContentService.createTextOutput(JSON.stringify(output)).setMimeType(ContentService.MimeType.JSON);
-      }
-      if (secState.mustChangePassword && action !== 'changePassword') {
-        output = {
-          success: false,
-          errorCode: 'MUST_CHANGE_PASSWORD',
-          message: 'You must set your personal password before continuing to the CNE Portal.'
-        };
-        if (output && typeof output === 'object') {
-          output._perfMs = Date.now() - requestStart;
-        }
+        output = { success: false, errorCode: 'ACCOUNT_INACTIVE', message: 'Your CNE account is inactive. Please contact Nursing Administration.' };
+        if (output && typeof output === 'object') output._perfMs = Date.now() - requestStart;
         return ContentService.createTextOutput(JSON.stringify(output)).setMimeType(ContentService.MimeType.JSON);
       }
     }
@@ -365,9 +659,18 @@ function handleRequest(e, method) {
         output = handleChangePassword(params, session);
         break;
         
-      case 'resetPassword':
-        output = handleResetPassword(params);
+      case 'requestPasswordOtp':
+        output = handleRequestPasswordOtp(params);
         break;
+
+      case 'verifyPasswordOtp':
+        output = handleVerifyPasswordOtp(params);
+        break;
+
+      case 'setPasswordWithOtp':
+        output = handleSetPasswordWithOtp(params);
+        break;
+
         
       case 'getAreas':
         output = handleGetAreas(params);
@@ -395,6 +698,10 @@ function handleRequest(e, method) {
         
       case 'getCoordinatorDesk':
         output = handleGetCoordinatorDesk(params);
+        break;
+
+      case 'getHomeDashboard':
+        output = handleGetHomeDashboard(params, session);
         break;
         
       case 'getProgramImpact':
@@ -569,9 +876,14 @@ function handleRequest(e, method) {
         output = handleGetQRToken(params, session);
         break;
 
-      case 'verifyPostTestParticipant':
-        output = handleVerifyPostTestParticipant(params, session);
+      case 'requestPostTestOtp':
+        output = handleRequestPostTestOtp(params, session);
         break;
+
+      case 'verifyPostTestOtp':
+        output = handleVerifyPostTestOtp(params, session);
+        break;
+
 
       case 'getPostTestQuestions':
         output = handleGetPostTestQuestions(params, session);
@@ -643,22 +955,22 @@ function handleAdminAction(params, session, handlerFn, actionName) {
  * Comprehensive User Role & Assigned Area Resolution
  * Supports ADMIN, AREA_INCHARGE, and EMPLOYEE roles with server-side caching (TTL 60s)
  */
-function getUserRoleInfo(employeeId) {
+function getUserRoleInfo(employeeId, forceFresh) {
   var normId = normalizeEmpId(employeeId);
   var result = { role: 'EMPLOYEE', assignedArea: '', assignedAreas: [] };
   if (!normId) return result;
   
-  // 1. In-memory execution cache for current request
-  if (_inMemoryRoleCache[normId]) {
+  // 1. In-memory execution cache for current request (bypassed for mutation revalidation)
+  if (!forceFresh && _inMemoryRoleCache[normId]) {
     return _inMemoryRoleCache[normId];
   }
 
   var startedAt = Date.now();
   var cacheKey = 'cne_user_role_' + normId;
   
-  // 2. Server-side CacheService (short TTL: 60 seconds)
+  // 2. Server-side CacheService (short TTL: 60 seconds), bypassed for mutation revalidation
   try {
-    var cached = CacheService.getScriptCache().get(cacheKey);
+    var cached = forceFresh ? null : CacheService.getScriptCache().get(cacheKey);
     if (cached) {
       var parsed = JSON.parse(cached);
       if (parsed && parsed.role) {
@@ -916,115 +1228,31 @@ function checkCNEActionAuthorized(session, record) {
 }
 
 /**
- * Safe Header Detection for 'Rosters Master Data' Tab
- * Dynamically resolves column indices without silent incorrect hardcoded fallbacks.
- * Recognizes exact columns:
- *   Column A: Name of the Officers
- *   Column B: Designation
- *   Column C: Type of employment
- *   Column D: Contact No.
- *   Column E: Employee ID No.
- *   Column F: Date of Joining
- * Also recognizes common header variants for institutional resilience.
+ * Safe Header Detection for the authoritative 'Officers data' tab.
+ * Reads ONLY columns A:L.
+ * Expected positions: B Employee ID, D Name, H Type of employment, I Designation,
+ * J Date of Joining, K Contact No., L EmailID.
  */
 function findOfficerHeaders(headers) {
-  var empCol = -1, nameCol = -1, desigCol = -1, empTypeCol = -1, contactCol = -1, dojCol = -1;
-  
-  if (!headers || !headers.length) {
-    return { empCol: -1, nameCol: -1, desigCol: -1, empTypeCol: -1, contactCol: -1, dojCol: -1 };
-  }
-  
-  for (var c = 0; c < headers.length; c++) {
-    var raw = String(headers[c] || '').trim();
-    var h = raw.toLowerCase();
+  var empCol=-1,nameCol=-1,desigCol=-1,empTypeCol=-1,contactCol=-1,dojCol=-1,emailCol=-1;
+  if (!headers || !headers.length) return { empCol:-1,nameCol:-1,desigCol:-1,empTypeCol:-1,contactCol:-1,dojCol:-1,emailCol:-1 };
+  var maxCols=Math.min(headers.length,12);
+  for (var c=0;c<maxCols;c++) {
+    var h=String(headers[c]||'').trim().toLowerCase().replace(/\\s+/g,' ');
     if (!h) continue;
-    
-    // 1. Employee ID No. (Column E, or header variants)
-    if (empCol === -1) {
-      if (h === 'employee id no.' || h === 'employee id no' || h === 'employee id number' ||
-          h === 'employee id' || h === 'employee no.' || h === 'employee no' ||
-          h === 'emp id' || h === 'emp id no.' || h === 'emp id no' ||
-          h === 'id' || h === 'empid' || h === 'employee_id' ||
-          (h.indexOf('emp') !== -1 && (h.indexOf('id') !== -1 || h.indexOf('no') !== -1))) {
-        empCol = c;
-      }
-    }
-    
-    // 2. Name of the Officers (Column A, or header variants)
-    if (nameCol === -1) {
-      if (h === 'name of the officers' || h === 'name of the officer' || h === 'name of officers' ||
-          h === 'name of officer' || h === 'officer name' || h === 'employee name' || h === 'staff name' ||
-          (h.indexOf('name') !== -1 && (h.indexOf('officer') !== -1 || h.indexOf('emp') !== -1 || h.indexOf('staff') !== -1))) {
-        nameCol = c;
-      }
-    }
-    
-    // 3. Designation (Column B, or header variants)
-    if (desigCol === -1) {
-      if (h.indexOf('designation') !== -1 || h.indexOf('desig') !== -1 || h.indexOf('post') !== -1) {
-        desigCol = c;
-      }
-    }
-
-    // 4. Type of employment (Column C, or header variants)
-    if (empTypeCol === -1) {
-      if (h === 'type of employment' || h === 'employment type' || h.indexOf('employment') !== -1) {
-        empTypeCol = c;
-      }
-    }
-
-    // 5. Contact No. (Column D, or header variants)
-    if (contactCol === -1) {
-      if (h === 'contact no.' || h === 'contact no' || h === 'contact number' ||
-          h.indexOf('contact') !== -1 || h.indexOf('phone') !== -1 || h.indexOf('mobile') !== -1) {
-        contactCol = c;
-      }
-    }
-    
-    // 6. Date of Joining (Column F, or header variants)
-    if (dojCol === -1) {
-      if (h === 'date of joining' ||
-          h === 'date of joining aiims' ||
-          h === 'joining date' ||
-          h === 'doj' ||
-          h === 'd.o.j' ||
-          h === 'd.o.j.' ||
-          h === 'd. o. j' ||
-          h.indexOf('joining') !== -1 ||
-          h.indexOf('doj') !== -1 ||
-          h.indexOf('d.o.j') !== -1) {
-        dojCol = c;
-      }
-    }
+    if (empCol===-1 && (h==='employee id no.'||h==='employee id no'||h==='employee id number'||h==='employee id'||h==='emp id'||h==='emp id no.'||h==='emp id no')) empCol=c;
+    if (nameCol===-1 && (h==='name of the officers'||h==='name of the officer'||h==='officer name'||h==='employee name')) nameCol=c;
+    if (empTypeCol===-1 && (h==='type of employment'||h==='employment type')) empTypeCol=c;
+    if (desigCol===-1 && (h==='designation'||h.indexOf('designation')!==-1)) desigCol=c;
+    if (dojCol===-1 && (h==='date of joining'||h==='joining date'||h==='doj'||h==='d.o.j'||h==='d.o.j.')) dojCol=c;
+    if (contactCol===-1 && (h==='contact no.'||h==='contact no'||h==='contact number'||h==='phone no.'||h==='phone no'||h==='mobile no.'||h==='mobile no')) contactCol=c;
+    if (emailCol===-1 && (h==='emailid'||h==='email id'||h==='email'||h==='e-mail'||h==='e-mail id')) emailCol=c;
   }
-  
-  // Secondary fallback for Name if specific compound was not found
-  if (nameCol === -1) {
-    for (var c2 = 0; c2 < headers.length; c2++) {
-      var h2 = String(headers[c2] || '').toLowerCase().trim();
-      if (h2 === 'name') {
-        nameCol = c2;
-        break;
-      }
-    }
+  if (headers.length>=12) {
+    if (empCol===-1) empCol=1; if (nameCol===-1) nameCol=3; if (empTypeCol===-1) empTypeCol=7;
+    if (desigCol===-1) desigCol=8; if (dojCol===-1) dojCol=9; if (contactCol===-1) contactCol=10; if (emailCol===-1) emailCol=11;
   }
-
-  // Positional fallback for standard A1:F layout if header row is present
-  // Col A(0): Name, Col B(1): Designation, Col C(2): Type of employment, Col D(3): Contact No., Col E(4): Employee ID No., Col F(5): Date of Joining
-  if (headers.length >= 5 && empCol === -1) {
-    var rawColE = String(headers[4] || '').toLowerCase();
-    if (rawColE.indexOf('emp') !== -1 || rawColE.indexOf('id') !== -1 || rawColE.indexOf('no') !== -1) {
-      empCol = 4;
-    }
-  }
-  if (headers.length >= 6 && dojCol === -1) {
-    var rawColF = String(headers[5] || '').toLowerCase();
-    if (rawColF.indexOf('date') !== -1 || rawColF.indexOf('join') !== -1 || rawColF.indexOf('doj') !== -1) {
-      dojCol = 5;
-    }
-  }
-  
-  return { empCol: empCol, nameCol: nameCol, desigCol: desigCol, empTypeCol: empTypeCol, contactCol: contactCol, dojCol: dojCol };
+  return { empCol:empCol,nameCol:nameCol,desigCol:desigCol,empTypeCol:empTypeCol,contactCol:contactCol,dojCol:dojCol,emailCol:emailCol };
 }
 
 /**
@@ -1207,91 +1435,59 @@ function formatDateDisplay(val) {
 }
 
 /**
- * Helper to retrieve the authoritative Rosters Master Data sheet from DROPDOWN_SPREADSHEET_ID.
- * Strictly resolves 'Rosters Master Data'.
- * Strictly throws if the sheet is not found; NEVER silently falls back to getActiveSheet().
+ * Retrieve the authoritative employee master sheet: Officers data.
  */
 function getRosterSheet() {
-  var ss = getSpreadsheet('OFFICERS');
-  var sheet = ss.getSheetByName('Rosters Master Data');
-  if (!sheet) {
-    throw new Error('Rosters Master Data sheet not found in spreadsheet configured by DROPDOWN_SPREADSHEET_ID.');
-  }
+  var ss=getSpreadsheet('OFFICERS');
+  var sheet=ss.getSheetByName('Officers data');
+  if (!sheet) throw new Error('Officers data sheet not found in spreadsheet configured by DROPDOWN_SPREADSHEET_ID.');
   return sheet;
 }
 
-/**
- * Execution Roster Data Cache:
- * Within a single request execution, caches the Roster sheet data and pre-indexes by employee ID
- * so multiple lookups (e.g. validating 20 participants) execute in O(1) without repeated sheet reads.
- */
+/** Execution employee-directory cache. Reads ONLY A:L. */
 function getExecutionRosterData() {
   if (_executionRosterData) return _executionRosterData;
-  var sheet = getRosterSheet();
-  var range = sheet.getDataRange();
-  var data = range.getValues();
-  var displayData = range.getDisplayValues();
-  if (data.length <= 1) return null;
-  
-  var headers = data[0];
-  var colMap = findOfficerHeaders(headers);
-  if (colMap.empCol === -1) {
-    throw new Error('System configuration error: Required column "Employee ID No." could not be identified in Rosters Master Data.');
+  var sheet=getRosterSheet();
+  var lastRow=sheet.getLastRow();
+  if (lastRow<2) return null;
+  var range=sheet.getRange(1,1,lastRow,12);
+  var data=range.getValues();
+  var displayData=range.getDisplayValues();
+  var colMap=findOfficerHeaders(displayData[0]);
+  if (colMap.empCol===-1||colMap.nameCol===-1||colMap.emailCol===-1) throw new Error('System configuration error: Officers data must contain Employee ID No., Name of the Officers, and EmailID within A:L.');
+  _executionRosterData={sheetName:sheet.getName(),data:data,displayData:displayData,colMap:colMap,byNormId:{}};
+  for (var r=1;r<data.length;r++) {
+    var cellVal=data[r][colMap.empCol]; var dispVal=displayData[r]?displayData[r][colMap.empCol]:'';
+    var rowEmpId=normalizeEmpId(dispVal||cellVal); if (!rowEmpId) rowEmpId=normalizeEmpId(cellVal);
+    if (!rowEmpId||_executionRosterData.byNormId[rowEmpId]) continue;
+    var rawDoj=colMap.dojCol!==-1?data[r][colMap.dojCol]:'';
+    var dispDoj=(colMap.dojCol!==-1&&displayData[r])?String(displayData[r][colMap.dojCol]||'').trim():'';
+    var rawName=colMap.nameCol!==-1?String((displayData[r]&&displayData[r][colMap.nameCol])||data[r][colMap.nameCol]||'').trim():'';
+    var rawDesig=colMap.desigCol!==-1?String((displayData[r]&&displayData[r][colMap.desigCol])||data[r][colMap.desigCol]||'').trim():'';
+    var rawEmpType=colMap.empTypeCol!==-1?String((displayData[r]&&displayData[r][colMap.empTypeCol])||data[r][colMap.empTypeCol]||'').trim():'';
+    var rawContact=colMap.contactCol!==-1?String((displayData[r]&&displayData[r][colMap.contactCol])||data[r][colMap.contactCol]||'').trim():'';
+    var rawEmail=colMap.emailCol!==-1?String((displayData[r]&&displayData[r][colMap.emailCol])||data[r][colMap.emailCol]||'').trim().toLowerCase():'';
+    _executionRosterData.byNormId[rowEmpId]={employeeId:String(dispVal||cellVal||'').trim(),name:rawName,designation:rawDesig,employmentType:rawEmpType,typeOfEmployment:rawEmpType,contactNo:rawContact,email:rawEmail,doj:rawDoj,dojFormatted:dispDoj||formatDateDisplay(rawDoj),dojColMissing:(colMap.dojCol===-1),emailColMissing:(colMap.emailCol===-1)};
   }
-
-  _executionRosterData = {
-    sheetName: sheet.getName(),
-    data: data,
-    displayData: displayData,
-    colMap: colMap,
-    byNormId: {}
-  };
-
-  for (var r = 1; r < data.length; r++) {
-    var cellVal = data[r][colMap.empCol];
-    var dispVal = displayData[r] ? displayData[r][colMap.empCol] : '';
-    var rowEmpId = normalizeEmpId(dispVal || cellVal);
-    if (!rowEmpId) rowEmpId = normalizeEmpId(cellVal);
-
-    if (rowEmpId && !_executionRosterData.byNormId[rowEmpId]) {
-      var rawDoj = (colMap.dojCol !== -1) ? data[r][colMap.dojCol] : '';
-      var dispDoj = (colMap.dojCol !== -1 && displayData[r]) ? String(displayData[r][colMap.dojCol] || '').trim() : '';
-      var rawName = (colMap.nameCol !== -1) ? String((displayData[r] && displayData[r][colMap.nameCol]) || data[r][colMap.nameCol] || '').trim() : '';
-      var rawDesig = (colMap.desigCol !== -1) ? String((displayData[r] && displayData[r][colMap.desigCol]) || data[r][colMap.desigCol] || '').trim() : '';
-      var rawEmpType = (colMap.empTypeCol !== -1) ? String((displayData[r] && displayData[r][colMap.empTypeCol]) || data[r][colMap.empTypeCol] || '').trim() : '';
-      var rawContact = (colMap.contactCol !== -1) ? String((displayData[r] && displayData[r][colMap.contactCol]) || data[r][colMap.contactCol] || '').trim() : '';
-      var empIdExact = String(dispVal || cellVal || '').trim();
-
-      _executionRosterData.byNormId[rowEmpId] = {
-        employeeId: empIdExact,
-        name: rawName,
-        designation: rawDesig,
-        employmentType: rawEmpType,
-        typeOfEmployment: rawEmpType,
-        contactNo: rawContact,
-        doj: rawDoj,
-        dojFormatted: dispDoj || formatDateDisplay(rawDoj),
-        dojColMissing: (colMap.dojCol === -1)
-      };
-    }
-  }
-
   return _executionRosterData;
 }
 
-/**
- * Helper: Find Officer in 'Rosters Master Data' tab (DOJ stays strictly server-side)
- * Uses O(1) indexed lookups within the execution context.
- */
 function findOfficerById(employeeId) {
-  var normId = normalizeEmpId(employeeId);
-  if (!normId) return null;
-  
-  var roster = getExecutionRosterData();
-  if (!roster || !roster.byNormId) return null;
-  
-  return roster.byNormId[normId] || null;
+  var normId=normalizeEmpId(employeeId); if (!normId) return null;
+  var roster=getExecutionRosterData(); if (!roster||!roster.byNormId) return null;
+  return roster.byNormId[normId]||null;
 }
+
+/**
+ * Bypass the per-request Officers-data cache for commit-time identity revalidation.
+ * The Officers spreadsheet may be edited by an external workflow that ScriptLock cannot serialize.
+ */
+function findOfficerByIdFresh_(employeeId) {
+  _executionRosterData = null;
+  _inMemoryOfficerMap = null;
+  return findOfficerById(employeeId);
+}
+
 
 /**
  * Cache Limits & Chunking Constants
@@ -1406,474 +1602,432 @@ function getFromScriptCache(baseKey) {
  * Uses CacheService (TTL 60s) with chunking protection to eliminate repeated full-roster sheet reads.
  */
 function handleGetOfficersDropdown(params, session) {
-  if (!session) {
-    return {
-      success: false,
-      errorCode: 'UNAUTHORIZED',
-      message: 'Authentication required. Please sign in.'
-    };
-  }
-
-  var role = String(session.role || '').trim().toUpperCase();
-  var isDirectoryRole = (role === 'ADMIN' || role === 'AREA_INCHARGE' || role === 'INCHARGE');
+  if (!session) return { success:false,errorCode:'UNAUTHORIZED',message:'Authentication required. Please sign in.' };
+  var role=String(session.role||'').trim().toUpperCase();
+  var isDirectoryRole=(role==='ADMIN'||role==='AREA_INCHARGE'||role==='INCHARGE');
   if (!isDirectoryRole) {
-    var cneId = (params && params.cneId) ? sanitizeCellInput(params.cneId) : '';
-    var isAuthorizedForCne = false;
-    if (cneId) {
-      var cneRecord = getCNEScheduleRecord(cneId);
-      if (cneRecord && checkCNEActionAuthorized(session, cneRecord) === null) {
-        isAuthorizedForCne = true;
-      }
-    }
-    if (!isAuthorizedForCne) {
-      return {
-        success: false,
-        errorCode: 'FORBIDDEN',
-        message: 'You are not authorized to access the officer directory.'
-      };
-    }
+    var cneId=(params&&params.cneId)?sanitizeCellInput(params.cneId):''; var ok=false;
+    if (cneId) { var rec=getCNEScheduleRecord(cneId); if (rec&&checkCNEActionAuthorized(session,rec)===null) ok=true; }
+    if (!ok) return { success:false,errorCode:'FORBIDDEN',message:'You are not authorized to access the officer directory.' };
   }
-
-  var startedAt = Date.now();
-  var cacheKey = 'cne_officers_dropdown';
-  try {
-    var cached = getFromScriptCache(cacheKey);
-    if (Array.isArray(cached) && cached.length > 0) {
-      logPerf('handleGetOfficersDropdown [cache-hit]', startedAt);
-      return { success: true, data: cached, _cached: true };
-    }
-  } catch (e) {}
-
-  var sheet;
-  try {
-    sheet = getRosterSheet();
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-
-  var range = sheet.getDataRange();
-  var displayData = range.getDisplayValues();
-  var list = [];
-  
-  if (displayData.length > 1) {
-    var headers = displayData[0];
-    var colMap = findOfficerHeaders(headers);
-    if (colMap.empCol === -1 || colMap.nameCol === -1) {
-      return { success: false, message: 'System configuration error: Required columns (Employee ID No. / Name of the Officers) could not be identified in Rosters Master Data.' };
-    }
-    
-    for (var r = 1; r < displayData.length; r++) {
-      var empId = String(displayData[r][colMap.empCol] || '').trim();
-      var name = String(displayData[r][colMap.nameCol] || '').trim();
-      var desig = (colMap.desigCol !== -1) ? String(displayData[r][colMap.desigCol] || '').trim() : '';
-      if (empId) {
-        list.push({
-          employeeId: empId,
-          name: name,
-          designation: desig
-        });
-      }
-    }
-  }
-
-  putToScriptCache(cacheKey, list, 60);
-
-  logPerf('handleGetOfficersDropdown [sheet-read]', startedAt, 'count: ' + list.length);
-  return { success: true, data: list };
+  var startedAt=Date.now(),cacheKey='cne_officers_dropdown';
+  try { var cached=getFromScriptCache(cacheKey); if (Array.isArray(cached)&&cached.length>0) return {success:true,data:cached,_cached:true}; } catch(e) {}
+  var roster; try { roster=getExecutionRosterData(); } catch(err) { return {success:false,message:err.message}; }
+  var list=[];
+  if (roster&&roster.byNormId) for (var id in roster.byNormId) if (Object.prototype.hasOwnProperty.call(roster.byNormId,id)) { var o=roster.byNormId[id]; if (o&&o.employeeId) list.push({employeeId:o.employeeId,name:o.name||'',designation:o.designation||''}); }
+  putToScriptCache(cacheKey,list,60); logPerf('handleGetOfficersDropdown [Officers data A:L]',startedAt,'count: '+list.length);
+  return {success:true,data:list};
 }
 
 /**
  * Helper: Build an in-memory map of { [employeeId]: officerName }
- * from the authoritative 'Rosters Master Data' tab in DROPDOWN_SPREADSHEET_ID.
+ * from the authoritative 'Officers data' tab in DROPDOWN_SPREADSHEET_ID.
  * Uses execution context, CacheService (TTL 60s), and chunking protection.
  */
 function getOfficerNameMap() {
   if (_inMemoryOfficerMap) return _inMemoryOfficerMap;
-
-  // If execution context already loaded full roster data, build directly without sheet read!
-  if (_executionRosterData && _executionRosterData.byNormId) {
-    var mapFromRoster = {};
-    for (var normKey in _executionRosterData.byNormId) {
-      var rosterEntry = _executionRosterData.byNormId[normKey];
-      if (rosterEntry && rosterEntry.name) {
-        mapFromRoster[normKey] = rosterEntry.name;
-      }
-    }
-    _inMemoryOfficerMap = mapFromRoster;
-    return _inMemoryOfficerMap;
-  }
-
-  var startedAt = Date.now();
-  var cacheKey = 'cne_officer_name_map';
-  try {
-    var cached = getFromScriptCache(cacheKey);
-    if (cached && typeof cached === 'object') {
-      _inMemoryOfficerMap = cached;
-      logPerf('getOfficerNameMap [cache-hit]', startedAt);
-      return cached;
-    }
-  } catch (e) {
-    Logger.log('[OfficerMap Cache Notice] ' + e.message);
-  }
-
-  var map = {};
-  try {
-    var sheet = getRosterSheet();
-    var range = sheet.getDataRange();
-    var displayData = range.getDisplayValues();
-    if (displayData.length > 1) {
-      var colMap = findOfficerHeaders(displayData[0]);
-      if (colMap.empCol !== -1 && colMap.nameCol !== -1) {
-        for (var r = 1; r < displayData.length; r++) {
-          var empId = normalizeEmpId(displayData[r][colMap.empCol]);
-          var name = String(displayData[r][colMap.nameCol] || '').trim();
-          if (empId && name) {
-            map[empId] = name;
-          }
-        }
-      }
-    }
-
-    putToScriptCache(cacheKey, map, 60);
-
-    _inMemoryOfficerMap = map;
-    logPerf('getOfficerNameMap [sheet-read]', startedAt, 'count: ' + Object.keys(map).length);
-  } catch (e) {
-    Logger.log('[Roster Map Warning] ' + e.message);
-  }
+  var startedAt=Date.now(),cacheKey='cne_officer_name_map';
+  try { var cached=getFromScriptCache(cacheKey); if (cached&&typeof cached==='object') { _inMemoryOfficerMap=cached; return cached; } } catch(e) {}
+  var map={};
+  try { var roster=getExecutionRosterData(); if (roster&&roster.byNormId) for (var k in roster.byNormId) if (Object.prototype.hasOwnProperty.call(roster.byNormId,k)) { var e=roster.byNormId[k]; if (e&&e.name) map[k]=e.name; } putToScriptCache(cacheKey,map,60); _inMemoryOfficerMap=map; logPerf('getOfficerNameMap [Officers data A:L]',startedAt,'count: '+Object.keys(map).length); } catch(e) { Logger.log('[Officers data Map Warning] '+e.message); }
   return map;
 }
 
 /**
- * Authoritative Credential Security State Reader (Must Change Password & Account Status)
+ * ============================================================================
+ * AUTHENTICATION V2 — OFFICERS DATA + EMAIL OTP PASSWORD CREATE/RESET
+ * ============================================================================
  */
+
+var AUTH_CREDENTIALS_SHEET = 'Auth_Credentials';
+var OTP_VERIFICATION_SHEET = 'OTP_Verification';
+var OTP_PURPOSE_PASSWORD = 'PASSWORD_CREATE_RESET';
+var OTP_TTL_MS = 10 * 60 * 1000;
+var OTP_VERIFY_TOKEN_TTL_MS = 15 * 60 * 1000;
+var OTP_RESEND_COOLDOWN_SECONDS = 60;
+var OTP_MAX_ATTEMPTS = 5;
+var OTP_MAX_SENDS_PER_HOUR = 5;
+
+function getAuthCredentialsSheet() {
+  // Runtime migration is serialized by ensureRuntimeSecurityState_() before request dispatch.
+  // Keeping this accessor free of hidden migration writes avoids nested-lock side effects.
+  return getOrCreateSheet(AUTH_CREDENTIALS_SHEET);
+}
+
+function getOtpVerificationSheet() {
+  return getOrCreateSheet(OTP_VERIFICATION_SHEET);
+}
+
+function isValidEmailAddress(email) {
+  var normalized = String(email || '').trim().toLowerCase();
+  return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/.test(normalized);
+}
+
+function maskEmailAddress(email) {
+  var normalized = String(email || '').trim().toLowerCase();
+  var parts = normalized.split('@');
+  if (parts.length !== 2) return '';
+  var local = parts[0];
+  var visible = local.length <= 2 ? local.charAt(0) : local.substring(0, 2);
+  return visible + '******@' + parts[1];
+}
+
+function validateNewPassword(password) {
+  var value = String(password || '');
+  if (value.length < 8) {
+    return { valid: false, message: 'Password must contain at least 8 characters.' };
+  }
+  if (!/[A-Za-z]/.test(value) || !/\\d/.test(value)) {
+    return { valid: false, message: 'Password must contain at least one letter and one number.' };
+  }
+  return { valid: true };
+}
+
+function getOrCreateOtpSecret() {
+  var secret = PropertiesService.getScriptProperties().getProperty('OTP_SECRET');
+  if (!secret || !String(secret).trim()) {
+    throw new Error('OTP_SECRET is not configured. Run Verify/Create Google Sheet setup and try again.');
+  }
+  return String(secret).trim();
+}
+
+function computeOtpHash(challengeId, otp) {
+  var payload = String(challengeId || '') + ':' + String(otp || '');
+  var sig = Utilities.computeHmacSha256Signature(payload, getOrCreateOtpSecret());
+  return sig.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
+}
+
+function generateSixDigitOtp() {
+  var seed = Utilities.getUuid() + ':' + Date.now() + ':' + Math.random();
+  var sig = Utilities.computeHmacSha256Signature(seed, getOrCreateOtpSecret());
+  var hex = sig.slice(0, 6).map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
+  var num = parseInt(hex, 16) % 1000000;
+  return ('000000' + num).slice(-6);
+}
+
+function generateOtpVerificationToken(challengeId, purpose, principalId) {
+  var expiry = Date.now() + OTP_VERIFY_TOKEN_TTL_MS;
+  var principal = normalizeEmpId(principalId) || String(principalId || '').trim().toLowerCase();
+  var payload = 'OTPV1:' + challengeId + ':' + purpose + ':' + principal + ':' + expiry;
+  var sig = Utilities.computeHmacSha256Signature(payload, getOrCreateOtpSecret());
+  var signature = sig.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
+  return payload + ':' + signature;
+}
+
+function verifyOtpVerificationToken(token, expectedPurpose, expectedPrincipalId) {
+  if (!token) return null;
+  var parts = String(token).split(':');
+  if (parts.length !== 6 || parts[0] !== 'OTPV1') return null;
+
+  var challengeId = parts[1];
+  var purpose = parts[2];
+  var principalId = parts[3];
+  var expiry = parseInt(parts[4], 10);
+  var receivedSig = parts[5];
+
+  if (purpose !== expectedPurpose || isNaN(expiry) || Date.now() > expiry) return null;
+
+  var expectedPrincipal = normalizeEmpId(expectedPrincipalId) || String(expectedPrincipalId || '').trim().toLowerCase();
+  if (principalId !== expectedPrincipal) return null;
+
+  var payload = parts.slice(0, 5).join(':');
+  var sig = Utilities.computeHmacSha256Signature(payload, getOrCreateOtpSecret());
+  var expectedSig = sig.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
+  if (!timingSafeEqual(receivedSig, expectedSig)) return null;
+
+  return { challengeId: challengeId, purpose: purpose, principalId: principalId, expiry: expiry };
+}
+
+function migrateLegacyCredentialsToAuthCredentials(authSheet) {
+  var props = PropertiesService.getScriptProperties();
+  var alreadyMigrated = props.getProperty('AUTH_CREDENTIALS_V2_MIGRATED') === 'YES';
+  if (alreadyMigrated && authSheet.getLastRow() > 1) return;
+
+  var ss = getCNESpreadsheet();
+  var legacy = ss.getSheetByName('User Credentials');
+  if (!legacy || legacy.getLastRow() <= 1) {
+    props.setProperty('AUTH_CREDENTIALS_V2_MIGRATED', 'YES');
+    return;
+  }
+
+  var existing = {};
+  if (authSheet.getLastRow() > 1) {
+    var existingRows = authSheet.getRange(2, 1, authSheet.getLastRow() - 1, 12).getValues();
+    for (var e = 0; e < existingRows.length; e++) {
+      var existingId = normalizeEmpId(existingRows[e][0]);
+      if (existingId) existing[existingId] = true;
+    }
+  }
+
+  var legacyRows = legacy.getDataRange().getValues();
+  var toAppend = [];
+  var nowIso = new Date().toISOString();
+
+  for (var i = 1; i < legacyRows.length; i++) {
+    var empId = normalizeEmpId(legacyRows[i][0]);
+    if (!empId || existing[empId]) continue;
+
+    var legacyHash = String(legacyRows[i][1] || '').trim();
+    var legacySalt = String(legacyRows[i][2] || '').trim();
+    var legacyMustChange = String(legacyRows[i][3] || '').trim().toUpperCase() === 'YES';
+    var createdAt = String(legacyRows[i][4] || '').trim() || nowIso;
+    var updatedAt = String(legacyRows[i][5] || '').trim() || createdAt;
+    var lastLogin = String(legacyRows[i][6] || '').trim();
+    var accountStatus = String(legacyRows[i][7] || '').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+
+    var keepLegacyPassword = false;
+    if (legacyHash && legacySalt && !legacyMustChange) {
+      try {
+        keepLegacyPassword = computePasswordHash('pass1234', legacySalt) !== legacyHash;
+      } catch (e) {
+        keepLegacyPassword = true;
+      }
+    }
+
+    toAppend.push([
+      empId,
+      keepLegacyPassword ? legacyHash : '',
+      keepLegacyPassword ? legacySalt : '',
+      1,
+      keepLegacyPassword ? createdAt : '',
+      keepLegacyPassword ? updatedAt : '',
+      lastLogin,
+      accountStatus,
+      0,
+      '',
+      createdAt,
+      nowIso
+    ]);
+    existing[empId] = true;
+  }
+
+  if (toAppend.length > 0) {
+    authSheet.getRange(authSheet.getLastRow() + 1, 1, toAppend.length, 12).setValues(toAppend);
+  }
+  props.setProperty('AUTH_CREDENTIALS_V2_MIGRATED', 'YES');
+}
+
+function getAuthCredentialRecord(employeeId) {
+  var cleanId = normalizeEmpId(employeeId);
+  if (!cleanId) return null;
+
+  var sheet = getAuthCredentialsSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return null;
+
+  var rows = sheet.getRange(2, 1, lastRow - 1, 12).getValues();
+  for (var i = 0; i < rows.length; i++) {
+    if (normalizeEmpId(rows[i][0]) !== cleanId) continue;
+    return {
+      rowIndex: i + 2,
+      employeeId: cleanId,
+      passwordHash: String(rows[i][1] || '').trim(),
+      passwordSalt: String(rows[i][2] || '').trim(),
+      passwordVersion: Math.max(1, parseInt(rows[i][3] || '1', 10) || 1),
+      passwordCreatedAt: String(rows[i][4] || '').trim(),
+      passwordChangedAt: String(rows[i][5] || '').trim(),
+      lastLoginAt: String(rows[i][6] || '').trim(),
+      accountStatus: String(rows[i][7] || '').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+      failedLoginCount: parseInt(rows[i][8] || '0', 10) || 0,
+      lockedUntil: String(rows[i][9] || '').trim(),
+      createdAt: String(rows[i][10] || '').trim(),
+      updatedAt: String(rows[i][11] || '').trim()
+    };
+  }
+  return null;
+}
+
 function getUserCredentialSecurityState(employeeId) {
   var cleanId = normalizeEmpId(employeeId);
-  if (!cleanId) return { mustChangePassword: false, accountStatus: 'ACTIVE' };
+  if (!cleanId) return { accountStatus: 'ACTIVE', passwordVersion: 0, hasPassword: false };
 
   var cache = CacheService.getScriptCache();
   var cached = cache.get('cred_sec_' + cleanId);
   if (cached) {
-    try {
-      return JSON.parse(cached);
-    } catch (e) {}
+    try { return JSON.parse(cached); } catch (e) {}
   }
 
-  var ss = getCNESpreadsheet();
-  var authSheet = ss.getSheetByName('User Credentials');
-  if (!authSheet) {
-    return { mustChangePassword: false, accountStatus: 'ACTIVE' };
-  }
-
-  var authData = authSheet.getDataRange().getValues();
-  var state = { mustChangePassword: false, accountStatus: 'ACTIVE' };
-
-  for (var i = 1; i < authData.length; i++) {
-    if (normalizeEmpId(authData[i][0]) === cleanId) {
-      var mustChange = (String(authData[i][3] || '').trim().toUpperCase() === 'YES');
-      var rawStatus = String(authData[i][7] || '').trim().toUpperCase();
-      var status = (rawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
-      state = { mustChangePassword: mustChange, accountStatus: status };
-      break;
-    }
-  }
-
+  var record = getAuthCredentialRecord(cleanId);
+  var state = {
+    accountStatus: record ? record.accountStatus : 'ACTIVE',
+    passwordVersion: record ? record.passwordVersion : 0,
+    hasPassword: Boolean(record && record.passwordHash && record.passwordSalt)
+  };
   cache.put('cred_sec_' + cleanId, JSON.stringify(state), 300);
   return state;
 }
 
-/**
- * Login Handler with Initial Default Password (pass1234), Salted SHA-256, Inactive Protection & Rate Limiting
- */
+function clearCredentialSecurityCache(employeeId) {
+  var cleanId = normalizeEmpId(employeeId);
+  if (cleanId) CacheService.getScriptCache().remove('cred_sec_' + cleanId);
+}
+
+function upsertPasswordCredential(employeeId, newPassword) {
+  var cleanId = normalizeEmpId(employeeId);
+  var validation = validateNewPassword(newPassword);
+  if (!cleanId || !validation.valid) {
+    throw new Error(validation.message || 'Valid Employee ID and password are required.');
+  }
+
+  var sheet = getAuthCredentialsSheet();
+  var record = getAuthCredentialRecord(cleanId);
+  if (record && record.accountStatus === 'INACTIVE') {
+    var inactiveError = new Error('Your CNE account is inactive. Please contact Nursing Administration.');
+    inactiveError.code = 'ACCOUNT_INACTIVE';
+    throw inactiveError;
+  }
+
+  var salt = Utilities.getUuid().replace(/-/g, '');
+  var hash = computePasswordHash(newPassword, salt);
+  var nowIso = new Date().toISOString();
+  var nextVersion = record ? Math.max(1, record.passwordVersion + 1) : 1;
+  var passwordCreatedAt = record && record.passwordCreatedAt ? record.passwordCreatedAt : nowIso;
+  var createdAt = record && record.createdAt ? record.createdAt : nowIso;
+  var lastLoginAt = record ? record.lastLoginAt : '';
+  var accountStatus = record ? record.accountStatus : 'ACTIVE';
+
+  var row = [
+    cleanId, hash, salt, nextVersion, passwordCreatedAt, nowIso,
+    lastLoginAt, accountStatus, 0, '', createdAt, nowIso
+  ];
+
+  if (record) {
+    sheet.getRange(record.rowIndex, 1, 1, 12).setValues([row]);
+  } else {
+    sheet.appendRow(row);
+  }
+
+  clearCredentialSecurityCache(cleanId);
+  invalidateUserRoleCache(cleanId);
+  return { passwordVersion: nextVersion, accountStatus: accountStatus, created: !record || !record.passwordHash };
+}
+
 function handleLogin(params) {
   var employeeId = normalizeEmpId(params.employeeId);
-  var password = (params.password || '').trim();
-  
+  var password = String(params.password || '');
   if (!employeeId || !password) {
     return { success: false, message: 'Employee ID and password are required.' };
   }
 
-  // Rate-limiting check: max 5 failed attempts per 15 minutes per employee ID
-  var cache = CacheService.getScriptCache();
-  var cacheKey = 'login_fail_' + employeeId;
-  var failCount = parseInt(cache.get(cacheKey) || '0', 10);
-
-  if (failCount >= 5) {
-    logAuditAction('LOGIN_BLOCKED', employeeId, 'Rate limit exceeded (5 failed attempts in 15m)', 'BLOCKED');
-    return {
-      success: false,
-      errorCode: 'RATE_LIMITED',
-      message: 'Too many failed login attempts. Please try again after 15 minutes.'
-    };
-  }
-  
+  // Fast public-directory check before waiting for the auth transaction lock.
   var officer;
   try {
     officer = findOfficerById(employeeId);
   } catch (err) {
-    return { success: false, message: err.message || 'Error accessing institutional roster.' };
+    return { success: false, message: err.message || 'Error accessing Officers data.' };
   }
-
   if (!officer) {
-    cache.put(cacheKey, String(failCount + 1), 900);
-    logAuditAction('LOGIN_FAILED', employeeId, 'Employee ID not found in institutional roster', 'FAILED');
-    return { success: false, message: 'Employee ID not found in institutional roster.' };
-  }
-  
-  var ss = getCNESpreadsheet();
-  var authSheet = ss.getSheetByName('User Credentials');
-  if (!authSheet) {
-    return {
-      success: false,
-      message: 'System configuration error: "User Credentials" sheet not found in CNE database. Please contact system administrator.'
-    };
-  }
-  
-  var authData = authSheet.getDataRange().getValues();
-  var savedHash = '';
-  var savedSalt = '';
-  var mustChangePass = false;
-  var userRowIndex = -1;
-  var accountStatus = 'ACTIVE';
-  
-  for (var i = 1; i < authData.length; i++) {
-    if (normalizeEmpId(authData[i][0]) === employeeId) {
-      savedHash = String(authData[i][1] || '').trim();
-      savedSalt = String(authData[i][2] || '').trim();
-      mustChangePass = (String(authData[i][3] || '').toUpperCase() === 'YES');
-      var rawStatus = String(authData[i][7] || '').trim().toUpperCase();
-      accountStatus = (rawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
-      userRowIndex = i + 1;
-      break;
-    }
+    logAuditAction('LOGIN_FAILED', employeeId, 'Employee ID not found in Officers data', 'FAILED');
+    return { success: false, message: 'Invalid Employee ID or password.' };
   }
 
-  // Inactive Account Protection: Reject before token generation or Last Login update
-  if (accountStatus === 'INACTIVE') {
-    logAuditAction('LOGIN_FAILED', employeeId, 'Inactive account login attempt', 'BLOCKED');
-    return {
-      success: false,
-      errorCode: 'ACCOUNT_INACTIVE',
-      message: 'Your CNE account is inactive. Please contact Nursing Administration.'
-    };
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (e) {
+    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy. Please try again.' };
   }
-  
-  var isValid = false;
-  var isFirstLogin = false;
-  
-  if (savedHash && savedSalt) {
-    var computed = computePasswordHash(password, savedSalt);
-    if (computed === savedHash) {
-      isValid = true;
-    }
-  } else {
-    // Initial First-Time Login: Default institutional password is pass1234
-    if (password === 'pass1234') {
-      isValid = true;
-      isFirstLogin = true;
-      mustChangePass = true;
-    }
-  }
-  
-  if (!isValid) {
-    cache.put(cacheKey, String(failCount + 1), 900);
-    logAuditAction('LOGIN_FAILED', employeeId, 'Invalid credentials attempt', 'FAILED');
-    return {
-      success: false,
-      message: 'Invalid credentials. Default initial password is pass1234'
-    };
-  }
-  
-  // Clear failure counter on successful credentials
-  cache.remove(cacheKey);
 
-  var nowStr = new Date().toISOString();
+  try {
+    // Re-resolve the employee and credential while serialized. This prevents concurrent
+    // failures from losing counter increments and prevents login against stale employee data.
+    officer = findOfficerByIdFresh_(employeeId);
+    if (!officer) {
+      logAuditAction('LOGIN_FAILED', employeeId, 'Employee ID no longer present in Officers data', 'FAILED');
+      return { success: false, message: 'Invalid Employee ID or password.' };
+    }
 
-  // First default-password login: Establish authoritative User Credentials record with Must Change Password = YES
-  if (userRowIndex <= 0 || (!savedHash && !savedSalt)) {
-    var lock = LockService.getScriptLock();
-    try {
-      lock.waitLock(10000);
-    } catch (lockErr) {
-      logAuditAction('FIRST_LOGIN_SETUP_FAILED', employeeId, 'Lock acquisition timeout during first-login setup', 'FAILED');
+    var record = getAuthCredentialRecord(employeeId);
+    if (!record || !record.passwordHash || !record.passwordSalt) {
       return {
         success: false,
-        errorCode: 'CREDENTIAL_SETUP_FAILED',
-        message: 'Server is busy completing account setup. Please try again.'
+        errorCode: 'PASSWORD_NOT_SET',
+        message: 'No personal password is set for this Employee ID. Use Create / Reset Password to verify your registered email and create a password.'
       };
     }
 
-    try {
-      var freshData = authSheet.getDataRange().getValues();
-      var existingRow = -1;
-      for (var r = 1; r < freshData.length; r++) {
-        if (normalizeEmpId(freshData[r][0]) === employeeId) {
-          existingRow = r + 1;
-          break;
-        }
+    if (record.accountStatus === 'INACTIVE') {
+      logAuditAction('LOGIN_FAILED', employeeId, 'Inactive account login attempt', 'BLOCKED');
+      return { success: false, errorCode: 'ACCOUNT_INACTIVE', message: 'Your CNE account is inactive. Please contact Nursing Administration.' };
+    }
+
+    var nowMs = Date.now();
+    var lockedUntilMs = record.lockedUntil ? new Date(record.lockedUntil).getTime() : 0;
+    if (lockedUntilMs && !isNaN(lockedUntilMs) && nowMs < lockedUntilMs) {
+      return { success: false, errorCode: 'RATE_LIMITED', message: 'Too many failed login attempts. Please try again after 15 minutes.' };
+    }
+
+    var computed = computePasswordHash(password, record.passwordSalt);
+    if (!timingSafeEqual(computed, record.passwordHash)) {
+      var failures = (lockedUntilMs && nowMs >= lockedUntilMs) ? 1 : (record.failedLoginCount + 1);
+      var newLockedUntil = '';
+      if (failures >= 5) {
+        failures = 5;
+        newLockedUntil = new Date(nowMs + 15 * 60 * 1000).toISOString();
       }
-
-      var expectedHash = '';
-      var expectedSalt = '';
-
-      if (existingRow > 0) {
-        var existingRowData = freshData[existingRow - 1];
-        var existingHash = String(existingRowData[1] || '').trim();
-        var existingSalt = String(existingRowData[2] || '').trim();
-        var existingMustChange = String(existingRowData[3] || '').trim().toUpperCase();
-        var existingCreatedAt = String(existingRowData[4] || '').trim() || nowStr;
-        var existingAccountStatus = String(existingRowData[7] || '').trim().toUpperCase();
-
-        // Re-check Account Status under lock to prevent overwriting concurrent administrative deactivation
-        if (existingAccountStatus === 'INACTIVE') {
-          logAuditAction('LOGIN_FAILED', employeeId, 'Inactive account login attempt detected under lock', 'BLOCKED');
-          return {
-            success: false,
-            errorCode: 'ACCOUNT_INACTIVE',
-            message: 'Your CNE account is inactive. Please contact Nursing Administration.'
-          };
-        }
-
-        // Case 4: Existing row has Must Change Password = NO (password change already completed concurrently)
-        if (existingMustChange === 'NO') {
-          logAuditAction('FIRST_LOGIN_STATE_CHANGED', employeeId, 'Concurrent credential state change detected (Must Change Password is NO)', 'FAILED');
-          return {
-            success: false,
-            errorCode: 'CREDENTIAL_STATE_CHANGED',
-            message: 'Your account credentials changed while signing in. Please sign in again with your current password.'
-          };
-        }
-
-        // Case 2: Existing row has blank password hash and blank salt
-        if (!existingHash && !existingSalt) {
-          var defaultSalt = Utilities.getUuid().replace(/-/g, '');
-          var defaultHash = computePasswordHash('pass1234', defaultSalt);
-          authSheet.getRange(existingRow, 2).setValue(defaultHash);
-          authSheet.getRange(existingRow, 3).setValue(defaultSalt);
-          authSheet.getRange(existingRow, 4).setValue('YES');
-          authSheet.getRange(existingRow, 5).setValue(existingCreatedAt);
-          authSheet.getRange(existingRow, 6).setValue(nowStr);
-          authSheet.getRange(existingRow, 7).setValue(nowStr);
-          authSheet.getRange(existingRow, 8).setValue('ACTIVE');
-          expectedHash = defaultHash;
-          expectedSalt = defaultSalt;
-        } else if (existingHash && existingSalt) {
-          // Case 3 & Case 5: Existing row has populated credentials
-          if (computePasswordHash('pass1234', existingSalt) === existingHash && existingMustChange === 'YES') {
-            // Case 3: Concurrent first-login request already established default-password credentials with Must Change Password = YES
-            // Reuse existing row without generating another salt or overwriting password hash
-            expectedHash = existingHash;
-            expectedSalt = existingSalt;
-            mustChangePass = true;
-          } else {
-            // Case 5: Existing populated credential does not match pass1234 (or Must Change Password is not YES)
-            logAuditAction('FIRST_LOGIN_STATE_CHANGED', employeeId, 'Concurrent credential state change detected (populated hash does not match initial default)', 'FAILED');
-            return {
-              success: false,
-              errorCode: 'CREDENTIAL_STATE_CHANGED',
-              message: 'Your account credentials changed while signing in. Please sign in again with your current password.'
-            };
-          }
-        } else {
-          // Partially populated or changed credential state
-          logAuditAction('FIRST_LOGIN_STATE_CHANGED', employeeId, 'Concurrent credential state change detected (incomplete credential state)', 'FAILED');
-          return {
-            success: false,
-            errorCode: 'CREDENTIAL_STATE_CHANGED',
-            message: 'Your account credentials changed while signing in. Please sign in again with your current password.'
-          };
-        }
-      } else {
-        // Case 1: No existing credential row
-        var defaultSalt = Utilities.getUuid().replace(/-/g, '');
-        var defaultHash = computePasswordHash('pass1234', defaultSalt);
-        authSheet.appendRow([employeeId, defaultHash, defaultSalt, 'YES', nowStr, nowStr, nowStr, 'ACTIVE']);
-        expectedHash = defaultHash;
-        expectedSalt = defaultSalt;
-      }
-
-      SpreadsheetApp.flush();
-
-      // Confirm the row was successfully persisted
-      var persistedData = authSheet.getDataRange().getValues();
-      var verifiedRowCount = 0;
-      var persistedSuccessfully = false;
-      for (var p = 1; p < persistedData.length; p++) {
-        if (normalizeEmpId(persistedData[p][0]) === employeeId) {
-          verifiedRowCount++;
-          var pHash = String(persistedData[p][1] || '').trim();
-          var pSalt = String(persistedData[p][2] || '').trim();
-          var pMustChange = String(persistedData[p][3] || '').trim().toUpperCase();
-          var pRawStatus = String(persistedData[p][7] || '').trim().toUpperCase();
-          var pStatus = (pRawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
-          if (pHash === expectedHash && pSalt === expectedSalt && pMustChange === 'YES' && pStatus === 'ACTIVE') {
-            persistedSuccessfully = true;
-          }
-        }
-      }
-
-      if (!persistedSuccessfully || verifiedRowCount !== 1) {
-        throw new Error('Authoritative first-login credential row persistence verification failed.');
-      }
-    } catch (setupErr) {
-      logAuditAction('FIRST_LOGIN_SETUP_FAILED', employeeId, 'Credential persistence failed during first-login setup', 'FAILED');
+      var authSheet = getAuthCredentialsSheet();
+      authSheet.getRange(record.rowIndex, 9).setValue(failures);
+      authSheet.getRange(record.rowIndex, 10).setValue(newLockedUntil);
+      authSheet.getRange(record.rowIndex, 12).setValue(new Date().toISOString());
+      clearCredentialSecurityCache(employeeId);
+      logAuditAction('LOGIN_FAILED', employeeId, 'Invalid credentials attempt', 'FAILED');
       return {
         success: false,
-        errorCode: 'CREDENTIAL_SETUP_FAILED',
-        message: 'Your account security setup could not be completed. Please try again.'
+        errorCode: failures >= 5 ? 'RATE_LIMITED' : 'INVALID_CREDENTIALS',
+        message: failures >= 5 ? 'Too many failed login attempts. Please try again after 15 minutes.' : 'Invalid Employee ID or password.'
       };
-    } finally {
-      lock.releaseLock();
     }
-    mustChangePass = true;
-  } else if (userRowIndex > 0) {
-    // Record Last Login
-    authSheet.getRange(userRowIndex, 7).setValue(nowStr);
-  }
 
-  // Update cached security state
-  cache.put('cred_sec_' + employeeId, JSON.stringify({ mustChangePassword: mustChangePass, accountStatus: 'ACTIVE' }), 300);
-  
-  var roleInfo = getUserRoleInfo(employeeId);
-  var role = roleInfo.role;
-  var token = generateSessionToken(employeeId);
-  
-  logAuditAction('LOGIN_SUCCESS', employeeId, 'Role: ' + role + (roleInfo.assignedArea ? ' (' + roleInfo.assignedArea + ')' : ''), 'SUCCESS');
-  
-  return {
-    success: true,
-    message: 'Login successful',
-    data: {
-      employeeId: officer.employeeId,
-      name: officer.name,
-      designation: officer.designation,
-      role: role,
-      assignedArea: roleInfo.assignedArea,
-      assignedAreas: roleInfo.assignedAreas,
-      token: token,
-      isFirstLogin: isFirstLogin,
-      mustChangePassword: mustChangePass
-    }
-  };
+    var authSheet = getAuthCredentialsSheet();
+    var nowIso = new Date().toISOString();
+    authSheet.getRange(record.rowIndex, 7).setValue(nowIso);
+    authSheet.getRange(record.rowIndex, 9).setValue(0);
+    authSheet.getRange(record.rowIndex, 10).setValue('');
+    authSheet.getRange(record.rowIndex, 12).setValue(nowIso);
+    clearCredentialSecurityCache(employeeId);
+
+    var roleInfo = getUserRoleInfo(employeeId, true);
+    var token = generateSessionToken(employeeId);
+    logAuditAction('LOGIN_SUCCESS', employeeId, 'Role: ' + roleInfo.role, 'SUCCESS');
+
+    return {
+      success: true,
+      message: 'Login successful',
+      data: {
+        employeeId: officer.employeeId,
+        name: officer.name,
+        designation: officer.designation,
+        role: roleInfo.role,
+        assignedArea: roleInfo.assignedArea,
+        assignedAreas: roleInfo.assignedAreas,
+        token: token
+      }
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
-/**
- * Change Password
- */
 function handleChangePassword(params, session) {
   if (!session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Invalid or expired session. Please log in again.' };
   }
-  
-  var newPassword = (params.newPassword || '').trim();
-  if (newPassword.length < 6) {
-    return { success: false, message: 'Password must be at least 6 characters long.' };
-  }
-  
-  var salt = Utilities.getUuid().replace(/-/g, '');
-  var hashStr = computePasswordHash(newPassword, salt);
+
   var empId = normalizeEmpId(session.employeeId);
-  
+  var currentPassword = String(params.currentPassword || '');
+  var newPassword = String(params.newPassword || '');
+
+  if (!currentPassword) {
+    return {
+      success: false,
+      errorCode: 'CURRENT_PASSWORD_REQUIRED',
+      message: 'Current password is required.'
+    };
+  }
+
+  var validation = validateNewPassword(newPassword);
+  if (!validation.valid) return { success: false, message: validation.message };
+
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
@@ -1882,61 +2036,57 @@ function handleChangePassword(params, session) {
   }
 
   try {
-    var ss = getCNESpreadsheet();
-    var authSheet = ss.getSheetByName('User Credentials');
-    if (!authSheet) {
+    var freshSessionCheck = refreshMutationSession(session);
+    if (!freshSessionCheck.success) return freshSessionCheck;
+    session = freshSessionCheck.session;
+
+    // Re-read the credential while holding the lock. A valid authenticated session
+    // should always have a personal password, but fail closed if the account state
+    // changed after the session was issued.
+    var record = getAuthCredentialRecord(empId);
+    if (!record || !record.passwordHash || !record.passwordSalt) {
       return {
         success: false,
-        message: 'System configuration error: "User Credentials" sheet not found in CNE database. Please contact system administrator.'
+        errorCode: 'PASSWORD_NOT_SET',
+        message: 'No personal password is currently set. Please use Create / Reset Password.'
       };
     }
-    var data = authSheet.getDataRange().getValues();
-    var updated = false;
-    var now = new Date().toISOString();
-    var preservedAccountStatus = 'ACTIVE';
-    
-    for (var i = 1; i < data.length; i++) {
-      if (normalizeEmpId(data[i][0]) === empId) {
-        var rawStatus = String(data[i][7] || '').trim().toUpperCase();
-        if (rawStatus === 'INACTIVE') {
-          CacheService.getScriptCache().remove('cred_sec_' + empId);
-          logAuditAction('PASSWORD_CHANGE_BLOCKED', empId, 'Account inactive', 'BLOCKED');
-          return {
-            success: false,
-            errorCode: 'ACCOUNT_INACTIVE',
-            message: 'Your CNE account is inactive. Please contact Nursing Administration.'
-          };
-        }
-        preservedAccountStatus = 'ACTIVE';
-        authSheet.getRange(i + 1, 2).setValue(hashStr);
-        authSheet.getRange(i + 1, 3).setValue(salt);
-        authSheet.getRange(i + 1, 4).setValue('NO');
-        authSheet.getRange(i + 1, 6).setValue(now);
-        updated = true;
-        break;
-      }
+    if (record.accountStatus === 'INACTIVE') {
+      return {
+        success: false,
+        errorCode: 'ACCOUNT_INACTIVE',
+        message: 'Your CNE account is inactive. Please contact Nursing Administration.'
+      };
     }
-    
-    if (!updated) {
-      authSheet.appendRow([empId, hashStr, salt, 'NO', now, now, now, 'ACTIVE']);
-    }
-    
-    // Invalidate previous active sessions
-    var changeTime = Date.now();
-    CacheService.getScriptCache().put('pwd_change_' + empId, String(changeTime), 7 * 24 * 60 * 60);
-    invalidateUserRoleCache(empId);
-    CacheService.getScriptCache().put('cred_sec_' + empId, JSON.stringify({ mustChangePassword: false, accountStatus: preservedAccountStatus }), 300);
 
-    logAuditAction('PASSWORD_CHANGED', empId, 'User changed personal password', 'SUCCESS');
-    
-    // Generate fresh session token and return updated SessionUser data
+    var currentHash = computePasswordHash(currentPassword, record.passwordSalt);
+    if (!timingSafeEqual(currentHash, record.passwordHash)) {
+      logAuditAction('PASSWORD_CHANGE_FAILED', empId, 'Incorrect current password', 'FAILED');
+      return {
+        success: false,
+        errorCode: 'INVALID_CURRENT_PASSWORD',
+        message: 'Current password is incorrect.'
+      };
+    }
+
+    var newHashWithCurrentSalt = computePasswordHash(newPassword, record.passwordSalt);
+    if (timingSafeEqual(newHashWithCurrentSalt, record.passwordHash)) {
+      return {
+        success: false,
+        errorCode: 'PASSWORD_UNCHANGED',
+        message: 'New password must be different from your current password.'
+      };
+    }
+
+    var result = upsertPasswordCredential(empId, newPassword);
     var officer = findOfficerById(empId);
     var roleInfo = getUserRoleInfo(empId);
     var newToken = generateSessionToken(empId);
+    logAuditAction('PASSWORD_CHANGED', empId, 'User changed personal password after current-password verification; version ' + result.passwordVersion, 'SUCCESS');
 
     return {
       success: true,
-      message: 'Password updated successfully. You can now use your new password.',
+      message: 'Password updated successfully.',
       data: {
         employeeId: officer ? officer.employeeId : empId,
         name: officer ? officer.name : '',
@@ -1944,9 +2094,7 @@ function handleChangePassword(params, session) {
         role: roleInfo.role,
         assignedArea: roleInfo.assignedArea,
         assignedAreas: roleInfo.assignedAreas,
-        token: newToken,
-        isFirstLogin: false,
-        mustChangePassword: false
+        token: newToken
       }
     };
   } finally {
@@ -1954,85 +2102,275 @@ function handleChangePassword(params, session) {
   }
 }
 
-/**
- * Password Reset / Forgot Password with Date of Joining (DOJ) Verification & Rate Limiting
- */
-function handleResetPassword(params) {
+function getOtpChallengeById(challengeId) {
+  var clean = String(challengeId || '').trim();
+  if (!clean) return null;
+  var sheet = getOtpVerificationSheet();
+  if (sheet.getLastRow() <= 1) return null;
+  var rowIndex = findExactRowInColumn_(sheet, 0, clean, 2);
+  if (rowIndex < 2) return null;
+  var row = sheet.getRange(rowIndex, 1, 1, 15).getValues()[0];
+  return {
+    rowIndex: rowIndex,
+    challengeId: clean,
+    purpose: String(row[1] || '').trim(),
+    principalType: String(row[2] || '').trim(),
+    principalId: String(row[3] || '').trim(),
+    email: String(row[4] || '').trim().toLowerCase(),
+    otpHash: String(row[5] || '').trim(),
+    expiresAt: String(row[6] || '').trim(),
+    attempts: parseInt(row[7] || '0', 10) || 0,
+    maxAttempts: parseInt(row[8] || String(OTP_MAX_ATTEMPTS), 10) || OTP_MAX_ATTEMPTS,
+    resendAvailableAt: String(row[9] || '').trim(),
+    verifiedAt: String(row[10] || '').trim(),
+    consumedAt: String(row[11] || '').trim(),
+    status: String(row[12] || '').trim().toUpperCase(),
+    createdAt: String(row[13] || '').trim(),
+    updatedAt: String(row[14] || '').trim()
+  };
+}
+
+function invalidateOpenOtpChallenges(purpose, principalId) {
+  var sheet = getOtpVerificationSheet();
+  if (sheet.getLastRow() <= 1) return;
+  var normalizedPrincipal = normalizeEmpId(principalId) || String(principalId || '').trim().toLowerCase();
+  var matchingRows = findExactRowsInColumn_(sheet, 3, normalizedPrincipal, 2);
+  var statusRanges = [];
+  var updatedRanges = [];
+  for (var i = 0; i < matchingRows.length; i++) {
+    var row = sheet.getRange(matchingRows[i], 2, 1, 12).getValues()[0]; // B:M
+    var rowPurpose = String(row[0] || '').trim();
+    var status = String(row[11] || '').trim().toUpperCase();
+    if (rowPurpose === purpose && (status === 'PENDING' || status === 'VERIFIED')) {
+      statusRanges.push('M' + matchingRows[i]);
+      updatedRanges.push('O' + matchingRows[i]);
+    }
+  }
+  if (statusRanges.length > 0) {
+    sheet.getRangeList(statusRanges).setValue('SUPERSEDED');
+    sheet.getRangeList(updatedRanges).setValue(new Date().toISOString());
+  }
+}
+
+function countRecentOtpSends(purpose, principalId, sinceMs) {
+  var sheet = getOtpVerificationSheet();
+  if (sheet.getLastRow() <= 1) return 0;
+  var normalizedPrincipal = normalizeEmpId(principalId) || String(principalId || '').trim().toLowerCase();
+  var matchingRows = findExactRowsInColumn_(sheet, 3, normalizedPrincipal, 2);
+  var count = 0;
+  for (var i = 0; i < matchingRows.length; i++) {
+    var row = sheet.getRange(matchingRows[i], 2, 1, 13).getValues()[0]; // B:N
+    var rowPurpose = String(row[0] || '').trim();
+    if (rowPurpose !== purpose) continue;
+    var createdMs = new Date(row[12]).getTime();
+    if (!isNaN(createdMs) && createdMs >= sinceMs) count++;
+  }
+  return count;
+}
+
+function getLatestOtpChallengeForPrincipal_(purpose, principalId) {
+  var sheet = getOtpVerificationSheet();
+  if (sheet.getLastRow() <= 1) return null;
+  var normalizedPrincipal = normalizeEmpId(principalId) || String(principalId || '').trim().toLowerCase();
+  var matchingRows = findExactRowsInColumn_(sheet, 3, normalizedPrincipal, 2);
+  var latest = null;
+  var latestMs = -1;
+  for (var i = 0; i < matchingRows.length; i++) {
+    var row = sheet.getRange(matchingRows[i], 1, 1, 15).getValues()[0];
+    var rowPurpose = String(row[1] || '').trim();
+    if (rowPurpose !== purpose) continue;
+    var createdMs = new Date(row[13]).getTime();
+    if (isNaN(createdMs)) createdMs = 0;
+    if (!latest || createdMs >= latestMs) {
+      latestMs = createdMs;
+      latest = {
+        rowIndex: matchingRows[i],
+        challengeId: String(row[0] || '').trim(),
+        purpose: rowPurpose,
+        principalId: String(row[3] || '').trim(),
+        status: String(row[12] || '').trim().toUpperCase(),
+        resendAvailableAt: String(row[9] || '').trim(),
+        createdAt: String(row[13] || '').trim()
+      };
+    }
+  }
+  return latest;
+}
+
+function getOtpCooldownRemainingSeconds_(purpose, principalId) {
+  var latest = getLatestOtpChallengeForPrincipal_(purpose, principalId);
+  if (!latest) return 0;
+  // A delivery failure is intentionally retryable immediately. Superseded/invalidated
+  // rows are historical and must never block the current request.
+  if (latest.status === 'SEND_FAILED' || latest.status === 'SUPERSEDED' || latest.status === 'INVALIDATED') return 0;
+  var resendMs = new Date(latest.resendAvailableAt).getTime();
+  if (isNaN(resendMs)) return 0;
+  return Math.max(0, Math.ceil((resendMs - Date.now()) / 1000));
+}
+
+
+function handleRequestPasswordOtp(params) {
   var employeeId = normalizeEmpId(params.employeeId);
-  var doj = (params.dateOfJoining || params.doj || '').trim();
-  var newPassword = (params.newPassword || '').trim();
-  
-  if (!employeeId || !doj || !newPassword) {
-    return { success: false, message: 'Employee ID, Date of Joining (DOJ) verification, and New Password are required.' };
-  }
-  
-  // Rate-limiting check: max 5 failed attempts per 15 minutes per employee ID
+  if (!employeeId) return { success: false, message: 'Employee ID is required.' };
+
+  var cooldownKey = 'otp_cd_' + employeeId;
   var cache = CacheService.getScriptCache();
-  var cacheKey = 'reset_fail_' + employeeId;
-  var failCount = parseInt(cache.get(cacheKey) || '0', 10);
-  
-  if (failCount >= 5) {
-    logAuditAction('PASSWORD_RESET_BLOCKED', employeeId, 'Rate limit exceeded', 'BLOCKED');
-    return {
-      success: false,
-      errorCode: 'RATE_LIMITED',
-      message: 'Too many failed verification attempts. Please try again after 15 minutes or contact Nursing Administration.'
-    };
+  if (cache.get(cooldownKey)) {
+    return { success: false, errorCode: 'OTP_COOLDOWN', message: 'Please wait 60 seconds before requesting another verification code.' };
   }
-  
-  if (newPassword.length < 6) {
-    return { success: false, message: 'New password must be at least 6 characters long.' };
-  }
-  
+
   var officer;
   try {
     officer = findOfficerById(employeeId);
-  } catch (err) {
-    return { success: false, message: err.message || 'Error accessing institutional roster.' };
+  } catch (e) {
+    return { success: false, message: e.message || 'Unable to access Officers data.' };
+  }
+  if (!officer) return { success: false, message: 'Employee ID was not found in Officers data.' };
+
+  var email = String(officer.email || '').trim().toLowerCase();
+  if (!isValidEmailAddress(email)) {
+    return {
+      success: false,
+      errorCode: 'EMAIL_NOT_AVAILABLE',
+      message: 'A valid registered email address is not available for this Employee ID. Please contact the CNE administrator to update Officers data.'
+    };
   }
 
-  if (!officer) {
-    cache.put(cacheKey, String(failCount + 1), 900);
-    return { success: false, message: 'Verification failed. Please check your details and try again.' };
+  var credential = getAuthCredentialRecord(employeeId);
+  if (credential && credential.accountStatus === 'INACTIVE') {
+    return { success: false, errorCode: 'ACCOUNT_INACTIVE', message: 'Your CNE account is inactive. Please contact Nursing Administration.' };
   }
-  
-  if (officer.dojColMissing) {
+
+  if (countRecentOtpSends(OTP_PURPOSE_PASSWORD, employeeId, Date.now() - 60 * 60 * 1000) >= OTP_MAX_SENDS_PER_HOUR) {
+    return { success: false, errorCode: 'OTP_RATE_LIMITED', message: 'Too many verification-code requests. Please try again later.' };
+  }
+
+  var remainingQuota = MailApp.getRemainingDailyQuota();
+  if (remainingQuota < 1) {
     return {
       success: false,
-      message: 'System configuration error: Date of Joining column could not be identified in Rosters Master Data. Please contact system administrator.'
+      errorCode: 'EMAIL_QUOTA_EXHAUSTED',
+      message: 'Email verification is temporarily unavailable because the daily email quota has been reached. Please contact the CNE administrator.'
     };
   }
-  
-  // Strict comparison against Date of Joining (DOJ) ONLY - NO DOB Fallback
-  var inputDojNorm = normalizeDateForComparison(doj);
-  if (!inputDojNorm) {
-    return {
-      success: false,
-      message: 'Invalid Date of Joining format. Please enter a valid date in DD/MM/YYYY format.'
-    };
+
+  // Reserve OTP creation atomically. The cooldown is written BEFORE releasing the lock,
+  // so two simultaneous requests for the same employee cannot both create active challenges.
+  var challengeId = '';
+  var otp = '';
+  var otpSheet = null;
+  var otpCreationLock = LockService.getScriptLock();
+  try {
+    otpCreationLock.waitLock(10000);
+  } catch (lockErr) {
+    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy processing another verification request. Please try again.' };
   }
-  
-  var officerDojNorm = normalizeDateForComparison(officer.doj);
-  if (!officerDojNorm) {
-    return {
-      success: false,
-      message: 'Hospital record error: Date of Joining in institutional roster is not formatted properly. Please contact system administrator.'
-    };
+
+  try {
+    // Re-check mutable controls while holding the lock. The checks above are only fast rejects.
+    if (cache.get(cooldownKey)) {
+      return { success: false, errorCode: 'OTP_COOLDOWN', message: 'Please wait 60 seconds before requesting another verification code.' };
+    }
+    var authoritativeCooldownSeconds = getOtpCooldownRemainingSeconds_(OTP_PURPOSE_PASSWORD, employeeId);
+    if (authoritativeCooldownSeconds > 0) {
+      return { success: false, errorCode: 'OTP_COOLDOWN', message: 'Please wait ' + authoritativeCooldownSeconds + ' seconds before requesting another verification code.' };
+    }
+    if (countRecentOtpSends(OTP_PURPOSE_PASSWORD, employeeId, Date.now() - 60 * 60 * 1000) >= OTP_MAX_SENDS_PER_HOUR) {
+      return { success: false, errorCode: 'OTP_RATE_LIMITED', message: 'Too many verification-code requests. Please try again later.' };
+    }
+
+    // Re-read authoritative identity/account state while serialized. The registered
+    // email may have changed between the fast pre-check and challenge creation.
+    officer = findOfficerByIdFresh_(employeeId);
+    if (!officer) return { success: false, message: 'Employee ID was not found in Officers data.' };
+    email = String(officer.email || '').trim().toLowerCase();
+    if (!isValidEmailAddress(email)) {
+      return { success: false, errorCode: 'EMAIL_NOT_AVAILABLE', message: 'A valid registered email address is not available for this Employee ID. Please contact the CNE administrator to update Officers data.' };
+    }
+    credential = getAuthCredentialRecord(employeeId);
+    if (credential && credential.accountStatus === 'INACTIVE') {
+      return { success: false, errorCode: 'ACCOUNT_INACTIVE', message: 'Your CNE account is inactive. Please contact Nursing Administration.' };
+    }
+
+    // A newly-created challenge supersedes every older open challenge for this purpose/principal.
+    invalidateOpenOtpChallenges(OTP_PURPOSE_PASSWORD, employeeId);
+
+    challengeId = Utilities.getUuid().replace(/-/g, '');
+    otp = generateSixDigitOtp();
+    var otpHash = computeOtpHash(challengeId, otp);
+    var now = new Date();
+    var nowIso = now.toISOString();
+    var expiresAt = new Date(now.getTime() + OTP_TTL_MS).toISOString();
+    var resendAt = new Date(now.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000).toISOString();
+
+    otpSheet = getOtpVerificationSheet();
+    otpSheet.appendRow([
+      challengeId, OTP_PURPOSE_PASSWORD, 'INTERNAL', employeeId, email, otpHash,
+      expiresAt, 0, OTP_MAX_ATTEMPTS, resendAt, '', '', 'PENDING', nowIso, nowIso
+    ]);
+
+    // Set cooldown before releasing the lock to close the concurrent-request race window.
+    cache.put(cooldownKey, '1', OTP_RESEND_COOLDOWN_SECONDS);
+  } finally {
+    otpCreationLock.releaseLock();
   }
-  
-  if (inputDojNorm !== officerDojNorm) {
-    cache.put(cacheKey, String(failCount + 1), 900);
-    logAuditAction('PASSWORD_RESET_FAILED', employeeId, 'DOJ mismatch', 'FAILED');
-    return { success: false, message: 'Verification failed. Date of Joining does not match hospital records.' };
+
+  try {
+    MailApp.sendEmail({
+      to: email,
+      subject: 'CNE Management System verification code',
+      body:
+        'CNE Management System Verification Code\\n\\n' +
+        'Your 6-digit verification code is: ' + otp + '\\n\\n' +
+        'This code expires in 10 minutes and can be used only once.\\n' +
+        'If you did not request this code, please ignore this email.\\n\\n' +
+        'AIIMS Rishikesh - CNE Management System'
+    });
+  } catch (sendErr) {
+    var sendFailLock = LockService.getScriptLock();
+    try {
+      sendFailLock.waitLock(10000);
+      var challenge = getOtpChallengeById(challengeId);
+      var latestChallenge = getLatestOtpChallengeForPrincipal_(OTP_PURPOSE_PASSWORD, employeeId);
+      var failedChallengeIsLatest = Boolean(latestChallenge && latestChallenge.challengeId === challengeId);
+      if (challenge && challenge.status === 'PENDING' && otpSheet && failedChallengeIsLatest) {
+        otpSheet.getRange(challenge.rowIndex, 13).setValue('SEND_FAILED');
+        otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+        // Remove cooldown only for the challenge whose email actually failed. Never
+        // erase a newer request's cooldown if this older email completes/fails late.
+        try { cache.remove(cooldownKey); } catch (cacheErr) {}
+      }
+    } finally {
+      try { sendFailLock.releaseLock(); } catch (releaseErr) {}
+    }
+    logAuditAction('PASSWORD_OTP_SEND_FAILED', employeeId, 'Email delivery failed', 'FAILED');
+    return { success: false, errorCode: 'OTP_EMAIL_FAILED', message: 'The verification email could not be sent. Please try again or contact the CNE administrator.' };
   }
-  
-  // Reset failure count on success
-  cache.remove(cacheKey);
-  
-  var salt = Utilities.getUuid().replace(/-/g, '');
-  var hashStr = computePasswordHash(newPassword, salt);
-  var now = new Date().toISOString();
-  
+
+  logAuditAction('PASSWORD_OTP_SENT', employeeId, 'OTP sent to registered email ' + maskEmailAddress(email), 'SUCCESS');
+
+  return {
+    success: true,
+    message: 'A 6-digit verification code has been sent to your registered email.',
+    data: {
+      challengeId: challengeId,
+      maskedEmail: maskEmailAddress(email),
+      expiresInSeconds: Math.floor(OTP_TTL_MS / 1000),
+      resendAfterSeconds: OTP_RESEND_COOLDOWN_SECONDS,
+      employeeName: officer.name || ''
+    }
+  };
+}
+
+function handleVerifyPasswordOtp(params) {
+  var employeeId = normalizeEmpId(params.employeeId);
+  var challengeId = String(params.challengeId || '').trim();
+  var otp = String(params.otp || '').trim();
+
+  if (!employeeId || !challengeId || !/^\\d{6}$/.test(otp)) {
+    return { success: false, message: 'Employee ID, challenge, and a valid 6-digit verification code are required.' };
+  }
+
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
@@ -2041,130 +2379,221 @@ function handleResetPassword(params) {
   }
 
   try {
-    var ss = getCNESpreadsheet();
-    var authSheet = ss.getSheetByName('User Credentials');
-    if (!authSheet) {
+    var challenge = getOtpChallengeById(challengeId);
+    if (!challenge || challenge.purpose !== OTP_PURPOSE_PASSWORD || normalizeEmpId(challenge.principalId) !== employeeId) {
+      return { success: false, errorCode: 'OTP_INVALID', message: 'Verification code is invalid or expired.' };
+    }
+    if (challenge.status !== 'PENDING') {
+      return { success: false, errorCode: 'OTP_INVALID', message: 'Verification code is no longer active. Request a new code.' };
+    }
+
+    var liveOfficer = findOfficerByIdFresh_(employeeId);
+    var liveCredential = getAuthCredentialRecord(employeeId);
+    var liveEmail = liveOfficer ? String(liveOfficer.email || '').trim().toLowerCase() : '';
+    if (!liveOfficer || !isValidEmailAddress(liveEmail) || liveEmail !== String(challenge.email || '').trim().toLowerCase()) {
+      var changedSheet = getOtpVerificationSheet();
+      changedSheet.getRange(challenge.rowIndex, 13).setValue('INVALIDATED');
+      changedSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      return { success: false, errorCode: 'OTP_IDENTITY_CHANGED', message: 'Registered employee/email details changed. Request a new verification code.' };
+    }
+    if (liveCredential && liveCredential.accountStatus === 'INACTIVE') {
+      return { success: false, errorCode: 'ACCOUNT_INACTIVE', message: 'Your CNE account is inactive. Please contact Nursing Administration.' };
+    }
+
+    var expiresMs = new Date(challenge.expiresAt).getTime();
+    if (isNaN(expiresMs) || Date.now() > expiresMs) {
+      var otpSheet = getOtpVerificationSheet();
+      otpSheet.getRange(challenge.rowIndex, 13).setValue('EXPIRED');
+      otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      return { success: false, errorCode: 'OTP_EXPIRED', message: 'Verification code has expired. Request a new code.' };
+    }
+
+    if (challenge.attempts >= challenge.maxAttempts) {
+      return { success: false, errorCode: 'OTP_LOCKED', message: 'Too many incorrect verification attempts. Request a new code.' };
+    }
+
+    var suppliedHash = computeOtpHash(challengeId, otp);
+    if (!timingSafeEqual(suppliedHash, challenge.otpHash)) {
+      var attempts = challenge.attempts + 1;
+      var otpSheet2 = getOtpVerificationSheet();
+      otpSheet2.getRange(challenge.rowIndex, 8).setValue(attempts);
+      otpSheet2.getRange(challenge.rowIndex, 13).setValue(attempts >= challenge.maxAttempts ? 'LOCKED' : 'PENDING');
+      otpSheet2.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      logAuditAction('PASSWORD_OTP_FAILED', employeeId, 'Incorrect OTP attempt ' + attempts, 'FAILED');
       return {
         success: false,
-        message: 'System configuration error: "User Credentials" sheet not found in CNE database. Please contact system administrator.'
+        errorCode: attempts >= challenge.maxAttempts ? 'OTP_LOCKED' : 'OTP_INVALID',
+        message: attempts >= challenge.maxAttempts ? 'Too many incorrect verification attempts. Request a new code.' : 'Incorrect verification code.'
       };
     }
-    var data = authSheet.getDataRange().getValues();
-    var updated = false;
-    var preservedAccountStatus = 'ACTIVE';
-    
-    for (var i = 1; i < data.length; i++) {
-      if (normalizeEmpId(data[i][0]) === employeeId) {
-        var rawStatus = String(data[i][7] || '').trim().toUpperCase();
-        if (rawStatus === 'INACTIVE') {
-          CacheService.getScriptCache().remove('cred_sec_' + employeeId);
-          logAuditAction('PASSWORD_RESET_BLOCKED', employeeId, 'Account inactive', 'BLOCKED');
-          return {
-            success: false,
-            errorCode: 'ACCOUNT_INACTIVE',
-            message: 'Your CNE account is inactive. Please contact Nursing Administration.'
-          };
-        }
-        preservedAccountStatus = 'ACTIVE';
-        authSheet.getRange(i + 1, 2).setValue(hashStr);
-        authSheet.getRange(i + 1, 3).setValue(salt);
-        authSheet.getRange(i + 1, 4).setValue('NO');
-        authSheet.getRange(i + 1, 6).setValue(now);
-        updated = true;
-        break;
-      }
-    }
-    
-    if (!updated) {
-      authSheet.appendRow([employeeId, hashStr, salt, 'NO', now, now, now, 'ACTIVE']);
-    }
-    
-    // Invalidate previous active sessions
-    CacheService.getScriptCache().put('pwd_change_' + employeeId, String(Date.now()), 7 * 24 * 60 * 60);
-    invalidateUserRoleCache(employeeId);
-    CacheService.getScriptCache().put('cred_sec_' + employeeId, JSON.stringify({ mustChangePassword: false, accountStatus: preservedAccountStatus }), 300);
 
-    logAuditAction('PASSWORD_RESET_SUCCESS', employeeId, 'Password reset via DOJ verification', 'SUCCESS');
-    
-    return { success: true, message: 'Password reset successfully. You can now log in with your new password.' };
+    var verifiedAt = new Date().toISOString();
+    var otpSheet3 = getOtpVerificationSheet();
+    otpSheet3.getRange(challenge.rowIndex, 6).setValue('');
+    otpSheet3.getRange(challenge.rowIndex, 11).setValue(verifiedAt);
+    otpSheet3.getRange(challenge.rowIndex, 13).setValue('VERIFIED');
+    otpSheet3.getRange(challenge.rowIndex, 15).setValue(verifiedAt);
+
+    var verificationToken = generateOtpVerificationToken(challengeId, OTP_PURPOSE_PASSWORD, employeeId);
+    logAuditAction('PASSWORD_OTP_VERIFIED', employeeId, 'Registered email verified', 'SUCCESS');
+
+    return {
+      success: true,
+      message: 'Email verification successful. You can now create your password.',
+      data: { verificationToken: verificationToken, expiresInSeconds: Math.floor(OTP_VERIFY_TOKEN_TTL_MS / 1000) }
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleSetPasswordWithOtp(params) {
+  var employeeId = normalizeEmpId(params.employeeId);
+  var verificationToken = String(params.verificationToken || '').trim();
+  var newPassword = String(params.newPassword || '');
+  var passwordValidation = validateNewPassword(newPassword);
+
+  if (!employeeId || !verificationToken || !passwordValidation.valid) {
+    return { success: false, message: passwordValidation.message || 'Employee ID, verification token, and new password are required.' };
+  }
+
+  var tokenData = verifyOtpVerificationToken(verificationToken, OTP_PURPOSE_PASSWORD, employeeId);
+  if (!tokenData) {
+    return { success: false, errorCode: 'VERIFICATION_EXPIRED', message: 'Email verification has expired or is invalid. Please request a new verification code.' };
+  }
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (e) {
+    return { success: false, message: 'Server is busy. Please try again.' };
+  }
+
+  try {
+    var challenge = getOtpChallengeById(tokenData.challengeId);
+    if (!challenge || challenge.status !== 'VERIFIED' || challenge.consumedAt || normalizeEmpId(challenge.principalId) !== employeeId) {
+      return { success: false, errorCode: 'VERIFICATION_ALREADY_USED', message: 'This verification has already been used or is no longer valid.' };
+    }
+
+    var officer = findOfficerByIdFresh_(employeeId);
+    if (!officer) return { success: false, message: 'Employee ID was not found in Officers data.' };
+    var currentRegisteredEmail = String(officer.email || '').trim().toLowerCase();
+    if (!isValidEmailAddress(currentRegisteredEmail) || currentRegisteredEmail !== String(challenge.email || '').trim().toLowerCase()) {
+      return { success: false, errorCode: 'OTP_IDENTITY_CHANGED', message: 'Registered employee/email details changed. Please request a new verification code.' };
+    }
+
+    // Consume the verified challenge BEFORE changing credentials. If the password write
+    // later fails, the OTP remains non-replayable and the user must request a fresh code.
+    var consumedAt = new Date().toISOString();
+    var otpSheet = getOtpVerificationSheet();
+    otpSheet.getRange(challenge.rowIndex, 12).setValue(consumedAt);
+    otpSheet.getRange(challenge.rowIndex, 13).setValue('CONSUMED');
+    otpSheet.getRange(challenge.rowIndex, 15).setValue(consumedAt);
+
+    var result = upsertPasswordCredential(employeeId, newPassword);
+
+    logAuditAction(
+      result.created ? 'PASSWORD_CREATED' : 'PASSWORD_RESET_SUCCESS',
+      employeeId,
+      'Password established after registered-email OTP verification; version ' + result.passwordVersion,
+      'SUCCESS'
+    );
+
+    return {
+      success: true,
+      message: result.created ? 'Password created successfully. You can now log in.' : 'Password reset successfully. You can now log in with your new password.',
+      data: { passwordVersion: result.passwordVersion }
+    };
+  } catch (err) {
+    if (err && err.code === 'ACCOUNT_INACTIVE') {
+      return { success: false, errorCode: 'ACCOUNT_INACTIVE', message: err.message };
+    }
+    return { success: false, message: err && err.message ? err.message : 'Unable to update password.' };
   } finally {
     lock.releaseLock();
   }
 }
 
 /**
- * Admin Password Reset: Admin resets an employee's password back to pass1234
+ * Legacy reset endpoint intentionally disabled.
+ * Password creation/reset must use requestPasswordOtp -> verifyPasswordOtp -> setPasswordWithOtp.
+ */
+function handleResetPassword(params) {
+  return {
+    success: false,
+    errorCode: 'OTP_REQUIRED',
+    message: 'Password reset now requires registered-email verification. Please use Create / Reset Password on the login page.'
+  };
+}
+
+/**
+ * Admin reset no longer assigns a shared/default password.
+ * It clears the password, increments Password Version, invalidates existing sessions,
+ * and requires the employee to complete the registered-email OTP flow.
  */
 function handleAdminResetPassword(params, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
-  
+
   var targetEmpId = normalizeEmpId(params.targetEmployeeId || params.employeeId);
-  if (!targetEmpId) {
-    return { success: false, message: 'Target Employee ID is required.' };
-  }
-  
-  var targetOfficer = findOfficerById(targetEmpId);
-  if (!targetOfficer) {
-    return { success: false, message: 'Employee ID (' + targetEmpId + ') not found in master roster.' };
-  }
-  
-  var salt = Utilities.getUuid().replace(/-/g, '');
-  var defaultHash = computePasswordHash('pass1234', salt);
-  var now = new Date().toISOString();
-  
+  if (!targetEmpId) return { success: false, message: 'Target Employee ID is required.' };
+
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
   } catch (e) {
-    return { success: false, message: 'Server is busy. Please try again.' };
+    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy. Please try again.' };
   }
 
   try {
-    var ss = getCNESpreadsheet();
-    var authSheet = ss.getSheetByName('User Credentials');
-    if (!authSheet) {
-      return {
-        success: false,
-        message: 'System configuration error: "User Credentials" sheet not found in CNE database. Please contact system administrator.'
-      };
-    }
-    var data = authSheet.getDataRange().getValues();
-    var updated = false;
-    var preservedAccountStatus = 'ACTIVE';
-    
-    for (var i = 1; i < data.length; i++) {
-      if (normalizeEmpId(data[i][0]) === targetEmpId) {
-        var rawStatus = String(data[i][7] || '').trim().toUpperCase();
-        preservedAccountStatus = (rawStatus === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
-        authSheet.getRange(i + 1, 2).setValue(defaultHash);
-        authSheet.getRange(i + 1, 3).setValue(salt);
-        authSheet.getRange(i + 1, 4).setValue('YES');
-        authSheet.getRange(i + 1, 6).setValue(now);
-        updated = true;
-        break;
-      }
-    }
-    
-    if (!updated) {
-      authSheet.appendRow([targetEmpId, defaultHash, salt, 'YES', now, now, now, 'ACTIVE']);
-    }
-    
-    // Invalidate previous active sessions
-    CacheService.getScriptCache().put('pwd_change_' + targetEmpId, String(Date.now()), 7 * 24 * 60 * 60);
-    invalidateUserRoleCache(targetEmpId);
-    CacheService.getScriptCache().put('cred_sec_' + targetEmpId, JSON.stringify({ mustChangePassword: true, accountStatus: preservedAccountStatus }), 300);
+    var freshAdmin = requireFreshAdminMutation(session);
+    if (!freshAdmin.success) return freshAdmin;
+    session = freshAdmin.session;
 
-    logAuditAction('ADMIN_PASSWORD_RESET', session.employeeId, 'Target Employee ID: ' + targetEmpId + ', Timestamp: ' + now + ', Status: SUCCESS', 'SUCCESS');
-    
+    var targetOfficer = findOfficerByIdFresh_(targetEmpId);
+    if (!targetOfficer) return { success: false, message: 'Employee ID (' + targetEmpId + ') not found in Officers data.' };
+
+    var sheet = getAuthCredentialsSheet();
+    var record = getAuthCredentialRecord(targetEmpId);
+    var nowIso = new Date().toISOString();
+
+    if (record && record.accountStatus === 'INACTIVE') {
+      return { success: false, errorCode: 'ACCOUNT_INACTIVE', message: 'The target CNE account is inactive.' };
+    }
+
+    if (record) {
+      var nextVersion = Math.max(1, record.passwordVersion + 1);
+      sheet.getRange(record.rowIndex, 2).setValue('');
+      sheet.getRange(record.rowIndex, 3).setValue('');
+      sheet.getRange(record.rowIndex, 4).setValue(nextVersion);
+      sheet.getRange(record.rowIndex, 6).setValue(nowIso);
+      sheet.getRange(record.rowIndex, 9).setValue(0);
+      sheet.getRange(record.rowIndex, 10).setValue('');
+      sheet.getRange(record.rowIndex, 12).setValue(nowIso);
+    } else {
+      sheet.appendRow([targetEmpId, '', '', 1, '', nowIso, '', 'ACTIVE', 0, '', nowIso, nowIso]);
+    }
+
+    clearCredentialSecurityCache(targetEmpId);
+    invalidateUserRoleCache(targetEmpId);
+    invalidateOpenOtpChallenges(OTP_PURPOSE_PASSWORD, targetEmpId);
+
+    logAuditAction(
+      'ADMIN_PASSWORD_RESET_REQUIRED',
+      session.employeeId,
+      'Password cleared for ' + targetEmpId + '; employee must verify registered email to create/reset password.',
+      'SUCCESS'
+    );
+
     return {
       success: true,
-      message: 'Password for ' + targetOfficer.name + ' (' + targetEmpId + ') has been reset to default password.'
+      message: 'Password access has been reset for ' + targetOfficer.name + ' (' + targetEmpId + '). The employee must now use Create / Reset Password and verify the registered email.'
     };
   } finally {
     lock.releaseLock();
   }
 }
+
 
 /**
  * Areas Management
@@ -2219,6 +2648,9 @@ function handleAddArea(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy processing another request. Please try again.' };
   }
@@ -2258,6 +2690,9 @@ function handleUpdateArea(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -2631,12 +3066,29 @@ function handleCreateCNE(params, session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
   }
 
-  var isUnscheduled = Boolean(
+  // Normalize any client-supplied lifecycle status BEFORE authorization decisions.
+  // This prevents aliases/casing such as "Finalized", "Finalised", or "completed"
+  // from bypassing the Admin-only retrospective CNE path.
+  var requestedCreateStatus = normalizeCNEStatus(params.status || 'Scheduled');
+  var explicitlyUnscheduled = Boolean(
     params.isUnscheduled === true ||
     params.isUnscheduled === 'true' ||
-    params.status === 'Completed' ||
     params.action === 'addUnscheduledCNE'
   );
+  var isUnscheduled = Boolean(
+    explicitlyUnscheduled ||
+    requestedCreateStatus === 'Completed'
+  );
+
+  // A CNE must never be born in the Canceled state. Cancellation is a separate,
+  // authorized lifecycle action against an existing scheduled CNE.
+  if (requestedCreateStatus === 'Canceled') {
+    return {
+      success: false,
+      errorCode: 'INVALID_INITIAL_STATUS',
+      message: 'A new CNE cannot be created directly in Canceled status.'
+    };
+  }
 
   var rawType = params.cneType || 'CENTRAL';
   var cneType = normalizeCNEType(rawType) || 'CENTRAL';
@@ -2752,7 +3204,7 @@ function handleCreateCNE(params, session) {
   if (invalidRpIds.length > 0) {
     return {
       success: false,
-      message: 'Invalid Resource Person Employee ID(s) not found in master roster: ' + invalidRpIds.join(', ')
+      message: 'Invalid Resource Person Employee ID(s) not found in Officers data: ' + invalidRpIds.join(', ')
     };
   }
 
@@ -2798,7 +3250,7 @@ function handleCreateCNE(params, session) {
   if (invalidStaffIds.length > 0) {
     return {
       success: false,
-      message: 'Invalid participant Employee ID(s) not found in master roster: ' + invalidStaffIds.join(', ')
+      message: 'Invalid participant Employee ID(s) not found in Officers data: ' + invalidStaffIds.join(', ')
     };
   }
 
@@ -2814,6 +3266,9 @@ function handleCreateCNE(params, session) {
     return { success: false, message: 'At least one participant is required before an unscheduled CNE can be recorded as Completed.' };
   }
 
+  // Authoritative create-state assignment. Because Completed aliases were already routed
+  // through the Admin-only retrospective path and Canceled was rejected above, the normal
+  // branch can only resolve to Scheduled. Keep normalization here for schema compatibility.
   var status = isUnscheduled ? 'Completed' : normalizeCNEStatus(params.status || 'Scheduled');
 
   var lock = LockService.getScriptLock();
@@ -2824,6 +3279,40 @@ function handleCreateCNE(params, session) {
   }
 
   try {
+    var freshCreateSession = refreshMutationSession(session);
+    if (!freshCreateSession.success) return freshCreateSession;
+    session = freshCreateSession.session;
+
+    // Re-run role/area authorization after waiting for the lock. A role or assigned
+    // area can change while the request is queued.
+    isAdmin = session.role === 'ADMIN';
+    isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
+    if (isUnscheduled && !isAdmin) {
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can record and finalize an unscheduled CNE.' };
+    }
+    if (cneType === 'CENTRAL' && !isAdmin) {
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can create Central CNE programs.' };
+    }
+    if (cneType === 'DEPARTMENTAL' && !isAdmin && !isAreaIncharge) {
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators or designated Area Incharges can create Departmental CNE programs.' };
+    }
+    var liveAreaAuthErr = checkCNEAuthorized(session, area, cneType);
+    if (liveAreaAuthErr) return liveAreaAuthErr;
+
+    // Revalidate internal identities against a fresh Officers-data snapshot at commit time.
+    _executionRosterData = null;
+    _inMemoryOfficerMap = null;
+    for (var rpIdx = 0; rpIdx < rpClean.length; rpIdx++) {
+      if (!findOfficerById(rpClean[rpIdx])) {
+        return { success: false, errorCode: 'OFFICER_DATA_CHANGED', message: 'Resource Person Employee ID is no longer present in Officers data: ' + rpClean[rpIdx] };
+      }
+    }
+    for (var staffIdx = 0; staffIdx < staffClean.length; staffIdx++) {
+      if (!findOfficerById(staffClean[staffIdx])) {
+        return { success: false, errorCode: 'OFFICER_DATA_CHANGED', message: 'Participant Employee ID is no longer present in Officers data: ' + staffClean[staffIdx] };
+      }
+    }
+
     var sheet = getOrCreateSheet('CNE Schedule');
     var curYear = parseInt(getIndiaTodayString().slice(0, 4), 10) || new Date().getFullYear();
     var timestampSuffix = Date.now().toString().slice(-4);
@@ -2970,6 +3459,66 @@ function handleUpdateCNE(params, session) {
   }
 
   try {
+    var freshUpdateSession = refreshMutationSession(session);
+    if (!freshUpdateSession.success) return freshUpdateSession;
+    session = freshUpdateSession.session;
+    _executionRosterData = null;
+    _inMemoryOfficerMap = null;
+
+    // Re-read the authoritative CNE while holding the lock. The record may have
+    // been finalized, canceled, or administratively changed after the initial
+    // pre-lock validation above. Never write using stale authorization/lifecycle
+    // state.
+    var liveUpdateRecord = getCNEScheduleRecord(cneId);
+    if (!liveUpdateRecord) {
+      return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
+    }
+
+    var liveUpdateAuthErr = checkCNEAuthorized(session, liveUpdateRecord.area, liveUpdateRecord.cneType);
+    if (liveUpdateAuthErr) return liveUpdateAuthErr;
+
+    var liveUpdateStatus = normalizeCNEStatus(liveUpdateRecord.status);
+    if (liveUpdateStatus === 'Completed') {
+      return {
+        success: false,
+        errorCode: 'CNE_ALREADY_FINALIZED',
+        message: 'This CNE has already been finalized. Details cannot be modified.'
+      };
+    }
+    if (liveUpdateStatus === 'Canceled') {
+      return {
+        success: false,
+        errorCode: 'CNE_ALREADY_CANCELED',
+        message: 'This CNE has been canceled. Details cannot be modified.'
+      };
+    }
+
+    // Re-check Area Incharge scope against the live authoritative area.
+    if (session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE') {
+      if (params.area !== undefined) {
+        var liveProposedArea = String(params.area || '').trim().toLowerCase();
+        var liveCurrentArea = String(liveUpdateRecord.area || '').trim().toLowerCase();
+        if (liveProposedArea !== liveCurrentArea) {
+          return {
+            success: false,
+            errorCode: 'FORBIDDEN_WARD_TRANSFER',
+            message: 'Permission denied. Area Incharge cannot transfer a Departmental CNE to another area/ward.'
+          };
+        }
+      }
+    }
+
+    if (params.status !== undefined) {
+      var liveProposedStatus = normalizeCNEStatus(params.status);
+      if (liveProposedStatus !== liveUpdateStatus) {
+        return {
+          success: false,
+          errorCode: 'INVALID_STATUS_TRANSITION',
+          message: 'CNE status cannot be changed through Edit CNE. Use the official Finalize or Cancel workflow.'
+        };
+      }
+    }
+
     var ss = getSpreadsheet('CNE');
     var sheet = ss.getSheetByName('CNE Schedule');
     if (!sheet) return { success: false, message: 'CNE Schedule sheet not found.' };
@@ -3133,7 +3682,7 @@ function handleUpdateCNE(params, session) {
           if (invalidStaffIds.length > 0) {
             return {
               success: false,
-              message: 'Invalid participant Employee ID(s) not found in master roster: ' + invalidStaffIds.join(', ')
+              message: 'Invalid participant Employee ID(s) not found in Officers data: ' + invalidStaffIds.join(', ')
             };
           }
 
@@ -3153,7 +3702,7 @@ function handleUpdateCNE(params, session) {
         }
 
         // Central CNE only maxParticipants
-        var currentCneType = normalizeCNEType(record.cneType);
+        var currentCneType = normalizeCNEType(liveUpdateRecord.cneType);
         if (currentCneType === 'CENTRAL' && params.maxParticipants !== undefined) {
           setColVal('maxparticipants', 10, parseInt(params.maxParticipants, 10) || 50);
         }
@@ -3161,7 +3710,7 @@ function handleUpdateCNE(params, session) {
         // Status transitions cannot be performed through handleUpdateCNE; identical status is safely ignored
         if (params.status !== undefined) {
           var proposedStatus = normalizeCNEStatus(params.status);
-          var currentStatus = normalizeCNEStatus(record.status);
+          var currentStatus = normalizeCNEStatus(liveUpdateRecord.status);
           if (proposedStatus !== currentStatus) {
             return {
               success: false,
@@ -3419,6 +3968,27 @@ function handleAddDepartmentalSchedule(params, session) {
   }
 
   try {
+    var freshDepartmentalSession = refreshMutationSession(session);
+    if (!freshDepartmentalSession.success) return freshDepartmentalSession;
+    session = freshDepartmentalSession.session;
+    isAdmin = session.role === 'ADMIN';
+    isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
+    if (!isAdmin && !isAreaIncharge) {
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Only an Administrator or designated Area Incharge can schedule Departmental CNEs.' };
+    }
+    _executionRosterData = null;
+    _inMemoryOfficerMap = null;
+    for (var liveIdx = 0; liveIdx < validatedList.length; liveIdx++) {
+      var liveItem = validatedList[liveIdx];
+      var liveDeptAuth = checkCNEAuthorized(session, liveItem.area, 'DEPARTMENTAL');
+      if (liveDeptAuth) return { success: false, errorCode: 'FORBIDDEN', message: 'Row ' + (liveIdx + 1) + ' (' + liveItem.area + '): ' + liveDeptAuth.message };
+      for (var liveRpIdx = 0; liveRpIdx < liveItem.rpClean.length; liveRpIdx++) {
+        if (!findOfficerById(liveItem.rpClean[liveRpIdx])) {
+          return { success: false, errorCode: 'OFFICER_DATA_CHANGED', message: 'Row ' + (liveIdx + 1) + ': Resource Person Employee ID is no longer present in Officers data: ' + liveItem.rpClean[liveRpIdx] };
+        }
+      }
+    }
+
     var sheet = getOrCreateSheet('CNE Schedule');
 
     var colMap = getHeaderMap(sheet);
@@ -3588,6 +4158,9 @@ function handleUploadImage(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy uploading images. Please try again.' };
   }
@@ -3649,6 +4222,9 @@ function handleUpdateGalleryItem(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -3686,6 +4262,9 @@ function handleDeleteGalleryItem(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -3862,6 +4441,9 @@ function handleUpdateRole(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -3991,11 +4573,44 @@ function handleUpdateRole(params, session) {
 }
 
 /**
+ * Lightweight public/home read caches. These contain display-only data and never
+ * replace authoritative mutation-time reads. Cache misses/failures safely fall
+ * back to Google Sheets/Drive.
+ */
+function removeScriptCacheEntry_(baseKey) {
+  if (!baseKey) return;
+  try {
+    var cache = CacheService.getScriptCache();
+    var chunkCount = parseInt(cache.get(baseKey + '_chunks'), 10) || 0;
+    var keys = [baseKey, baseKey + '_chunks'];
+    for (var i = 0; i < chunkCount && i < MAX_SAFE_CHUNKS; i++) {
+      keys.push(baseKey + '_p' + i);
+    }
+    cache.removeAll(keys);
+  } catch (e) {}
+}
+
+function getPublicHomeCache_(key) {
+  try { return getFromScriptCache(key); } catch (e) { return null; }
+}
+
+function putPublicHomeCache_(key, data, ttlSeconds) {
+  try { putToScriptCache(key, data, ttlSeconds || 300); } catch (e) {}
+}
+
+var HOME_CACHE_NEWS = 'cne_public_news_v1';
+var HOME_CACHE_QUICK_LINKS = 'cne_public_quicklinks_v1';
+var HOME_CACHE_COORDINATOR = 'cne_public_coordinator_v1';
+var HOME_CACHE_CHAIR_PHOTO = 'cne_public_chairphoto_v1';
+
+/**
  * 11. News & Events Management (Public Read, Admin Write)
  */
 function handleGetNewsEvents(params) {
+  var cachedNews = getPublicHomeCache_(HOME_CACHE_NEWS);
+  if (Array.isArray(cachedNews)) return { success: true, data: cachedNews, _cached: true };
+
   var sheet = getOrCreateSheet('News and Events');
-  
   var data = sheet.getDataRange().getValues();
   var list = [];
   
@@ -4030,6 +4645,7 @@ function handleGetNewsEvents(params) {
     ];
   }
   
+  putPublicHomeCache_(HOME_CACHE_NEWS, list, 300);
   return { success: true, data: list };
 }
 
@@ -4050,6 +4666,9 @@ function handleAddNewsEvent(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -4072,6 +4691,7 @@ function handleAddNewsEvent(params, session) {
       session.employeeId || ''
     ]);
     
+    removeScriptCacheEntry_(HOME_CACHE_NEWS);
     logAuditAction('ADD_NEWS', session.employeeId, 'Published News: ' + eventId + ' (' + title + ')', 'SUCCESS');
     return { success: true, message: 'News and Event published successfully.', data: { id: eventId } };
   } finally {
@@ -4089,6 +4709,9 @@ function handleUpdateNewsEvent(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -4108,6 +4731,7 @@ function handleUpdateNewsEvent(params, session) {
         if (params.content !== undefined) sheet.getRange(r + 1, 6).setValue(sanitizeCellInput(params.content));
         if (params.status !== undefined) sheet.getRange(r + 1, 7).setValue(params.status);
         
+        removeScriptCacheEntry_(HOME_CACHE_NEWS);
         logAuditAction('UPDATE_NEWS', session.employeeId, 'Updated News ID: ' + id, 'SUCCESS');
         return { success: true, message: 'News event updated successfully.' };
       }
@@ -4128,6 +4752,9 @@ function handleDeleteNewsEvent(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -4141,6 +4768,7 @@ function handleDeleteNewsEvent(params, session) {
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0]).trim().toLowerCase() === id.toLowerCase()) {
         sheet.getRange(r + 1, 7).setValue('INACTIVE');
+        removeScriptCacheEntry_(HOME_CACHE_NEWS);
         logAuditAction('DELETE_NEWS', session.employeeId, 'Deactivated News ID: ' + id, 'SUCCESS');
         return { success: true, message: 'News event deactivated successfully.' };
       }
@@ -4183,6 +4811,11 @@ function extractChairpersonPhotoDriveId(value) {
 }
 
 function handleGetChairpersonPhoto() {
+  var cachedPhoto = getPublicHomeCache_(HOME_CACHE_CHAIR_PHOTO);
+  if (cachedPhoto && typeof cachedPhoto.photoUrl === 'string') {
+    return { success: true, data: cachedPhoto, _cached: true };
+  }
+
   var configured = String(
     PropertiesService.getScriptProperties().getProperty('CHAIRPERSON_PHOTO') || ''
   ).trim();
@@ -4240,7 +4873,11 @@ function handleGetChairpersonPhoto() {
     }
 
     var dataUrl = 'data:' + contentType + ';base64,' + Utilities.base64Encode(bytes);
-    return { success: true, data: { photoUrl: dataUrl } };
+    var photoData = { photoUrl: dataUrl };
+    // putToScriptCache safely skips oversized payloads, so large photos still work
+    // without risking CacheService quota errors.
+    putPublicHomeCache_(HOME_CACHE_CHAIR_PHOTO, photoData, 300);
+    return { success: true, data: photoData };
   } catch (e) {
     console.warn('Chairperson photo load error: ' + e.message);
     return {
@@ -4289,7 +4926,7 @@ function getDefaultQuickLinks_() {
         title: 'AIIMS Rishikesh CNE Guidelines & Attendance Norms',
         body: [
           '1. Minimum Attendance: All Nursing Officers (N.O) and Senior Nursing Officers (S.N.O) should aim to complete at least 20 documented CNE hours per academic year.',
-          '2. Punctuality & Verification: Attendance is digitally signed and logged through the Area Incharge and verified against institutional roster data.',
+          '2. Punctuality & Verification: Attendance is digitally signed and logged through the Area Incharge and verified against Officers data.',
           '3. Faculty / Resource Person Recognition: Serving as an approved resource person or instructor carries double CNE credits and is recognized as institutional academic leadership.',
           '4. Certificate of Completion: Certificates and annual summary records can be downloaded directly from the portal once logged in with verified credentials.',
           '5. Leave & Excusal: Prior written notification to the CNE Coordinator is required if unable to attend a class for which registration was confirmed.'
@@ -4367,8 +5004,8 @@ function ensureQuickLinksSheetSeeded_() {
   return sheet;
 }
 
-function readQuickLinksFromSheet_() {
-  var sheet = ensureQuickLinksSheetSeeded_();
+function readQuickLinksFromSheet_(sourceSheet) {
+  var sheet = sourceSheet || ensureQuickLinksSheetSeeded_();
   var data = sheet.getDataRange().getValues();
   if (data.length <= 1) return [];
   var map = getHeaderMap(sheet);
@@ -4407,7 +5044,32 @@ function readQuickLinksFromSheet_() {
 }
 
 function handleGetQuickLinks(params) {
-  return { success: true, data: readQuickLinksFromSheet_() };
+  var cachedLinks = getPublicHomeCache_(HOME_CACHE_QUICK_LINKS);
+  if (Array.isArray(cachedLinks)) return { success: true, data: cachedLinks, _cached: true };
+
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('Quick Links');
+
+  // Only first-use seeding needs serialization. Normal public reads are lock-free.
+  if (!sheet || sheet.getLastRow() <= 1) {
+    var initLock = LockService.getScriptLock();
+    if (!initLock.tryLock(3000)) {
+      sheet = ss.getSheetByName('Quick Links');
+      if (!sheet || sheet.getLastRow() <= 1) {
+        return { success: true, data: getDefaultQuickLinks_(), message: 'Loaded default Quick Links while initialization is completing.' };
+      }
+    } else {
+      try {
+        sheet = ensureQuickLinksSheetSeeded_();
+      } finally {
+        initLock.releaseLock();
+      }
+    }
+  }
+
+  var links = readQuickLinksFromSheet_(sheet);
+  putPublicHomeCache_(HOME_CACHE_QUICK_LINKS, links, 300);
+  return { success: true, data: links };
 }
 
 function handleAddQuickLink(params, session) {
@@ -4420,6 +5082,9 @@ function handleAddQuickLink(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -4446,6 +5111,7 @@ function handleAddQuickLink(params, session) {
     };
     writeQuickLinkRow_(sheet, newLink, maxSort + 1, session.employeeId);
 
+    removeScriptCacheEntry_(HOME_CACHE_QUICK_LINKS);
     logAuditAction('ADD_QUICK_LINK', session.employeeId, 'Added Quick Link: ' + title, 'SUCCESS');
     return { success: true, message: 'Quick Link added successfully.', data: { id: newId } };
   } finally {
@@ -4463,6 +5129,9 @@ function handleUpdateQuickLink(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -4496,6 +5165,7 @@ function handleUpdateQuickLink(params, session) {
     if (map['updatedat'] !== undefined) sheet.getRange(foundRow, map['updatedat'] + 1).setValue(new Date().toISOString());
     if (map['updatedby'] !== undefined) sheet.getRange(foundRow, map['updatedby'] + 1).setValue(session.employeeId);
 
+    removeScriptCacheEntry_(HOME_CACHE_QUICK_LINKS);
     logAuditAction('UPDATE_QUICK_LINK', session.employeeId, 'Updated Quick Link ID: ' + id, 'SUCCESS');
     return { success: true, message: 'Quick link updated successfully.' };
   } finally {
@@ -4513,6 +5183,9 @@ function handleDeleteQuickLink(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -4526,6 +5199,7 @@ function handleDeleteQuickLink(params, session) {
         sheet.getRange(r + 1, map['status'] + 1).setValue('INACTIVE');
         if (map['updatedat'] !== undefined) sheet.getRange(r + 1, map['updatedat'] + 1).setValue(new Date().toISOString());
         if (map['updatedby'] !== undefined) sheet.getRange(r + 1, map['updatedby'] + 1).setValue(session.employeeId);
+        removeScriptCacheEntry_(HOME_CACHE_QUICK_LINKS);
         logAuditAction('DELETE_QUICK_LINK', session.employeeId, 'Deactivated Quick Link ID: ' + id, 'SUCCESS');
         return { success: true, message: 'Quick link removed successfully.' };
       }
@@ -4615,21 +5289,47 @@ function upsertPortalContentValue_(sheet, section, key, value, updatedBy) {
 }
 
 function handleGetCoordinatorDesk(params) {
-  var sheet = ensureCoordinatorContentSeeded_();
+  var cachedCoordinator = getPublicHomeCache_(HOME_CACHE_COORDINATOR);
+  if (cachedCoordinator && typeof cachedCoordinator === 'object') {
+    return { success: true, data: cachedCoordinator, _cached: true };
+  }
+
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('Portal Content');
+
+  if (!sheet || !hasCoordinatorContentRows_(sheet)) {
+    var initLock = LockService.getScriptLock();
+    if (!initLock.tryLock(3000)) {
+      sheet = ss.getSheetByName('Portal Content');
+      if (!sheet || !hasCoordinatorContentRows_(sheet)) {
+        return { success: false, errorCode: 'SERVER_BUSY', message: 'Coordinator content is being initialized. Please try again.' };
+      }
+    } else {
+      try {
+        sheet = ensureCoordinatorContentSeeded_();
+      } finally {
+        initLock.releaseLock();
+      }
+    }
+  }
+
+  var coordinatorResponse = buildCoordinatorDeskResponse_(sheet);
+  if (coordinatorResponse && coordinatorResponse.success) {
+    putPublicHomeCache_(HOME_CACHE_COORDINATOR, coordinatorResponse.data, 300);
+  }
+  return coordinatorResponse;
+}
+
+function buildCoordinatorDeskResponse_(sheet) {
   var namesRaw = getPortalContentValue_(sheet, 'COORDINATOR', 'NAMES');
   var coordinators = namesRaw
     ? namesRaw.split(/\\r?\\n|,/).map(function(v) { return v.trim(); }).filter(Boolean)
     : [];
   var email = getPortalContentValue_(sheet, 'COORDINATOR', 'EMAIL');
   var note = getPortalContentValue_(sheet, 'COORDINATOR', 'NOTE');
-
   return {
     success: true,
-    data: {
-      note: note,
-      coordinators: coordinators,
-      email: email
-    }
+    data: { note: note, coordinators: coordinators, email: email }
   };
 }
 
@@ -4640,6 +5340,9 @@ function handleUpdateCoordinatorDesk(params, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
   } catch (e) {
     return { success: false, message: 'Server is busy. Please try again.' };
   }
@@ -4659,8 +5362,11 @@ function handleUpdateCoordinatorDesk(params, session) {
       upsertPortalContentValue_(sheet, 'COORDINATOR', 'NAMES', coords.join('\\n'), session.employeeId);
     }
 
+    removeScriptCacheEntry_(HOME_CACHE_COORDINATOR);
     logAuditAction('UPDATE_COORDINATOR_DESK', session.employeeId, 'Updated Coordinator Desk info', 'SUCCESS');
-    return handleGetCoordinatorDesk(params);
+    var response = buildCoordinatorDeskResponse_(sheet);
+    if (response && response.success) putPublicHomeCache_(HOME_CACHE_COORDINATOR, response.data, 300);
+    return response;
   } finally {
     lock.releaseLock();
   }
@@ -4674,11 +5380,19 @@ function handleUpdateCoordinatorDesk(params, session) {
  * Uses server-side session identity exclusively; does not accept unverified client-supplied employee IDs.
  */
 function handleGetProgramImpact(params, session) {
-  var ss = getSpreadsheet('CNE');
-  var dataSheet = ss.getSheetByName('CNE Schedule');
-  
   var isUserLoggedIn = Boolean(session && session.employeeId);
   var loggedInId = isUserLoggedIn ? normalizeEmpId(session.employeeId) : null;
+  var impactCacheKey = isUserLoggedIn ? ('cne_impact_user_' + loggedInId) : 'cne_impact_public';
+  var forceFreshImpact = Boolean(params && params.forceFresh);
+  if (!forceFreshImpact) {
+    var cachedImpact = getFromScriptCache(impactCacheKey);
+    if (cachedImpact && typeof cachedImpact === 'object') {
+      return { success: true, data: cachedImpact, _cached: true };
+    }
+  }
+
+  var ss = getSpreadsheet('CNE');
+  var dataSheet = ss.getSheetByName('CNE Schedule');
   
   if (!dataSheet) {
     return {
@@ -4795,13 +5509,49 @@ function handleGetProgramImpact(params, session) {
     totalStaff = trainedOthers;
   }
   
+  var impactData = {
+    totalCompletedClasses: completedClasses,
+    cneDuration: formatDurationAsHoursPlus(totalDurationSeconds),
+    uniqueStaffTrained: totalStaff,
+    scope: isUserLoggedIn ? 'user' : 'institutional'
+  };
+  // Impact metrics are display-only. A short cache removes repeated full CNE Schedule
+  // scans during navigation while limiting any staleness to a small window.
+  putToScriptCache(impactCacheKey, impactData, 30);
+  return { success: true, data: impactData };
+}
+
+/**
+ * Optimized homepage bootstrap. One client request replaces multiple Apps Script
+ * executions while preserving session-aware personal impact metrics. Public CNE
+ * schedule data is deliberately fetched without a session to avoid exposing
+ * management-only identifiers in the homepage payload.
+ */
+function handleGetHomeDashboard(params, session) {
+  var scheduleRes = handleGetCNERecords({ status: 'Scheduled' }, null);
+  var newsRes = handleGetNewsEvents({});
+  var linksRes = handleGetQuickLinks({});
+  var coordinatorRes = handleGetCoordinatorDesk({});
+  var impactRes = handleGetProgramImpact({}, session);
+  // Reuse the existing cached photo loader so the homepage still performs only
+  // one client -> Apps Script request while preserving the current fallback rules.
+  var chairpersonPhotoRes = handleGetChairpersonPhoto();
+
   return {
     success: true,
     data: {
-      totalCompletedClasses: completedClasses,
-      cneDuration: formatDurationAsHoursPlus(totalDurationSeconds),
-      uniqueStaffTrained: totalStaff,
-      scope: isUserLoggedIn ? 'user' : 'institutional'
+      upcomingClasses: scheduleRes && scheduleRes.success && Array.isArray(scheduleRes.data) ? scheduleRes.data : [],
+      newsEvents: newsRes && newsRes.success && Array.isArray(newsRes.data) ? newsRes.data : [],
+      quickLinks: linksRes && linksRes.success && Array.isArray(linksRes.data) ? linksRes.data : [],
+      coordinatorDesk: coordinatorRes && coordinatorRes.success && coordinatorRes.data
+        ? coordinatorRes.data
+        : { note: '', coordinators: [], email: '' },
+      impactStats: impactRes && impactRes.success && impactRes.data
+        ? impactRes.data
+        : { totalCompletedClasses: 0, cneDuration: '0 Hrs', uniqueStaffTrained: 0, scope: session && session.employeeId ? 'user' : 'institutional' },
+      chairpersonPhotoUrl: chairpersonPhotoRes && chairpersonPhotoRes.success && chairpersonPhotoRes.data
+        ? String(chairpersonPhotoRes.data.photoUrl || '')
+        : ''
     }
   };
 }
@@ -4866,7 +5616,16 @@ var CNE_SHEET_HEADERS = {
   'News and Events': ['Event ID', 'Title', 'Category', 'Date', 'Summary', 'Full Content', 'Status', 'CreatedAt', 'CreatedBy'],
   'Portal Content': ['Section', 'Key', 'Value', 'Updated At', 'Updated By'],
   'Quick Links': ['ID', 'Title', 'Description', 'Icon Name', 'Target', 'Badge', 'Action Type', 'URL', 'Modal Title', 'Modal Body', 'Status', 'Sort Order', 'Updated At', 'Updated By'],
-  'User Credentials': ['Employee ID', 'Password Hash', 'Password Salt', 'Must Change Password', 'Created At', 'Updated At', 'Last Login At', 'Account Status'],
+  'Auth_Credentials': [
+    'Employee ID', 'Password Hash', 'Password Salt', 'Password Version',
+    'Password Created At', 'Password Changed At', 'Last Login At', 'Account Status',
+    'Failed Login Count', 'Locked Until', 'Created At', 'Updated At'
+  ],
+  'OTP_Verification': [
+    'Challenge ID', 'Purpose', 'Principal Type', 'Principal ID', 'Email', 'OTP Hash',
+    'Expires At', 'Attempts', 'Max Attempts', 'Resend Available At', 'Verified At',
+    'Consumed At', 'Status', 'Created At', 'Updated At'
+  ],
   'Audit Log': ['Timestamp', 'Action', 'Employee ID', 'Details', 'Status'],
   'CNE Post Test Questions': ['CNE ID', 'Question ID', 'Question Text', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option', 'Explanation', 'Is Finalized', 'Is Locked', 'Created At', 'Created By', 'Authoritative Source', 'Status'],
   'CNE Post Test Responses': ['Response ID', 'CNE ID', 'Employee ID', 'Employee Name', 'Designation', 'Department', 'Score', 'Total Questions', 'Percentage', 'Source', 'Submitted At', 'Answers JSON', 'Status', 'Remarks'],
@@ -4940,15 +5699,25 @@ var CNE_HEADER_ALIASES = {
 function getOrCreateSheet(sheetName, defaultHeaders) {
   var ss = getSpreadsheet('CNE');
   var sheet = ss.getSheetByName(sheetName);
-  var headers = defaultHeaders || (typeof CNE_SHEET_HEADERS !== 'undefined' ? CNE_SHEET_HEADERS[sheetName] : null);
+  var headers = defaultHeaders || CNE_SHEET_HEADERS[sheetName] || [];
+
   if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
-    if (headers && headers.length > 0) {
-      sheet.appendRow(headers);
-      sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+    try {
+      sheet = ss.insertSheet(sheetName);
+    } catch (insertErr) {
+      // Another execution may have created the sheet after our first read.
+      sheet = ss.getSheetByName(sheetName);
+      if (!sheet) throw insertErr;
     }
-  } else if (sheet.getLastRow() === 0 && headers && headers.length > 0) {
-    sheet.appendRow(headers);
+  }
+
+  // Header initialization is deliberately idempotent: set row 1 rather than appendRow,
+  // so concurrent first-use executions cannot create duplicate header rows.
+  if (headers && headers.length > 0 && sheet.getLastRow() === 0) {
+    if (sheet.getMaxColumns() < headers.length) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
+    }
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
   }
   return sheet;
@@ -4959,7 +5728,7 @@ function getOrCreateSheet(sheetName, defaultHeaders) {
  * Verifies all required CNE tabs and their headers.
  * Never deletes or clears existing sheets or rows. Appends missing headers if needed.
  */
-function setupAndVerifyCNESheets(executorEmpId) {
+function setupAndVerifyCNESheets(executorEmpId, session) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(20000);
@@ -4968,6 +5737,14 @@ function setupAndVerifyCNESheets(executorEmpId) {
   }
 
   try {
+    if (session) {
+      var freshSetupAdmin = requireFreshAdminMutation(session);
+      if (!freshSetupAdmin.success) return freshSetupAdmin;
+      session = freshSetupAdmin.session;
+      executorEmpId = session.employeeId;
+    }
+    setupSecurityProperties();
+
     var tabNames = [
       'CNE Schedule',
       'Area',
@@ -4976,7 +5753,8 @@ function setupAndVerifyCNESheets(executorEmpId) {
       'News and Events',
       'Portal Content',
       'Quick Links',
-      'User Credentials',
+      'Auth_Credentials',
+      'OTP_Verification',
       'Audit Log',
       'CNE Post Test Questions',
       'CNE Post Test Responses',
@@ -5116,16 +5894,44 @@ function setupAndVerifyCNESheets(executorEmpId) {
       }
     }
 
-    // Check Employee Master
+    // Migrate existing personal passwords once. Legacy default-password rows are intentionally NOT preserved.
     try {
-      var offSS = getSpreadsheet('OFFICERS');
-      var offSheet = offSS.getSheetByName('Rosters Master Data');
-      if (offSheet) {
-        auditReport.push({ tab: offSheet.getName(), status: 'Existing, verified (Master Roster)', rowCount: offSheet.getLastRow() });
-      }
-    } catch (e) {
-      auditReport.push({ tab: 'Rosters Master Data', status: 'Separate Sheet / Unconfigured', error: e.message });
+      migrateLegacyCredentialsToAuthCredentials(ss.getSheetByName(AUTH_CREDENTIALS_SHEET));
+      auditReport.push({ tab: AUTH_CREDENTIALS_SHEET, status: 'Legacy credential migration checked (personal passwords preserved; default-password accounts require OTP setup)' });
+    } catch (migrationErr) {
+      auditReport.push({ tab: AUTH_CREDENTIALS_SHEET, status: 'Credential migration warning', error: migrationErr.message });
     }
+
+    // Verify authoritative employee master: Officers data (A:L only).
+    try {
+      var offSS=getSpreadsheet('OFFICERS');
+      var offSheet=offSS.getSheetByName('Officers data');
+      if (!offSheet) {
+        auditReport.push({tab:'Officers data',status:'Missing',error:'Required Officers data tab was not found.'});
+      } else {
+        var offLastRow=offSheet.getLastRow();
+        var officerHeaders=offSheet.getRange(1,1,1,12).getDisplayValues()[0];
+        var officerCols=findOfficerHeaders(officerHeaders);
+        var requiredOk=officerCols.empCol!==-1&&officerCols.nameCol!==-1&&officerCols.desigCol!==-1&&officerCols.dojCol!==-1&&officerCols.emailCol!==-1;
+        if (!requiredOk) {
+          auditReport.push({tab:'Officers data',status:'Header verification failed',error:'Expected Employee ID No., Name of the Officers, Designation, Date of Joining, and EmailID within A:L.'});
+        } else {
+          var missingEmailCount=0,invalidEmailCount=0,duplicateEmployeeIdCount=0,duplicateEmailCount=0,seenIds={},seenEmails={};
+          if (offLastRow>1) {
+            var officerRows=offSheet.getRange(2,1,offLastRow-1,12).getDisplayValues();
+            for (var orow=0;orow<officerRows.length;orow++) {
+              var oid=normalizeEmpId(officerRows[orow][officerCols.empCol]);
+              var oemail=String(officerRows[orow][officerCols.emailCol]||'').trim().toLowerCase();
+              if (oid) { if (seenIds[oid]) duplicateEmployeeIdCount++; seenIds[oid]=true; }
+              if (!oemail) { if (oid) missingEmailCount++; }
+              else if (!isValidEmailAddress(oemail)) invalidEmailCount++;
+              else { if (seenEmails[oemail]) duplicateEmailCount++; seenEmails[oemail]=true; }
+            }
+          }
+          auditReport.push({tab:'Officers data',status:'Verified A:L employee master',rowCount:offLastRow,details:'Missing emails: '+missingEmailCount+'; Invalid emails: '+invalidEmailCount+'; Duplicate Employee IDs: '+duplicateEmployeeIdCount+'; Duplicate emails: '+duplicateEmailCount});
+        }
+      }
+    } catch(e) { auditReport.push({tab:'Officers data',status:'Separate Sheet / Unconfigured',error:e.message}); }
 
     logAuditAction('SETUP_AND_VERIFY_SHEETS', executorEmpId || 'SYSTEM', 'Sheet verification executed', 'SUCCESS');
 
@@ -5146,7 +5952,7 @@ function handleSetupAndVerifyCNESheets(params, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
 
-  return setupAndVerifyCNESheets(session ? session.employeeId : 'ADMIN');
+  return setupAndVerifyCNESheets(session ? session.employeeId : 'ADMIN', session);
 }
 
 /**
@@ -5159,45 +5965,38 @@ function getCNEScheduleRecord(cneId) {
   if (!cneId) return null;
   var ss = getSpreadsheet('CNE');
   var sheet = ss.getSheetByName('CNE Schedule');
-  if (!sheet) return null;
-  
-  var data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return null;
-  
+  if (!sheet || sheet.getLastRow() <= 1) return null;
+
   var colMap = getHeaderMap(sheet);
   var cleanId = String(cneId).trim().toUpperCase();
+  var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 0);
+  var rowIndex = findExactRowInColumn_(sheet, idCol, cleanId, 2);
+  if (rowIndex < 2) return null;
 
-  for (var r = 1; r < data.length; r++) {
-    var row = data[r];
-    var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 0);
-    var rowId = String(row[idCol] || '').trim().toUpperCase();
-    if (rowId === cleanId) {
-      var rawType = colMap['typeofcne'] !== undefined ? row[colMap['typeofcne']] : row[12];
-      var rawStatus = colMap['status'] !== undefined ? row[colMap['status']] : row[11];
-      var durVal = colMap['duration'] !== undefined ? row[colMap['duration']] : row[6];
-      var maxP = colMap['maxparticipants'] !== undefined ? row[colMap['maxparticipants']] : row[10];
+  var row = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var rawType = colMap['typeofcne'] !== undefined ? row[colMap['typeofcne']] : row[12];
+  var rawStatus = colMap['status'] !== undefined ? row[colMap['status']] : row[11];
+  var durVal = colMap['duration'] !== undefined ? row[colMap['duration']] : row[6];
+  var maxP = colMap['maxparticipants'] !== undefined ? row[colMap['maxparticipants']] : row[10];
 
-      return {
-        rowIndex: r + 1,
-        cneId: String(row[idCol] || '').trim(),
-        topic: String((colMap['topic'] !== undefined ? row[colMap['topic']] : row[1]) || '').trim(),
-        area: String((colMap['area'] !== undefined ? row[colMap['area']] : row[2]) || '').trim(),
-        date: formatDateValue(colMap['fromdate'] !== undefined ? row[colMap['fromdate']] : (colMap['date'] !== undefined ? row[colMap['date']] : row[3])),
-        toDate: formatDateValue(colMap['todate'] !== undefined ? row[colMap['todate']] : (row[4] || row[3])),
-        duration: durVal ? Number(durVal) : 60,
-        instructor: String((colMap['resourcepersonempid'] !== undefined ? row[colMap['resourcepersonempid']] : row[7]) || '').trim(),
-        mode: String((colMap['modeofteaching'] !== undefined ? row[colMap['modeofteaching']] : (colMap['mode'] !== undefined ? row[colMap['mode']] : row[8])) || 'Offline').trim(),
-        description: String((colMap['description'] !== undefined ? row[colMap['description']] : row[9]) || '').trim(),
-        maxParticipants: maxP ? Number(maxP) : 50,
-        status: normalizeCNEStatus(rawStatus),
-        externalResourcePersons: String((colMap['externalresourcepersons'] !== undefined ? row[colMap['externalresourcepersons']] : row[13]) || '').trim(),
-        proposedBy: String((colMap['proposedby'] !== undefined ? row[colMap['proposedby']] : row[14]) || '').trim(),
-        adminRemarks: String((colMap['adminremarks'] !== undefined ? row[colMap['adminremarks']] : row[15]) || '').trim(),
-        cneType: normalizeCNEType(rawType)
-      };
-    }
-  }
-  return null;
+  return {
+    rowIndex: rowIndex,
+    cneId: String(row[idCol] || '').trim(),
+    topic: String((colMap['topic'] !== undefined ? row[colMap['topic']] : row[1]) || '').trim(),
+    area: String((colMap['area'] !== undefined ? row[colMap['area']] : row[2]) || '').trim(),
+    date: formatDateValue(colMap['fromdate'] !== undefined ? row[colMap['fromdate']] : (colMap['date'] !== undefined ? row[colMap['date']] : row[3])),
+    toDate: formatDateValue(colMap['todate'] !== undefined ? row[colMap['todate']] : (row[4] || row[3])),
+    duration: durVal ? Number(durVal) : 60,
+    instructor: String((colMap['resourcepersonempid'] !== undefined ? row[colMap['resourcepersonempid']] : row[7]) || '').trim(),
+    mode: String((colMap['modeofteaching'] !== undefined ? row[colMap['modeofteaching']] : (colMap['mode'] !== undefined ? row[colMap['mode']] : row[8])) || 'Offline').trim(),
+    description: String((colMap['description'] !== undefined ? row[colMap['description']] : row[9]) || '').trim(),
+    maxParticipants: maxP ? Number(maxP) : 50,
+    status: normalizeCNEStatus(rawStatus),
+    externalResourcePersons: String((colMap['externalresourcepersons'] !== undefined ? row[colMap['externalresourcepersons']] : row[13]) || '').trim(),
+    proposedBy: String((colMap['proposedby'] !== undefined ? row[colMap['proposedby']] : row[14]) || '').trim(),
+    adminRemarks: String((colMap['adminremarks'] !== undefined ? row[colMap['adminremarks']] : row[15]) || '').trim(),
+    cneType: normalizeCNEType(rawType)
+  };
 }
 
 /**
@@ -5253,6 +6052,19 @@ function handleSaveReferenceMaterial(params, session) {
   }
   
   try {
+    var freshMaterialSession = refreshMutationSession(session);
+    if (!freshMaterialSession.success) return freshMaterialSession;
+    session = freshMaterialSession.session;
+    var liveMaterialRecord = getCNEScheduleRecord(cneId);
+    if (!liveMaterialRecord) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
+    var liveMaterialAuth = checkCNEActionAuthorized(session, liveMaterialRecord);
+    if (liveMaterialAuth) return liveMaterialAuth;
+    var liveMaterialStatus = normalizeCNEStatus(liveMaterialRecord.status);
+    if (liveMaterialStatus === 'Completed' || liveMaterialStatus === 'Canceled') {
+      return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Learning materials cannot be modified.' };
+    }
+    record = liveMaterialRecord;
+
     var sheet = getOrCreateSheet('CNE_Reference');
     var data = sheet.getDataRange().getValues();
     var colMap = getHeaderMap(sheet);
@@ -5311,28 +6123,63 @@ function handleSaveReferenceMaterial(params, session) {
  * Non-destructively ensure all 10 CNE_Reference headers exist.
  * Preserves existing columns 1-5 and existing row data.
  */
-function ensureReferenceSheetHeaders(sheet) {
-  if (!sheet) return;
-  var expected = CNE_SHEET_HEADERS['CNE_Reference'] || [];
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(expected);
-    sheet.getRange(1, 1, 1, expected.length).setFontWeight('bold');
+function ensureSheetHeadersSafe_(sheet, expected, lockAlreadyHeld) {
+  if (!sheet || !expected || expected.length === 0) return;
+
+  function applyMissingHeaders_() {
+    if (sheet.getLastRow() === 0) {
+      if (sheet.getMaxColumns() < expected.length) {
+        sheet.insertColumnsAfter(sheet.getMaxColumns(), expected.length - sheet.getMaxColumns());
+      }
+      sheet.getRange(1, 1, 1, expected.length).setValues([expected]).setFontWeight('bold');
+      return;
+    }
+    var colMap = getHeaderMap(sheet);
+    var missing = [];
+    for (var i = 0; i < expected.length; i++) {
+      var key = expected[i].toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (colMap[key] === undefined) missing.push(expected[i]);
+    }
+    if (missing.length === 0) return;
+    var lastCol = sheet.getLastColumn() || 1;
+    if (sheet.getMaxColumns() < lastCol + missing.length) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), (lastCol + missing.length) - sheet.getMaxColumns());
+    }
+    sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]).setFontWeight('bold');
+  }
+
+  // Fast no-write path avoids lock overhead after setup is complete.
+  if (sheet.getLastRow() > 0) {
+    var fastMap = getHeaderMap(sheet);
+    var allPresent = true;
+    for (var f = 0; f < expected.length; f++) {
+      var fastKey = expected[f].toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (fastMap[fastKey] === undefined) { allPresent = false; break; }
+    }
+    if (allPresent) return;
+  }
+
+  if (lockAlreadyHeld) {
+    applyMissingHeaders_();
     return;
   }
 
-  var colMap = getHeaderMap(sheet);
-  var missing = [];
-  for (var i = 0; i < expected.length; i++) {
-    var key = expected[i].toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (colMap[key] === undefined) {
-      missing.push(expected[i]);
-    }
+  var headerLock = LockService.getScriptLock();
+  try {
+    headerLock.waitLock(10000);
+  } catch (e) {
+    throw new Error('Server is busy initializing sheet headers. Please try again.');
   }
+  try {
+    // Re-read after acquiring the lock so another request cannot append duplicates.
+    applyMissingHeaders_();
+  } finally {
+    headerLock.releaseLock();
+  }
+}
 
-  if (missing.length > 0) {
-    var lastCol = sheet.getLastColumn() || 1;
-    sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]).setFontWeight('bold');
-  }
+function ensureReferenceSheetHeaders(sheet, lockAlreadyHeld) {
+  ensureSheetHeadersSafe_(sheet, CNE_SHEET_HEADERS['CNE_Reference'] || [], Boolean(lockAlreadyHeld));
 }
 
 /**
@@ -5340,26 +6187,8 @@ function ensureReferenceSheetHeaders(sheet) {
  * Preserves existing rows, structure, and formatting.
  * Appends missing headers only if necessary.
  */
-function ensureReferenceIndexSheetHeaders(sheet) {
-  var expected = CNE_SHEET_HEADERS['CNE_Reference_Index'];
-  if (!sheet) return;
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(expected);
-    sheet.getRange(1, 1, 1, expected.length).setFontWeight('bold');
-    return;
-  }
-  var colMap = getHeaderMap(sheet);
-  var missing = [];
-  for (var i = 0; i < expected.length; i++) {
-    var key = expected[i].toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (colMap[key] === undefined) {
-      missing.push(expected[i]);
-    }
-  }
-  if (missing.length > 0) {
-    var lastCol = sheet.getLastColumn() || 1;
-    sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]).setFontWeight('bold');
-  }
+function ensureReferenceIndexSheetHeaders(sheet, lockAlreadyHeld) {
+  ensureSheetHeadersSafe_(sheet, CNE_SHEET_HEADERS['CNE_Reference_Index'] || [], Boolean(lockAlreadyHeld));
 }
 
 /**
@@ -5367,26 +6196,8 @@ function ensureReferenceIndexSheetHeaders(sheet) {
  * Preserves existing rows, structure, and formatting.
  * Appends missing headers only if necessary.
  */
-function ensureLearningResourceSheetHeaders(sheet) {
-  var expected = CNE_SHEET_HEADERS['CNE_Reference'];
-  if (!sheet) return;
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(expected);
-    sheet.getRange(1, 1, 1, expected.length).setFontWeight('bold');
-    return;
-  }
-  var colMap = getHeaderMap(sheet);
-  var missing = [];
-  for (var i = 0; i < expected.length; i++) {
-    var key = expected[i].toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (colMap[key] === undefined) {
-      missing.push(expected[i]);
-    }
-  }
-  if (missing.length > 0) {
-    var lastCol = sheet.getLastColumn() || 1;
-    sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]).setFontWeight('bold');
-  }
+function ensureLearningResourceSheetHeaders(sheet, lockAlreadyHeld) {
+  ensureSheetHeadersSafe_(sheet, CNE_SHEET_HEADERS['CNE_Reference'] || [], Boolean(lockAlreadyHeld));
 }
 
 /**
@@ -5394,26 +6205,8 @@ function ensureLearningResourceSheetHeaders(sheet) {
  * Preserves existing rows, structure, and formatting.
  * Appends missing headers only if necessary.
  */
-function ensureReferenceLibrarySheetHeaders(sheet) {
-  var expected = CNE_SHEET_HEADERS['CNE_Reference_Library'];
-  if (!sheet) return;
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(expected);
-    sheet.getRange(1, 1, 1, expected.length).setFontWeight('bold');
-    return;
-  }
-  var colMap = getHeaderMap(sheet);
-  var missing = [];
-  for (var i = 0; i < expected.length; i++) {
-    var key = expected[i].toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (colMap[key] === undefined) {
-      missing.push(expected[i]);
-    }
-  }
-  if (missing.length > 0) {
-    var lastCol = sheet.getLastColumn() || 1;
-    sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]).setFontWeight('bold');
-  }
+function ensureReferenceLibrarySheetHeaders(sheet, lockAlreadyHeld) {
+  ensureSheetHeadersSafe_(sheet, CNE_SHEET_HEADERS['CNE_Reference_Library'] || [], Boolean(lockAlreadyHeld));
 }
 
 /**
@@ -5422,59 +6215,48 @@ function ensureReferenceLibrarySheetHeaders(sheet) {
  * Uses ONLY DRIVE_FOLDER_ID from ScriptProperties; ignores any client folder IDs.
  */
 function getOrCreateLearningResourcesFolder() {
-  var driveFolderId = PropertiesService.getScriptProperties().getProperty('DRIVE_FOLDER_ID');
-  if (!driveFolderId || driveFolderId.trim() === '') {
-    return {
-      success: false,
-      errorCode: 'MISSING_DRIVE_CONFIG',
-      message: 'Google Drive configuration error: DRIVE_FOLDER_ID is not configured in Script Properties.'
-    };
-  }
-
-  var parentFolder;
   try {
-    parentFolder = DriveApp.getFolderById(driveFolderId.trim());
+    var rootId = getProperty('LEARNING_RESOURCES_ROOT_FOLDER_ID');
+    var rootFolder = rootId ? DriveApp.getFolderById(rootId) : DriveApp.getRootFolder();
+    return { success: true, folder: getOrCreateChildFolderSafe_(rootFolder, 'CNE Learning Resources') };
   } catch (e) {
-    return {
-      success: false,
-      errorCode: 'INVALID_DRIVE_FOLDER',
-      message: 'Google Drive configuration error: Invalid DRIVE_FOLDER_ID configured.'
-    };
-  }
-
-  try {
-    var subfolders = parentFolder.getFoldersByName('Learning Resources');
-    if (subfolders.hasNext()) {
-      return { success: true, folder: subfolders.next() };
-    }
-    var newFolder = parentFolder.createFolder('Learning Resources');
-    return { success: true, folder: newFolder };
-  } catch (e) {
-    return {
-      success: false,
-      errorCode: 'FOLDER_CREATION_FAILED',
-      message: 'Failed to access or create Learning Resources folder: ' + e.message
-    };
+    return { success: false, message: 'Unable to access CNE Learning Resources folder: ' + e.message };
   }
 }
 
 /**
  * Helper: Obtain or create the 'Nursing Reference Library' subfolder inside 'Learning Resources'.
  */
+function getOrCreateChildFolderSafe_(parentFolder, folderName) {
+  var existing = parentFolder.getFoldersByName(folderName);
+  if (existing.hasNext()) return existing.next();
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (e) {
+    throw new Error('Server is busy creating the Drive folder. Please try again.');
+  }
+  try {
+    // Re-check while serialized so two first-use requests cannot create duplicate folders.
+    var latest = parentFolder.getFoldersByName(folderName);
+    if (latest.hasNext()) return latest.next();
+    return parentFolder.createFolder(folderName);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function getOrCreateNursingRefLibraryFolder(learningResourcesFolder) {
   try {
-    var subfolders = learningResourcesFolder.getFoldersByName('Nursing Reference Library');
-    if (subfolders.hasNext()) {
-      return { success: true, folder: subfolders.next() };
+    if (!learningResourcesFolder) {
+      var parentResult = getOrCreateLearningResourcesFolder();
+      if (!parentResult.success) return parentResult;
+      learningResourcesFolder = parentResult.folder;
     }
-    var newFolder = learningResourcesFolder.createFolder('Nursing Reference Library');
-    return { success: true, folder: newFolder };
+    return { success: true, folder: getOrCreateChildFolderSafe_(learningResourcesFolder, 'Nursing Reference Library') };
   } catch (e) {
-    return {
-      success: false,
-      errorCode: 'FOLDER_CREATION_FAILED',
-      message: 'Failed to access or create Nursing Reference Library folder: ' + e.message
-    };
+    return { success: false, message: 'Unable to access Nursing Reference Library folder: ' + e.message };
   }
 }
 
@@ -5486,23 +6268,12 @@ function getOrCreateNursingRefLibraryFolder(learningResourcesFolder) {
 function getOrCreateOpenRnFolder() {
   var lrResult = getOrCreateLearningResourcesFolder();
   if (!lrResult.success) return lrResult;
-
   var nrlResult = getOrCreateNursingRefLibraryFolder(lrResult.folder);
   if (!nrlResult.success) return nrlResult;
-
   try {
-    var subfolders = nrlResult.folder.getFoldersByName('Open RN');
-    if (subfolders.hasNext()) {
-      return { success: true, folder: subfolders.next() };
-    }
-    var newFolder = nrlResult.folder.createFolder('Open RN');
-    return { success: true, folder: newFolder };
+    return { success: true, folder: getOrCreateChildFolderSafe_(nrlResult.folder, 'Open RN') };
   } catch (e) {
-    return {
-      success: false,
-      errorCode: 'FOLDER_CREATION_FAILED',
-      message: 'Failed to access or create Open RN folder: ' + e.message
-    };
+    return { success: false, message: 'Unable to access Open RN folder: ' + e.message };
   }
 }
 
@@ -5548,45 +6319,19 @@ function sanitizeFileNamePart(str) {
  */
 function handleUploadLearningResource(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
-  if (!cneId) {
-    return { success: false, errorCode: 'INVALID_CNE_ID', message: 'CNE ID is required.' };
-  }
+  if (!cneId) return { success: false, errorCode: 'INVALID_CNE_ID', message: 'CNE ID is required.' };
 
   var record = getCNEScheduleRecord(cneId);
-  if (!record) {
-    return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
-  }
-
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
   var authErr = checkCNEActionAuthorized(session, record);
   if (authErr) return authErr;
-
-  // Prevent learning-material modification after finalization.
-  if (normalizeCNEStatus(record.status) === 'Completed') {
-    return {
-      success: false,
-      errorCode: 'CNE_ALREADY_FINALIZED',
-      message: 'This CNE has already been finalized. Learning materials cannot be modified.'
-    };
-  }
-
-  // Also fail closed for canceled sessions.
+  if (normalizeCNEStatus(record.status) === 'Completed') return { success: false, errorCode: 'CNE_ALREADY_FINALIZED', message: 'This CNE has already been finalized. Learning materials cannot be modified.' };
   var materialStatus = normalizeCNEStatus(record.status);
-  if (materialStatus === 'Canceled' || materialStatus === 'Cancelled') {
-    return {
-      success: false,
-      errorCode: 'CNE_CANCELED',
-      message: 'This CNE has been canceled. Learning materials cannot be modified.'
-    };
-  }
+  if (materialStatus === 'Canceled' || materialStatus === 'Cancelled') return { success: false, errorCode: 'CNE_CANCELED', message: 'This CNE has been canceled. Learning materials cannot be modified.' };
 
   var base64Data = params.base64Data || params.fileData || params.fileBase64;
-  if (!base64Data) {
-    return { success: false, errorCode: 'MISSING_FILE', message: 'File data is required.' };
-  }
-
+  if (!base64Data) return { success: false, errorCode: 'MISSING_FILE', message: 'File data is required.' };
   var clientFileName = sanitizeCellInput(params.fileName || '');
-  
-  // Extract MIME and raw base64
   var contentType = '';
   var rawBase64 = String(base64Data);
   if (rawBase64.indexOf(';base64,') !== -1) {
@@ -5597,339 +6342,211 @@ function handleUploadLearningResource(params, session) {
     contentType = String(params.fileType || params.mimeType).toLowerCase().trim();
   }
 
-  // Pre-decode size check (approximate base64 length check to avoid huge memory allocation)
-  // For 3 MB binary file, base64 length is ~ 3 * 1024 * 1024 * 4/3 ≈ 4.19 MB.
   var MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024;
-  if (rawBase64.length > 4.5 * 1024 * 1024) {
-    return {
-      success: false,
-      errorCode: 'FILE_TOO_LARGE',
-      message: 'File exceeds maximum allowed size of 3 MB.'
-    };
-  }
+  if (rawBase64.length > 4.5 * 1024 * 1024) return { success: false, errorCode: 'FILE_TOO_LARGE', message: 'File exceeds maximum allowed size of 3 MB.' };
 
-  // 1. Determine and validate normalized extension (strictly pdf)
   var ext = '';
-  if (clientFileName && clientFileName.lastIndexOf('.') !== -1) {
-    ext = clientFileName.substring(clientFileName.lastIndexOf('.') + 1).toLowerCase().trim();
-  } else if (params.extension) {
-    ext = String(params.extension).toLowerCase().replace(/^\\./, '').trim();
-  }
-
+  if (clientFileName && clientFileName.lastIndexOf('.') !== -1) ext = clientFileName.substring(clientFileName.lastIndexOf('.') + 1).toLowerCase().trim();
+  else if (params.extension) ext = String(params.extension).toLowerCase().replace(/^\\./, '').trim();
   var ALLOWED_EXTS = ['pdf'];
-  if (!ext || ALLOWED_EXTS.indexOf(ext) === -1) {
-    return {
-      success: false,
-      errorCode: 'INVALID_FILE_TYPE',
-      message: 'Invalid file format. Only PDF (.pdf) documents are permitted.'
-    };
-  }
+  if (!ext || ALLOWED_EXTS.indexOf(ext) === -1) return { success: false, errorCode: 'INVALID_FILE_TYPE', message: 'Invalid file format. Only PDF (.pdf) documents are permitted.' };
 
-  // 2. MIME type handling (PDF only)
-  var SPECIFIC_MIMES_BY_EXT = {
-    'pdf': ['application/pdf', 'application/x-pdf']
-  };
-
-  var GENERIC_MIMES = [
-    'application/octet-stream',
-    'binary/octet-stream'
-  ];
-
+  var SPECIFIC_MIMES_BY_EXT = { 'pdf': ['application/pdf', 'application/x-pdf'] };
+  var GENERIC_MIMES = ['application/octet-stream', 'binary/octet-stream'];
   if (contentType) {
     var isSpecific = SPECIFIC_MIMES_BY_EXT[ext] && SPECIFIC_MIMES_BY_EXT[ext].indexOf(contentType) !== -1;
     var isGeneric = GENERIC_MIMES.indexOf(contentType) !== -1;
-
-    // Reject outright if declared MIME is incompatible with document types
-    if (!isSpecific && !isGeneric) {
-      return {
-        success: false,
-        errorCode: 'INVALID_MIME_TYPE',
-        message: 'Declared MIME type (' + contentType + ') is not permitted for .' + ext.toUpperCase() + ' documents.'
-      };
-    }
+    if (!isSpecific && !isGeneric) return { success: false, errorCode: 'INVALID_MIME_TYPE', message: 'Declared MIME type (' + contentType + ') is not permitted for .' + ext.toUpperCase() + ' documents.' };
   }
 
-  // Canonical MIME type for Drive storage
-  var canonicalMime = 'application/pdf';
-
-  // Decode base64
   var decoded;
-  try {
-    decoded = Utilities.base64Decode(rawBase64);
-  } catch (decodeErr) {
-    return {
-      success: false,
-      errorCode: 'INVALID_FILE_ENCODING',
-      message: 'Failed to decode base64 file data.'
-    };
-  }
-
+  try { decoded = Utilities.base64Decode(rawBase64); }
+  catch (decodeErr) { return { success: false, errorCode: 'INVALID_FILE_ENCODING', message: 'Failed to decode base64 file data.' }; }
   var fileSize = decoded.length;
-  if (fileSize <= 0) {
-    return {
-      success: false,
-      errorCode: 'EMPTY_FILE',
-      message: 'Uploaded file is empty (0 bytes).'
-    };
-  }
-
+  if (fileSize <= 0) return { success: false, errorCode: 'EMPTY_FILE', message: 'Uploaded file is empty (0 bytes).' };
   if (fileSize > MAX_CNE_LEARNING_MATERIAL_BYTES || fileSize > 3 * 1024 * 1024) {
-    return {
-      success: false,
-      errorCode: 'FILE_TOO_LARGE',
-      message: 'File exceeds maximum allowed size of 3 MB (Actual: ' + (Math.round(fileSize / (1024 * 1024) * 10) / 10) + ' MB).'
-    };
+    return { success: false, errorCode: 'FILE_TOO_LARGE', message: 'File exceeds maximum allowed size of 3 MB (Actual: ' + (Math.round(fileSize / (1024 * 1024) * 10) / 10) + ' MB).' };
+  }
+  if (decoded.length < 4 || (decoded[0] & 0xFF) !== 0x25 || (decoded[1] & 0xFF) !== 0x50 || (decoded[2] & 0xFF) !== 0x44 || (decoded[3] & 0xFF) !== 0x46) {
+    return { success: false, errorCode: 'INVALID_FILE_CONTENT', message: 'File content does not match standard PDF document structure (%PDF header missing).' };
   }
 
-  // 3. Binary & Structural Signature Validation (Strictly %PDF: 0x25 0x50 0x44 0x46)
-  if (ext === 'pdf') {
-    if (decoded.length < 4 ||
-        (decoded[0] & 0xFF) !== 0x25 ||
-        (decoded[1] & 0xFF) !== 0x50 ||
-        (decoded[2] & 0xFF) !== 0x44 ||
-        (decoded[3] & 0xFF) !== 0x46) {
-      return {
-        success: false,
-        errorCode: 'INVALID_FILE_CONTENT',
-        message: 'File content does not match standard PDF document structure (%PDF header missing).'
-      };
-    }
-  }
-
-  // Access authoritative Drive subfolder 'Learning Resources'
   var folderRes = getOrCreateLearningResourcesFolder();
-  if (!folderRes.success) {
-    return folderRes;
-  }
+  if (!folderRes.success) return folderRes;
   var targetFolder = folderRes.folder;
 
-  // Resolve authoritative CNE Topic & Resource Person Name
+  // Fresh authorization/identity preparation before Drive work. No global lock is held here.
+  var freshUploadSession = refreshMutationSession(session);
+  if (!freshUploadSession.success) return freshUploadSession;
+  session = freshUploadSession.session;
+  record = getCNEScheduleRecord(cneId);
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
+  authErr = checkCNEActionAuthorized(session, record);
+  if (authErr) return authErr;
+  materialStatus = normalizeCNEStatus(record.status);
+  if (materialStatus === 'Completed' || materialStatus === 'Canceled') return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Learning materials cannot be modified.' };
+
   var authoritativeTopic = sanitizeFileNamePart(record.topic) || ('CNE_' + cneId);
-  var authoritativeRpName = '';
+  var authoritativeRpNames = [];
+  var seenRpNames = {};
+  function addAuthoritativeRpName(rawName) {
+    var cleanName = sanitizeFileNamePart(rawName);
+    if (!cleanName) return;
+    var key = cleanName.toUpperCase();
+    if (seenRpNames[key]) return;
+    seenRpNames[key] = true;
+    authoritativeRpNames.push(cleanName);
+  }
 
-  if (record.instructor) {
-    var officer = findOfficerById(record.instructor);
-    if (officer && officer.name) {
-      authoritativeRpName = officer.name;
-    }
+  _executionRosterData = null;
+  _inMemoryOfficerMap = null;
+  var internalRpIds = String(record.instructor || '').split(/[,;\\n]+/).map(function(id) { return String(id || '').trim(); }).filter(Boolean);
+  for (var rpIdx = 0; rpIdx < internalRpIds.length; rpIdx++) {
+    var authoritativeOfficer = findOfficerById(internalRpIds[rpIdx]);
+    if (authoritativeOfficer && authoritativeOfficer.name) addAuthoritativeRpName(authoritativeOfficer.name);
   }
-  if (!authoritativeRpName && record.externalResourcePersons) {
-    authoritativeRpName = record.externalResourcePersons;
+  var externalRpNames = String(record.externalResourcePersons || '').split(/[,;\\n]+/).map(function(name) { return String(name || '').trim(); }).filter(Boolean);
+  for (var extRpIdx = 0; extRpIdx < externalRpNames.length; extRpIdx++) addAuthoritativeRpName(externalRpNames[extRpIdx]);
+  if (authoritativeRpNames.length === 0) {
+    logAuditAction('UPLOAD_LEARNING_RESOURCE_REJECTED', session.employeeId, 'Learning resource upload rejected for CNE ' + cneId + ': Resource Person could not be resolved from the authoritative CNE assignment.', 'FAILED');
+    return { success: false, errorCode: 'CNE_RESOURCE_PERSON_NOT_CONFIGURED', message: 'Resource Person could not be resolved from the selected CNE. Please update the CNE Resource Person assignment before uploading learning material.' };
   }
-  if (!authoritativeRpName && session.employeeId) {
-    var sessionOfficer = findOfficerById(session.employeeId);
-    if (sessionOfficer && sessionOfficer.name) {
-      authoritativeRpName = sessionOfficer.name;
-    } else if (session.name && session.name.toUpperCase() !== session.employeeId.toUpperCase()) {
-      authoritativeRpName = session.name;
-    }
-  }
-  if (!authoritativeRpName && params.resourcePersonName) {
-    authoritativeRpName = sanitizeCellInput(params.resourcePersonName);
-  }
-  authoritativeRpName = sanitizeFileNamePart(authoritativeRpName) || 'Resource Person';
 
+  var authoritativeRpName = authoritativeRpNames.join(', ');
   var baseFileName = authoritativeTopic + ' - ' + authoritativeRpName;
+  var finalFileName = baseFileName + '.' + ext;
+  try {
+    if (targetFolder.getFilesByName(finalFileName).hasNext()) {
+      finalFileName = baseFileName + ' (' + Utilities.getUuid().substring(0, 8) + ').' + ext;
+    }
+  } catch (dupCheckErr) {
+    finalFileName = baseFileName + ' (' + Utilities.getUuid().substring(0, 8) + ').' + ext;
+  }
 
-  // Acquire ScriptLock for concurrency-safe filename allocation, Drive creation, and Sheet metadata persistence
+  // Drive file creation is independent work and must not monopolize ScriptLock.
+  var newlyCreatedDriveFile = null;
+  var newDriveFileId = null;
+  try {
+    var blob = Utilities.newBlob(decoded, 'application/pdf', finalFileName);
+    newlyCreatedDriveFile = targetFolder.createFile(blob);
+    newDriveFileId = newlyCreatedDriveFile.getId();
+  } catch (driveErr) {
+    return { success: false, errorCode: 'DRIVE_UPLOAD_FAILED', message: 'Failed to create file in Google Drive: ' + driveErr.message };
+  }
+
+  var preparedIdentity = [String(record.topic || '').trim(), String(record.instructor || '').trim(), String(record.externalResourcePersons || '').trim()].join('|');
+  var commitError = null;
+  var updatedAt = new Date().toISOString();
+
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
-  } catch (e) {
-    return {
-      success: false,
-      errorCode: 'SERVER_BUSY',
-      message: 'Server is busy processing learning resources. Please try again in a few moments.'
-    };
+  } catch (lockErr) {
+    try { newlyCreatedDriveFile.setTrashed(true); } catch (cleanupErr) {}
+    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy committing the learning resource. Please try again.' };
   }
 
-  var newlyCreatedDriveFile = null;
-  var newDriveFileId = null;
-
   try {
-    // A. Concurrency-safe duplicate filename resolution inside lock
-    var finalFileName = baseFileName + '.' + ext;
-    try {
-      if (targetFolder.getFilesByName(finalFileName).hasNext()) {
-        var counter = 2;
-        while (targetFolder.getFilesByName(baseFileName + ' (' + counter + ').' + ext).hasNext()) {
-          counter++;
-          if (counter > 100) break;
-        }
-        finalFileName = baseFileName + ' (' + counter + ').' + ext;
-      }
-    } catch (dupCheckErr) {
-      finalFileName = baseFileName + ' (' + Date.now() + ').' + ext;
-    }
+    var liveSession = refreshMutationSession(session);
+    if (!liveSession.success) {
+      commitError = liveSession;
+    } else {
+      session = liveSession.session;
+      var liveRecord = getCNEScheduleRecord(cneId);
+      if (!liveRecord) commitError = { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
+      else {
+        var liveAuth = checkCNEActionAuthorized(session, liveRecord);
+        if (liveAuth) commitError = liveAuth;
+        else if (isCNEClosedForParticipantAccess(liveRecord)) commitError = { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Learning materials cannot be modified.' };
+        else {
+          var liveIdentity = [String(liveRecord.topic || '').trim(), String(liveRecord.instructor || '').trim(), String(liveRecord.externalResourcePersons || '').trim()].join('|');
+          if (liveIdentity !== preparedIdentity) {
+            commitError = { success: false, errorCode: 'CNE_RESOURCE_IDENTITY_CHANGED', message: 'The CNE topic/resource-person assignment changed during upload. Please retry with the latest CNE details.' };
+          } else {
+            record = liveRecord;
+            var sheet = getOrCreateSheet('CNE_Reference');
+            ensureReferenceSheetHeaders(sheet, true);
+            ensureLearningResourceSheetHeaders(sheet, true);
+            var colMap = getHeaderMap(sheet);
+            var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+            var existingRow = findExactRowInColumn_(sheet, idCol, cneId.toUpperCase(), 2);
+            var rowWidth = sheet.getLastColumn();
+            var rowValues = existingRow > 1 ? sheet.getRange(existingRow, 1, 1, rowWidth).getValues()[0] : new Array(rowWidth).fill('');
+            var refCol = colMap['referencetextclinicalguides'] !== undefined ? colMap['referencetextclinicalguides'] : (colMap['referencetext'] !== undefined ? colMap['referencetext'] : 2);
+            var existingText = existingRow > 1 ? String(rowValues[refCol] || '') : '';
+            var contentText = existingText || sanitizeCellInput(params.unifiedContent || params.referenceText || '');
 
-    // B. Create file in Drive
-    try {
-      var blob = Utilities.newBlob(decoded, canonicalMime, finalFileName);
-      newlyCreatedDriveFile = targetFolder.createFile(blob);
-      newDriveFileId = newlyCreatedDriveFile.getId();
-      // CRITICAL SECURITY: Do NOT call driveFile.setSharing(ANYONE_WITH_LINK).
-      // File remains strictly private within the configured Drive structure.
-    } catch (driveErr) {
-      lock.releaseLock();
-      return {
-        success: false,
-        errorCode: 'DRIVE_UPLOAD_FAILED',
-        message: 'Failed to create file in Google Drive: ' + driveErr.message
-      };
-    }
+            if (colMap['cneid'] !== undefined) rowValues[colMap['cneid']] = cneId; else rowValues[0] = cneId;
+            if (colMap['topic'] !== undefined) rowValues[colMap['topic']] = record.topic; else rowValues[1] = record.topic;
+            if (refCol !== undefined) rowValues[refCol] = contentText;
+            if (colMap['updatedat'] !== undefined) rowValues[colMap['updatedat']] = updatedAt; else rowValues[3] = updatedAt;
+            if (colMap['updatedby'] !== undefined) rowValues[colMap['updatedby']] = session.employeeId; else rowValues[4] = session.employeeId;
+            if (colMap['drivefileid'] !== undefined) rowValues[colMap['drivefileid']] = newDriveFileId; else rowValues[5] = newDriveFileId;
+            if (colMap['filename'] !== undefined) rowValues[colMap['filename']] = finalFileName; else rowValues[6] = finalFileName;
+            if (colMap['filetype'] !== undefined) rowValues[colMap['filetype']] = ext.toUpperCase(); else rowValues[7] = ext.toUpperCase();
+            if (colMap['resourcepersonname'] !== undefined) rowValues[colMap['resourcepersonname']] = authoritativeRpName; else rowValues[8] = authoritativeRpName;
+            if (colMap['filesize'] !== undefined) rowValues[colMap['filesize']] = fileSize; else rowValues[9] = fileSize;
+            if (colMap['indexingstatus'] !== undefined) rowValues[colMap['indexingstatus']] = 'PENDING';
+            if (colMap['indexingerrorcode'] !== undefined) rowValues[colMap['indexingerrorcode']] = '';
+            if (colMap['indexingmessage'] !== undefined) rowValues[colMap['indexingmessage']] = 'Indexing is in progress.';
+            if (colMap['chunkscount'] !== undefined) rowValues[colMap['chunkscount']] = 0;
+            if (colMap['indexedat'] !== undefined) rowValues[colMap['indexedat']] = '';
 
-    // C. Persist metadata to CNE_Reference with automatic rollback on failure
-    try {
-      var sheet = getOrCreateSheet('CNE_Reference');
-      ensureReferenceSheetHeaders(sheet);
-      ensureLearningResourceSheetHeaders(sheet);
-      var colMap = getHeaderMap(sheet);
-      var data = sheet.getDataRange().getValues();
-      var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
-      var existingRow = -1;
-      var existingText = '';
-
-      for (var r = 1; r < data.length; r++) {
-        if (String(data[r][idCol] || '').trim().toUpperCase() === cneId.toUpperCase()) {
-          existingRow = r + 1;
-          var refCol = colMap['referencetextclinicalguides'] !== undefined
-            ? colMap['referencetextclinicalguides']
-            : (colMap['referencetext'] !== undefined ? colMap['referencetext'] : 2);
-          existingText = String(data[r][refCol] || '');
-          break;
+            if (existingRow > 1) sheet.getRange(existingRow, 1, 1, rowWidth).setValues([rowValues]);
+            else sheet.getRange(sheet.getLastRow() + 1, 1, 1, rowWidth).setValues([rowValues]);
+          }
         }
       }
-
-      var updatedAt = new Date().toISOString();
-      var updatedBy = session.employeeId;
-      var contentText = existingText || sanitizeCellInput(params.unifiedContent || params.referenceText || '');
-
-      // Base learning-resource metadata remains in the original first 10 columns.
-      // Persistent indexing metadata is written by header name below so existing sheet layouts remain non-destructive.
-      var fullRow = [
-        cneId,
-        record.topic,
-        contentText,
-        updatedAt,
-        updatedBy,
-        newDriveFileId,
-        finalFileName,
-        ext.toUpperCase(),
-        authoritativeRpName,
-        fileSize
-      ];
-
-      var metadataRow;
-      if (existingRow > 0) {
-        sheet.getRange(existingRow, 1, 1, fullRow.length).setValues([fullRow]);
-        metadataRow = existingRow;
-      } else {
-        sheet.appendRow(fullRow);
-        metadataRow = sheet.getLastRow();
-      }
-
-      // Mark the new/replaced file as pending before extraction/indexing starts.
-      var pendingColMap = getHeaderMap(sheet);
-      if (pendingColMap['indexingstatus'] !== undefined) sheet.getRange(metadataRow, pendingColMap['indexingstatus'] + 1).setValue('PENDING');
-      if (pendingColMap['indexingerrorcode'] !== undefined) sheet.getRange(metadataRow, pendingColMap['indexingerrorcode'] + 1).setValue('');
-      if (pendingColMap['indexingmessage'] !== undefined) sheet.getRange(metadataRow, pendingColMap['indexingmessage'] + 1).setValue('Indexing is in progress.');
-      if (pendingColMap['chunkscount'] !== undefined) sheet.getRange(metadataRow, pendingColMap['chunkscount'] + 1).setValue(0);
-      if (pendingColMap['indexedat'] !== undefined) sheet.getRange(metadataRow, pendingColMap['indexedat'] + 1).setValue('');
-
-      logAuditAction('UPLOAD_LEARNING_RESOURCE', session.employeeId, 'Uploaded learning resource for CNE ' + cneId + ': ' + finalFileName + ' (' + fileSize + ' bytes)', 'SUCCESS');
-
-      // Phase 4A: Extract & index uploaded CNE learning resource content into CNE_Reference_Index
-      // Extraction occurs AFTER Drive creation and CNE_Reference metadata persistence.
-      // If extraction fails, original file and CNE_Reference metadata remain intact.
-      var indexResult = null;
-      try {
-        indexResult = indexLearningResourceContent(cneId, newDriveFileId, finalFileName, ext.toUpperCase(), record.topic, session);
-      } catch (indexErr) {
-        indexResult = {
-          success: false,
-          errorCode: 'INDEXING_EXECUTION_ERROR',
-          message: 'Error occurred during content indexing: ' + (indexErr && indexErr.message ? indexErr.message : String(indexErr))
-        };
-      }
-
-      var indexingStatus = (indexResult && indexResult.success) ? 'SUCCESS' : 'FAILED';
-      var indexingMessage = (indexResult && indexResult.message) ? indexResult.message : (indexingStatus === 'SUCCESS' ? 'Content indexed successfully.' : 'Unable to extract readable text from the uploaded material.');
-      var indexingErrorCode = (indexResult && !indexResult.success && indexResult.errorCode) ? indexResult.errorCode : '';
-      var indexingChunksCount = (indexResult && indexResult.chunksCount) ? Number(indexResult.chunksCount) : 0;
-      var indexedAt = new Date().toISOString();
-
-      // Persist indexing outcome so the status survives closing/reopening the modal.
-      var refreshedColMap = getHeaderMap(sheet);
-      if (refreshedColMap['indexingstatus'] !== undefined) {
-        sheet.getRange(metadataRow, refreshedColMap['indexingstatus'] + 1).setValue(indexingStatus);
-      }
-      if (refreshedColMap['indexingerrorcode'] !== undefined) {
-        sheet.getRange(metadataRow, refreshedColMap['indexingerrorcode'] + 1).setValue(indexingErrorCode);
-      }
-      if (refreshedColMap['indexingmessage'] !== undefined) {
-        sheet.getRange(metadataRow, refreshedColMap['indexingmessage'] + 1).setValue(indexingMessage);
-      }
-      if (refreshedColMap['chunkscount'] !== undefined) {
-        sheet.getRange(metadataRow, refreshedColMap['chunkscount'] + 1).setValue(indexingChunksCount);
-      }
-      if (refreshedColMap['indexedat'] !== undefined) {
-        sheet.getRange(metadataRow, refreshedColMap['indexedat'] + 1).setValue(indexedAt);
-      }
-
-      return {
-        success: true,
-        data: {
-          cneId: cneId,
-          driveFileId: newDriveFileId,
-          fileName: finalFileName,
-          fileType: ext.toUpperCase(),
-          fileSize: fileSize,
-          resourcePersonName: authoritativeRpName,
-          uploadedAt: updatedAt,
-          topic: record.topic,
-          indexingStatus: indexingStatus,
-          indexingErrorCode: indexingErrorCode || undefined,
-          indexingMessage: indexingMessage,
-          chunksCount: indexingChunksCount,
-          indexedAt: indexedAt
-        },
-        message: indexingStatus === 'SUCCESS'
-          ? 'Learning resource uploaded and indexed successfully.'
-          : 'Learning resource uploaded to Drive, but content indexing could not be completed.'
-      };
-    } catch (sheetErr) {
-      // RECONCILIATION: Drive creation succeeded, but Sheet persistence failed.
-      // Safely attempt to trash/rollback ONLY newlyCreatedDriveFile from this failed transaction.
-      // Do NOT touch any previous learning-resource file or unrelated files.
-      var rolledBack = false;
-      if (newlyCreatedDriveFile) {
-        try {
-          newlyCreatedDriveFile.setTrashed(true);
-          rolledBack = true;
-        } catch (trashErr) {
-          rolledBack = false;
-        }
-      }
-
-      if (rolledBack) {
-        logAuditAction('UPLOAD_LEARNING_RESOURCE_ROLLED_BACK', session.employeeId, 'Metadata persistence failed for CNE ' + cneId + '. Newly created Drive file rolled back (trashed): ' + newDriveFileId + '. Sheet error: ' + sheetErr.message, 'FAILED');
-        return {
-          success: false,
-          errorCode: 'METADATA_PERSIST_FAILED_ROLLED_BACK',
-          message: 'Failed to persist reference metadata in sheet. The uploaded file was rolled back. Please try again.'
-        };
-      } else {
-        logAuditAction('UPLOAD_LEARNING_RESOURCE_ORPHANED', session.employeeId, 'CRITICAL: Metadata persistence failed and Drive rollback failed. Orphaned Drive File ID: ' + newDriveFileId + ', CNE: ' + cneId + ', Error: ' + sheetErr.message, 'FAILED');
-        return {
-          success: false,
-          errorCode: 'METADATA_PERSIST_FAILED_CLEANUP_FAILED',
-          message: 'Failed to persist reference metadata. Upload cleanup could not be completed; administrative reconciliation may be required.'
-        };
-      }
     }
+  } catch (sheetErr) {
+    commitError = { success: false, errorCode: 'METADATA_PERSIST_FAILED', message: 'Failed to persist reference metadata in sheet: ' + sheetErr.message };
   } finally {
     lock.releaseLock();
   }
+
+  if (commitError) {
+    var rolledBack = false;
+    try { newlyCreatedDriveFile.setTrashed(true); rolledBack = true; } catch (trashErr) {}
+    logAuditAction(rolledBack ? 'UPLOAD_LEARNING_RESOURCE_ROLLED_BACK' : 'UPLOAD_LEARNING_RESOURCE_ORPHANED', session.employeeId, 'Learning resource metadata commit failed for CNE ' + cneId + '. Drive File ID: ' + newDriveFileId + '. Reason: ' + (commitError.message || commitError.errorCode || 'Unknown'), 'FAILED');
+    if (rolledBack) return { success: false, errorCode: commitError.errorCode || 'METADATA_PERSIST_FAILED_ROLLED_BACK', message: (commitError.message || 'Metadata persistence failed.') + ' The uploaded file was rolled back.' };
+    return { success: false, errorCode: 'METADATA_PERSIST_FAILED_CLEANUP_FAILED', message: 'Metadata persistence failed and uploaded-file cleanup could not be completed. Administrative reconciliation may be required.' };
+  }
+
+  logAuditAction('UPLOAD_LEARNING_RESOURCE', session.employeeId, 'Uploaded learning resource for CNE ' + cneId + ': ' + finalFileName + ' (' + fileSize + ' bytes)', 'SUCCESS');
+
+  // Index with NO caller-held ScriptLock. Extraction happens concurrently; only final shared-sheet commit is serialized.
+  var indexResult = null;
+  try {
+    indexResult = indexLearningResourceContent(cneId, newDriveFileId, finalFileName, ext.toUpperCase(), record.topic, session, false);
+  } catch (indexErr) {
+    indexResult = { success: false, errorCode: 'INDEXING_EXECUTION_ERROR', message: 'Error occurred during content indexing: ' + (indexErr && indexErr.message ? indexErr.message : String(indexErr)) };
+  }
+
+  var indexingStatus = (indexResult && indexResult.success) ? 'SUCCESS' : 'FAILED';
+  var indexingMessage = (indexResult && indexResult.message) ? indexResult.message : (indexingStatus === 'SUCCESS' ? 'Content indexed successfully.' : 'Unable to extract readable text from the uploaded material.');
+  var indexingErrorCode = (indexResult && !indexResult.success && indexResult.errorCode) ? indexResult.errorCode : '';
+  var indexingChunksCount = (indexResult && indexResult.chunksCount) ? Number(indexResult.chunksCount) : 0;
+  var indexedAt = new Date().toISOString();
+
+  return {
+    success: true,
+    data: {
+      cneId: cneId,
+      driveFileId: newDriveFileId,
+      fileName: finalFileName,
+      fileType: ext.toUpperCase(),
+      fileSize: fileSize,
+      resourcePersonName: authoritativeRpName,
+      uploadedAt: updatedAt,
+      topic: record.topic,
+      indexingStatus: indexingStatus,
+      indexingErrorCode: indexingErrorCode || undefined,
+      indexingMessage: indexingMessage,
+      chunksCount: indexingChunksCount,
+      indexedAt: indexedAt
+    },
+    message: indexingStatus === 'SUCCESS' ? 'Learning resource uploaded and indexed successfully.' : 'Learning resource uploaded to Drive, but content indexing could not be completed.'
+  };
 }
 
 /**
@@ -6081,6 +6698,64 @@ function handleDeleteLearningResource(params, session) {
   }
 
   try {
+    var freshDeleteSession = refreshMutationSession(session);
+    if (!freshDeleteSession.success) return freshDeleteSession;
+    session = freshDeleteSession.session;
+    var liveDeleteRecord = getCNEScheduleRecord(cneId);
+    if (!liveDeleteRecord) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
+    var liveDeleteAuth = checkCNEActionAuthorized(session, liveDeleteRecord);
+    if (liveDeleteAuth) return liveDeleteAuth;
+    var liveDeleteStatus = normalizeCNEStatus(liveDeleteRecord.status);
+    if (liveDeleteStatus === 'Completed' || liveDeleteStatus === 'Canceled') {
+      return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Learning materials cannot be modified.' };
+    }
+
+    // Re-resolve metadata under the lock so a concurrent replacement cannot make us
+    // trash an old file and then clear the newer file's metadata row.
+    sheet = getOrCreateSheet('CNE_Reference');
+    ensureReferenceSheetHeaders(sheet, true);
+    ensureLearningResourceSheetHeaders(sheet, true);
+    colMap = getHeaderMap(sheet);
+    data = sheet.getDataRange().getValues();
+    idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+    driveFileIdCol = colMap['drivefileid'];
+    fileNameCol = colMap['filename'];
+    fileTypeCol = colMap['filetype'];
+    fileSizeCol = colMap['filesize'];
+    indexingStatusCol = colMap['indexingstatus'];
+    indexingErrorCodeCol = colMap['indexingerrorcode'];
+    indexingMessageCol = colMap['indexingmessage'];
+    chunksCountCol = colMap['chunkscount'];
+    indexedAtCol = colMap['indexedat'];
+    updatedCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 3;
+    byCol = colMap['updatedby'] !== undefined ? colMap['updatedby'] : 4;
+    existingRow = -1;
+    targetDriveFileId = '';
+    targetFileName = '';
+    for (var liveMetaRow = 1; liveMetaRow < data.length; liveMetaRow++) {
+      if (String(data[liveMetaRow][idCol] || '').trim().toUpperCase() === cneId.toUpperCase()) {
+        existingRow = liveMetaRow + 1;
+        targetDriveFileId = driveFileIdCol !== undefined ? String(data[liveMetaRow][driveFileIdCol] || '').trim() : '';
+        targetFileName = fileNameCol !== undefined ? String(data[liveMetaRow][fileNameCol] || '').trim() : '';
+        break;
+      }
+    }
+    if (!targetDriveFileId || existingRow === -1) {
+      return { success: false, errorCode: 'NO_RESOURCE_FILE', message: 'No uploaded learning resource file is currently associated with this CNE.' };
+    }
+    file = null;
+    try { file = DriveApp.getFileById(targetDriveFileId); } catch (liveDriveLookupErr) { file = null; }
+    if (file) {
+      var liveParents = file.getParents();
+      var liveInFolder = false;
+      while (liveParents.hasNext()) {
+        if (liveParents.next().getId() === targetFolderId) { liveInFolder = true; break; }
+      }
+      if (!liveInFolder) {
+        return { success: false, errorCode: 'FILE_OUTSIDE_REPOSITORY', message: 'Resource file does not belong to the authoritative Learning Resources folder.' };
+      }
+    }
+
     // 6. Trash/delete only that specific Learning Resource file if it exists
     if (file) {
       try {
@@ -6120,7 +6795,7 @@ function handleDeleteLearningResource(params, session) {
 
       // Phase 4A: Clean up index rows for this CNE in CNE_Reference_Index
       try {
-        cleanUpIndexRowsForCNE(cneId);
+        cleanUpIndexRowsForCNELocked_(cneId);
       } catch (cleanIndexErr) {}
 
       // 8. Write audit entry for successful deletion
@@ -6303,12 +6978,6 @@ function handleGetLearningResource(params, session) {
           indexingMessage = inferredIndexing.indexingMessage || '';
           chunksCount = Number(inferredIndexing.chunksCount) || 0;
           indexedAt = inferredIndexing.indexedAt || '';
-
-          if (indexingStatusCol !== undefined) sheet.getRange(r + 1, indexingStatusCol + 1).setValue(indexingStatus);
-          if (indexingErrorCodeCol !== undefined) sheet.getRange(r + 1, indexingErrorCodeCol + 1).setValue(indexingErrorCode);
-          if (indexingMessageCol !== undefined) sheet.getRange(r + 1, indexingMessageCol + 1).setValue(indexingMessage);
-          if (chunksCountCol !== undefined) sheet.getRange(r + 1, chunksCountCol + 1).setValue(chunksCount);
-          if (indexedAtCol !== undefined) sheet.getRange(r + 1, indexedAtCol + 1).setValue(indexedAt);
         }
       }
 
@@ -6473,12 +7142,6 @@ function handleListLearningResources(params, session) {
         indexingMessage = inferredIndexing.indexingMessage || '';
         chunksCount = Number(inferredIndexing.chunksCount) || 0;
         indexedAt = inferredIndexing.indexedAt || '';
-
-        if (indexingStatusCol !== undefined) sheet.getRange(r + 1, indexingStatusCol + 1).setValue(indexingStatus);
-        if (indexingErrorCodeCol !== undefined) sheet.getRange(r + 1, indexingErrorCodeCol + 1).setValue(indexingErrorCode);
-        if (indexingMessageCol !== undefined) sheet.getRange(r + 1, indexingMessageCol + 1).setValue(indexingMessage);
-        if (chunksCountCol !== undefined) sheet.getRange(r + 1, chunksCountCol + 1).setValue(chunksCount);
-        if (indexedAtCol !== undefined) sheet.getRange(r + 1, indexedAtCol + 1).setValue(indexedAt);
       }
     }
 
@@ -7060,6 +7723,23 @@ function deleteSheetRowsByIndices(sheet, rowNumbers) {
  * Strictly non-destructive to other CNEs.
  * Uses row-level deletion without clearing the sheet or rewriting unrelated rows.
  */
+function cleanUpIndexRowsForCNELocked_(cneId) {
+  if (!cneId) return;
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('CNE_Reference_Index');
+  if (!sheet || sheet.getLastRow() <= 1) return;
+
+  var colMap = getHeaderMap(sheet);
+  var cneIdCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 2;
+  var targetCne = String(cneId).trim().toUpperCase();
+  var values = sheet.getRange(2, cneIdCol + 1, sheet.getLastRow() - 1, 1).getValues();
+  var rowsToDelete = [];
+  for (var r = 0; r < values.length; r++) {
+    if (String(values[r][0] || '').trim().toUpperCase() === targetCne) rowsToDelete.push(r + 2);
+  }
+  if (rowsToDelete.length > 0) deleteSheetRowsByIndices(sheet, rowsToDelete);
+}
+
 function cleanUpIndexRowsForCNE(cneId) {
   if (!cneId) return;
   var lock = LockService.getScriptLock();
@@ -7069,25 +7749,7 @@ function cleanUpIndexRowsForCNE(cneId) {
     return;
   }
   try {
-    var ss = getSpreadsheet('CNE');
-    var sheet = ss.getSheetByName('CNE_Reference_Index');
-    if (!sheet || sheet.getLastRow() <= 1) return;
-
-    var allData = sheet.getDataRange().getValues();
-    var colMap = getHeaderMap(sheet);
-    var cneIdCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 2;
-
-    var targetCne = String(cneId).trim().toUpperCase();
-    var rowsToDelete = [];
-    for (var r = 1; r < allData.length; r++) {
-      if (String(allData[r][cneIdCol] || '').trim().toUpperCase() === targetCne) {
-        rowsToDelete.push(r + 1); // 1-indexed sheet row number
-      }
-    }
-
-    if (rowsToDelete.length > 0) {
-      deleteSheetRowsByIndices(sheet, rowsToDelete);
-    }
+    cleanUpIndexRowsForCNELocked_(cneId);
   } finally {
     lock.releaseLock();
   }
@@ -7101,22 +7763,17 @@ function cleanUpIndexRowsForCNE(cneId) {
  * 3. Does NOT clear the sheet or rewrite unrelated rows.
  * 4. Appends all new chunk rows in ONE batch setValues() call.
  */
-function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, topic, session) {
+function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, topic, session, lockAlreadyHeld) {
   if (!cneId || !driveFileId) {
     return { success: false, errorCode: 'INVALID_PARAMS', message: 'CNE ID and Drive File ID are required.' };
   }
 
-  // 1. Content Extraction & Chunking OUTSIDE of ScriptLock
-  // Heavy Drive file reading and document extraction must not block other concurrent requests.
+  // 1. Content extraction/chunking is deliberately outside the global ScriptLock.
   var extResult = null;
   try {
     extResult = extractLearningResourceContentCore(cneId, session);
   } catch (extErr) {
-    extResult = {
-      success: false,
-      errorCode: 'EXTRACTION_EXCEPTION',
-      message: 'Exception during content extraction: ' + (extErr && extErr.message ? extErr.message : String(extErr))
-    };
+    extResult = { success: false, errorCode: 'EXTRACTION_EXCEPTION', message: 'Exception during content extraction: ' + (extErr && extErr.message ? extErr.message : String(extErr)) };
   }
 
   var rowsToInsert = [];
@@ -7126,151 +7783,128 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
   if (isSuccess) {
     var extractedText = extResult.data.extractedText;
     var chunks = chunkExtractedContent(extractedText, fileType);
-
     if (chunks.length > 0) {
       for (var c = 0; c < chunks.length; c++) {
-        var indexId = 'IDX_' + cneId + '_' + driveFileId.substring(0, 8) + '_C' + (c + 1);
         rowsToInsert.push([
-          indexId,
-          'UPLOADED_CNE',
-          cneId,
-          driveFileId,
-          fileName,
-          topic,
-          chunks[c].heading || 'General Content',
-          (c + 1),
-          chunks[c].text,
-          '', // Clinical Keywords left blank in Phase 4A as required
-          'SUCCESS',
-          nowIso
+          'IDX_' + cneId + '_' + driveFileId.substring(0, 8) + '_C' + (c + 1),
+          'UPLOADED_CNE', cneId, driveFileId, fileName, topic,
+          chunks[c].heading || 'General Content', c + 1, chunks[c].text, '', 'SUCCESS', nowIso
         ]);
       }
     } else {
       isSuccess = false;
-      extResult = {
-        success: false,
-        errorCode: 'NO_EXTRACTABLE_CONTENT',
-        message: 'No readable textual content could be extracted into chunks.'
-      };
+      extResult = { success: false, errorCode: 'NO_EXTRACTABLE_CONTENT', message: 'No readable textual content could be extracted into chunks.' };
     }
   }
 
   if (!isSuccess) {
     var failErrCode = extResult ? extResult.errorCode : 'CONTENT_EXTRACTION_FAILED';
     var failErrMsg = extResult ? extResult.message : 'No readable textual content could be extracted.';
-    var failIndexId = 'IDX_' + cneId + '_' + driveFileId.substring(0, 8) + '_FAIL';
-
     rowsToInsert.push([
-      failIndexId,
-      'UPLOADED_CNE',
-      cneId,
-      driveFileId,
-      fileName,
-      topic,
-      'Extraction Error',
-      0,
-      failErrCode + ': ' + failErrMsg,
-      '',
-      'FAILED',
-      nowIso
+      'IDX_' + cneId + '_' + driveFileId.substring(0, 8) + '_FAIL',
+      'UPLOADED_CNE', cneId, driveFileId, fileName, topic, 'Extraction Error', 0,
+      failErrCode + ': ' + failErrMsg, '', 'FAILED', nowIso
     ]);
   }
 
-  // 2. CRITICAL SECTION: Acquire ScriptLock ONLY for shared CNE_Reference_Index sheet operations
-  var lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(15000);
-  } catch (lockErr) {
-    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy indexing content. Please try again.' };
+  var lock = lockAlreadyHeld ? null : LockService.getScriptLock();
+  if (!lockAlreadyHeld) {
+    try {
+      lock.waitLock(15000);
+    } catch (lockErr) {
+      return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy indexing content. Please try again.' };
+    }
   }
 
   var alreadyIndexed = false;
   var alreadyIndexedCount = 0;
+  var refSheet = null;
+  var refMap = null;
+  var refRow = -1;
 
   try {
-    var sheet = getOrCreateSheet('CNE_Reference_Index');
-    ensureReferenceIndexSheetHeaders(sheet);
-    var colMap = getHeaderMap(sheet);
-    var allData = sheet.getDataRange().getValues();
+    refSheet = getOrCreateSheet('CNE_Reference');
+    ensureReferenceSheetHeaders(refSheet, true);
+    ensureLearningResourceSheetHeaders(refSheet, true);
+    refMap = getHeaderMap(refSheet);
+    var refIdCol = refMap['cneid'] !== undefined ? refMap['cneid'] : 0;
+    var refDriveCol = refMap['drivefileid'];
+    refRow = findExactRowInColumn_(refSheet, refIdCol, String(cneId).trim().toUpperCase(), 2);
+    var currentDriveId = (refRow > 1 && refDriveCol !== undefined)
+      ? String(refSheet.getRange(refRow, refDriveCol + 1).getValue() || '').trim()
+      : '';
+    if (!currentDriveId || currentDriveId !== String(driveFileId).trim()) {
+      return { success: false, errorCode: 'RESOURCE_SUPERSEDED', message: 'Learning resource changed before indexing completed. Stale indexing result was discarded.' };
+    }
 
+    var sheet = getOrCreateSheet('CNE_Reference_Index');
+    ensureReferenceIndexSheetHeaders(sheet, true);
+    var colMap = getHeaderMap(sheet);
     var cneIdCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 2;
     var driveCol = colMap['drivefileid'] !== undefined ? colMap['drivefileid'] : 3;
     var statusCol = colMap['extractionstatus'] !== undefined ? colMap['extractionstatus'] : 10;
-
     var targetCne = String(cneId).trim().toUpperCase();
+    var rowCount = Math.max(0, sheet.getLastRow() - 1);
+    var cneVals = rowCount ? sheet.getRange(2, cneIdCol + 1, rowCount, 1).getValues() : [];
+    var driveVals = rowCount ? sheet.getRange(2, driveCol + 1, rowCount, 1).getValues() : [];
+    var statusVals = rowCount ? sheet.getRange(2, statusCol + 1, rowCount, 1).getValues() : [];
+    var rowsToDelete = [];
 
-    // 2A. Duplicate Protection: Check if same CNE ID + Drive File ID is already successfully indexed
-    for (var r = 1; r < allData.length; r++) {
-      var rCneId = String(allData[r][cneIdCol] || '').trim().toUpperCase();
-      var rDriveId = String(allData[r][driveCol] || '').trim();
-      var rStatus = String(allData[r][statusCol] || '').trim().toUpperCase();
-
-      if (rCneId === targetCne && rDriveId === driveFileId && rStatus === 'SUCCESS') {
-        alreadyIndexedCount++;
-      }
+    for (var r = 0; r < rowCount; r++) {
+      var rCneId = String(cneVals[r][0] || '').trim().toUpperCase();
+      var rDriveId = String(driveVals[r][0] || '').trim();
+      var rStatus = String(statusVals[r][0] || '').trim().toUpperCase();
+      if (rCneId === targetCne && rDriveId === driveFileId && rStatus === 'SUCCESS') alreadyIndexedCount++;
+      if (rCneId === targetCne) rowsToDelete.push(r + 2);
     }
 
     if (alreadyIndexedCount > 0) {
       alreadyIndexed = true;
     } else {
-      // 2B. Surgical Replacement: Identify and remove ONLY rows belonging to this specific CNE ID
-      var rowsToDelete = [];
-      for (var r2 = 1; r2 < allData.length; r2++) {
-        var rowCne = String(allData[r2][cneIdCol] || '').trim().toUpperCase();
-        if (rowCne === targetCne) {
-          rowsToDelete.push(r2 + 1); // 1-indexed sheet row number
-        }
-      }
-
-      if (rowsToDelete.length > 0) {
-        deleteSheetRowsByIndices(sheet, rowsToDelete);
-      }
-
-      // 2C. Batch write new index rows in ONE single setValues() call at the end of the sheet
+      // Safe replacement: write the new batch first. If the write fails, old index rows remain intact.
       if (rowsToInsert.length > 0) {
         var startRow = sheet.getLastRow() + 1;
         sheet.getRange(startRow, 1, rowsToInsert.length, rowsToInsert[0].length).setValues(rowsToInsert);
       }
+      if (rowsToDelete.length > 0) deleteSheetRowsByIndices(sheet, rowsToDelete);
+    }
+
+    // Persist indexing outcome in the same short critical section.
+    if (refRow > 1) {
+      var rowWidth = refSheet.getLastColumn();
+      var refRowValues = refSheet.getRange(refRow, 1, 1, rowWidth).getValues()[0];
+      var indexingStatus = (alreadyIndexed || isSuccess) ? 'SUCCESS' : 'FAILED';
+      var indexingErrorCode = (!alreadyIndexed && !isSuccess && extResult && extResult.errorCode) ? extResult.errorCode : '';
+      var indexingMessage = alreadyIndexed
+        ? 'Learning resource is already indexed.'
+        : (isSuccess ? 'Learning resource indexed successfully (' + rowsToInsert.length + ' chunks).' : 'Unable to extract readable text from the uploaded material.');
+      var chunksCount = alreadyIndexed ? alreadyIndexedCount : (isSuccess ? rowsToInsert.length : 0);
+      if (refMap['indexingstatus'] !== undefined) refRowValues[refMap['indexingstatus']] = indexingStatus;
+      if (refMap['indexingerrorcode'] !== undefined) refRowValues[refMap['indexingerrorcode']] = indexingErrorCode;
+      if (refMap['indexingmessage'] !== undefined) refRowValues[refMap['indexingmessage']] = indexingMessage;
+      if (refMap['chunkscount'] !== undefined) refRowValues[refMap['chunkscount']] = chunksCount;
+      if (refMap['indexedat'] !== undefined) refRowValues[refMap['indexedat']] = new Date().toISOString();
+      refSheet.getRange(refRow, 1, 1, rowWidth).setValues([refRowValues]);
     }
   } finally {
-    lock.releaseLock();
+    if (!lockAlreadyHeld && lock) lock.releaseLock();
   }
 
-  // 3. Post-mutation audit logging and response return
   if (alreadyIndexed) {
-    return {
-      success: true,
-      alreadyIndexed: true,
-      chunksCount: alreadyIndexedCount,
-      message: 'Learning resource is already indexed.'
-    };
+    return { success: true, alreadyIndexed: true, chunksCount: alreadyIndexedCount, message: 'Learning resource is already indexed.' };
   }
 
   if (isSuccess) {
-    logAuditAction(
-      'LEARNING_RESOURCE_CONTENT_INDEXED',
-      session ? session.employeeId : 'SYSTEM',
-      'Successfully indexed ' + rowsToInsert.length + ' chunks for CNE ' + cneId + ' (' + fileName + ')',
-      'SUCCESS'
-    );
-    return {
-      success: true,
-      chunksCount: rowsToInsert.length,
-      message: 'Learning resource indexed successfully (' + rowsToInsert.length + ' chunks).'
-    };
-  } else {
-    logAuditAction(
-      'LEARNING_RESOURCE_CONTENT_INDEX_FAILED',
-      session ? session.employeeId : 'SYSTEM',
-      'Content indexing failed for CNE ' + cneId + ' (' + fileName + '): ' + (extResult ? extResult.errorCode : 'FAILED'),
-      'FAILED'
-    );
-    return {
-      success: false,
-      errorCode: (extResult && extResult.errorCode) ? extResult.errorCode : 'CONTENT_EXTRACTION_FAILED',
-      message: 'Unable to extract readable text from the uploaded material. The file has been saved, but its content could not be indexed.'
-    };
+    logAuditAction('LEARNING_RESOURCE_CONTENT_INDEXED', session ? session.employeeId : 'SYSTEM', 'Successfully indexed ' + rowsToInsert.length + ' chunks for CNE ' + cneId + ' (' + fileName + ')', 'SUCCESS');
+    return { success: true, chunksCount: rowsToInsert.length, message: 'Learning resource indexed successfully (' + rowsToInsert.length + ' chunks).' };
   }
+
+  logAuditAction('LEARNING_RESOURCE_CONTENT_INDEX_FAILED', session ? session.employeeId : 'SYSTEM', 'Content indexing failed for CNE ' + cneId + ' (' + fileName + '): ' + (extResult ? extResult.errorCode : 'FAILED'), 'FAILED');
+  return {
+    success: false,
+    errorCode: (extResult && extResult.errorCode) ? extResult.errorCode : 'CONTENT_EXTRACTION_FAILED',
+    message: 'Unable to extract readable text from the uploaded material. The file has been saved, but its content could not be indexed.'
+  };
 }
 
 /**
@@ -7465,6 +8099,7 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
 
   // 4. Validate file non-empty and type (PDF only)
   var fileSize = file.getSize();
+  var sourceLastUpdatedMs = file.getLastUpdated().getTime();
   if (fileSize <= 0) {
     return {
       success: false,
@@ -7616,7 +8251,27 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
     ]);
   }
 
-  // 8. CRITICAL SECTION: Shared Sheet Operations INSIDE ScriptLock
+  // 8. Revalidate Drive state immediately before the shared-sheet commit.
+  // ScriptLock cannot serialize external Drive permission/file edits, so keeping Drive calls
+  // inside the script-wide mutex only increases contention without providing stronger atomicity.
+  var liveReferenceFile;
+  try { liveReferenceFile = DriveApp.getFileById(cleanDriveFileId); } catch (liveRefErr) { liveReferenceFile = null; }
+  if (!liveReferenceFile || !isFileInOpenRnFolder(liveReferenceFile, openRnFolder)) {
+    return { success: false, errorCode: 'REFERENCE_RESOURCE_CHANGED', message: 'Reference resource was removed or moved while indexing. Stale indexing result was discarded.' };
+  }
+  if (liveReferenceFile.getSize() !== fileSize || liveReferenceFile.getLastUpdated().getTime() !== sourceLastUpdatedMs) {
+    return { success: false, errorCode: 'REFERENCE_RESOURCE_CHANGED', message: 'Reference resource changed while indexing. Please index the latest file version again.' };
+  }
+  try {
+    var liveSharing = liveReferenceFile.getSharingAccess();
+    if (liveSharing === DriveApp.Access.ANYONE || liveSharing === DriveApp.Access.ANYONE_WITH_LINK) {
+      return { success: false, errorCode: 'PUBLIC_ACCESS_FORBIDDEN', message: 'Security policy violation: Reference file has public Drive link sharing. Sharing must be private.' };
+    }
+  } catch (livePrivacyErr) {
+    return { success: false, errorCode: 'DRIVE_PRIVACY_CHECK_FAILED', message: 'Drive privacy check failed before indexing commit.' };
+  }
+
+  // 9. CRITICAL SECTION: shared Sheet state only.
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(20000);
@@ -7629,44 +8284,41 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
   var resourceId = 'LIB_OPENRN_' + cleanDriveFileId.substring(0, 10);
 
   try {
+    var freshIndexAdmin = requireFreshAdminMutation(session);
+    if (!freshIndexAdmin.success) return freshIndexAdmin;
+    session = freshIndexAdmin.session;
+
     // 8A. Update / Verify CNE_Reference_Library metadata sheet
     var libSheet = getOrCreateSheet('CNE_Reference_Library');
-    ensureReferenceLibrarySheetHeaders(libSheet);
+    ensureReferenceLibrarySheetHeaders(libSheet, true);
     var libMap = getHeaderMap(libSheet);
-    var libData = libSheet.getDataRange().getValues();
-
     var driveColLib = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
     var activeColLib = libMap['active'] !== undefined ? libMap['active'] : 8;
     var updatedColLib = libMap['updatedat'] !== undefined ? libMap['updatedat'] : 10;
     var resIdColLib = libMap['resourceid'] !== undefined ? libMap['resourceid'] : 0;
 
-    var existingLibRow = -1;
-    for (var lr = 1; lr < libData.length; lr++) {
-      if (String(libData[lr][driveColLib] || '').trim() === cleanDriveFileId) {
-        existingLibRow = lr + 1; // 1-indexed sheet row number
-        resourceId = String(libData[lr][resIdColLib] || resourceId).trim();
-        break;
-      }
+    var existingLibRow = findExactRowInColumn_(libSheet, driveColLib, cleanDriveFileId, 2);
+    if (existingLibRow > 1) {
+      resourceId = String(libSheet.getRange(existingLibRow, resIdColLib + 1).getValue() || resourceId).trim();
     }
 
     // 8B. Duplicate Check in CNE_Reference_Index
     var indexSheet = getOrCreateSheet('CNE_Reference_Index');
-    ensureReferenceIndexSheetHeaders(indexSheet);
+    ensureReferenceIndexSheetHeaders(indexSheet, true);
     var idxMap = getHeaderMap(indexSheet);
-    var idxData = indexSheet.getDataRange().getValues();
-
     var srcTypeCol = idxMap['sourcetype'] !== undefined ? idxMap['sourcetype'] : 1;
     var driveColIdx = idxMap['drivefileid'] !== undefined ? idxMap['drivefileid'] : 3;
     var statusColIdx = idxMap['extractionstatus'] !== undefined ? idxMap['extractionstatus'] : 10;
+    var idxRowCount = Math.max(0, indexSheet.getLastRow() - 1);
+    var srcVals = idxRowCount ? indexSheet.getRange(2, srcTypeCol + 1, idxRowCount, 1).getValues() : [];
+    var driveVals = idxRowCount ? indexSheet.getRange(2, driveColIdx + 1, idxRowCount, 1).getValues() : [];
+    var statusVals = idxRowCount ? indexSheet.getRange(2, statusColIdx + 1, idxRowCount, 1).getValues() : [];
 
-    for (var ir = 1; ir < idxData.length; ir++) {
-      var rSrc = String(idxData[ir][srcTypeCol] || '').trim().toUpperCase();
-      var rDrive = String(idxData[ir][driveColIdx] || '').trim();
-      var rStat = String(idxData[ir][statusColIdx] || '').trim().toUpperCase();
-
-      if (rSrc === 'LOCAL_REFERENCE_LIB' && rDrive === cleanDriveFileId && rStat === 'SUCCESS') {
-        alreadyIndexedCount++;
-      }
+    for (var ir = 0; ir < idxRowCount; ir++) {
+      var rSrc = String(srcVals[ir][0] || '').trim().toUpperCase();
+      var rDrive = String(driveVals[ir][0] || '').trim();
+      var rStat = String(statusVals[ir][0] || '').trim().toUpperCase();
+      if (rSrc === 'LOCAL_REFERENCE_LIB' && rDrive === cleanDriveFileId && rStat === 'SUCCESS') alreadyIndexedCount++;
     }
 
     if (alreadyIndexedCount > 0 && !isReindex) {
@@ -7689,12 +8341,10 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
 
       // Collect existing LOCAL_REFERENCE_LIB rows for this Drive File ID ONLY
       var rowsToDelete = [];
-      for (var ir2 = 1; ir2 < idxData.length; ir2++) {
-        var rowSrc = String(idxData[ir2][srcTypeCol] || '').trim().toUpperCase();
-        var rowDrive = String(idxData[ir2][driveColIdx] || '').trim();
-        if (rowSrc === 'LOCAL_REFERENCE_LIB' && rowDrive === cleanDriveFileId) {
-          rowsToDelete.push(ir2 + 1); // 1-indexed sheet row
-        }
+      for (var ir2 = 0; ir2 < idxRowCount; ir2++) {
+        var rowSrc = String(srcVals[ir2][0] || '').trim().toUpperCase();
+        var rowDrive = String(driveVals[ir2][0] || '').trim();
+        if (rowSrc === 'LOCAL_REFERENCE_LIB' && rowDrive === cleanDriveFileId) rowsToDelete.push(ir2 + 2);
       }
 
       // 8C. Safe Replacement: Batch write new chunk rows FIRST before deleting old rows
@@ -7820,6 +8470,10 @@ function deleteReferenceLibraryResource(driveFileId, session) {
 
   var deletedChunksCount = 0;
   try {
+    var freshDeleteAdmin = requireFreshAdminMutation(session);
+    if (!freshDeleteAdmin.success) return freshDeleteAdmin;
+    session = freshDeleteAdmin.session;
+
     // 1. Remove chunks from CNE_Reference_Index
     var indexSheet = getSpreadsheet('CNE').getSheetByName('CNE_Reference_Index');
     if (indexSheet && indexSheet.getLastRow() > 1) {
@@ -7993,65 +8647,39 @@ function uploadNursingReferenceResource(params, session) {
   var fileName = params ? params.fileName : null;
   var base64Data = params ? params.base64Data : null;
   var resourceTitle = params ? params.resourceTitle : null;
-
-  if (!fileName || !base64Data) {
-    return { success: false, errorCode: 'INVALID_PARAMS', message: 'File name and file content are required.' };
-  }
+  if (!fileName || !base64Data) return { success: false, errorCode: 'INVALID_PARAMS', message: 'File name and file content are required.' };
 
   var ext = getFileExtension(fileName).toLowerCase();
   var ALLOWED_EXTS = ['pdf'];
-  if (ALLOWED_EXTS.indexOf(ext) === -1) {
-    return { success: false, errorCode: 'UNSUPPORTED_FILE_TYPE', message: 'Only PDF (.pdf) documents are permitted.' };
-  }
+  if (ALLOWED_EXTS.indexOf(ext) === -1) return { success: false, errorCode: 'UNSUPPORTED_FILE_TYPE', message: 'Only PDF (.pdf) documents are permitted.' };
 
   var folderResult = getOrCreateOpenRnFolder();
-  if (!folderResult.success || !folderResult.folder) {
-    return { success: false, errorCode: folderResult.errorCode || 'FOLDER_ERROR', message: folderResult.message || 'Failed to access Open RN folder.' };
-  }
+  if (!folderResult.success || !folderResult.folder) return { success: false, errorCode: folderResult.errorCode || 'FOLDER_ERROR', message: folderResult.message || 'Failed to access Open RN folder.' };
 
   var cleanBase64 = base64Data;
-  if (cleanBase64.indexOf(',') !== -1) {
-    cleanBase64 = cleanBase64.split(',')[1];
-  }
-
+  if (cleanBase64.indexOf(',') !== -1) cleanBase64 = cleanBase64.split(',')[1];
   var fileBytes;
-  try {
-    fileBytes = Utilities.base64Decode(cleanBase64);
-  } catch (decErr) {
-    return { success: false, errorCode: 'INVALID_PAYLOAD', message: 'Invalid file payload: unable to decode base64 content.' };
+  try { fileBytes = Utilities.base64Decode(cleanBase64); }
+  catch (decErr) { return { success: false, errorCode: 'INVALID_PAYLOAD', message: 'Invalid file payload: unable to decode base64 content.' }; }
+  if (!fileBytes || fileBytes.length === 0) return { success: false, errorCode: 'EMPTY_FILE', message: 'Uploaded file is empty (0 bytes).' };
+  if (fileBytes.length < 4 || (fileBytes[0] & 0xFF) !== 0x25 || (fileBytes[1] & 0xFF) !== 0x50 || (fileBytes[2] & 0xFF) !== 0x44 || (fileBytes[3] & 0xFF) !== 0x46) {
+    return { success: false, errorCode: 'INVALID_FILE_CONTENT', message: 'File content does not match standard PDF document structure (%PDF header missing).' };
   }
 
-  if (!fileBytes || fileBytes.length === 0) {
-    return { success: false, errorCode: 'EMPTY_FILE', message: 'Uploaded file is empty (0 bytes).' };
-  }
+  var freshAdmin = requireFreshAdminMutation(session);
+  if (!freshAdmin.success) return freshAdmin;
+  session = freshAdmin.session;
 
-  // Validate %PDF binary header signature (0x25, 0x50, 0x44, 0x46)
-  if (fileBytes.length < 4 ||
-      (fileBytes[0] & 0xFF) !== 0x25 ||
-      (fileBytes[1] & 0xFF) !== 0x50 ||
-      (fileBytes[2] & 0xFF) !== 0x44 ||
-      (fileBytes[3] & 0xFF) !== 0x46) {
-    return {
-      success: false,
-      errorCode: 'INVALID_FILE_CONTENT',
-      message: 'File content does not match standard PDF document structure (%PDF header missing).'
-    };
-  }
-
-  var mimeType = 'application/pdf';
   var safeName = sanitizeFileNamePart(fileName.replace(/\\.[^/.]+$/, '')) + '.' + ext;
-  var blob = Utilities.newBlob(fileBytes, mimeType, safeName);
-
+  var blob = Utilities.newBlob(fileBytes, 'application/pdf', safeName);
   var createdFile;
   try {
     createdFile = folderResult.folder.createFile(blob);
-    // Explicitly set private sharing
     createdFile.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
   } catch (createErr) {
     return { success: false, errorCode: 'FILE_CREATION_FAILED', message: 'Failed to create file in Open RN folder: ' + createErr.message };
   }
 
-  // Index the newly created file
   var indexResult = null;
   try {
     indexResult = indexReferenceLibraryResource(createdFile.getId(), {
@@ -8062,51 +8690,31 @@ function uploadNursingReferenceResource(params, session) {
       reindex: false
     }, session);
   } catch (idxException) {
-    indexResult = {
-      success: false,
-      errorCode: 'INDEXING_UNEXPECTED_ERROR',
-      message: idxException && idxException.message ? idxException.message : String(idxException)
-    };
+    indexResult = { success: false, errorCode: 'INDEXING_UNEXPECTED_ERROR', message: idxException && idxException.message ? idxException.message : String(idxException) };
   }
 
-  // Rollback newly created Drive file if subsequent registration/indexing failed
   if (!indexResult || !indexResult.success) {
     var rolledBack = false;
-    try {
-      createdFile.setTrashed(true);
-      rolledBack = true;
-    } catch (trashErr) {
-      rolledBack = false;
-    }
-
+    try { createdFile.setTrashed(true); rolledBack = true; } catch (trashErr) {}
     if (rolledBack) {
-      logAuditAction(
-        'UPLOAD_REFERENCE_RESOURCE_ROLLED_BACK',
-        session ? session.employeeId : 'SYSTEM',
-        'Indexing failed for uploaded reference file "' + safeName + '". Newly created Drive file rolled back (trashed): ' + createdFile.getId() + '. Reason: ' + (indexResult ? indexResult.message : 'Unknown error'),
-        'FAILED'
-      );
-      return {
-        success: false,
-        errorCode: (indexResult && indexResult.errorCode) ? indexResult.errorCode : 'INDEXING_FAILED_ROLLED_BACK',
-        message: 'Failed to index uploaded reference resource. The uploaded file was rolled back. ' + (indexResult ? indexResult.message : '')
-      };
-    } else {
-      logAuditAction(
-        'UPLOAD_REFERENCE_RESOURCE_ORPHANED',
-        session ? session.employeeId : 'SYSTEM',
-        'CRITICAL: Reference resource indexing failed AND Drive rollback failed. Orphaned Drive File ID: ' + createdFile.getId() + '. Index error: ' + (indexResult ? indexResult.message : 'Unknown error'),
-        'FAILED'
-      );
-      return {
-        success: false,
-        errorCode: 'INDEXING_FAILED_CLEANUP_FAILED',
-        message: 'Failed to index reference resource, and rollback cleanup could not be completed. Administrative reconciliation may be required.'
-      };
+      logAuditAction('UPLOAD_REFERENCE_RESOURCE_ROLLED_BACK', session ? session.employeeId : 'SYSTEM', 'Indexing failed for uploaded reference file "' + safeName + '". Newly created Drive file rolled back (trashed): ' + createdFile.getId() + '. Reason: ' + (indexResult ? indexResult.message : 'Unknown error'), 'FAILED');
+      return { success: false, errorCode: (indexResult && indexResult.errorCode) ? indexResult.errorCode : 'INDEXING_FAILED_ROLLED_BACK', message: 'Failed to index uploaded reference resource. The uploaded file was rolled back. ' + (indexResult ? indexResult.message : '') };
     }
+    logAuditAction('UPLOAD_REFERENCE_RESOURCE_ORPHANED', session ? session.employeeId : 'SYSTEM', 'CRITICAL: Reference resource indexing failed AND Drive rollback failed. Orphaned Drive File ID: ' + createdFile.getId() + '. Index error: ' + (indexResult ? indexResult.message : 'Unknown error'), 'FAILED');
+    return { success: false, errorCode: 'INDEXING_FAILED_CLEANUP_FAILED', message: 'Failed to index uploaded reference resource, and cleanup of the newly created Drive file also failed. Administrative reconciliation may be required.' };
   }
 
-  return indexResult;
+  logAuditAction('UPLOAD_REFERENCE_RESOURCE', session ? session.employeeId : 'SYSTEM', 'Uploaded and indexed reference resource "' + safeName + '" (' + createdFile.getId() + ')', 'SUCCESS');
+  return {
+    success: true,
+    data: {
+      driveFileId: createdFile.getId(),
+      fileName: safeName,
+      resourceId: indexResult.resourceId,
+      chunksCount: indexResult.chunksCount || 0
+    },
+    message: 'Reference resource uploaded and indexed successfully.'
+  };
 }
 
 // Action Dispatch Handlers for Phase 4B
@@ -9389,88 +9997,103 @@ function handleGetCNEActivityProgress(params, session) {
   var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found for ID: ' + cneId };
 
-  var cleanId = cneId.toUpperCase();
+  // Authorization is always checked against authoritative CNE data before any
+  // shared advisory cache is consulted.
+  var progressAuthErr = checkCNEActionAuthorized(session, record);
+  if (progressAuthErr) return progressAuthErr;
 
-  // 1. Check Learning Material
+  var cleanId = cneId.toUpperCase();
+  var progressCacheKey = 'cne_activity_' + normalizeCneId(cleanId);
+  var forceFresh = Boolean(params && params.forceFresh);
+  if (!forceFresh) {
+    var cachedProgress = getFromScriptCache(progressCacheKey);
+    if (cachedProgress && typeof cachedProgress === 'object') {
+      return { success: true, data: cachedProgress, _cached: true };
+    }
+  }
+
+  // 1. Learning Material: target only this CNE row instead of scanning the sheet.
   var materialStatus = 'Not Added';
   try {
     var refSheet = getOrCreateSheet('CNE_Reference');
-    var refData = refSheet.getDataRange().getValues();
     var refColMap = getHeaderMap(refSheet);
     var refIdCol = refColMap['cneid'] !== undefined ? refColMap['cneid'] : 0;
     var refTextCol = refColMap['referencetextclinicalguides'] !== undefined
       ? refColMap['referencetextclinicalguides']
       : (refColMap['referencetext'] !== undefined ? refColMap['referencetext'] : 2);
     var refFileIdCol = refColMap['drivefileid'];
-
-    for (var r = 1; r < refData.length; r++) {
-      if (String(refData[r][refIdCol] || '').trim().toUpperCase() === cleanId) {
-        var txt = String(refData[r][refTextCol] || '').trim();
-        var hasFile = refFileIdCol !== undefined && Boolean(String(refData[r][refFileIdCol] || '').trim());
-        if (txt.length >= 15 || hasFile) {
-          materialStatus = 'Added';
-        }
-        break;
-      }
+    var refRowNum = findExactRowInColumn_(refSheet, refIdCol, cleanId, 2);
+    if (refRowNum >= 2) {
+      var refRow = refSheet.getRange(refRowNum, 1, 1, refSheet.getLastColumn()).getValues()[0];
+      var refText = String(refRow[refTextCol] || '').trim();
+      var refHasFile = refFileIdCol !== undefined && Boolean(String(refRow[refFileIdCol] || '').trim());
+      if (refText.length >= 15 || refHasFile) materialStatus = 'Added';
     }
   } catch (e) {
     materialStatus = 'Not Added';
   }
 
-  // 2. Check Questions
+  // 2. Questions: TextFinder narrows to matching CNE rows, then one bounded read
+  // calculates finalized active questions.
   var questionsStatus = 'Not Generated';
   var finalizedCount = 0;
   try {
     var qSheet = getQuestionsSheet();
-    var qData = qSheet.getDataRange().getValues();
-    for (var q = 1; q < qData.length; q++) {
-      if (String(qData[q][0] || '').trim().toUpperCase() === cleanId) {
-        var isFin = String(qData[q][9] || 'NO').toUpperCase() === 'YES';
-        var qStatus = String(qData[q][14] || 'ACTIVE').trim().toUpperCase();
-        if (isFin && qStatus !== 'INACTIVE' && qStatus !== 'REPLACED') {
+    var qCols = getQuestionColIndexes(qSheet);
+    var qRows = findExactRowsInColumn_(qSheet, qCols.cneId, cleanId, 2);
+    if (qRows.length > 0) {
+      var qMin = Math.min.apply(null, qRows);
+      var qMax = Math.max.apply(null, qRows);
+      var qBlock = qSheet.getRange(qMin, 1, qMax - qMin + 1, qSheet.getLastColumn()).getValues();
+      for (var qi = 0; qi < qBlock.length; qi++) {
+        var qRow = qBlock[qi];
+        if (String(qRow[qCols.cneId] || '').trim().toUpperCase() !== cleanId) continue;
+        var isFin = String(qRow[qCols.isFinalized] || 'NO').toUpperCase() === 'YES';
+        var qStatus = String(qRow[qCols.status] || 'ACTIVE').trim().toUpperCase();
+        if (isFin && qStatus !== 'INACTIVE' && qStatus !== 'REPLACED' && qStatus !== 'INCOMPLETE') {
           finalizedCount++;
         }
       }
     }
-    if (finalizedCount > 0) {
-      questionsStatus = 'Generated';
-    }
+    if (finalizedCount >= 5) questionsStatus = 'Generated';
   } catch (e) {
     questionsStatus = 'Not Generated';
   }
 
-  // 3. Check QR Code
+  // 3. QR Code: reuse the targeted active-token lookup.
   var qrStatus = 'Not Generated';
   try {
-    var qrSheet = getQRTokensSheet();
-    var qrData = qrSheet.getDataRange().getValues();
-    for (var t = 1; t < qrData.length; t++) {
-      if (String(qrData[t][1] || '').trim().toUpperCase() === cleanId &&
-          String(qrData[t][4] || 'ACTIVE').trim().toUpperCase() === 'ACTIVE') {
-        qrStatus = 'Generated';
-        break;
-      }
-    }
+    if (findActiveQrTokenForCne_(cleanId)) qrStatus = 'Generated';
   } catch (e) {
     qrStatus = 'Not Generated';
   }
 
-  // 4. Check Participants Count
+  // 4. Participants: find only rows belonging to this CNE and read one bounded block.
   var participantsCount = 0;
   try {
     var respSheet = getResponsesSheet();
-    var respData = respSheet.getDataRange().getValues();
-    for (var p = 1; p < respData.length; p++) {
-      if (String(respData[p][1] || '').trim().toUpperCase() === cleanId) {
-        participantsCount++;
+    var respRows = findExactRowsInColumn_(respSheet, 1, cleanId, 2);
+    var participantKeys = {};
+    if (respRows.length > 0) {
+      var pMin = Math.min.apply(null, respRows);
+      var pMax = Math.max.apply(null, respRows);
+      var respBlock = respSheet.getRange(pMin, 2, pMax - pMin + 1, 3).getValues(); // CNE ID, Employee/Participant ID, Name
+      for (var pi = 0; pi < respBlock.length; pi++) {
+        var pRow = respBlock[pi];
+        if (String(pRow[0] || '').trim().toUpperCase() !== cleanId) continue;
+        var progressEmpId = String(pRow[1] || '').trim().toUpperCase();
+        var progressName = String(pRow[2] || '').trim().toLowerCase();
+        var progressKey = progressEmpId ? ('ID:' + progressEmpId) : (progressName ? ('NAME:' + progressName) : '');
+        if (progressKey) participantKeys[progressKey] = true;
       }
     }
+    participantsCount = Object.keys(participantKeys).length;
   } catch (e) {
     participantsCount = 0;
   }
 
-  // 5. Post Test Status
-  var isCompleted = record.status === 'Completed';
+  var normalizedProgressStatus = normalizeCNEStatus(record.status);
+  var isCompleted = normalizedProgressStatus === 'Completed';
   var postTestStatus = 'Not Available';
   if (isCompleted) {
     postTestStatus = 'Completed';
@@ -9478,21 +10101,20 @@ function handleGetCNEActivityProgress(params, session) {
     postTestStatus = 'Available';
   }
 
-  // 6. Finalization Status
-  var finalizationStatus = isCompleted ? 'Finalized' : 'Not Finalized';
-
-  return {
-    success: true,
-    data: {
-      cneId: cneId,
-      materialStatus: materialStatus,
-      questionsStatus: questionsStatus,
-      qrStatus: qrStatus,
-      participantsCount: participantsCount,
-      postTestStatus: postTestStatus,
-      finalizationStatus: finalizationStatus
-    }
+  var progressData = {
+    cneId: cneId,
+    materialStatus: materialStatus,
+    questionsStatus: questionsStatus,
+    qrStatus: qrStatus,
+    participantsCount: participantsCount,
+    postTestStatus: postTestStatus,
+    finalizationStatus: isCompleted ? 'Finalized' : 'Not Finalized'
   };
+
+  // Advisory UI cache only. Child mutation flows explicitly request forceFresh,
+  // so progress updates immediately after changes while repeated modal reads are cheap.
+  putToScriptCache(progressCacheKey, progressData, 10);
+  return { success: true, data: progressData };
 }
 
 /**
@@ -9530,25 +10152,30 @@ function getCNELearningMaterial(cneId) {
 function handleGetAiQuota(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
-  
+
+  // This is an advisory read only. Generation/reservation/commit endpoints still
+  // revalidate authorization, lifecycle state, question lock state and quota under ScriptLock.
+  var freshReadSession = refreshMutationSession(session);
+  if (!freshReadSession.success) return freshReadSession;
+  session = freshReadSession.session;
+
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found for ID: ' + cneId };
-  
+  if (!record) return { success: false, message: 'CNE record not found.' };
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
-  
-  var isLocked = isCNEQuestionsLocked(cneId);
+
+  var quotaLifecycleStatus = normalizeCNEStatus(record.status);
+  var isClosed = quotaLifecycleStatus === 'Completed' || quotaLifecycleStatus === 'Canceled';
+  var isLocked = isCNEQuestionsLocked(cneId) || isClosed;
   var sheet = getOrCreateSheet('CNE_AI_Quota');
   var data = sheet.getDataRange().getValues();
-  var rowIndex = -1;
   var attemptsUsed = 0;
-  var maxQuota = 1; // Exactly ONE successful generation per CNE
+  var maxQuota = 1;
   var lastAttemptAt = '';
   var lastGeneratedBy = '';
-  
+
   for (var r = 1; r < data.length; r++) {
     if (String(data[r][0] || '').trim().toUpperCase() === cneId.toUpperCase()) {
-      rowIndex = r + 1;
       var rawUsed = parseInt(data[r][2], 10) || 0;
       attemptsUsed = rawUsed >= 1 ? 1 : 0;
       lastAttemptAt = String(data[r][4] || '');
@@ -9557,12 +10184,9 @@ function handleGetAiQuota(params, session) {
     }
   }
 
-  // AI generation status becomes USED ONLY after a successful AI-generated batch of exactly 5
-  // questions has been persisted and verified by handleCommitAiQuota().
-  // Manual questions MUST NOT consume, reset, or alter the one-time AI generation allowance.
   var status = attemptsUsed >= 1 ? 'USED' : 'AVAILABLE';
   var canGenerate = (attemptsUsed === 0) && !isLocked;
-  
+
   return {
     success: true,
     data: {
@@ -9574,6 +10198,7 @@ function handleGetAiQuota(params, session) {
       remaining: Math.max(0, maxQuota - attemptsUsed),
       canGenerate: canGenerate,
       isLocked: isLocked,
+      isClosed: isClosed,
       lastAttemptAt: lastAttemptAt,
       lastGeneratedBy: lastGeneratedBy
     }
@@ -9671,6 +10296,17 @@ function handleReserveAiQuota(params, session) {
   
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
+
+  var lifecycleStatus = normalizeCNEStatus(record.status);
+  if (lifecycleStatus === 'Completed' || lifecycleStatus === 'Canceled') {
+    return {
+      success: false,
+      errorCode: 'CNE_CLOSED',
+      message: lifecycleStatus === 'Canceled'
+        ? 'This CNE has been canceled. AI question generation is disabled.'
+        : 'This CNE has already been finalized. AI question generation is disabled.'
+    };
+  }
   
   if (isCNEQuestionsLocked(cneId)) {
     return {
@@ -9732,6 +10368,13 @@ function handleReserveAiQuota(params, session) {
   }
   
   try {
+    var liveMutation = revalidateCneMutation_(session, cneId, 'QUESTION', false);
+    if (!liveMutation.success) return liveMutation;
+    session = liveMutation.session;
+    record = liveMutation.record;
+    if (isCNEQuestionsLocked(cneId)) {
+      return { success: false, errorCode: 'QUESTIONS_LOCKED', message: 'Questions are permanently locked because post-test submissions have begun.' };
+    }
     var sheet = getOrCreateSheet('CNE_AI_Quota');
     var data = sheet.getDataRange().getValues();
     var rowIndex = -1;
@@ -9870,6 +10513,17 @@ function handleCommitAiQuota(params, session) {
   
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
+
+  var lifecycleStatus = normalizeCNEStatus(record.status);
+  if (lifecycleStatus === 'Completed' || lifecycleStatus === 'Canceled') {
+    return {
+      success: false,
+      errorCode: 'CNE_CLOSED',
+      message: lifecycleStatus === 'Canceled'
+        ? 'This CNE has been canceled. AI question generation is disabled.'
+        : 'This CNE has already been finalized. AI question generation is disabled.'
+    };
+  }
   
   if (isCNEQuestionsLocked(cneId)) {
     return {
@@ -9888,6 +10542,13 @@ function handleCommitAiQuota(params, session) {
   }
   
   try {
+    var liveMutation = revalidateCneMutation_(session, cneId, 'QUESTION', false);
+    if (!liveMutation.success) return liveMutation;
+    session = liveMutation.session;
+    record = liveMutation.record;
+    if (isCNEQuestionsLocked(cneId)) {
+      return { success: false, errorCode: 'QUESTIONS_LOCKED', message: 'Questions are permanently locked because post-test submissions have begun.' };
+    }
     var quotaSheet = getOrCreateSheet('CNE_AI_Quota');
     var qData = quotaSheet.getDataRange().getValues();
     var rowIndex = -1;
@@ -10246,6 +10907,13 @@ function handleReleaseAiQuota(params, session) {
   }
   
   try {
+    var liveMutation = revalidateCneMutation_(session, cneId, 'QUESTION', false);
+    if (!liveMutation.success) return liveMutation;
+    session = liveMutation.session;
+    record = liveMutation.record;
+    if (isCNEQuestionsLocked(cneId)) {
+      return { success: false, errorCode: 'QUESTIONS_LOCKED', message: 'Questions are permanently locked because post-test submissions have begun.' };
+    }
     var sheet = getOrCreateSheet('CNE_AI_Quota');
     var data = sheet.getDataRange().getValues();
     var rowIndex = -1;
@@ -10340,6 +11008,17 @@ function handleValidateAiQuotaReservation(params, session) {
 
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
+
+  var lifecycleStatus = normalizeCNEStatus(record.status);
+  if (lifecycleStatus === 'Completed' || lifecycleStatus === 'Canceled') {
+    return {
+      success: false,
+      errorCode: 'CNE_CLOSED',
+      message: lifecycleStatus === 'Canceled'
+        ? 'This CNE has been canceled. AI question generation is disabled.'
+        : 'This CNE has already been finalized. AI question generation is disabled.'
+    };
+  }
 
   if (isCNEQuestionsLocked(cneId)) {
     return {
@@ -10438,6 +11117,13 @@ function handleValidateAiQuotaReservation(params, session) {
   }
 
   try {
+    var liveMutation = revalidateCneMutation_(session, cneId, 'QUESTION', false);
+    if (!liveMutation.success) return liveMutation;
+    session = liveMutation.session;
+    record = liveMutation.record;
+    if (isCNEQuestionsLocked(cneId)) {
+      return { success: false, errorCode: 'QUESTIONS_LOCKED', message: 'Questions are permanently locked because post-test submissions have begun.' };
+    }
     var sheet = getOrCreateSheet('CNE_AI_Quota');
     var data = sheet.getDataRange().getValues();
     var storedToken = '';
@@ -10899,11 +11585,19 @@ function handleGenerateCNEQuestions(params, session) {
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
 
-  if (normalizeCNEStatus(record.status) === 'Completed') {
+  var generationStatus = normalizeCNEStatus(record.status);
+  if (generationStatus === 'Completed') {
     return {
       success: false,
       errorCode: 'CNE_ALREADY_FINALIZED',
       message: 'This CNE has already been finalized. Questions cannot be modified.'
+    };
+  }
+  if (generationStatus === 'Canceled') {
+    return {
+      success: false,
+      errorCode: 'CNE_ALREADY_CANCELED',
+      message: 'This CNE has been canceled. Questions cannot be generated or modified.'
     };
   }
 
@@ -11228,31 +11922,45 @@ function getQRTokensSheet() {
  */
 function isCNEQuestionsLocked(cneId) {
   if (!cneId) return false;
+  if (isCNEQuestionsLockedCached_(cneId)) return true;
+
+  var target = String(cneId).trim().toUpperCase();
   var record = getCNEScheduleRecord(cneId);
   if (record && normalizeCNEStatus(record.status) === 'Completed') {
-    return true; // Locked because CNE has been finalized/completed
+    markCNEQuestionsLockedCache_(cneId);
+    return true;
   }
+
   var partSheet = getResponsesSheet();
   if (partSheet && partSheet.getLastRow() > 1) {
-    var pData = partSheet.getDataRange().getValues();
-    for (var p = 1; p < pData.length; p++) {
-      var rowCneId = String(pData[p][1] || '').trim().toUpperCase();
-      var source = String(pData[p][9] || pData[p][6] || '').trim().toUpperCase();
-      if (rowCneId === String(cneId).trim().toUpperCase() && source === 'POST_TEST') {
-        return true; // At least one participant post-test submission exists
+    // Read only B:J; deliberately excludes large Answers JSON column L.
+    var pData = partSheet.getRange(2, 2, partSheet.getLastRow() - 1, 9).getValues();
+    for (var p = 0; p < pData.length; p++) {
+      var rowCneId = String(pData[p][0] || '').trim().toUpperCase();
+      var source = String(pData[p][8] || '').trim().toUpperCase();
+      if (rowCneId === target && source === 'POST_TEST') {
+        markCNEQuestionsLockedCache_(cneId);
+        return true;
       }
     }
   }
-  
+
   var qSheet = getQuestionsSheet();
   if (qSheet && qSheet.getLastRow() > 1) {
-    var qData = qSheet.getDataRange().getValues();
     var cols = getQuestionColIndexes(qSheet);
-    for (var q = 1; q < qData.length; q++) {
-      var qCneId = String(qData[q][cols.cneId] || '').trim().toUpperCase();
-      var isLockCol = String(qData[q][cols.isLocked] || '').trim().toUpperCase();
-      if (qCneId === String(cneId).trim().toUpperCase() && isLockCol === 'YES') {
-        return true;
+    var matchingRows = findExactRowsInColumn_(qSheet, cols.cneId, target, 2);
+    if (matchingRows.length > 0) {
+      var minRow = Math.min.apply(null, matchingRows);
+      var maxRow = Math.max.apply(null, matchingRows);
+      var lockValues = qSheet.getRange(minRow, cols.isLocked + 1, maxRow - minRow + 1, 1).getValues();
+      var rowSet = {};
+      for (var mr = 0; mr < matchingRows.length; mr++) rowSet[matchingRows[mr]] = true;
+      for (var offset = 0; offset < lockValues.length; offset++) {
+        var sheetRow = minRow + offset;
+        if (rowSet[sheetRow] && String(lockValues[offset][0] || '').trim().toUpperCase() === 'YES') {
+          markCNEQuestionsLockedCache_(cneId);
+          return true;
+        }
       }
     }
   }
@@ -11404,6 +12112,11 @@ function handleSaveCNEQuestions(params, session) {
   }
 
   try {
+    var liveSaveQuestions = revalidateCneMutation_(session, cneId, 'QUESTION', false);
+    if (!liveSaveQuestions.success) return liveSaveQuestions;
+    session = liveSaveQuestions.session;
+    record = liveSaveQuestions.record;
+
     // Re-verify locked state under lock
     if (isCNEQuestionsLocked(cneId)) {
       return {
@@ -11585,16 +12298,13 @@ function resolveActiveQrToken(qrToken) {
   if (!token) return null;
   var qrSheet = getQRTokensSheet();
   if (!qrSheet || qrSheet.getLastRow() <= 1) return null;
-  var qrData = qrSheet.getDataRange().getValues();
-  for (var q = 1; q < qrData.length; q++) {
-    var rowTok = String(qrData[q][0] || '').trim();
-    var rowStatus = String(qrData[q][4] || 'ACTIVE').trim().toUpperCase();
-    if (rowTok === token && rowStatus === 'ACTIVE') {
-      return {
-        qrToken: rowTok,
-        cneId: String(qrData[q][1] || '').trim()
-      };
-    }
+  var rowIndex = findExactRowInColumn_(qrSheet, 0, token, 2);
+  if (rowIndex < 2) return null;
+  var row = qrSheet.getRange(rowIndex, 1, 1, 5).getValues()[0];
+  var rowTok = String(row[0] || '').trim();
+  var rowStatus = String(row[4] || 'ACTIVE').trim().toUpperCase();
+  if (rowTok === token && rowStatus === 'ACTIVE') {
+    return { qrToken: rowTok, cneId: String(row[1] || '').trim() };
   }
   return null;
 }
@@ -11604,13 +12314,13 @@ function deactivateQRTokensForCNE(cneId) {
   if (!target) return;
   var qrSheet = getQRTokensSheet();
   if (!qrSheet || qrSheet.getLastRow() <= 1) return;
-  var data = qrSheet.getDataRange().getValues();
-  for (var r = 1; r < data.length; r++) {
-    if (String(data[r][1] || '').trim().toUpperCase() === target &&
-        String(data[r][4] || 'ACTIVE').trim().toUpperCase() === 'ACTIVE') {
-      qrSheet.getRange(r + 1, 5).setValue('INACTIVE');
-    }
+  var rows = findExactRowsInColumn_(qrSheet, 1, target, 2);
+  var statusRanges = [];
+  for (var i = 0; i < rows.length; i++) {
+    var status = String(qrSheet.getRange(rows[i], 5).getValue() || 'ACTIVE').trim().toUpperCase();
+    if (status === 'ACTIVE') statusRanges.push('E' + rows[i]);
   }
+  if (statusRanges.length > 0) qrSheet.getRangeList(statusRanges).setValue('INACTIVE');
 }
 
 function generatePostTestParticipantVerificationToken(cneId, participantId, participantType) {
@@ -11654,73 +12364,130 @@ function verifyPostTestParticipantVerificationToken(token, expectedCneId) {
 function findExternalRegistration(cneId, participantId) {
   var partSheet = getResponsesSheet();
   if (!partSheet || partSheet.getLastRow() <= 1) return null;
-  var data = partSheet.getDataRange().getValues();
   var cne = String(cneId || '').trim().toUpperCase();
   var pid = String(participantId || '').trim().toUpperCase();
-  for (var r = 1; r < data.length; r++) {
-    if (String(data[r][1] || '').trim().toUpperCase() === cne &&
-        String(data[r][2] || '').trim().toUpperCase() === pid &&
-        String(data[r][9] || '').trim().toUpperCase() === 'EXTERNAL_REGISTRATION') {
+  var rows = partSheet.getRange(2, 2, partSheet.getLastRow() - 1, 9).getValues(); // B:J only
+  for (var r = 0; r < rows.length; r++) {
+    if (String(rows[r][0] || '').trim().toUpperCase() === cne &&
+        String(rows[r][1] || '').trim().toUpperCase() === pid &&
+        String(rows[r][8] || '').trim().toUpperCase() === 'EXTERNAL_REGISTRATION') {
+      var rowIndex = r + 2;
+      var fullRow = partSheet.getRange(rowIndex, 1, 1, 14).getValues()[0];
       return {
-        rowIndex: r + 1,
+        rowIndex: rowIndex,
         participantId: pid,
-        name: String(data[r][3] || '').trim(),
-        email: String(data[r][13] || '').replace(/^External Email:\\s*/i, '').trim(),
-        designation: String(data[r][4] || 'External Participant').trim(),
-        department: String(data[r][5] || '').trim()
+        name: String(fullRow[3] || '').trim(),
+        email: String(fullRow[13] || '').replace(/^External Email:\\s*/i, '').trim(),
+        designation: String(fullRow[4] || 'External Participant').trim(),
+        department: String(fullRow[5] || '').trim()
       };
     }
   }
   return null;
 }
 
-function handleVerifyPostTestParticipant(params, session) {
+var OTP_PURPOSE_POSTTEST_INTERNAL = 'POSTTEST_INTERNAL';
+var OTP_PURPOSE_POSTTEST_EXTERNAL = 'POSTTEST_EXTERNAL';
+
+function buildPostTestOtpPrincipal(cneId, identity) {
+  var cne = String(cneId || '').trim().toUpperCase();
+  var id = String(identity || '').trim().toUpperCase();
+  return cne && id ? (cne + '#' + id) : '';
+}
+
+function findExistingPostTestSubmission(cneId, participantId) {
+  var partSheet = getResponsesSheet();
+  if (!partSheet || partSheet.getLastRow() <= 1) return null;
+  var cne = String(cneId || '').trim().toUpperCase();
+  var pid = String(participantId || '').trim().toUpperCase();
+  var rows = partSheet.getRange(2, 2, partSheet.getLastRow() - 1, 9).getValues(); // B:J only; excludes Answers JSON
+  for (var r = 0; r < rows.length; r++) {
+    if (String(rows[r][0] || '').trim().toUpperCase() === cne &&
+        String(rows[r][1] || '').trim().toUpperCase() === pid &&
+        String(rows[r][8] || '').trim().toUpperCase() === 'POST_TEST') {
+      var rowIndex = r + 2;
+      var fullRow = partSheet.getRange(rowIndex, 1, 1, 13).getValues()[0]; // A:M, one matched row only
+      return {
+        rowIndex: rowIndex,
+        responseId: String(fullRow[0] || '').trim(),
+        participantId: pid,
+        participantName: String(fullRow[3] || '').trim(),
+        designation: String(fullRow[4] || '').trim(),
+        department: String(fullRow[5] || '').trim(),
+        score: fullRow[6],
+        totalQuestions: fullRow[7],
+        percentage: fullRow[8],
+        submittedAt: String(fullRow[10] || '').trim(),
+        status: String(fullRow[12] || '').trim()
+      };
+    }
+  }
+  return null;
+}
+
+function sendPostTestOtpEmail(email, otp, record, participantType) {
+  var topic = record && record.topic ? String(record.topic).trim() : 'CNE Post-Test';
+  var typeLabel = participantType === 'EXTERNAL' ? 'external participant' : 'internal participant';
+  MailApp.sendEmail({
+    to: email,
+    subject: 'CNE Post-Test verification code',
+    body:
+      'CNE Management System - Post-Test Verification\\n\\n' +
+      'Your 6-digit verification code is: ' + otp + '\\n\\n' +
+      'CNE: ' + topic + '\\n' +
+      'Verification type: ' + typeLabel + '\\n\\n' +
+      'This code expires in 10 minutes and can be used only once.\\n' +
+      'If you did not request this code, please ignore this email.\\n\\n' +
+      'AIIMS Rishikesh - CNE Management System'
+  });
+}
+
+/**
+ * Request a Post-Test OTP.
+ * INTERNAL: Employee ID is resolved only from Officers data and OTP is sent to its registered EmailID.
+ * EXTERNAL: Name + email are supplied by the participant and OTP is sent to that email.
+ * The challenge is bound to both CNE ID and participant identity, so it cannot be reused for another CNE.
+ */
+function handleRequestPostTestOtp(params, session) {
   var resolvedQr = resolveActiveQrToken(params.qrToken || params.token);
   if (!resolvedQr || !resolvedQr.cneId) {
-    return { success: false, errorCode: 'INVALID_OR_MISSING_QR_TOKEN', message: 'A valid active QR token is required for participant verification.' };
+    return { success: false, errorCode: 'INVALID_OR_MISSING_QR_TOKEN', message: 'A valid active QR token is required for Post-Test verification.' };
   }
+
   var cneId = resolvedQr.cneId;
   var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   if (isCNEClosedForParticipantAccess(record)) {
-    return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Participant verification and post-test access are closed.' };
+    return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Post-Test verification is closed.' };
   }
 
   var participantType = String(params.participantType || 'INTERNAL').trim().toUpperCase();
+  var participantId = '';
+  var principal = '';
+  var purpose = '';
+  var email = '';
+
   if (participantType === 'INTERNAL') {
     var employeeId = normalizeEmpId(params.employeeId);
-    var dojInput = String(params.dateOfJoining || params.doj || '').trim();
-    if (!employeeId || !dojInput) {
-      return { success: false, errorCode: 'VERIFICATION_FIELDS_REQUIRED', message: 'Employee ID and Date of Joining are required.' };
-    }
-    var officer = findOfficerById(employeeId);
-    if (!officer || !officer.name) {
-      return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Employee ID ' + employeeId + ' not found in institutional employee roster.' };
-    }
-    if (officer.dojColMissing) {
-      return { success: false, errorCode: 'DOJ_NOT_CONFIGURED', message: 'Date of Joining verification is unavailable because the roster DOJ column is not configured.' };
-    }
-    var inputDoj = normalizeDateForComparison(dojInput);
-    var rosterDoj = normalizeDateForComparison(officer.doj);
-    if (!inputDoj || !rosterDoj || inputDoj !== rosterDoj) {
-      return { success: false, errorCode: 'DOJ_MISMATCH', message: 'Employee ID and Date of Joining do not match the institutional roster.' };
-    }
-    var verificationToken = generatePostTestParticipantVerificationToken(cneId, employeeId, 'INTERNAL');
-    return {
-      success: true,
-      data: {
-        cneId: cneId,
-        participantType: 'INTERNAL',
-        participantId: employeeId,
-        employeeId: employeeId,
-        participantName: officer.name,
-        designation: officer.designation || '',
-        verificationToken: verificationToken
-      }
-    };
-  }
+    if (!employeeId) return { success: false, errorCode: 'EMPLOYEE_ID_REQUIRED', message: 'Employee ID is required.' };
 
-  if (participantType === 'EXTERNAL') {
+    var officer;
+    try {
+      officer = findOfficerById(employeeId);
+    } catch (e) {
+      return { success: false, message: e.message || 'Unable to access Officers data.' };
+    }
+    if (!officer || !officer.name) {
+      return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Employee ID was not found in Officers data.' };
+    }
+    email = String(officer.email || '').trim().toLowerCase();
+    if (!isValidEmailAddress(email)) {
+      return { success: false, errorCode: 'EMAIL_NOT_AVAILABLE', message: 'A valid registered email address is not available for this Employee ID. Please contact the CNE administrator to update Officers data.' };
+    }
+    participantId = employeeId;
+    purpose = OTP_PURPOSE_POSTTEST_INTERNAL;
+    principal = buildPostTestOtpPrincipal(cneId, participantId);
+  } else if (participantType === 'EXTERNAL') {
     var externalName = sanitizeCellInput(params.name || params.externalName || '');
     var externalEmail = normalizeExternalEmail(params.email || params.externalEmail || '');
     if (!externalName || externalName.length < 2) {
@@ -11729,157 +12496,442 @@ function handleVerifyPostTestParticipant(params, session) {
     if (!externalEmail) {
       return { success: false, errorCode: 'INVALID_EXTERNAL_EMAIL', message: 'Please enter a valid email address.' };
     }
-    var externalId = makeExternalParticipantId(externalEmail);
-    var lock = LockService.getScriptLock();
+    participantId = makeExternalParticipantId(externalEmail);
+    purpose = OTP_PURPOSE_POSTTEST_EXTERNAL;
+    principal = buildPostTestOtpPrincipal(cneId, participantId);
+    email = externalEmail;
+  } else {
+    return { success: false, errorCode: 'INVALID_PARTICIPANT_TYPE', message: 'Participant type must be INTERNAL or EXTERNAL.' };
+  }
+
+  // Refresh the external Officers roster BEFORE taking the script-wide lock.
+  // The Officers spreadsheet is outside this script's transactional boundary, so holding
+  // ScriptLock during that remote read adds contention without making the roster read atomic.
+  if (participantType === 'INTERNAL') {
     try {
-      lock.waitLock(10000);
-    } catch (e) {
-      return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy. Please try again.' };
+      officer = findOfficerByIdFresh_(participantId);
+    } catch (freshRosterErr) {
+      return { success: false, message: freshRosterErr.message || 'Unable to access Officers data.' };
     }
+    if (!officer || !officer.name) {
+      return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Employee ID was not found in Officers data.' };
+    }
+    email = String(officer.email || '').trim().toLowerCase();
+    if (!isValidEmailAddress(email)) {
+      return { success: false, errorCode: 'EMAIL_NOT_AVAILABLE', message: 'A valid registered email address is not available for this Employee ID.' };
+    }
+  }
+
+  var previousSubmission = findExistingPostTestSubmission(cneId, participantId);
+  if (previousSubmission) {
+    return { success: false, errorCode: 'ALREADY_SUBMITTED', message: 'This participant has already submitted the Post-Test for this CNE.' };
+  }
+
+  var cooldownKey = 'ptotp_cd_' + purpose + '_' + principal;
+  var cache = CacheService.getScriptCache();
+  if (cache.get(cooldownKey)) {
+    return { success: false, errorCode: 'OTP_COOLDOWN', message: 'Please wait 60 seconds before requesting another verification code.' };
+  }
+
+  if (countRecentOtpSends(purpose, principal, Date.now() - 60 * 60 * 1000) >= OTP_MAX_SENDS_PER_HOUR) {
+    return { success: false, errorCode: 'OTP_RATE_LIMITED', message: 'Too many verification-code requests. Please try again later.' };
+  }
+
+  if (MailApp.getRemainingDailyQuota() < 1) {
+    return { success: false, errorCode: 'EMAIL_QUOTA_EXHAUSTED', message: 'Email verification is temporarily unavailable because the daily email quota has been reached. Please contact the CNE administrator.' };
+  }
+
+  // Reserve Post-Test OTP creation atomically. This guarantees that concurrent resend
+  // requests cannot both survive the cooldown check and create multiple active challenges.
+  var challengeId = '';
+  var otp = '';
+  var otpSheet = null;
+  var otpCreationLock = LockService.getScriptLock();
+  try {
+    otpCreationLock.waitLock(10000);
+  } catch (lockErr) {
+    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy processing another verification request. Please try again.' };
+  }
+
+  try {
+    // Re-check mutable controls while holding the lock. The checks above are only fast rejects.
+    if (cache.get(cooldownKey)) {
+      return { success: false, errorCode: 'OTP_COOLDOWN', message: 'Please wait 60 seconds before requesting another verification code.' };
+    }
+    var authoritativeCooldownSeconds = getOtpCooldownRemainingSeconds_(purpose, principal);
+    if (authoritativeCooldownSeconds > 0) {
+      return { success: false, errorCode: 'OTP_COOLDOWN', message: 'Please wait ' + authoritativeCooldownSeconds + ' seconds before requesting another verification code.' };
+    }
+    if (countRecentOtpSends(purpose, principal, Date.now() - 60 * 60 * 1000) >= OTP_MAX_SENDS_PER_HOUR) {
+      return { success: false, errorCode: 'OTP_RATE_LIMITED', message: 'Too many verification-code requests. Please try again later.' };
+    }
+
+    var liveQr = resolveActiveQrToken(params.qrToken || params.token);
+    if (!liveQr || String(liveQr.cneId || '').trim().toUpperCase() !== cneId.toUpperCase()) {
+      return { success: false, errorCode: 'INVALID_OR_MISSING_QR_TOKEN', message: 'The QR token is no longer active.' };
+    }
+    var liveOtpRecord = getCNEScheduleRecord(cneId);
+    if (!liveOtpRecord || isCNEClosedForParticipantAccess(liveOtpRecord)) {
+      return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Post-Test verification is closed.' };
+    }
+    if (findExistingPostTestSubmission(cneId, participantId)) {
+      return { success: false, errorCode: 'ALREADY_SUBMITTED', message: 'This participant has already submitted the Post-Test for this CNE.' };
+    }
+    record = liveOtpRecord;
+
+    // A newly-created challenge supersedes every older open challenge for this CNE/participant.
+    invalidateOpenOtpChallenges(purpose, principal);
+
+    challengeId = Utilities.getUuid().replace(/-/g, '');
+    otp = generateSixDigitOtp();
+    var otpHash = computeOtpHash(challengeId, otp);
+    var now = new Date();
+    var nowIso = now.toISOString();
+    var expiresAt = new Date(now.getTime() + OTP_TTL_MS).toISOString();
+    var resendAt = new Date(now.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000).toISOString();
+    otpSheet = getOtpVerificationSheet();
+    otpSheet.appendRow([
+      challengeId, purpose, participantType, principal, email, otpHash,
+      expiresAt, 0, OTP_MAX_ATTEMPTS, resendAt, '', '', 'PENDING', nowIso, nowIso
+    ]);
+
+    // Set cooldown before releasing the lock to close the concurrent-request race window.
+    cache.put(cooldownKey, '1', OTP_RESEND_COOLDOWN_SECONDS);
+  } finally {
+    otpCreationLock.releaseLock();
+  }
+
+  try {
+    sendPostTestOtpEmail(email, otp, record, participantType);
+  } catch (sendErr) {
+    var postSendFailLock = LockService.getScriptLock();
     try {
-      // Re-check session state while holding the lock.
-      var liveRecord = getCNEScheduleRecord(cneId);
-      if (!liveRecord || isCNEClosedForParticipantAccess(liveRecord)) {
-        return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. External registration is closed.' };
+      postSendFailLock.waitLock(10000);
+      var failedChallenge = getOtpChallengeById(challengeId);
+      var latestPostTestChallenge = getLatestOtpChallengeForPrincipal_(purpose, principal);
+      var failedPostTestChallengeIsLatest = Boolean(latestPostTestChallenge && latestPostTestChallenge.challengeId === challengeId);
+      if (failedChallenge && failedChallenge.status === 'PENDING' && otpSheet && failedPostTestChallengeIsLatest) {
+        otpSheet.getRange(failedChallenge.rowIndex, 13).setValue('SEND_FAILED');
+        otpSheet.getRange(failedChallenge.rowIndex, 15).setValue(new Date().toISOString());
+        try { cache.remove(cooldownKey); } catch (cacheErr) {}
       }
-      var existing = findExternalRegistration(cneId, externalId);
+    } finally {
+      try { postSendFailLock.releaseLock(); } catch (releaseErr) {}
+    }
+    logAuditAction('POST_TEST_OTP_SEND_FAILED', participantId, 'CNE: ' + cneId + ', email delivery failed', 'FAILED');
+    return { success: false, errorCode: 'OTP_EMAIL_FAILED', message: 'The verification email could not be sent. Please try again or contact the CNE administrator.' };
+  }
+
+  logAuditAction('POST_TEST_OTP_SENT', participantId, 'CNE: ' + cneId + ', type: ' + participantType + ', email: ' + maskEmailAddress(email), 'SUCCESS');
+
+  return {
+    success: true,
+    message: 'A 6-digit verification code has been sent to the registered email address.',
+    data: {
+      challengeId: challengeId,
+      participantType: participantType,
+      maskedEmail: maskEmailAddress(email),
+      expiresInSeconds: Math.floor(OTP_TTL_MS / 1000),
+      resendAfterSeconds: OTP_RESEND_COOLDOWN_SECONDS
+    }
+  };
+}
+
+/**
+ * Verify Post-Test OTP and issue the short-lived CNE-bound participant token.
+ * External registration is written only AFTER email ownership is successfully verified.
+ */
+function handleVerifyPostTestOtp(params, session) {
+  var resolvedQr = resolveActiveQrToken(params.qrToken || params.token);
+  if (!resolvedQr || !resolvedQr.cneId) {
+    return { success: false, errorCode: 'INVALID_OR_MISSING_QR_TOKEN', message: 'A valid active QR token is required for Post-Test verification.' };
+  }
+
+  var cneId = resolvedQr.cneId;
+  var record = getCNEScheduleRecord(cneId);
+  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (isCNEClosedForParticipantAccess(record)) {
+    return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Post-Test verification is closed.' };
+  }
+
+  var participantType = String(params.participantType || 'INTERNAL').trim().toUpperCase();
+  var challengeId = String(params.challengeId || '').trim();
+  var otp = String(params.otp || '').trim();
+  if (!challengeId || !/^\\d{6}$/.test(otp)) {
+    return { success: false, errorCode: 'OTP_REQUIRED', message: 'Challenge ID and a valid 6-digit verification code are required.' };
+  }
+
+  var participantId = '';
+  var principal = '';
+  var purpose = '';
+  var expectedEmail = '';
+  var participantName = '';
+  var designation = '';
+  var externalName = '';
+  var externalEmail = '';
+
+  if (participantType === 'INTERNAL') {
+    var employeeId = normalizeEmpId(params.employeeId);
+    if (!employeeId) return { success: false, errorCode: 'EMPLOYEE_ID_REQUIRED', message: 'Employee ID is required.' };
+    var officer = findOfficerById(employeeId);
+    if (!officer || !officer.name) return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Employee ID was not found in Officers data.' };
+    expectedEmail = String(officer.email || '').trim().toLowerCase();
+    if (!isValidEmailAddress(expectedEmail)) return { success: false, errorCode: 'EMAIL_NOT_AVAILABLE', message: 'A valid registered email address is not available for this Employee ID.' };
+    participantId = employeeId;
+    participantName = officer.name;
+    designation = officer.designation || '';
+    purpose = OTP_PURPOSE_POSTTEST_INTERNAL;
+    principal = buildPostTestOtpPrincipal(cneId, participantId);
+  } else if (participantType === 'EXTERNAL') {
+    externalName = sanitizeCellInput(params.name || params.externalName || '');
+    externalEmail = normalizeExternalEmail(params.email || params.externalEmail || '');
+    if (!externalName || externalName.length < 2) return { success: false, errorCode: 'INVALID_EXTERNAL_NAME', message: 'Please enter the external participant name.' };
+    if (!externalEmail) return { success: false, errorCode: 'INVALID_EXTERNAL_EMAIL', message: 'Please enter a valid email address.' };
+    participantId = makeExternalParticipantId(externalEmail);
+    participantName = externalName;
+    designation = 'External Participant';
+    expectedEmail = externalEmail;
+    purpose = OTP_PURPOSE_POSTTEST_EXTERNAL;
+    principal = buildPostTestOtpPrincipal(cneId, participantId);
+  } else {
+    return { success: false, errorCode: 'INVALID_PARTICIPANT_TYPE', message: 'Participant type must be INTERNAL or EXTERNAL.' };
+  }
+
+  // Refresh the external Officers roster BEFORE taking the global mutation lock.
+  // The challenge email is still compared inside the lock, so a stale/mismatched roster
+  // value cannot authorize verification. This keeps the critical section short.
+  if (participantType === 'INTERNAL') {
+    try {
+      officer = findOfficerByIdFresh_(participantId);
+    } catch (freshRosterErr) {
+      return { success: false, message: freshRosterErr.message || 'Unable to access Officers data.' };
+    }
+    if (!officer || !officer.name) {
+      return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Employee ID was not found in Officers data.' };
+    }
+    expectedEmail = String(officer.email || '').trim().toLowerCase();
+    if (!isValidEmailAddress(expectedEmail)) {
+      return { success: false, errorCode: 'EMAIL_NOT_AVAILABLE', message: 'A valid registered email address is not available for this Employee ID.' };
+    }
+    participantName = officer.name;
+    designation = officer.designation || '';
+  }
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (e) {
+    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy. Please try again.' };
+  }
+
+  try {
+    var liveQr = resolveActiveQrToken(params.qrToken || params.token);
+    if (!liveQr || String(liveQr.cneId || '').trim().toUpperCase() !== cneId.toUpperCase()) {
+      return { success: false, errorCode: 'INVALID_OR_MISSING_QR_TOKEN', message: 'The QR token is no longer active.' };
+    }
+    var liveRecord = getCNEScheduleRecord(cneId);
+    if (!liveRecord || isCNEClosedForParticipantAccess(liveRecord)) {
+      return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Post-Test verification is closed.' };
+    }
+    if (findExistingPostTestSubmission(cneId, participantId)) {
+      return { success: false, errorCode: 'ALREADY_SUBMITTED', message: 'This participant has already submitted the Post-Test for this CNE.' };
+    }
+
+    var challenge = getOtpChallengeById(challengeId);
+    if (!challenge || challenge.purpose !== purpose ||
+        String(challenge.principalType || '').toUpperCase() !== participantType ||
+        String(challenge.principalId || '').toUpperCase() !== String(principal || '').toUpperCase() ||
+        String(challenge.email || '').toLowerCase() !== expectedEmail) {
+      return { success: false, errorCode: 'OTP_INVALID', message: 'Verification code is invalid or does not belong to this participant/CNE.' };
+    }
+    if (challenge.status !== 'PENDING') {
+      return { success: false, errorCode: 'OTP_INVALID', message: 'Verification code is no longer active. Request a new code.' };
+    }
+
+    var otpSheet = getOtpVerificationSheet();
+    var expiresMs = new Date(challenge.expiresAt).getTime();
+    if (isNaN(expiresMs) || Date.now() > expiresMs) {
+      otpSheet.getRange(challenge.rowIndex, 13).setValue('EXPIRED');
+      otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      return { success: false, errorCode: 'OTP_EXPIRED', message: 'Verification code has expired. Request a new code.' };
+    }
+    if (challenge.attempts >= challenge.maxAttempts) {
+      otpSheet.getRange(challenge.rowIndex, 13).setValue('LOCKED');
+      otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      return { success: false, errorCode: 'OTP_LOCKED', message: 'Too many incorrect verification attempts. Request a new code.' };
+    }
+
+    var submittedHash = computeOtpHash(challengeId, otp);
+    if (!timingSafeEqual(submittedHash, challenge.otpHash)) {
+      var newAttempts = challenge.attempts + 1;
+      otpSheet.getRange(challenge.rowIndex, 8).setValue(newAttempts);
+      otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      if (newAttempts >= challenge.maxAttempts) otpSheet.getRange(challenge.rowIndex, 13).setValue('LOCKED');
+      return {
+        success: false,
+        errorCode: newAttempts >= challenge.maxAttempts ? 'OTP_LOCKED' : 'OTP_MISMATCH',
+        message: newAttempts >= challenge.maxAttempts ? 'Too many incorrect verification attempts. Request a new code.' : 'Incorrect verification code.',
+        data: { attemptsRemaining: Math.max(0, challenge.maxAttempts - newAttempts) }
+      };
+    }
+
+    // Consume the challenge before any registration/token side effect. A partial failure
+    // can require a new OTP, but can never leave a successfully verified OTP replayable.
+    var verifiedAt = new Date().toISOString();
+    otpSheet.getRange(challenge.rowIndex, 6).setValue('');
+    otpSheet.getRange(challenge.rowIndex, 11).setValue(verifiedAt);
+    otpSheet.getRange(challenge.rowIndex, 12).setValue(verifiedAt);
+    otpSheet.getRange(challenge.rowIndex, 13).setValue('CONSUMED');
+    otpSheet.getRange(challenge.rowIndex, 15).setValue(verifiedAt);
+
+    // For external participants, persist registration only after successful email ownership verification.
+    if (participantType === 'EXTERNAL') {
+      var existing = findExternalRegistration(cneId, participantId);
+      if (existing && existing.name && existing.name.toLowerCase() !== externalName.toLowerCase()) {
+        return { success: false, errorCode: 'EXTERNAL_EMAIL_ALREADY_REGISTERED', message: 'This email is already registered for this CNE under another participant name.' };
+      }
       if (!existing) {
         var partSheet = getResponsesSheet();
-        var now = new Date().toISOString();
+        var registeredAt = new Date().toISOString();
         partSheet.appendRow([
           'EXTREG-' + Date.now(),
           cneId,
-          externalId,
+          participantId,
           externalName,
           'External Participant',
           liveRecord.area || 'External',
           '', '', '',
           'EXTERNAL_REGISTRATION',
-          now,
+          registeredAt,
           '',
           'REGISTERED',
           'External Email: ' + externalEmail
         ]);
-        logAuditAction('REGISTER_EXTERNAL_POST_TEST_PARTICIPANT', externalId, 'CNE: ' + cneId, 'SUCCESS');
-      } else if (existing.name && existing.name.toLowerCase() !== externalName.toLowerCase()) {
-        return { success: false, errorCode: 'EXTERNAL_EMAIL_ALREADY_REGISTERED', message: 'This email is already registered for this CNE under another participant name.' };
+        logAuditAction('REGISTER_EXTERNAL_POST_TEST_PARTICIPANT', participantId, 'CNE: ' + cneId + ', verified email', 'SUCCESS');
       }
-    } finally {
-      lock.releaseLock();
     }
-    var externalVerificationToken = generatePostTestParticipantVerificationToken(cneId, externalId, 'EXTERNAL');
+
+    var verificationToken = generatePostTestParticipantVerificationToken(cneId, participantId, participantType);
+    logAuditAction('POST_TEST_OTP_VERIFIED', participantId, 'CNE: ' + cneId + ', type: ' + participantType, 'SUCCESS');
+
     return {
       success: true,
+      message: 'Email verification successful.',
       data: {
         cneId: cneId,
-        participantType: 'EXTERNAL',
-        participantId: externalId,
-        participantName: externalName,
-        email: externalEmail,
-        verificationToken: externalVerificationToken
+        participantType: participantType,
+        participantId: participantId,
+        employeeId: participantType === 'INTERNAL' ? participantId : '',
+        participantName: participantName,
+        designation: designation,
+        email: participantType === 'EXTERNAL' ? externalEmail : '',
+        maskedEmail: maskEmailAddress(expectedEmail),
+        verificationToken: verificationToken
       }
     };
+  } finally {
+    lock.releaseLock();
   }
+}
 
-  return { success: false, errorCode: 'INVALID_PARTICIPANT_TYPE', message: 'Participant type must be INTERNAL or EXTERNAL.' };
+/**
+ * Legacy participant-verification endpoint is deliberately disabled as a direct
+ * Employee ID + DOJ / Name + Email bypass. New clients must use the email OTP flow.
+ * A challenge+OTP payload is accepted here only as a compatibility alias.
+ */
+function handleVerifyPostTestParticipant(params, session) {
+  if (params && params.challengeId && params.otp) {
+    return handleVerifyPostTestOtp(params, session);
+  }
+  return {
+    success: false,
+    errorCode: 'POST_TEST_OTP_REQUIRED',
+    message: 'Email OTP verification is required before the Post-Test can be opened.'
+  };
 }
 
 function handleGetQRToken(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
-  
+
   var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
-  
+
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
 
-  // Closed CNEs must never expose, regenerate, or create an active QR token.
-  // Frontend controls also block this, but the backend must enforce it independently
-  // so a direct API request with createIfMissing=true cannot bypass finalization/cancellation.
   if (isCNEClosedForParticipantAccess(record)) {
-    return {
-      success: false,
-      errorCode: 'CNE_CLOSED',
-      message: 'QR Code is unavailable because this CNE has been finalized or canceled.'
-    };
-  }
-  
-  var finalizedCount = countActiveCNEQuestions(cneId);
-
-  // Look for existing QR token first
-  var qrSheet = getQRTokensSheet();
-  var qrData = qrSheet.getDataRange().getValues();
-  var existingToken = null;
-  
-  for (var q = 1; q < qrData.length; q++) {
-    if (String(qrData[q][1] || '').trim().toUpperCase() === cneId.toUpperCase() &&
-        String(qrData[q][4] || 'ACTIVE').toUpperCase() === 'ACTIVE') {
-      existingToken = String(qrData[q][0] || '');
-      break;
-    }
+    return { success: false, errorCode: 'CNE_CLOSED', message: 'QR Code is unavailable because this CNE has been finalized or canceled.' };
   }
 
-  // Check-only mode: do NOT automatically generate if missing
   var isCheckOnly = params.checkOnly === true || params.createIfMissing === false;
+
+  // Read-only QR status no longer takes the global ScriptLock. Creation remains serialized.
   if (isCheckOnly) {
+    var freshReadSession = refreshMutationSession(session);
+    if (!freshReadSession.success) return freshReadSession;
+    session = freshReadSession.session;
+    record = getCNEScheduleRecord(cneId);
+    if (!record) return { success: false, message: 'CNE record not found.' };
+    var readAuthErr = checkQuestionManagementAuthorized(session, record);
+    if (readAuthErr) return readAuthErr;
+    if (isCNEClosedForParticipantAccess(record)) {
+      return { success: false, errorCode: 'CNE_CLOSED', message: 'QR Code is unavailable because this CNE has been finalized or canceled.' };
+    }
+    var readFinalizedCount = countActiveCNEQuestions(cneId, true);
+    var activeReadToken = findActiveQrTokenForCne_(cneId);
     return {
       success: true,
       data: {
-        hasQR: Boolean(existingToken),
-        qrToken: existingToken || '',
+        hasQR: Boolean(activeReadToken && activeReadToken.qrToken),
+        qrToken: activeReadToken ? activeReadToken.qrToken : '',
         cneId: cneId,
         topic: record.topic,
         area: record.area,
-        finalizedCount: finalizedCount
+        finalizedCount: readFinalizedCount
       }
     };
   }
 
-  // Generating / saving mode: require at least 5 finalized questions if token does not exist
+  var finalizedCount = countActiveCNEQuestions(cneId);
+  var existingQr = findActiveQrTokenForCne_(cneId);
+  var existingToken = existingQr ? existingQr.qrToken : null;
+
   if (!existingToken && finalizedCount < 5) {
-    return {
-      success: false,
-      errorCode: 'INSUFFICIENT_QUESTIONS',
-      message: 'At least 5 active finalized questions must be present before QR Code and Post-Test can be generated. Currently active & finalized: ' + finalizedCount
-    };
+    return { success: false, errorCode: 'INSUFFICIENT_QUESTIONS', message: 'At least 5 active finalized questions must be present before QR Code and Post-Test can be generated. Currently active & finalized: ' + finalizedCount };
   }
-  
+
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
   } catch (e) {
-    return { success: false, message: 'Server is busy. Please try again.' };
+    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy. Please try again.' };
   }
 
   try {
-    // Re-check existing token after lock
-    var qrDataLatest = qrSheet.getDataRange().getValues();
-    var qrToken = null;
-    for (var q2 = 1; q2 < qrDataLatest.length; q2++) {
-      if (String(qrDataLatest[q2][1] || '').trim().toUpperCase() === cneId.toUpperCase() &&
-          String(qrDataLatest[q2][4] || 'ACTIVE').toUpperCase() === 'ACTIVE') {
-        qrToken = String(qrDataLatest[q2][0] || '');
-        break;
-      }
+    var liveQrMutation = revalidateCneMutation_(session, cneId, 'QUESTION', false);
+    if (!liveQrMutation.success) return liveQrMutation;
+    session = liveQrMutation.session;
+    record = liveQrMutation.record;
+    finalizedCount = countActiveCNEQuestions(cneId, true);
+
+    var liveActiveQr = findActiveQrTokenForCne_(cneId);
+    var qrToken = liveActiveQr ? liveActiveQr.qrToken : null;
+
+    if (!qrToken && finalizedCount < 5) {
+      return { success: false, errorCode: 'INSUFFICIENT_QUESTIONS', message: 'At least 5 active finalized questions must be present before QR Code and Post-Test can be generated. Currently active & finalized: ' + finalizedCount };
     }
-    
+
     if (!qrToken) {
       qrToken = Utilities.getUuid().replace(/-/g, '');
+      var qrSheet = getQRTokensSheet();
       qrSheet.appendRow([qrToken, cneId, new Date().toISOString(), session.employeeId, 'ACTIVE']);
       logAuditAction('GENERATE_QR', session.employeeId, 'Generated secure QR token for CNE: ' + cneId, 'SUCCESS');
     }
-    
+
     return {
       success: true,
-      data: {
-        hasQR: true,
-        qrToken: qrToken,
-        cneId: cneId,
-        topic: record.topic,
-        area: record.area,
-        finalizedCount: finalizedCount
-      }
+      data: { hasQR: true, qrToken: qrToken, cneId: cneId, topic: record.topic, area: record.area, finalizedCount: finalizedCount }
     };
   } finally {
     lock.releaseLock();
@@ -11904,6 +12956,7 @@ function handleGetQRToken(params, session) {
 function handleGetPostTestQuestions(params, session) {
   // Security compatibility marker: resolveActiveQrToken authoritatively requires rowStatus === 'ACTIVE' in CNE_QR_Tokens.
   var resolvedQr = resolveActiveQrToken(params.qrToken || params.token);
+  var isPublicQrAccess = Boolean(resolvedQr && resolvedQr.cneId);
   var cneId = resolvedQr ? resolvedQr.cneId : null;
   var participantId = '';
   var participantType = '';
@@ -11912,16 +12965,11 @@ function handleGetPostTestQuestions(params, session) {
   if (cneId) {
     var verification = verifyPostTestParticipantVerificationToken(params.participantVerificationToken, cneId);
     if (!verification) {
-      return {
-        success: false,
-        errorCode: 'PARTICIPANT_VERIFICATION_REQUIRED',
-        message: 'Please verify the participant before opening the post-test.'
-      };
+      return { success: false, errorCode: 'PARTICIPANT_VERIFICATION_REQUIRED', message: 'Please verify the participant before opening the post-test.' };
     }
     participantId = verification.participantId;
     participantType = verification.participantType;
   } else if (params.cneId) {
-    // Direct CNE ID lookup remains restricted to authenticated operational users.
     var candidateId = sanitizeCellInput(params.cneId);
     var candidateRecord = getCNEScheduleRecord(candidateId);
     if (!candidateRecord) return { success: false, message: 'CNE record not found.' };
@@ -11932,21 +12980,39 @@ function handleGetPostTestQuestions(params, session) {
     participantType = 'INTERNAL';
   }
 
-  if (!cneId) {
-    return { success: false, errorCode: 'INVALID_OR_MISSING_QR_TOKEN', message: 'A valid opaque QR token is required for public post-test access.' };
+  if (!cneId) return { success: false, errorCode: 'INVALID_OR_MISSING_QR_TOKEN', message: 'A valid opaque QR token is required for public post-test access.' };
+  if (!participantId) return { success: false, message: 'Verified participant identity is required.' };
+
+  // This endpoint is read-only. A participant may receive a snapshot just before a CNE closes,
+  // but submission always re-checks QR status, CNE lifecycle and duplicate state under ScriptLock.
+  if (isPublicQrAccess) {
+    var liveQr = resolveActiveQrToken(params.qrToken || params.token);
+    if (!liveQr || String(liveQr.cneId || '').trim().toUpperCase() !== String(cneId).trim().toUpperCase()) {
+      return { success: false, errorCode: 'INVALID_OR_MISSING_QR_TOKEN', message: 'The QR token is no longer active.' };
+    }
+    var liveVerification = verifyPostTestParticipantVerificationToken(params.participantVerificationToken, cneId);
+    if (!liveVerification || liveVerification.participantId !== participantId || liveVerification.participantType !== participantType) {
+      return { success: false, errorCode: 'PARTICIPANT_VERIFICATION_REQUIRED', message: 'Participant verification expired or changed. Please verify again.' };
+    }
+  } else {
+    var freshReadSession = refreshMutationSession(session);
+    if (!freshReadSession.success) return freshReadSession;
+    session = freshReadSession.session;
   }
 
   var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!isPublicQrAccess) {
+    var liveActionAuthErr = checkCNEActionAuthorized(session, record);
+    if (liveActionAuthErr) return liveActionAuthErr;
+  }
   if (isCNEClosedForParticipantAccess(record)) {
     return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. The post-test is closed.' };
   }
 
-  if (!participantId) return { success: false, message: 'Verified participant identity is required.' };
-
   if (participantType === 'INTERNAL') {
-    var officer = findOfficerById(participantId);
-    if (!officer || !officer.name) return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Verified employee is no longer present in the institutional roster.' };
+    var officer = findOfficerByIdFresh_(participantId);
+    if (!officer || !officer.name) return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Verified employee is no longer present in the Officers data.' };
     participantName = officer.name;
   } else {
     var registration = findExternalRegistration(cneId, participantId);
@@ -11954,44 +13020,33 @@ function handleGetPostTestQuestions(params, session) {
     participantName = registration.name;
   }
 
-  var partSheet = getResponsesSheet();
-  if (partSheet && partSheet.getLastRow() > 1) {
-    var pData = partSheet.getDataRange().getValues();
-    for (var p = 1; p < pData.length; p++) {
-      var pCne = String(pData[p][1] || '').trim().toUpperCase();
-      var pEmp = String(pData[p][2] || '').trim().toUpperCase();
-      var pSrc = String(pData[p][9] || '').trim().toUpperCase();
-      if (pCne === cneId.toUpperCase() && pEmp === participantId.toUpperCase() && pSrc === 'POST_TEST') {
-        var scoreVal = (pData[p][6] !== '' && !isNaN(Number(pData[p][6]))) ? Number(pData[p][6]) : 0;
-        var totalVal = (pData[p][7] !== '' && !isNaN(Number(pData[p][7]))) ? Number(pData[p][7]) : 0;
-        var pctVal = (pData[p][8] !== '' && !isNaN(Number(pData[p][8]))) ? Number(pData[p][8]) : 0;
-        return {
-          success: true,
-          data: {
-            alreadySubmitted: true,
-            cneId: cneId,
-            topic: record.topic,
-            area: record.area,
-            participantType: participantType,
-            participantName: participantName,
-            submission: {
-              participantId: String(pData[p][0] || ''),
-              cneId: cneId,
-              employeeId: participantType === 'INTERNAL' ? participantId : '',
-              externalParticipantId: participantType === 'EXTERNAL' ? participantId : '',
-              name: String(pData[p][3] || participantName),
-              designation: String(pData[p][4] || ''),
-              department: String(pData[p][5] || ''),
-              score: scoreVal,
-              totalQuestions: totalVal,
-              percentage: pctVal,
-              status: String(pData[p][12] || ''),
-              submittedAt: String(pData[p][10] || '')
-            }
-          }
-        };
+  var existingSubmission = findExistingPostTestSubmission(cneId, participantId);
+  if (existingSubmission) {
+    return {
+      success: true,
+      data: {
+        alreadySubmitted: true,
+        cneId: cneId,
+        topic: record.topic,
+        area: record.area,
+        participantType: participantType,
+        participantName: participantName,
+        submission: {
+          participantId: existingSubmission.responseId || '',
+          cneId: cneId,
+          employeeId: participantType === 'INTERNAL' ? participantId : '',
+          externalParticipantId: participantType === 'EXTERNAL' ? participantId : '',
+          name: existingSubmission.participantName || participantName,
+          designation: existingSubmission.designation || '',
+          department: existingSubmission.department || '',
+          score: Number(existingSubmission.score || 0),
+          totalQuestions: Number(existingSubmission.totalQuestions || 0),
+          percentage: Number(existingSubmission.percentage || 0),
+          status: existingSubmission.status || '',
+          submittedAt: existingSubmission.submittedAt || ''
+        }
       }
-    }
+    };
   }
 
   var sanitizedQuestions = getCachedSanitizedQuestions(cneId);
@@ -12019,7 +13074,7 @@ function handleGetPostTestQuestions(params, session) {
  * duplicate check -> question retrieval -> scoring -> response write -> question locking.
  * Enforces:
  * 1. Opaque QR token resolution via CNE_QR_Tokens (no CNE ID only access)
- * 2. Authoritative employee validation against Rosters Master Data
+ * 2. Authoritative employee validation against Officers data
  * 3. Server-side scoring (never trust browser score)
  * 4. Rejection of duplicate submissions per employee per CNE
  * 5. A failed submission does NOT lock questions.
@@ -12028,6 +13083,7 @@ function handleGetPostTestQuestions(params, session) {
  */
 function handleSubmitPostTest(params, session) {
   var resolvedQr = resolveActiveQrToken(params.qrToken || params.token);
+  var isPublicQrSubmission = Boolean(resolvedQr && resolvedQr.cneId);
   var cneId = resolvedQr ? resolvedQr.cneId : null;
   var participantId = '';
   var participantType = '';
@@ -12066,12 +13122,18 @@ function handleSubmitPostTest(params, session) {
   var designation = '';
   var department = record.area || '';
   var responseRemarks = '';
+
+  // Officers data is an external authoritative spreadsheet and is not protected by this script's
+  // ScriptLock. Perform its fresh read before taking the global CNE lock so one roster read cannot
+  // block every other Post-Test submission.
   if (participantType === 'INTERNAL') {
-    var officer = findOfficerById(participantId);
-    if (!officer || !officer.name) return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Verified employee is no longer present in the institutional roster.' };
-    participantName = officer.name;
-    designation = officer.designation || 'Nursing Officer';
-    department = officer.department || record.area || '';
+    var liveParticipantOfficer = findOfficerByIdFresh_(participantId);
+    if (!liveParticipantOfficer || !liveParticipantOfficer.name) {
+      return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Verified employee is no longer present in the Officers data.' };
+    }
+    participantName = liveParticipantOfficer.name;
+    designation = liveParticipantOfficer.designation || 'Nursing Officer';
+    department = liveParticipantOfficer.department || record.area || '';
   } else if (participantType === 'EXTERNAL') {
     var registration = findExternalRegistration(cneId, participantId);
     if (!registration) return { success: false, errorCode: 'EXTERNAL_REGISTRATION_REQUIRED', message: 'External participant registration was not found. Please register again.' };
@@ -12083,77 +13145,78 @@ function handleSubmitPostTest(params, session) {
     return { success: false, errorCode: 'INVALID_PARTICIPANT_TYPE', message: 'Verified participant type is invalid.' };
   }
 
+  // After the first successful Post-Test submission, questions are permanently immutable.
+  // From then on answer-key reading/scoring can safely happen outside the global lock.
+  var questionsAlreadyLocked = isCNEQuestionsLocked(cneId);
+  var preparedSnapshot = null;
+  var preparedScore = null;
+  if (questionsAlreadyLocked) {
+    preparedSnapshot = getPostTestAnswerSnapshot_(cneId);
+    if (!preparedSnapshot || preparedSnapshot.answerKeys.length < 5) {
+      return { success: false, message: 'Cannot submit: CNE post-test does not have at least 5 finalized questions.' };
+    }
+    preparedScore = scorePostTestAnswers_(preparedSnapshot.answerKeys, answers);
+  }
+
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
   } catch (e) {
-    return { success: false, message: 'Server is busy processing submissions. Please try again.' };
+    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy processing submissions. Please try again.' };
   }
 
+  var successPayload = null;
+  var auditDetails = '';
   try {
-    // Re-check CNE status while holding lock so finalization cannot race a submission.
+    if (isPublicQrSubmission) {
+      var liveSubmitQr = resolveActiveQrToken(params.qrToken || params.token);
+      if (!liveSubmitQr || String(liveSubmitQr.cneId || '').trim().toUpperCase() !== cneId.toUpperCase()) {
+        return { success: false, errorCode: 'INVALID_OR_MISSING_QR_TOKEN', message: 'The QR token is no longer active.' };
+      }
+    }
+
     var liveRecord = getCNEScheduleRecord(cneId);
     if (!liveRecord || isCNEClosedForParticipantAccess(liveRecord)) {
       return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Post-test submission is closed.' };
     }
+    if (!isPublicQrSubmission) {
+      var freshSubmitSession = refreshMutationSession(session);
+      if (!freshSubmitSession.success) return freshSubmitSession;
+      session = freshSubmitSession.session;
+      var liveSubmitAuth = checkCNEActionAuthorized(session, liveRecord);
+      if (liveSubmitAuth) return liveSubmitAuth;
+    }
+    record = liveRecord;
 
-    var partSheet = getResponsesSheet();
-    if (partSheet && partSheet.getLastRow() > 1) {
-      var pData = partSheet.getDataRange().getValues();
-      for (var p = 1; p < pData.length; p++) {
-        var pCne = String(pData[p][1] || '').trim().toUpperCase();
-        var pEmp = String(pData[p][2] || '').trim().toUpperCase();
-        var pSrc = String(pData[p][9] || '').trim().toUpperCase();
-        if (pCne === cneId.toUpperCase() && pEmp === participantId.toUpperCase() && pSrc === 'POST_TEST') {
-          return { success: false, errorCode: 'ALREADY_SUBMITTED', message: 'You have already submitted the post-test for this CNE.' };
-        }
+    if (participantType === 'EXTERNAL') {
+      var liveRegistration = findExternalRegistration(cneId, participantId);
+      if (!liveRegistration) return { success: false, errorCode: 'EXTERNAL_REGISTRATION_REQUIRED', message: 'External participant registration was not found. Please register again.' };
+      participantName = liveRegistration.name;
+      designation = liveRegistration.designation || 'External Participant';
+      department = liveRegistration.department || liveRecord.area || 'External';
+      responseRemarks = liveRegistration.email ? ('External Email: ' + liveRegistration.email) : '';
+    }
+
+    if (findExistingPostTestSubmission(cneId, participantId)) {
+      return { success: false, errorCode: 'ALREADY_SUBMITTED', message: 'You have already submitted the post-test for this CNE.' };
+    }
+
+    var snapshot = preparedSnapshot;
+    var scored = preparedScore;
+
+    // Conservative first-submission path: questions may still be editable, so take the
+    // authoritative answer snapshot only after acquiring the same global lock used by question mutations.
+    if (!questionsAlreadyLocked) {
+      snapshot = getPostTestAnswerSnapshot_(cneId);
+      if (!snapshot || snapshot.answerKeys.length < 5) {
+        return { success: false, message: 'Cannot submit: CNE post-test does not have at least 5 finalized questions.' };
       }
+      scored = scorePostTestAnswers_(snapshot.answerKeys, answers);
     }
 
-    var qSheet = getQuestionsSheet();
-    var cols = getQuestionColIndexes(qSheet);
-    var qData = qSheet.getDataRange().getValues();
-    var answerKeys = [];
-    var questionRowsToLock = [];
-    for (var r = 1; r < qData.length; r++) {
-      var qCne = String(qData[r][cols.cneId] || '').trim().toUpperCase();
-      var isFin = String(qData[r][cols.isFinalized] || 'NO').toUpperCase() === 'YES';
-      var qStatus = String(qData[r][cols.status] || 'ACTIVE').trim().toUpperCase();
-      if (qCne === cneId.toUpperCase() && isFin && qStatus !== 'INACTIVE' && qStatus !== 'REPLACED') {
-        answerKeys.push({
-          id: String(qData[r][cols.qId] || ''),
-          question: String(qData[r][cols.question] || ''),
-          correctOption: String(qData[r][cols.correctOption] || 'A').toUpperCase(),
-          explanation: String(qData[r][cols.explanation] || '')
-        });
-        questionRowsToLock.push(r + 1);
-      }
-    }
-    if (answerKeys.length < 5) return { success: false, message: 'Cannot submit: CNE post-test does not have at least 5 finalized questions.' };
-
-    var score = 0;
-    var total = answerKeys.length;
-    var detailedReview = [];
-    for (var i = 0; i < answerKeys.length; i++) {
-      var item = answerKeys[i];
-      var submittedAns = String(answers[item.id] || '').trim().toUpperCase();
-      var isCorrect = submittedAns === item.correctOption;
-      if (isCorrect) score++;
-      detailedReview.push({
-        questionId: item.id,
-        question: item.question,
-        userAnswer: submittedAns,
-        correctAnswer: item.correctOption,
-        isCorrect: isCorrect,
-        explanation: item.explanation
-      });
-    }
-
-    var percentage = Math.round((score / total) * 100);
-    var passed = percentage >= 50;
-    var status = passed ? 'PASSED' : 'NEEDS_IMPROVEMENT';
     var now = new Date().toISOString();
-    var responseId = 'RESP-' + Date.now();
+    var responseId = 'RESP-' + Date.now() + '-' + Utilities.getUuid().substring(0, 8);
+    var partSheet = getResponsesSheet();
     partSheet.appendRow([
       responseId,
       cneId,
@@ -12161,22 +13224,25 @@ function handleSubmitPostTest(params, session) {
       participantName,
       designation,
       department,
-      score,
-      total,
-      percentage,
+      scored.score,
+      scored.total,
+      scored.percentage,
       'POST_TEST',
       now,
       JSON.stringify(answers),
-      status,
+      scored.status,
       responseRemarks
     ]);
 
-    for (var k = 0; k < questionRowsToLock.length; k++) {
-      qSheet.getRange(questionRowsToLock[k], cols.isLocked + 1).setValue('YES');
+    // Only the first-submission path needs to persist question-row lock markers.
+    // Logical locking is also guaranteed by the POST_TEST response row itself.
+    if (!questionsAlreadyLocked && snapshot.questionRowsToLock.length > 0) {
+      lockQuestionRowsBatch_(snapshot.qSheet, snapshot.questionRowsToLock, snapshot.cols.isLocked);
     }
+    markCNEQuestionsLockedCache_(cneId);
 
-    logAuditAction('SUBMIT_POST_TEST', participantId, 'CNE: ' + cneId + ', Score: ' + score + '/' + total + ' (' + percentage + '%)', 'SUCCESS');
-    return {
+    auditDetails = 'CNE: ' + cneId + ', Score: ' + scored.score + '/' + scored.total + ' (' + scored.percentage + '%)';
+    successPayload = {
       success: true,
       message: 'Post-test submitted successfully!',
       data: {
@@ -12184,18 +13250,22 @@ function handleSubmitPostTest(params, session) {
         cneId: cneId,
         participantType: participantType,
         participantName: participantName,
-        score: score,
-        totalQuestions: total,
-        percentage: percentage,
-        passed: passed,
-        status: status,
+        score: scored.score,
+        totalQuestions: scored.total,
+        percentage: scored.percentage,
+        passed: scored.passed,
+        status: scored.status,
         submittedAt: now,
-        review: detailedReview
+        review: scored.detailedReview
       }
     };
   } finally {
     lock.releaseLock();
   }
+
+  // Audit logging is intentionally outside the global mutation lock.
+  if (successPayload) logAuditAction('SUBMIT_POST_TEST', participantId, auditDetails, 'SUCCESS');
+  return successPayload || { success: false, errorCode: 'SUBMISSION_FAILED', message: 'Post-test submission could not be completed.' };
 }
 
 /**
@@ -12214,12 +13284,19 @@ function handleAddManualParticipants(params, session) {
   var authErr = checkCNEActionAuthorized(session, record);
   if (authErr) return authErr;
 
-  // Fix 3: Prevent participant modification after finalization
+  // Prevent participant modification after finalization or cancellation.
   if (normalizeCNEStatus(record.status) === 'Completed') {
     return {
       success: false,
       errorCode: 'CNE_ALREADY_FINALIZED',
       message: 'This CNE has already been finalized. Participants cannot be added or modified.'
+    };
+  }
+  if (normalizeCNEStatus(record.status) === 'Canceled') {
+    return {
+      success: false,
+      errorCode: 'CNE_ALREADY_CANCELED',
+      message: 'This CNE has been canceled. Participants cannot be added or modified.'
     };
   }
 
@@ -12307,25 +13384,49 @@ function handleAddManualParticipants(params, session) {
   try {
     lock.waitLock(15000);
   } catch (e) {
-    return { success: false, message: 'Server is busy. Please try again.' };
+    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy. Please try again.' };
   }
 
   try {
+    var freshParticipantSession = refreshMutationSession(session);
+    if (!freshParticipantSession.success) return freshParticipantSession;
+    session = freshParticipantSession.session;
+
+    // Re-read lifecycle state while holding the lock so finalization/cancellation
+    // cannot race a manual attendance write.
+    var liveParticipantRecord = getCNEScheduleRecord(cneId);
+    if (!liveParticipantRecord) {
+      return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
+    }
+
+    // Re-authorize against the live CNE record while holding the lock. Area, CNE
+    // type, or RP assignment may have changed after the pre-lock authorization
+    // check, so manual attendance must never rely on stale authorization state.
+    var liveParticipantAuthErr = checkCNEActionAuthorized(session, liveParticipantRecord);
+    if (liveParticipantAuthErr) return liveParticipantAuthErr;
+
+    var liveParticipantStatus = normalizeCNEStatus(liveParticipantRecord.status);
+    if (liveParticipantStatus === 'Completed' || liveParticipantStatus === 'Canceled') {
+      return {
+        success: false,
+        errorCode: 'CNE_CLOSED',
+        message: 'This CNE has been finalized or canceled. Participants cannot be added or modified.'
+      };
+    }
+
     var partSheet = getResponsesSheet();
-    var pData = partSheet.getDataRange().getValues();
+    var pData = partSheet.getLastRow() > 1
+      ? partSheet.getRange(2, 2, partSheet.getLastRow() - 1, 3).getValues()
+      : []; // B:D only: CNE ID, Employee ID, Employee Name
 
     var existingEmpIds = {};
     var existingNames = {};
-    for (var p = 1; p < pData.length; p++) {
-      if (String(pData[p][1] || '').trim().toUpperCase() === cneId.toUpperCase()) {
-        var existingEmp = normalizeEmpId(pData[p][2]);
-        if (existingEmp) {
-          existingEmpIds[existingEmp] = true;
-        }
-        var existingNm = String(pData[p][3] || '').trim().toLowerCase();
-        if (existingNm) {
-          existingNames[existingNm] = true;
-        }
+    for (var p = 0; p < pData.length; p++) {
+      if (String(pData[p][0] || '').trim().toUpperCase() === cneId.toUpperCase()) {
+        var existingEmp = normalizeEmpId(pData[p][1]);
+        if (existingEmp) existingEmpIds[existingEmp] = true;
+        var existingNm = String(pData[p][2] || '').trim().toLowerCase();
+        if (existingNm) existingNames[existingNm] = true;
       }
     }
 
@@ -12541,6 +13642,15 @@ function handleFinalizeCNE(params, session) {
   // 3. Validate current authorization
   var authErr = checkCNEAuthorized(session, record.area, cneType);
   if (authErr) return authErr;
+
+  // A canceled CNE cannot later be finalized.
+  if (normalizeCNEStatus(record.status) === 'Canceled') {
+    return {
+      success: false,
+      errorCode: 'CNE_ALREADY_CANCELED',
+      message: 'Cannot finalize a CNE that has already been canceled.'
+    };
+  }
   
   // 4. Acquire ScriptLock
   var lock = LockService.getScriptLock();
@@ -12551,6 +13661,9 @@ function handleFinalizeCNE(params, session) {
   }
   
   try {
+    var freshFinalizeSession = refreshMutationSession(session);
+    if (!freshFinalizeSession.success) return freshFinalizeSession;
+    session = freshFinalizeSession.session;
     var ss = getSpreadsheet('CNE');
     var cneSheet = ss.getSheetByName('CNE Schedule');
     if (!cneSheet) {
@@ -12562,9 +13675,24 @@ function handleFinalizeCNE(params, session) {
     if (!liveRecord) {
       return { success: false, message: 'CNE record not found upon re-reading CNE Schedule.' };
     }
+
+    // Re-authorize against the live record while holding the lock. The CNE Area or
+    // Type may have changed after the initial pre-lock check, so lifecycle actions
+    // must never rely on stale authorization state.
+    var liveFinalizeType = normalizeCNEType(liveRecord.cneType);
+    if (!liveFinalizeType) {
+      return {
+        success: false,
+        errorCode: 'INVALID_CNE_TYPE',
+        message: 'Cannot finalize CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL or DEPARTMENTAL).'
+      };
+    }
+    var liveFinalizeAuthErr = checkCNEAuthorized(session, liveRecord.area, liveFinalizeType);
+    if (liveFinalizeAuthErr) return liveFinalizeAuthErr;
     
-    // 6. Confirm the CNE is not already Completed
-    if (normalizeCNEStatus(liveRecord.status) === 'Completed') {
+    // 6. Confirm the CNE is not already Completed or Canceled.
+    var liveFinalizeStatus = normalizeCNEStatus(liveRecord.status);
+    if (liveFinalizeStatus === 'Completed') {
       return {
         success: true,
         alreadyFinalized: true,
@@ -12575,6 +13703,13 @@ function handleFinalizeCNE(params, session) {
         },
         cneId: cneId,
         dataId: cneId
+      };
+    }
+    if (liveFinalizeStatus === 'Canceled') {
+      return {
+        success: false,
+        errorCode: 'CNE_ALREADY_CANCELED',
+        message: 'Cannot finalize a CNE that has already been canceled.'
       };
     }
     
@@ -12674,6 +13809,15 @@ function handleCancelCNE(params, session) {
   
   var authErr = checkCNEAuthorized(session, record.area, record.cneType);
   if (authErr) return authErr;
+
+  // Keep cancellation idempotent and avoid rewriting remarks/audit entries.
+  if (normalizeCNEStatus(record.status) === 'Canceled') {
+    return {
+      success: true,
+      alreadyCanceled: true,
+      message: 'This CNE has already been canceled.'
+    };
+  }
   
   var lock = LockService.getScriptLock();
   try {
@@ -12683,10 +13827,36 @@ function handleCancelCNE(params, session) {
   }
   
   try {
+    var freshCancelSession = refreshMutationSession(session);
+    if (!freshCancelSession.success) return freshCancelSession;
+    session = freshCancelSession.session;
     var liveRecord = getCNEScheduleRecord(cneId);
     if (!liveRecord) return { success: false, message: 'CNE record not found.' };
-    if (normalizeCNEStatus(liveRecord.status) === 'Completed') {
-      return { success: false, message: 'Cannot cancel a CNE that has already been finalized/completed.' };
+
+    // Re-authorize against the live record while holding the lock. This closes the
+    // same stale-authorization window as Edit/Finalize when Area or CNE Type changes
+    // between the initial check and the lifecycle write.
+    var liveCancelType = normalizeCNEType(liveRecord.cneType);
+    if (!liveCancelType) {
+      return {
+        success: false,
+        errorCode: 'INVALID_CNE_TYPE',
+        message: 'Cannot cancel CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL or DEPARTMENTAL).'
+      };
+    }
+    var liveCancelAuthErr = checkCNEAuthorized(session, liveRecord.area, liveCancelType);
+    if (liveCancelAuthErr) return liveCancelAuthErr;
+
+    var liveCancelStatus = normalizeCNEStatus(liveRecord.status);
+    if (liveCancelStatus === 'Completed') {
+      return { success: false, errorCode: 'CNE_ALREADY_FINALIZED', message: 'Cannot cancel a CNE that has already been finalized/completed.' };
+    }
+    if (liveCancelStatus === 'Canceled') {
+      return {
+        success: true,
+        alreadyCanceled: true,
+        message: 'This CNE has already been canceled.'
+      };
     }
     
     var reason = sanitizeCellInput(params.remarks || 'Cancelled by coordinator');

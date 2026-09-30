@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Search,
   RefreshCw,
@@ -6,6 +6,8 @@ import {
   Loader2,
   X,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Plus
 } from 'lucide-react';
 import { Employee, SessionUser, UserRole } from '../types';
@@ -443,28 +445,47 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
     try {
       const res = await ApiService.adminResetPassword(empId);
       if (res.success) {
-        success(res.message || `Password for ${name} reset to pass1234`, 'Password Reset');
+        success(res.message || `Password access for ${name} has been reset. The employee must use Create / Reset Password.`, 'Password Access Reset');
         setConfirmResetOfficer(null);
       } else {
-        error(res.message || 'Failed to reset password.');
+        error(res.message || 'Failed to reset password access.');
       }
     } catch (e: any) {
-      error('Error resetting employee password.');
+      error('Error resetting employee password access.');
     } finally {
       resettingRef.current = false;
       setResettingId(null);
     }
   };
 
-  const filteredOfficers = officers.filter((o) => {
-    if (!searchTerm.trim()) return true;
+  const PAGE_SIZE = 50;
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const filteredOfficers = useMemo(() => {
+    if (!searchTerm.trim()) return officers;
     const q = searchTerm.toLowerCase();
-    return (
-      (o.name || '').toLowerCase().includes(q) ||
-      (o.employeeId || '').toLowerCase().includes(q) ||
-      (o.designation || '').toLowerCase().includes(q)
-    );
-  });
+    return officers.filter((o) => {
+      return (
+        (o.name || '').toLowerCase().includes(q) ||
+        (o.employeeId || '').toLowerCase().includes(q) ||
+        (o.designation || '').toLowerCase().includes(q)
+      );
+    });
+  }, [officers, searchTerm]);
+
+  // Reset to page 1 whenever the search term changes
+  const handleSearchChange = (val: string) => {
+    setSearchTerm(val);
+    setCurrentPage(1);
+  };
+
+  const totalPages = Math.max(1, Math.ceil(filteredOfficers.length / PAGE_SIZE));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const paginatedOfficers = useMemo(() => {
+    const start = (safeCurrentPage - 1) * PAGE_SIZE;
+    return filteredOfficers.slice(start, start + PAGE_SIZE);
+  }, [filteredOfficers, safeCurrentPage]);
 
   return (
     <div className="space-y-6 pb-12">
@@ -478,7 +499,7 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Manage system permissions and credentials. Admins can assign roles and reset employee passwords to default (pass1234).
+            Manage system permissions and credentials. Admins can assign roles and require employees to create a new password through registered-email OTP verification.
           </p>
         </div>
 
@@ -500,7 +521,7 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
             type="text"
             placeholder="Search nursing officer by name, ID, designation..."
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg"
           />
         </div>
@@ -514,8 +535,9 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
             <span className="text-xs font-medium">Loading data</span>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase text-[11px]">
                   <th className="py-3 px-4">Employee ID</th>
@@ -524,11 +546,11 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
                   <th className="py-3 px-4">Assigned Role</th>
                   <th className="py-3 px-4">Assign Ward</th>
                   <th className="py-3 px-4">Assigned Wards</th>
-                  <th className="py-3 px-4 text-right">Reset Password</th>
+                  <th className="py-3 px-4 text-right">Password Access</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredOfficers.map((officer) => {
+                {paginatedOfficers.map((officer) => {
                   const empId = (officer.employeeId || '').toLowerCase().trim();
                   const roleObj: OfficerRoleState = rolesMap[empId] || { role: 'EMPLOYEE', assignedAreas: [], area: '' };
                   const role: UserRole = roleObj.role;
@@ -640,14 +662,14 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
                           onClick={() => setConfirmResetOfficer({ empId: officer.employeeId, name: officer.name })}
                           disabled={isResetting || updatingEmpId === officer.employeeId}
                           className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
-                          title="Reset employee password to default pass1234"
+                          title="Clear the current password and require registered-email OTP verification"
                         >
                           {isResetting ? (
                             <Loader2 className="w-3 h-3 animate-spin text-amber-600" />
                           ) : (
                             <KeyRound className="w-3 h-3 text-amber-600" />
                           )}
-                          <span>{isResetting ? 'Resetting...' : 'Reset to pass1234'}</span>
+                          <span>{isResetting ? 'Resetting...' : 'Require Password Reset'}</span>
                         </button>
                       </td>
                     </tr>
@@ -656,10 +678,49 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
               </tbody>
             </table>
           </div>
-        )}
-      </div>
 
-      {/* Admin Reset Password Confirmation Modal */}
+          {/* Pagination Controls */}
+          {filteredOfficers.length > 0 && (
+            <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
+              <div className="font-medium">
+                Showing <span className="font-bold text-slate-900">{(safeCurrentPage - 1) * PAGE_SIZE + 1}</span> to{' '}
+                <span className="font-bold text-slate-900">{Math.min(safeCurrentPage * PAGE_SIZE, filteredOfficers.length)}</span> of{' '}
+                <span className="font-bold text-slate-900">{filteredOfficers.length}</span> officers
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500 mr-2">
+                  Page <strong className="text-slate-900">{safeCurrentPage}</strong> of <strong className="text-slate-900">{totalPages}</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={safeCurrentPage <= 1}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+                  title="Previous page"
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Previous</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safeCurrentPage >= totalPages}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+                  title="Next page"
+                  aria-label="Next page"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+
+      {/* Admin Require Password Reset Confirmation Modal */}
       {confirmResetOfficer && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-slate-200 text-center space-y-4">
@@ -667,9 +728,9 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
               <KeyRound className="w-6 h-6" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-slate-900">Reset Employee Password?</h3>
+              <h3 className="text-base font-bold text-slate-900">Require Password Reset?</h3>
               <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-                Reset password for <strong className="text-slate-800">{confirmResetOfficer.name}</strong> ({confirmResetOfficer.empId}) to the default credentials: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono font-bold text-amber-700">pass1234</code>?
+                Clear the current password for <strong className="text-slate-800">{confirmResetOfficer.name}</strong> ({confirmResetOfficer.empId})? Existing sessions will be invalidated, and the employee must use <strong className="text-slate-800">Create / Reset Password</strong> and verify the registered email before signing in again.
               </p>
             </div>
             <div className="flex items-center justify-center gap-2 pt-2">
@@ -690,10 +751,10 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
                 {resettingId === confirmResetOfficer.empId ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Resetting Password...</span>
+                    <span>Resetting Access...</span>
                   </>
                 ) : (
-                  <span>Reset to pass1234</span>
+                  <span>Require Password Reset</span>
                 )}
               </button>
             </div>

@@ -1,24 +1,31 @@
-import React, { useState } from 'react';
-import { KeyRound } from 'lucide-react';
+import React, { lazy, Suspense, useState, useEffect } from 'react';
 import { ViewMode, SessionUser } from './types';
 import { ApiService } from './services/api';
 import { ToastProvider, useToast } from './components/Toast';
 import { Navbar } from './components/Navbar';
 import { TopToolbar } from './components/TopToolbar';
 import { CneHomePage } from './components/CneHomePage';
-import { LoginModal } from './components/LoginModal';
-import { ChangePasswordModal } from './components/ChangePasswordModal';
-import { ForgotPasswordModal } from './components/ForgotPasswordModal';
-import { CNEPostTestModal } from './components/cne/CNEPostTestModal';
-import { MyCNERecords } from './components/MyCNERecords';
-import { CNECalendar } from './components/CNECalendar';
-import { CNESchedule } from './components/CNESchedule';
-import { LearningResourcesPage } from './components/cne/LearningResourcesPage';
-import { Gallery } from './components/Gallery';
-import { AdminAreas } from './components/AdminAreas';
-import { AdminRoles } from './components/AdminRoles';
-import { AdminReports } from './components/AdminReports';
-import { AdminContent } from './components/AdminContent';
+import { scheduleIdlePrefetch } from './services/routePrefetch';
+
+const LoginModal = lazy(() => import('./components/LoginModal').then((m) => ({ default: m.LoginModal })));
+const ChangePasswordModal = lazy(() => import('./components/ChangePasswordModal').then((m) => ({ default: m.ChangePasswordModal })));
+const ForgotPasswordModal = lazy(() => import('./components/ForgotPasswordModal').then((m) => ({ default: m.ForgotPasswordModal })));
+const CNEPostTestModal = lazy(() => import('./components/cne/CNEPostTestModal').then((m) => ({ default: m.CNEPostTestModal })));
+const MyCNERecords = lazy(() => import('./components/MyCNERecords').then((m) => ({ default: m.MyCNERecords })));
+const CNECalendar = lazy(() => import('./components/CNECalendar').then((m) => ({ default: m.CNECalendar })));
+const CNESchedule = lazy(() => import('./components/CNESchedule').then((m) => ({ default: m.CNESchedule })));
+const LearningResourcesPage = lazy(() => import('./components/cne/LearningResourcesPage').then((m) => ({ default: m.LearningResourcesPage })));
+const Gallery = lazy(() => import('./components/Gallery').then((m) => ({ default: m.Gallery })));
+const AdminAreas = lazy(() => import('./components/AdminAreas').then((m) => ({ default: m.AdminAreas })));
+const AdminRoles = lazy(() => import('./components/AdminRoles').then((m) => ({ default: m.AdminRoles })));
+const AdminReports = lazy(() => import('./components/AdminReports').then((m) => ({ default: m.AdminReports })));
+const AdminContent = lazy(() => import('./components/AdminContent').then((m) => ({ default: m.AdminContent })));
+
+const PageLoadingFallback: React.FC = () => (
+  <div className="min-h-[220px] flex items-center justify-center text-sm font-medium text-slate-500">
+    Loading…
+  </div>
+);
 
 const AppContent: React.FC = () => {
   const [user, setUser] = useState<SessionUser | null>(() => ApiService.getSessionUser());
@@ -35,15 +42,16 @@ const AppContent: React.FC = () => {
     }
   });
 
-  // Forced password change mode flag (first login or reset requiring password setup)
-  const isForcedPasswordChange = Boolean(user && (user.mustChangePassword || user.isFirstLogin));
-
   // Modals state
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
 
   const { success, info } = useToast();
+
+  useEffect(() => {
+    return scheduleIdlePrefetch(Boolean(user && user.employeeId));
+  }, [user?.employeeId]);
 
   const handleCloseRootQrPostTest = () => {
     setRootQrToken(null);
@@ -61,11 +69,7 @@ const AppContent: React.FC = () => {
   const handleLoginSuccess = (loggedInUser: SessionUser) => {
     setUser(loggedInUser);
     setIsLoginOpen(false);
-    if (loggedInUser.mustChangePassword || loggedInUser.isFirstLogin) {
-      setIsChangePasswordOpen(true);
-    } else {
-      success(`Welcome, ${loggedInUser.name}`, 'Authentication Successful');
-    }
+    success(`Welcome, ${loggedInUser.name}`, 'Authentication Successful');
   };
 
   const handleLogout = () => {
@@ -77,10 +81,6 @@ const AppContent: React.FC = () => {
   };
 
   const handleNavigate = (view: ViewMode) => {
-    if (isForcedPasswordChange) {
-      info('Please set your personal password before continuing to the CNE Portal.', 'Password Setup Required');
-      return;
-    }
     // If not logged in and attempting to access staff/admin protected views, prompt login
     if (!user || !user.employeeId) {
       if (['my-cne-records', 'admin-areas', 'admin-roles', 'admin-content', 'admin-reports'].includes(view)) {
@@ -104,7 +104,7 @@ const AppContent: React.FC = () => {
       />
 
       {/* Persistent Static Top Toolbar for Primary Navigation (Authenticated Users Only) */}
-      {user && user.employeeId && !isForcedPasswordChange && (
+      {user && user.employeeId && (
         <TopToolbar
           user={user}
           activeView={activeView}
@@ -115,66 +115,47 @@ const AppContent: React.FC = () => {
       <div className="flex-1 w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-12">
         {/* Main Content Area */}
         <main className="w-full">
-          {isForcedPasswordChange ? (
-            <div className="max-w-xl mx-auto my-12 p-8 bg-white rounded-2xl border border-amber-200 shadow-xl text-center space-y-4">
-              <div className="w-16 h-16 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center mx-auto border border-amber-200">
-                <KeyRound className="w-8 h-8" />
-              </div>
-              <h2 className="text-xl font-bold text-slate-900">Personal Password Setup Required</h2>
-              <p className="text-xs text-slate-600 leading-relaxed max-w-md mx-auto">
-                You must set your personal password before continuing to the CNE Portal.
-              </p>
-              <button
-                type="button"
-                onClick={() => setIsChangePasswordOpen(true)}
-                className="px-6 py-2.5 bg-teal-800 hover:bg-teal-900 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer transition-colors"
-              >
-                Set Personal Password
-              </button>
-            </div>
-          ) : (
-            <>
-              {(!user || !user.employeeId || activeView === 'dashboard') && (
-                <CneHomePage
-                  user={user}
-                  onNavigate={handleNavigate}
-                />
-              )}
-
-              {user && user.employeeId && activeView === 'my-cne-records' && (
-                <MyCNERecords user={user} />
-              )}
-
-              {user && user.employeeId && activeView === 'calendar' && <CNECalendar />}
-
-              {user && user.employeeId && activeView === 'cne-schedule' && (
-                <CNESchedule user={user} />
-              )}
-
-              {user && user.employeeId && activeView === 'learning-resources' && (
-                <LearningResourcesPage user={user} />
-              )}
-
-              {user && user.employeeId && activeView === 'gallery' && <Gallery user={user} />}
-
-              {/* Admin Protected Views */}
-              {activeView === 'admin-areas' && user?.role === 'ADMIN' && (
-                <AdminAreas user={user} />
-              )}
-
-              {activeView === 'admin-roles' && user?.role === 'ADMIN' && (
-                <AdminRoles user={user} />
-              )}
-
-              {activeView === 'admin-content' && user?.role === 'ADMIN' && (
-                <AdminContent user={user} />
-              )}
-
-              {activeView === 'admin-reports' && user?.role === 'ADMIN' && (
-                <AdminReports user={user} />
-              )}
-            </>
+          <Suspense fallback={<PageLoadingFallback />}>
+          {(!user || !user.employeeId || activeView === 'dashboard') && (
+            <CneHomePage
+              user={user}
+              onNavigate={handleNavigate}
+            />
           )}
+
+          {user && user.employeeId && activeView === 'my-cne-records' && (
+            <MyCNERecords user={user} />
+          )}
+
+          {user && user.employeeId && activeView === 'calendar' && <CNECalendar />}
+
+          {user && user.employeeId && activeView === 'cne-schedule' && (
+            <CNESchedule user={user} />
+          )}
+
+          {user && user.employeeId && activeView === 'learning-resources' && (
+            <LearningResourcesPage user={user} />
+          )}
+
+          {user && user.employeeId && activeView === 'gallery' && <Gallery user={user} />}
+
+          {/* Admin Protected Views */}
+          {activeView === 'admin-areas' && user?.role === 'ADMIN' && (
+            <AdminAreas user={user} />
+          )}
+
+          {activeView === 'admin-roles' && user?.role === 'ADMIN' && (
+            <AdminRoles user={user} />
+          )}
+
+          {activeView === 'admin-content' && user?.role === 'ADMIN' && (
+            <AdminContent user={user} />
+          )}
+
+          {activeView === 'admin-reports' && user?.role === 'ADMIN' && (
+            <AdminReports user={user} />
+          )}
+          </Suspense>
         </main>
       </div>
 
@@ -187,48 +168,49 @@ const AppContent: React.FC = () => {
       </footer>
 
       {/* Global Modals */}
-      <LoginModal
-        isOpen={isLoginOpen}
-        onClose={() => setIsLoginOpen(false)}
-        onLoginSuccess={handleLoginSuccess}
-        onOpenForgotPassword={() => {
-          setIsLoginOpen(false);
-          setIsForgotPasswordOpen(true);
-        }}
-      />
+      <Suspense fallback={null}>
+      {isLoginOpen && (
+        <LoginModal
+          isOpen={isLoginOpen}
+          onClose={() => setIsLoginOpen(false)}
+          onLoginSuccess={handleLoginSuccess}
+          onOpenForgotPassword={() => {
+            setIsLoginOpen(false);
+            setIsForgotPasswordOpen(true);
+          }}
+        />
+      )}
 
-      <ChangePasswordModal
-        isOpen={isChangePasswordOpen || isForcedPasswordChange}
-        forced={isForcedPasswordChange}
-        onClose={() => {
-          if (!isForcedPasswordChange) {
-            setIsChangePasswordOpen(false);
-          }
-        }}
-        user={user}
-        onPasswordChanged={(updatedUser) => {
-          if (updatedUser) {
-            setUser(updatedUser);
-          } else {
-            const stored = ApiService.getSessionUser();
-            if (stored) {
-              const fresh = { ...stored, mustChangePassword: false, isFirstLogin: false };
-              ApiService.saveSessionUser(fresh);
-              setUser(fresh);
+      {isChangePasswordOpen && (
+        <ChangePasswordModal
+          isOpen={isChangePasswordOpen}
+          forced={false}
+          onClose={() => setIsChangePasswordOpen(false)}
+          user={user}
+          onPasswordChanged={(updatedUser) => {
+            if (updatedUser) {
+              setUser(updatedUser);
+            } else {
+              const stored = ApiService.getSessionUser();
+              if (stored) {
+                setUser(stored);
+              }
             }
-          }
-          setIsChangePasswordOpen(false);
-        }}
-      />
+            setIsChangePasswordOpen(false);
+          }}
+        />
+      )}
 
-      <ForgotPasswordModal
-        isOpen={isForgotPasswordOpen}
-        onClose={() => setIsForgotPasswordOpen(false)}
-        onBackToLogin={() => {
-          setIsForgotPasswordOpen(false);
-          setIsLoginOpen(true);
-        }}
-      />
+      {isForgotPasswordOpen && (
+        <ForgotPasswordModal
+          isOpen={isForgotPasswordOpen}
+          onClose={() => setIsForgotPasswordOpen(false)}
+          onBackToLogin={() => {
+            setIsForgotPasswordOpen(false);
+            setIsLoginOpen(true);
+          }}
+        />
+      )}
 
       {/* Root-Level QR Post-Test Deep-Link Modal */}
       {rootQrToken && (
@@ -238,6 +220,7 @@ const AppContent: React.FC = () => {
           onClose={handleCloseRootQrPostTest}
         />
       )}
+      </Suspense>
     </div>
   );
 };

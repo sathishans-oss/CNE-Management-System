@@ -69,90 +69,46 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
     let active = true;
     const isCurrent = () => active && requestId === homeRequestRef.current;
 
-    // Clear user-specific modal state immediately so an account change cannot retain
-    // details opened under the previous session.
+    // Clear modal state immediately so an account switch cannot retain details
+    // opened under the previous session.
     setSelectedNews(null);
     setSelectedQuickLink(null);
     setSelectedClass(null);
 
     const cachedImpact = ApiService.getCachedData<ProgramImpactStats>('getProgramImpact');
-    setImpactStats(cachedImpact || null);
+    if (cachedImpact) setImpactStats(cachedImpact);
     setImpactLoading(!cachedImpact);
     setImpactError(null);
+    setChairpersonPhotoUrl('');
     setClassesLoading(true);
 
-    // All independent initial reads execute concurrently and update only if this
-    // request still belongs to the current account/session.
-    ApiService.getCNERecords({ status: 'Scheduled' })
+    // One optimized bootstrap request supplies all homepage datasets, including
+    // the Chairperson photo. The backend still applies session-aware impact
+    // scoping once per request.
+    ApiService.getHomeDashboard()
       .then((res) => {
         if (!isCurrent()) return;
         if (res.success && res.data) {
-          setUpcomingClasses(res.data);
-        } else {
-          setUpcomingClasses([]);
-        }
-      })
-      .catch((err) => {
-        if (!isCurrent()) return;
-        console.warn('[Home Data] Upcoming classes error:', err);
-        setUpcomingClasses([]);
-      })
-      .finally(() => {
-        if (isCurrent()) setClassesLoading(false);
-      });
-
-    ApiService.getNewsEvents()
-      .then((res) => {
-        if (isCurrent() && res.success && res.data) setNewsEvents(res.data);
-      })
-      .catch((err) => {
-        if (isCurrent()) console.warn('[Home Data] News error:', err);
-      });
-
-    ApiService.getQuickLinks()
-      .then((res) => {
-        if (isCurrent() && res.success && res.data) setQuickLinks(res.data);
-      })
-      .catch((err) => {
-        if (isCurrent()) console.warn('[Home Data] Quick links error:', err);
-      });
-
-    ApiService.getCoordinatorDesk()
-      .then((res) => {
-        if (isCurrent() && res.success && res.data) setCoordinatorDesk(res.data);
-      })
-      .catch((err) => {
-        if (isCurrent()) console.warn('[Home Data] Coordinator desk error:', err);
-      });
-
-    ApiService.getChairpersonPhoto()
-      .then((res) => {
-        if (!isCurrent()) return;
-        setChairpersonPhotoUrl(res.success && res.data?.photoUrl ? res.data.photoUrl : '');
-      })
-      .catch((err) => {
-        if (!isCurrent()) return;
-        console.warn('[Home Data] Chairperson photo error:', err);
-        setChairpersonPhotoUrl('');
-      });
-
-    ApiService.getProgramImpact()
-      .then((res) => {
-        if (!isCurrent()) return;
-        if (res.success && res.data) {
-          setImpactStats(res.data);
+          setUpcomingClasses(res.data.upcomingClasses || []);
+          setNewsEvents(res.data.newsEvents || INITIAL_NEWS_EVENTS);
+          setQuickLinks(res.data.quickLinks || INITIAL_QUICK_LINKS);
+          setCoordinatorDesk(res.data.coordinatorDesk || INITIAL_COORDINATOR_DESK);
+          setImpactStats(res.data.impactStats || cachedImpact || INITIAL_PROGRAM_IMPACT);
+          setChairpersonPhotoUrl(res.data.chairpersonPhotoUrl || '');
           setImpactError(null);
-        } else if (!cachedImpact) {
-          setImpactError(res.message || 'Unable to load impact metrics');
+        } else {
+          if (!cachedImpact) setImpactError(res.message || 'Unable to load impact metrics');
         }
       })
       .catch((err) => {
         if (!isCurrent()) return;
-        console.warn('[Home Data] Impact error:', err);
+        console.warn('[Home Data] Dashboard bootstrap error:', err);
         if (!cachedImpact) setImpactError('Unable to load impact metrics');
       })
       .finally(() => {
-        if (isCurrent()) setImpactLoading(false);
+        if (!isCurrent()) return;
+        setClassesLoading(false);
+        setImpactLoading(false);
       });
 
     return () => {

@@ -474,20 +474,27 @@ export function validateCneDuration(
  */
 export function resolveEmployeeName(
   empId?: string | null,
-  officers?: Employee[],
+  officers?: Employee[] | Map<string, Employee>,
   fallbackLabel: string = 'Staff Member'
 ): string {
   if (!empId) return '';
   const trimmedId = empId.trim();
   if (!trimmedId) return '';
 
-  if (officers && officers.length > 0) {
-    const norm = trimmedId.toLowerCase();
-    const found = officers.find(
-      (o) => (o.employeeId || '').trim().toLowerCase() === norm
-    );
-    if (found && found.name && found.name.trim()) {
-      return found.name.trim();
+  if (officers) {
+    if (officers instanceof Map) {
+      const found = officers.get(trimmedId.toLowerCase()) || officers.get(trimmedId.toUpperCase()) || officers.get(trimmedId);
+      if (found && found.name && found.name.trim()) {
+        return found.name.trim();
+      }
+    } else if (Array.isArray(officers) && officers.length > 0) {
+      const norm = trimmedId.toLowerCase();
+      const found = officers.find(
+        (o) => (o.employeeId || '').trim().toLowerCase() === norm
+      );
+      if (found && found.name && found.name.trim()) {
+        return found.name.trim();
+      }
     }
   }
 
@@ -501,7 +508,7 @@ export function resolveEmployeeName(
  */
 export function resolveEmployeeNamesList(
   empIds?: string | string[] | null,
-  officers?: Employee[],
+  officers?: Employee[] | Map<string, Employee>,
   fallbackLabel: string = 'Staff Member'
 ): string[] {
   if (!empIds) return [];
@@ -522,13 +529,14 @@ export function formatResourcePersonsDisplay(params: {
   resourcePersonEmpId?: string | null;
   resourcePersonName?: string | null;
   externalResourcePersons?: string[] | null;
-  officers?: Employee[];
+  officers?: Employee[] | Map<string, Employee>;
 }): string {
   const { resourcePersonEmpId, resourcePersonName, externalResourcePersons, officers } = params;
 
   let internalNames: string[] = [];
 
-  if (officers && officers.length > 0 && resourcePersonEmpId) {
+  const hasOfficers = officers instanceof Map ? officers.size > 0 : (Array.isArray(officers) && officers.length > 0);
+  if (hasOfficers && resourcePersonEmpId) {
     internalNames = resolveEmployeeNamesList(resourcePersonEmpId, officers, 'Resource Person');
   } else if (resourcePersonName && resourcePersonName.trim()) {
     internalNames = resourcePersonName

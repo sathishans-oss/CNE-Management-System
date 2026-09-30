@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { GraduationCap, Lock, User, AlertCircle, ArrowRight, HelpCircle, X, Eye, EyeOff } from 'lucide-react';
+import { GraduationCap, Lock, User, AlertCircle, ArrowRight, MailCheck, X, Eye, EyeOff } from 'lucide-react';
 import { ApiService } from '../services/api';
 import { SessionUser } from '../types';
 import { useToast } from './Toast';
@@ -23,9 +23,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [showHelper, setShowHelper] = useState(false);
 
-  const { success, error } = useToast();
+  const { error } = useToast();
 
   if (!isOpen) return null;
 
@@ -62,6 +61,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           ? 'Account Inactive'
           : response.errorCode === 'BACKEND_NOT_CONFIGURED'
           ? 'Service Not Configured'
+          : response.errorCode === 'PASSWORD_NOT_SET'
+          ? 'Password Setup Required'
           : 'Authentication Error';
         error(msg, title);
       }
@@ -172,7 +173,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   onClick={onOpenForgotPassword}
                   className="text-xs font-semibold text-teal-700 hover:text-teal-800 transition-colors"
                 >
-                  Forgot password?
+                  Create / Reset Password
                 </button>
               </div>
               <div className="relative rounded-lg shadow-xs">
@@ -206,32 +207,20 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               </div>
             </div>
 
-            {/* Institutional Password Notice */}
+            {/* Password Setup / Recovery Notice */}
             <div className="rounded-lg bg-teal-50/60 p-3 border border-teal-200 text-xs text-teal-900">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-teal-900 flex items-center gap-1.5">
-                  <HelpCircle className="w-3.5 h-3.5 text-teal-700" />
-                  First-time login info
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setShowHelper(!showHelper)}
-                  className="text-teal-700 hover:underline font-medium text-[11px] cursor-pointer"
-                >
-                  {showHelper ? 'Hide' : 'Details'}
-                </button>
+              <div className="flex items-start gap-2.5">
+                <MailCheck className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-teal-900">First time here or forgot your password?</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-teal-800">
+                    Use <span className="font-semibold">Create / Reset Password</span>. A 6-digit verification code will be sent to the email registered against your Employee ID in Officers data.
+                  </p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+                    After verification, create your personal password and use Employee ID + Password for future logins.
+                  </p>
+                </div>
               </div>
-              <p className="mt-1.5 text-[11px] leading-relaxed text-teal-800">
-                Default first-time password: <code className="bg-white border border-teal-300 font-bold px-1.5 py-0.5 rounded text-teal-950">pass1234</code>
-              </p>
-              <p className="text-[11px] text-teal-700 mt-0.5">
-                You will be required to change your password on first login.
-              </p>
-              {showHelper && (
-                <p className="mt-1.5 text-[11px] text-slate-600 border-t border-teal-200/60 pt-1.5">
-                  Once you have set your personal password, use your new password to log in. If forgotten, you can reset it via &quot;Forgot password?&quot; above.
-                </p>
-              )}
             </div>
 
             {/* Submit Button */}

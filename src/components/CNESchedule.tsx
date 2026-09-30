@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { lazy, useState, useEffect, useCallback, useRef, useMemo, useDeferredValue } from 'react';
 import {
   Sparkles,
   Calendar,
@@ -23,11 +23,14 @@ import {
   ClipboardCheck,
   Building2,
   GraduationCap,
-  FileDown
+  FileDown,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
-import { SessionUser, CNERecord, CNEActivityProgress } from '../types';
+import { SessionUser, CNERecord, CNEActivityProgress, Employee } from '../types';
 import { ApiService } from '../services/api';
 import { useToast } from './Toast';
+import { ScheduleRow } from './cne/ScheduleRow';
 import {
   formatResourcePersonsDisplay,
   isCneAuthorized,
@@ -39,19 +42,19 @@ import {
   toDateTimeLocalString,
   parseToIsoDateString
 } from '../utils';
-import { CNEReferenceModal } from './cne/CNEReferenceModal';
-import { CNEQuestionsModal } from './cne/CNEQuestionsModal';
-import { CNEQRModal } from './cne/CNEQRModal';
-import { CNEParticipantsModal } from './cne/CNEParticipantsModal';
-import { CNEFinalizeModal } from './cne/CNEFinalizeModal';
-import { CNEPostTestModal } from './cne/CNEPostTestModal';
-import { DepartmentalScheduleModal } from './cne/DepartmentalScheduleModal';
-import { AddUnscheduledCneModal } from './cne/AddUnscheduledCneModal';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 import { CneDateTimeFields } from './cne/CneDateTimeFields';
 import { SearchInput } from './SearchInput';
 import { loadOfficersSingleFlight, getCachedOfficers } from '../services/officerLoader';
-import { generateCNESessionPdf } from '../services/pdfGenerator';
+
+const CNEReferenceModal = lazy(() => import('./cne/CNEReferenceModal').then((m) => ({ default: m.CNEReferenceModal })));
+const CNEQuestionsModal = lazy(() => import('./cne/CNEQuestionsModal').then((m) => ({ default: m.CNEQuestionsModal })));
+const CNEQRModal = lazy(() => import('./cne/CNEQRModal').then((m) => ({ default: m.CNEQRModal })));
+const CNEParticipantsModal = lazy(() => import('./cne/CNEParticipantsModal').then((m) => ({ default: m.CNEParticipantsModal })));
+const CNEFinalizeModal = lazy(() => import('./cne/CNEFinalizeModal').then((m) => ({ default: m.CNEFinalizeModal })));
+const CNEPostTestModal = lazy(() => import('./cne/CNEPostTestModal').then((m) => ({ default: m.CNEPostTestModal })));
+const DepartmentalScheduleModal = lazy(() => import('./cne/DepartmentalScheduleModal').then((m) => ({ default: m.DepartmentalScheduleModal })));
+const AddUnscheduledCneModal = lazy(() => import('./cne/AddUnscheduledCneModal').then((m) => ({ default: m.AddUnscheduledCneModal })));
 
 interface CNEScheduleProps {
   user: SessionUser | null;
@@ -230,7 +233,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     };
   }, [sessionKey]);
 
-  const fetchActivityProgress = useCallback((cneId: string) => {
+  const fetchActivityProgress = useCallback((cneId: string, forceFresh = false) => {
     const requestId = ++activityRequestRef.current;
     const requestSession = sessionKeyRef.current;
     const isCurrent = () => requestId === activityRequestRef.current && requestSession === sessionKeyRef.current && cneId === selectedCneIdRef.current;
@@ -238,7 +241,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setActivityError(null);
     setActivityProgress(null);
 
-    ApiService.getCNEActivityProgress(cneId)
+    ApiService.getCNEActivityProgress(cneId, forceFresh)
       .then((res) => {
         if (!isCurrent()) return;
         if (res && res.success && res.data) {
@@ -331,7 +334,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     const cneId = targetCneId || selectedDetailCne?.cneId || selectedDetailCne?.classId;
     if (cneId && selectedCneIdRef.current === cneId) {
       // Immediately refresh activity progress so checks, readiness counter & progress bar update
-      fetchActivityProgress(cneId);
+      fetchActivityProgress(cneId, true);
     }
     try {
       const freshClasses = await loadData();
@@ -493,7 +496,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
 
     const rpNames = selectedRpEmpIds.map((id) => {
-      const off = officersList.find((o) => o.employeeId === id);
+      const off = officerByEmployeeId.get(String(id || '').trim().toUpperCase());
       return off ? off.name : id;
     });
     if (newExternalRpList.length > 0) {
@@ -667,7 +670,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
 
     const rpNames = editSelectedRpEmpIds.map((id) => {
-      const off = officersList.find((o) => o.employeeId === id);
+      const off = officerByEmployeeId.get(String(id || '').trim().toUpperCase());
       return off ? off.name : id;
     });
     if (editExternalRpList.length > 0) {
@@ -733,19 +736,30 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
   };
 
-  const getResourcePersonsDisplay = (cls: CNERecord) => {
+  const officerByEmployeeId = useMemo(() => {
+    const map = new Map<string, Employee>();
+    officersList.forEach((officer) => {
+      const id = String(officer.employeeId || '').trim().toUpperCase();
+      if (id) {
+        map.set(id, officer);
+      }
+    });
+    return map;
+  }, [officersList]);
+
+  const getResourcePersonsDisplay = useCallback((cls: CNERecord) => {
     const internalNames = (cls.resourcePersonEmpId || '')
       .split(',')
       .map((id) => id.trim())
       .filter(Boolean)
       .map((id) => {
-        const off = officersList.find((o) => o.employeeId === id);
+        const off = officerByEmployeeId.get(id.toUpperCase());
         return off ? `${off.name} (${id})` : id;
       });
     const externalNames = (cls.externalResourcePersons || []).map((p) => `${p} (Ext)`);
     const all = [...internalNames, ...externalNames];
     return all.length > 0 ? all.join(', ') : cls.resourcePersonName || 'TBD';
-  };
+  }, [officerByEmployeeId]);
 
   const userAssignedAreas = getUserAssignedAreas(user);
 
@@ -798,6 +812,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         error(res.message || 'Unable to load participant data for the session report.');
         return;
       }
+      const { generateCNESessionPdf } = await import('../services/pdfGenerator');
       generateCNESessionPdf(cne, res.data.participants || [], res.data.averageScore ?? null);
       success('CNE session report PDF generated successfully.');
     } catch (e: any) {
@@ -807,11 +822,14 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
   };
 
+  // React deferred rendering for smooth typing in large datasets
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+
   const filteredClasses = useMemo(() => classes.filter((c) => {
     if (!canViewScheduleRecord(c)) return false;
-    // 1. Search filter: case-insensitive partial-text search across required CNE fields
-    if (searchTerm.trim()) {
-      const q = searchTerm.trim().toLowerCase();
+    // 1. Search filter: case-insensitive partial-text search using deferredSearchTerm
+    if (deferredSearchTerm.trim()) {
+      const q = deferredSearchTerm.trim().toLowerCase();
       const rpDisplay = getResourcePersonsDisplay(c);
       const searchableParts: (string | undefined | null)[] = [
         c.cneId,
@@ -875,13 +893,30 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
 
     return true;
-  }), [classes, canViewScheduleRecord, searchTerm, fromDateFilter, toDateFilter, officersList]);
+  }), [classes, canViewScheduleRecord, deferredSearchTerm, fromDateFilter, toDateFilter, getResourcePersonsDisplay]);
 
   const availableClasses = useMemo(() => [...filteredClasses].sort((a, b) => {
     const aFromDate = parseToIsoDateString(a.fromDate || a.date) || '';
     const bFromDate = parseToIsoDateString(b.fromDate || b.date) || '';
     return bFromDate.localeCompare(aFromDate);
   }), [filteredClasses]);
+
+  // Schedule Table Pagination: default 25 records per page, configurable
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
+  // Reset to page 1 whenever search or date filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [deferredSearchTerm, fromDateFilter, toDateFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(availableClasses.length / pageSize));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const paginatedClasses = useMemo(() => {
+    const start = (safeCurrentPage - 1) * pageSize;
+    return availableClasses.slice(start, start + pageSize);
+  }, [availableClasses, safeCurrentPage, pageSize]);
 
   return (
     <div className="space-y-4 pb-12">
@@ -999,89 +1034,87 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
-                  {availableClasses.map((cls, idx) => {
+                  {paginatedClasses.map((cls, idx) => {
                     const rpDisplay = formatResourcePersonsDisplay({
                       resourcePersonEmpId: cls.resourcePersonEmpId,
                       resourcePersonName: cls.resourcePersonName,
                       externalResourcePersons: cls.externalResourcePersons,
-                      officers: officersList
+                      officers: officerByEmployeeId
                     });
 
                     return (
-                      <tr
+                      <ScheduleRow
                         key={cls.cneId ? `${cls.cneId}-${idx}` : `cne-class-${idx}`}
-                        onClick={() => setSelectedDetailCne(cls)}
-                        className="hover:bg-slate-50/90 cursor-pointer transition-colors group"
-                      >
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <span
-                            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 ${
-                              (cls.cneType || 'CENTRAL').toUpperCase() === 'CENTRAL'
-                                ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                : 'bg-teal-50 text-teal-700 border border-teal-200'
-                            }`}
-                          >
-                            {(cls.cneType || 'CENTRAL').toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="font-bold text-slate-900 line-clamp-2 max-w-xs md:max-w-sm" title={cls.topic}>
-                            {cls.topic}
-                          </div>
-                          {cls.isLocked && (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-600 mt-0.5">
-                              <Lock className="w-2.5 h-2.5" /> Questions Locked
-                            </span>
-                          )}
-                          {cls.description && (
-                            <div className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">
-                              {cls.description}
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                            {cls.area}
-                          </span>
-                          {isAreaIncharge && isCneAuthorized(user, cls.area, cls.cneType) && (
-                            <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
-                              Your Ward
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <div className="font-semibold text-slate-800">
-                            {formatCneDateTimeDisplay(cls.date, cls.toDate)}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="line-clamp-2 max-w-[220px] text-slate-600 text-xs leading-relaxed" title={rpDisplay}>
-                            {rpDisplay}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <span
-                            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 ${
-                              (cls.status || '').toLowerCase() === 'completed'
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                : (cls.status || '').toLowerCase().includes('cancel')
-                                ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                                : 'bg-amber-50 text-amber-700 border border-amber-200'
-                            }`}
-                          >
-                            {(cls.status || '').toLowerCase() === 'completed'
-                              ? 'Completed'
-                              : (cls.status || '').toLowerCase().includes('cancel')
-                              ? 'Canceled'
-                              : 'Scheduled'}
-                          </span>
-                        </td>
-                      </tr>
+                        cls={cls}
+                        idx={idx}
+                        user={user}
+                        isAreaIncharge={isAreaIncharge}
+                        rpDisplay={rpDisplay}
+                        onSelect={setSelectedDetailCne}
+                      />
                     );
                   })}
                 </tbody>
               </table>
             </div>
+
+            {/* Schedule Table Pagination Controls */}
+            {availableClasses.length > 0 && (
+              <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
+                <div className="flex items-center gap-3">
+                  <div className="font-medium">
+                    Showing <span className="font-bold text-slate-900">{(safeCurrentPage - 1) * pageSize + 1}</span> to{' '}
+                    <span className="font-bold text-slate-900">{Math.min(safeCurrentPage * pageSize, availableClasses.length)}</span> of{' '}
+                    <span className="font-bold text-slate-900">{availableClasses.length}</span> sessions
+                  </div>
+                  <div className="flex items-center gap-1.5 text-slate-500">
+                    <span>•</span>
+                    <label htmlFor="schedule-page-size" className="text-slate-600 font-medium">Per page:</label>
+                    <select
+                      id="schedule-page-size"
+                      value={pageSize}
+                      onChange={(e) => {
+                        setPageSize(Number(e.target.value));
+                        setCurrentPage(1);
+                      }}
+                      className="px-2 py-1 bg-white border border-slate-300 rounded-md text-xs font-semibold text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                    >
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500 mr-2">
+                    Page <strong className="text-slate-900">{safeCurrentPage}</strong> of <strong className="text-slate-900">{totalPages}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    disabled={safeCurrentPage <= 1}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+                    title="Previous page"
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Previous</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={safeCurrentPage >= totalPages}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+                    title="Next page"
+                    aria-label="Next page"
+                  >
+                    <span>Next</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1270,7 +1303,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       {selectedRpEmpIds.length > 0 && (
                         <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto p-1 bg-white rounded-lg border border-slate-200">
                           {selectedRpEmpIds.map((empId, idx) => {
-                            const officer = officersList.find((o) => o.employeeId === empId);
+                            const officer = officerByEmployeeId.get(String(empId || '').trim().toUpperCase());
                             return (
                               <span
                                 key={`sel-rp-${empId}-${idx}`}

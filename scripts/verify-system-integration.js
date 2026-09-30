@@ -14,6 +14,7 @@
  * 9. Environment Safety (no exposed keys, secrets, or hardcoded spreadsheet IDs)
  * 10. Active API Methods & Cleanup Candidate Detection
  * 11. Shared Date-Time Architecture across all CNE workflows
+ * 12. QR Post-Test Email OTP identity verification (Internal + External)
  */
 
 import assert from 'assert';
@@ -521,9 +522,19 @@ runTest('PDF resource policy (CNE 3MB limit vs Reference Library policy)', () =>
     codeGs.includes("fileSize > 3 * 1024 * 1024"),
     "Code.gs uploadLearningResource must enforce 3 MB limit"
   );
+  const uploadLearningResourceSection = codeGs.substring(
+    codeGs.indexOf('function handleUploadLearningResource'),
+    codeGs.indexOf('function handleDeleteLearningResource')
+  );
   assert.ok(
-    codeGs.includes("ext === 'pdf'") && codeGs.includes("0x25") && codeGs.includes("0x50"),
-    "Code.gs uploadLearningResource must enforce PDF extension and binary signature"
+    (uploadLearningResourceSection.includes("ext === 'pdf'") ||
+      (uploadLearningResourceSection.includes("var ALLOWED_EXTS = ['pdf']") &&
+        uploadLearningResourceSection.includes('ALLOWED_EXTS.indexOf(ext) === -1'))) &&
+      uploadLearningResourceSection.includes('0x25') &&
+      uploadLearningResourceSection.includes('0x50') &&
+      uploadLearningResourceSection.includes('0x44') &&
+      uploadLearningResourceSection.includes('0x46'),
+    "Code.gs uploadLearningResource must enforce PDF extension and %PDF binary signature"
   );
 
   // Reference Library: PDF only, Admin-only management
@@ -763,52 +774,159 @@ runTest('Shared date-time architecture across all CNE creation/edit workflows', 
 });
 
 // -----------------------------------------------------------------------------
-// 12. QR Post-Test Root Deep-Link & Guest Workflow
+// 12. QR Post-Test Root Deep-Link & Email OTP Participant Workflow
 // -----------------------------------------------------------------------------
-runTest('QR Post-Test root routing, guest employee flow, and opaque token security', () => {
-  // 1. App.tsx reads postTest query parameter on initial load
+runTest('QR Post-Test root routing, Internal/External email OTP verification, and opaque token security', () => {
+  // 1. App.tsx reads postTest query parameter on initial load.
   assert.ok(
     appTs.includes("params.get('postTest')"),
     "App.tsx must inspect window.location.search for 'postTest' query parameter"
   );
 
-  // 2. App.tsx renders CNEPostTestModal at root level without requiring authenticated session
+  // 2. App.tsx renders CNEPostTestModal at root level without requiring an authenticated session.
   assert.ok(
     appTs.includes("{rootQrToken && (") && appTs.includes("<CNEPostTestModal"),
     "App.tsx must render CNEPostTestModal directly at root level when rootQrToken exists"
   );
 
-  // 3. CNESchedule.tsx no longer owns global query-param detection
+  // 3. CNESchedule.tsx no longer owns global query-param detection.
   assert.ok(
     !cneScheduleTs.includes("params.get('postTest')"),
     "CNESchedule.tsx must NOT contain duplicate postTest query parameter handling"
   );
 
-  // 4. Public QR access URL format & opaque token resolution
+  // 4. Public QR access uses an opaque token resolved server-side.
   assert.ok(
     cneQrModalTs.includes("/?postTest="),
     "CNEQRModal must generate public QR access URLs in canonical format /?postTest=<token>"
   );
   assert.ok(
-    codeGs.includes("getQRTokensSheet()"),
-    "Backend must resolve opaque QR tokens through CNE_QR_Tokens"
+    codeGs.includes('function resolveActiveQrToken(') && codeGs.includes('getQRTokensSheet()'),
+    "Backend must resolve active opaque QR tokens through CNE_QR_Tokens"
   );
   assert.ok(
     codeGs.includes("INVALID_OR_MISSING_QR_TOKEN"),
-    "Backend must reject post-test access without a valid opaque QR token or authorized session"
+    "Backend must reject Post-Test access without a valid opaque QR token or authorized session"
   );
 
-  // 5. Guest employee verification before loading questions
+  // 5. Frontend API exposes the two-stage Post-Test OTP contract.
   assert.ok(
-    postTestModalTs.includes("guestEmpIdVerified") && postTestModalTs.includes("handleGuestContinue"),
-    "CNEPostTestModal must prompt unauthenticated visitors for Employee ID and verify before loading questions"
+    apiTs.includes("static async requestPostTestOtp(") &&
+    apiTs.includes("executeAction<PostTestOtpRequestData>('requestPostTestOtp'"),
+    "ApiService must expose requestPostTestOtp through the Apps Script router"
   );
   assert.ok(
-    codeGs.includes("INVALID_EMPLOYEE_ID"),
-    "handleGetPostTestQuestions must validate Employee ID against roster and reject invalid IDs with INVALID_EMPLOYEE_ID"
+    apiTs.includes("static async verifyPostTestOtp(") &&
+    apiTs.includes("executeAction<PostTestParticipantVerificationData>('verifyPostTestOtp'"),
+    "ApiService must expose verifyPostTestOtp through the Apps Script router"
+  );
+  assert.ok(
+    !apiTs.includes('static async verifyPostTestParticipant('),
+    "Legacy direct verifyPostTestParticipant frontend API must remain removed"
   );
 
-  // 6. Safe query parameter removal on close without reload
+  // 6. Public QR UI supports both participant types and requires OTP before questions load.
+  assert.ok(
+    postTestModalTs.includes("type ParticipantType = 'INTERNAL' | 'EXTERNAL'") &&
+    postTestModalTs.includes('handleRequestOtp') &&
+    postTestModalTs.includes('handleVerifyOtp') &&
+    postTestModalTs.includes('ApiService.requestPostTestOtp') &&
+    postTestModalTs.includes('ApiService.verifyPostTestOtp'),
+    "CNEPostTestModal must implement Internal/External Send OTP -> Verify OTP flow"
+  );
+  assert.ok(
+    postTestModalTs.includes('internalEmployeeId') &&
+    postTestModalTs.includes("participantType: 'INTERNAL'") &&
+    postTestModalTs.includes('externalName') &&
+    postTestModalTs.includes('externalEmail') &&
+    postTestModalTs.includes("participantType: 'EXTERNAL'"),
+    "CNEPostTestModal must collect Employee ID for Internal users and Name + Email for External users"
+  );
+  assert.ok(
+    postTestModalTs.includes('maskedEmail') &&
+    postTestModalTs.includes('resendRemaining') &&
+    postTestModalTs.includes('participantVerificationToken'),
+    "CNEPostTestModal must show masked email/resend state and retain the signed participant verification token"
+  );
+  assert.ok(
+    !postTestModalTs.includes('guestEmpIdVerified') &&
+    !postTestModalTs.includes('handleGuestContinue') &&
+    !postTestModalTs.includes('Date of Joining') &&
+    !postTestModalTs.includes('dateOfJoining') &&
+    !postTestModalTs.includes('ApiService.verifyPostTestParticipant'),
+    "Legacy Employee ID + DOJ/direct participant verification UI must remain absent"
+  );
+
+  // 7. Backend Internal flow resolves Employee ID only from Officers data and sends OTP to its registered email.
+  const requestOtpStart = codeGs.indexOf('function handleRequestPostTestOtp(');
+  const verifyOtpStart = codeGs.indexOf('function handleVerifyPostTestOtp(');
+  assert.ok(requestOtpStart >= 0 && verifyOtpStart > requestOtpStart, 'Post-Test OTP request/verify handlers must exist');
+  const requestOtpSection = codeGs.substring(requestOtpStart, verifyOtpStart);
+  assert.ok(
+    requestOtpSection.includes("participantType === 'INTERNAL'") &&
+    requestOtpSection.includes('findOfficerById(employeeId)') &&
+    requestOtpSection.includes("officer.email") &&
+    requestOtpSection.includes("errorCode: 'EMAIL_NOT_AVAILABLE'") &&
+    requestOtpSection.includes('OTP_PURPOSE_POSTTEST_INTERNAL'),
+    "Internal Post-Test OTP must resolve the employee in Officers data and use the registered EmailID"
+  );
+
+  // 8. Backend External flow derives stable identity from normalized email and does not register before OTP verification.
+  assert.ok(
+    requestOtpSection.includes("participantType === 'EXTERNAL'") &&
+    requestOtpSection.includes('normalizeExternalEmail(') &&
+    requestOtpSection.includes('makeExternalParticipantId(externalEmail)') &&
+    requestOtpSection.includes('OTP_PURPOSE_POSTTEST_EXTERNAL'),
+    "External Post-Test OTP request must use Name + normalized Email and derive a stable external participant ID"
+  );
+  assert.ok(
+    !requestOtpSection.includes("'EXTERNAL_REGISTRATION'"),
+    "External participant registration must not be persisted before OTP ownership is verified"
+  );
+
+  // 9. OTP challenge is bound to CNE + participant identity and duplicate submissions are blocked before sending.
+  assert.ok(
+    codeGs.includes('function buildPostTestOtpPrincipal(') &&
+    codeGs.includes("return cne && id ? (cne + '#' + id) : ''") &&
+    requestOtpSection.includes('findExistingPostTestSubmission(cneId, participantId)') &&
+    requestOtpSection.includes("errorCode: 'ALREADY_SUBMITTED'"),
+    "Post-Test OTP must be CNE-bound and reject participants who already submitted"
+  );
+
+  // 10. Verification validates the challenge binding, persists external registration only after success,
+  //     consumes the challenge, and issues the signed participant token used to load/submit the test.
+  const verifyOtpEnd = codeGs.indexOf('function handleVerifyPostTestParticipant(', verifyOtpStart);
+  assert.ok(verifyOtpEnd > verifyOtpStart, 'Legacy compatibility handler must follow handleVerifyPostTestOtp');
+  const verifyOtpSection = codeGs.substring(verifyOtpStart, verifyOtpEnd);
+  assert.ok(
+    verifyOtpSection.includes('challenge.purpose !== purpose') &&
+    verifyOtpSection.includes('challenge.principalType') &&
+    verifyOtpSection.includes('challenge.principalId') &&
+    verifyOtpSection.includes('challenge.email') &&
+    verifyOtpSection.includes("challenge.status !== 'PENDING'"),
+    "Post-Test OTP verification must validate purpose, participant type, CNE-bound principal, email, and active status"
+  );
+  assert.ok(
+    verifyOtpSection.includes("participantType === 'EXTERNAL'") &&
+    verifyOtpSection.includes("'EXTERNAL_REGISTRATION'") &&
+    verifyOtpSection.includes("setValue('CONSUMED')") &&
+    verifyOtpSection.includes('generatePostTestParticipantVerificationToken('),
+    "Successful OTP verification must persist verified external identity, consume the OTP, and issue a signed participant token"
+  );
+
+  // 11. The legacy direct verification endpoint is fail-closed unless it is used only as a challenge+OTP alias.
+  const legacyVerifyStart = codeGs.indexOf('function handleVerifyPostTestParticipant(');
+  const qrHandlerStart = codeGs.indexOf('function handleGetQRToken(', legacyVerifyStart);
+  assert.ok(legacyVerifyStart >= 0 && qrHandlerStart > legacyVerifyStart, 'Legacy compatibility verification handler must remain bounded');
+  const legacyVerifySection = codeGs.substring(legacyVerifyStart, qrHandlerStart);
+  assert.ok(
+    legacyVerifySection.includes('params.challengeId && params.otp') &&
+    legacyVerifySection.includes('handleVerifyPostTestOtp(params, session)') &&
+    legacyVerifySection.includes("errorCode: 'POST_TEST_OTP_REQUIRED'"),
+    "Legacy participant verification endpoint must not allow Employee ID + DOJ or unverified Name + Email bypass"
+  );
+
+  // 12. Safe query parameter removal on close without reload.
   assert.ok(
     appTs.includes("url.searchParams.delete('postTest')") && appTs.includes("window.history.replaceState"),
     "App.tsx must remove 'postTest' query parameter using window.history.replaceState on modal close"
@@ -940,17 +1058,22 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
   assert.ok(!codeGs.includes('Drive.Files.insert'), 'Code.gs must not contain Drive.Files.insert');
 
   // 6. Real employee IDs absent from frontend source files.
-  // The Login screen intentionally shows one approved example placeholder for staff:
+  // Authentication screens intentionally show one approved example placeholder for staff:
   //   Example ID: RSNHO000001
-  // Ignore only that exact UI placeholder while keeping the repository-wide protection
-  // against any other RSNHO / AIIMSR / FNMDCNO identifiers in frontend source.
+  // Ignore only that exact placeholder in Login/Create-Reset Password screens while keeping
+  // the repository-wide protection against any other RSNHO / AIIMSR / FNMDCNO identifiers.
   const frontendSourceFiles = getFilesRecursively('src', ['.ts', '.tsx']);
   for (const file of frontendSourceFiles) {
     if (file.includes('googleAppsScript.ts')) continue;
     const content = fs.readFileSync(file, 'utf8');
-    const contentForEmployeeIdScan = file.endsWith('src/components/LoginModal.tsx')
-      ? content.replaceAll('Example ID: RSNHO000001', '')
-      : content;
+    let contentForEmployeeIdScan = content;
+    if (file.endsWith('src/components/LoginModal.tsx') ||
+        file.endsWith('src/components/ForgotPasswordModal.tsx')) {
+      contentForEmployeeIdScan = contentForEmployeeIdScan.replaceAll('Example ID: RSNHO000001', '');
+    }
+    if (file.endsWith('src/components/cne/CNEPostTestModal.tsx')) {
+      contentForEmployeeIdScan = contentForEmployeeIdScan.replaceAll('e.g. RSNHO000001', '');
+    }
     assert.ok(!contentForEmployeeIdScan.includes('RSNHO'), `Real employee ID prefix RSNHO must be absent from ${file} except the approved Login placeholder`);
     assert.ok(!contentForEmployeeIdScan.includes('AIIMSR'), `Real employee ID prefix AIIMSR must be absent from ${file}`);
     assert.ok(!contentForEmployeeIdScan.includes('FNMDCNO'), `Real employee ID prefix FNMDCNO must be absent from ${file}`);
@@ -986,15 +1109,18 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
   assert.ok(!utilsTs.includes(deadStaffHelper), 'Dead utility formatStaffParticipantsDisplay must be absent from src/utils.ts');
   assert.ok(!typesTs.includes(deadReportType), 'Dead interface CNEReportStats must be absent from src/types.ts');
 
-  // Officer directory authorization is role-restricted
+  // Officer directory authorization is role-restricted. Normalize whitespace because
+  // Code.gs intentionally keeps this hot-path handler compact.
   const officerDropdownSection = codeGs.substring(
     codeGs.indexOf('function handleGetOfficersDropdown('),
     codeGs.indexOf('function getOfficerNameMap(')
   );
+  const compactOfficerDropdownSection = officerDropdownSection.replace(/\s+/g, '');
   assert.ok(
-    officerDropdownSection.includes("role === 'ADMIN' || role === 'AREA_INCHARGE' || role === 'INCHARGE'") &&
-    officerDropdownSection.includes("errorCode: 'FORBIDDEN'"),
-    'handleGetOfficersDropdown must enforce role-based authorization and return FORBIDDEN for unauthorized callers'
+    compactOfficerDropdownSection.includes("role==='ADMIN'||role==='AREA_INCHARGE'||role==='INCHARGE'") &&
+    compactOfficerDropdownSection.includes("errorCode:'FORBIDDEN'") &&
+    compactOfficerDropdownSection.includes('checkCNEActionAuthorized(session,rec)===null'),
+    'handleGetOfficersDropdown must enforce Admin/Incharge or CNE-scoped authorization and return FORBIDDEN for unauthorized callers'
   );
 
   // Chairperson name/designation/message remain static. Only the photo is allowed to use Script Properties.
@@ -1006,9 +1132,11 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
     !codeGs.includes("case 'getChairpersonMessage':") &&
     !codeGs.includes('function handleGetChairpersonMessage(') &&
     cneHomeTs.includes('...INITIAL_CHAIRPERSON_MESSAGE') &&
-    cneHomeTs.includes('ApiService.getChairpersonPhoto()') &&
+    cneHomeTs.includes('ApiService.getHomeDashboard()') &&
+    cneHomeTs.includes('res.data.chairpersonPhotoUrl') &&
+    !cneHomeTs.includes('ApiService.getChairpersonPhoto()') &&
     !cneHomeTs.includes('ApiService.getChairpersonMessage('),
-    'Chairperson text content must remain static while only the photo is loaded dynamically'
+    'Chairperson text content must remain static while the photo is loaded dynamically through the consolidated Home Dashboard response'
   );
   assert.ok(
     !codeGs.includes('CHAIRPERSON_MESSAGE') &&
@@ -1071,10 +1199,12 @@ runTest('Coordinator Desk homepage renders sheet-backed Admin content', () => {
   const coordinatorCardTs = fs.readFileSync('src/components/home/CoordinatorDeskCard.tsx', 'utf8');
 
   assert.ok(
-    cneHomeTs.includes("ApiService.getCoordinatorDesk()") &&
-    cneHomeTs.includes("setCoordinatorDesk(res.data)") &&
+    (
+      (cneHomeTs.includes("ApiService.getCoordinatorDesk()") && cneHomeTs.includes("setCoordinatorDesk(res.data)")) ||
+      (cneHomeTs.includes("ApiService.getHomeDashboard()") && cneHomeTs.includes("setCoordinatorDesk(res.data.coordinatorDesk"))
+    ) &&
     cneHomeTs.includes("<CoordinatorDeskCard coordinatorDesk={coordinatorDesk}"),
-    'CneHomePage must fetch Coordinator Desk data and pass it to the homepage card'
+    'CneHomePage must fetch Coordinator Desk data (directly or through the optimized Home Dashboard bootstrap) and pass it to the homepage card'
   );
 
   assert.ok(

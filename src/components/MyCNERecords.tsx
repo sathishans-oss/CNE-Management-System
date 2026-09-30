@@ -5,11 +5,12 @@ import {
   Clock,
   X,
   CheckCircle2,
-  Loader2
+  Loader2,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { CNERecord, SessionUser } from '../types';
 import { ApiService } from '../services/api';
-import { generateCNERecordsPdf } from '../services/pdfGenerator';
 import { useToast } from './Toast';
 import {
   formatCneDateTimeDisplay,
@@ -213,6 +214,37 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     return parts.join(' ');
   }, [filteredRecords, user.employeeId]);
 
+  // Responsive display mode: render only desktop table OR mobile cards, never both
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return false;
+    return window.matchMedia('(max-width: 767px)').matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mql = window.matchMedia('(max-width: 767px)');
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, []);
+
+  // Pagination for large personal histories: 25 records per page
+  const PAGE_SIZE = 25;
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
+  // Reset to page 1 whenever filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, startDate, endDate]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / PAGE_SIZE));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const paginatedRecords = useMemo(() => {
+    const start = (safeCurrentPage - 1) * PAGE_SIZE;
+    return filteredRecords.slice(start, start + PAGE_SIZE);
+  }, [filteredRecords, safeCurrentPage]);
+
   const handleGeneratePdf = async () => {
     if (generatingPdfRef.current || isGeneratingPdf) return;
 
@@ -224,6 +256,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     generatingPdfRef.current = true;
     setIsGeneratingPdf(true);
     try {
+      const { generateCNERecordsPdf } = await import('../services/pdfGenerator');
       generateCNERecordsPdf(user, filteredRecords, {
         fromDate: startDate || undefined,
         toDate: endDate || undefined,
@@ -342,140 +375,182 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
           </div>
         ) : (
           <>
-            {/* Desktop Table */}
-            <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
-                    <th className="py-3.5 px-4 w-12 text-center">Sr.</th>
-                    <th className="py-3.5 px-4">Date &amp; Time</th>
-                    <th className="py-3.5 px-4">Area / Ward</th>
-                    <th className="py-3.5 px-4">Topic / Skills</th>
-                    <th className="py-3.5 px-4">Role</th>
-                    <th className="py-3.5 px-4">Instructor / Resource Person</th>
-                    <th className="py-3.5 px-4">Duration</th>
-                    <th className="py-3.5 px-4 text-right">Details</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredRecords.map((rec, index) => {
-                    const isParticipant = isUserParticipantInRecord(user, rec);
-                    const isResourcePerson = isUserResourcePersonInRecord(user, rec);
-                    return (
-                      <tr
-                        key={rec.cneId || rec.dataId || `rec-${index}`}
-                        className="hover:bg-slate-50/80 transition-colors"
-                      >
-                        <td className="py-3 px-4 text-center font-medium text-slate-500">
-                          {index + 1}
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap font-medium text-slate-800">
-                          {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}
-                        </td>
-                        <td className="py-3 px-4">
-                          <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                            {rec.area}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 font-semibold text-slate-900 max-w-xs">
-                          {rec.topic}
-                        </td>
-                        <td className="py-3 px-4">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              isParticipant
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : isResourcePerson
-                                ? 'bg-purple-100 text-purple-800'
-                                : 'bg-slate-100 text-slate-700'
-                            }`}
-                          >
-                            {isParticipant ? 'Participant (You)' : isResourcePerson ? 'Resource Person' : 'Linked Record'}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-slate-600">
+            {isMobile ? (
+              /* Mobile Card List (Rendered only on mobile viewports) */
+              <div className="divide-y divide-slate-100">
+                {paginatedRecords.map((rec, index) => {
+                  const isParticipant = isUserParticipantInRecord(user, rec);
+                  const isResourcePerson = isUserResourcePersonInRecord(user, rec);
+                  const globalIdx = (safeCurrentPage - 1) * PAGE_SIZE + index;
+                  return (
+                    <div key={rec.cneId || rec.dataId || `mob-rec-${globalIdx}`} className="p-4 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-500">#{globalIdx + 1} • {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}</span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            isParticipant
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : isResourcePerson
+                              ? 'bg-purple-100 text-purple-800'
+                              : 'bg-slate-100 text-slate-700'
+                          }`}
+                        >
+                          {isParticipant ? 'Participant' : isResourcePerson ? 'Resource Person' : 'Linked Record'}
+                        </span>
+                      </div>
+
+                      <h4 className="text-sm font-bold text-slate-900 leading-snug">
+                        {rec.topic}
+                      </h4>
+
+                      <div className="flex flex-wrap gap-2 text-xs text-slate-600">
+                        <span className="bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                          {rec.area}
+                        </span>
+                        <span className="flex items-center gap-1 text-slate-500">
+                          <Clock className="w-3 h-3" />
+                          {formatDurationForDisplay(rec.duration)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="text-xs text-slate-500 truncate max-w-[200px]">
+                          Instructor:{' '}
                           {formatResourcePersonsDisplay({
                             resourcePersonEmpId: rec.resourcePersonEmpId,
                             resourcePersonName: rec.resourcePersonName,
                             externalResourcePersons: rec.externalResourcePersons
                           })}
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap text-slate-700 flex items-center gap-1">
-                          <Clock className="w-3.5 h-3.5 text-slate-400" />
-                          <span>{formatDurationForDisplay(rec.duration)}</span>
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <button
-                            id={`btn-view-rec-${rec.cneId || rec.dataId || index}`}
-                            onClick={() => setSelectedRecord(rec)}
-                            className="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors cursor-pointer"
-                          >
-                            View
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Mobile Card List */}
-            <div className="md:hidden divide-y divide-slate-100">
-              {filteredRecords.map((rec, index) => {
-                const isParticipant = isUserParticipantInRecord(user, rec);
-                const isResourcePerson = isUserResourcePersonInRecord(user, rec);
-                return (
-                  <div key={rec.cneId || rec.dataId || `mob-rec-${index}`} className="p-4 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-slate-500">#{index + 1} • {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}</span>
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          isParticipant
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : isResourcePerson
-                            ? 'bg-purple-100 text-purple-800'
-                            : 'bg-slate-100 text-slate-700'
-                        }`}
-                      >
-                        {isParticipant ? 'Participant' : isResourcePerson ? 'Resource Person' : 'Linked Record'}
-                      </span>
+                        </span>
+                        <button
+                          onClick={() => setSelectedRecord(rec)}
+                          className="text-xs font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer"
+                        >
+                          Details →
+                        </button>
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* Desktop Table (Rendered only on desktop viewports) */
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
+                      <th className="py-3.5 px-4 w-12 text-center">Sr.</th>
+                      <th className="py-3.5 px-4">Date &amp; Time</th>
+                      <th className="py-3.5 px-4">Area / Ward</th>
+                      <th className="py-3.5 px-4">Topic / Skills</th>
+                      <th className="py-3.5 px-4">Role</th>
+                      <th className="py-3.5 px-4">Instructor / Resource Person</th>
+                      <th className="py-3.5 px-4">Duration</th>
+                      <th className="py-3.5 px-4 text-right">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {paginatedRecords.map((rec, index) => {
+                      const isParticipant = isUserParticipantInRecord(user, rec);
+                      const isResourcePerson = isUserResourcePersonInRecord(user, rec);
+                      const globalIdx = (safeCurrentPage - 1) * PAGE_SIZE + index;
+                      return (
+                        <tr
+                          key={rec.cneId || rec.dataId || `rec-${globalIdx}`}
+                          className="hover:bg-slate-50/80 transition-colors"
+                        >
+                          <td className="py-3 px-4 text-center font-medium text-slate-500">
+                            {globalIdx + 1}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap font-medium text-slate-800">
+                            {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                              {rec.area}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 font-semibold text-slate-900 max-w-xs">
+                            {rec.topic}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                isParticipant
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : isResourcePerson
+                                  ? 'bg-purple-100 text-purple-800'
+                                  : 'bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              {isParticipant ? 'Participant (You)' : isResourcePerson ? 'Resource Person' : 'Linked Record'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-600">
+                            {formatResourcePersonsDisplay({
+                              resourcePersonEmpId: rec.resourcePersonEmpId,
+                              resourcePersonName: rec.resourcePersonName,
+                              externalResourcePersons: rec.externalResourcePersons
+                            })}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap text-slate-700 flex items-center gap-1">
+                            <Clock className="w-3.5 h-3.5 text-slate-400" />
+                            <span>{formatDurationForDisplay(rec.duration)}</span>
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <button
+                              id={`btn-view-rec-${rec.cneId || rec.dataId || globalIdx}`}
+                              onClick={() => setSelectedRecord(rec)}
+                              className="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors cursor-pointer"
+                            >
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-                    <h4 className="text-sm font-bold text-slate-900 leading-snug">
-                      {rec.topic}
-                    </h4>
-
-                    <div className="flex flex-wrap gap-2 text-xs text-slate-600">
-                      <span className="bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                        {rec.area}
-                      </span>
-                      <span className="flex items-center gap-1 text-slate-500">
-                        <Clock className="w-3 h-3" />
-                        {formatDurationForDisplay(rec.duration)}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between pt-1">
-                      <span className="text-xs text-slate-500 truncate max-w-[200px]">
-                        Instructor:{' '}
-                        {formatResourcePersonsDisplay({
-                          resourcePersonEmpId: rec.resourcePersonEmpId,
-                          resourcePersonName: rec.resourcePersonName,
-                          externalResourcePersons: rec.externalResourcePersons
-                        })}
-                      </span>
-                      <button
-                        onClick={() => setSelectedRecord(rec)}
-                        className="text-xs font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer"
-                      >
-                        Details →
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            {/* Pagination Controls */}
+            {filteredRecords.length > 0 && (
+              <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
+                <div className="font-medium">
+                  Showing <span className="font-bold text-slate-900">{(safeCurrentPage - 1) * PAGE_SIZE + 1}</span> to{' '}
+                  <span className="font-bold text-slate-900">{Math.min(safeCurrentPage * PAGE_SIZE, filteredRecords.length)}</span> of{' '}
+                  <span className="font-bold text-slate-900">{filteredRecords.length}</span> records
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500 mr-2">
+                    Page <strong className="text-slate-900">{safeCurrentPage}</strong> of <strong className="text-slate-900">{totalPages}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    disabled={safeCurrentPage <= 1}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+                    title="Previous page"
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Previous</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={safeCurrentPage >= totalPages}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+                    title="Next page"
+                    aria-label="Next page"
+                  >
+                    <span>Next</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

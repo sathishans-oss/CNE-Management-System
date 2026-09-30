@@ -299,7 +299,7 @@ runTest('Participant roster, staff counts, and post-test participants are record
     'handleAddManualParticipants must record participant in responses sheet with MANUAL source'
   );
 
-  // Post test submissions write participant record, update responses sheet, and enforce >= 50% pass threshold
+  // Post test submissions write participant record, update responses sheet, and enforce >= 60% pass threshold
   const submitPostTestSection = codeGs.substring(
     codeGs.indexOf('function handleSubmitPostTest'),
     codeGs.indexOf('function handleAddManualParticipants')
@@ -309,8 +309,11 @@ runTest('Participant roster, staff counts, and post-test participants are record
     'handleSubmitPostTest must record in responses sheet and prevent duplicate submissions'
   );
   assert.ok(
-    submitPostTestSection.includes('var passed = percentage >= 50;'),
-    'handleSubmitPostTest must enforce percentage >= 50 as PASSED threshold'
+    submitPostTestSection.includes('var passed = percentage >= 60;') ||
+      (submitPostTestSection.includes('scorePostTestAnswers_') &&
+        codeGs.includes('var passed = percentage >= 60;') &&
+        codeGs.includes("status: passed ? 'PASSED' : 'NEEDS_IMPROVEMENT'")),
+    'Post-Test scoring must enforce percentage >= 60 as PASSED threshold, directly or through the scoring helper'
   );
 });
 

@@ -425,9 +425,16 @@ export function generateCNESessionPdf(
       ? '— (Manual Attendance)'
       : (p.score !== null && p.totalQuestions !== null ? `${p.score}/${p.totalQuestions} (${p.percentage}%)` : '—');
 
+    const storedStatus = String(p.status || '').trim().toUpperCase();
     const statusStr = isManual
       ? 'ATTENDED'
-      : (p.percentage !== null && p.percentage >= 50 ? 'PASSED' : 'COMPLETED');
+      : storedStatus === 'PASSED'
+        ? 'PASSED'
+        : storedStatus === 'NEEDS_IMPROVEMENT'
+          ? 'NEEDS IMPROVEMENT'
+          : (p.percentage !== null
+            ? (p.percentage >= 60 ? 'PASSED' : 'NEEDS IMPROVEMENT')
+            : 'COMPLETED');
 
     // Standard date-time display; the Date & Time column is deliberately wide enough to wrap.
     const formattedSubmittedAt = p.submittedAt ? formatCneDateTimeDisplay(p.submittedAt) : '—';

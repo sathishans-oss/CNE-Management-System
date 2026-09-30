@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Award,
-  CalendarDays,
   CheckCircle2,
   Loader2,
   Mail,
@@ -28,10 +27,9 @@ interface CNEPostTestModalProps {
 
 type ParticipantType = 'INTERNAL' | 'EXTERNAL';
 
-// Legacy integration-verifier compatibility markers:
-// guestEmpIdVerified / handleGuestContinue were the former Employee-ID-only QR flow.
-// The live implementation below replaces them with Employee ID + DOJ verification and
-// External Name + Email registration via handleVerifyParticipant.
+// Public QR participants now use email OTP verification. Internal participants provide
+// Employee ID only; the registered email is resolved from Officers data. External
+// participants provide Name + Email and are registered only after OTP verification.
 
 const normalizeEmployeeId = (value: string) => value.trim().toUpperCase();
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -50,9 +48,13 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
   const [participantType, setParticipantType] = useState<ParticipantType>('INTERNAL');
 
   const [internalEmployeeId, setInternalEmployeeId] = useState(user?.employeeId || '');
-  const [internalDoj, setInternalDoj] = useState('');
   const [externalName, setExternalName] = useState('');
   const [externalEmail, setExternalEmail] = useState('');
+  const [otpChallengeId, setOtpChallengeId] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [maskedEmail, setMaskedEmail] = useState('');
+  const [otpExpiresInSeconds, setOtpExpiresInSeconds] = useState(0);
+  const [resendRemaining, setResendRemaining] = useState(0);
 
   const [verifiedParticipant, setVerifiedParticipant] = useState<PostTestParticipantVerificationData | null>(null);
   const [participantVerificationToken, setParticipantVerificationToken] = useState('');
@@ -92,13 +94,30 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
     setSubmissionResult(null);
   };
 
+  const resetOtpChallenge = () => {
+    setOtpChallengeId('');
+    setOtpCode('');
+    setMaskedEmail('');
+    setOtpExpiresInSeconds(0);
+    setResendRemaining(0);
+  };
+
+  useEffect(() => {
+    if (resendRemaining <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendRemaining((current) => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendRemaining]);
+
   const handleLoadFailure = (res: { errorCode?: string; message?: string }) => {
     const message = res.message || 'Failed to load post-test evaluation.';
     if (res.errorCode === 'PARTICIPANT_VERIFICATION_REQUIRED') {
       setParticipantVerificationToken('');
       setVerifiedParticipant(null);
+      resetOtpChallenge();
       resetQuestionState();
-      setVerificationError('Participant verification has expired. Please verify again.');
+      setVerificationError('Participant verification has expired. Please request and verify a new email code.');
       error('Participant verification has expired. Please verify again.', 'Verification Required');
       return;
     }
@@ -176,9 +195,9 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
     setFlowError('');
     setParticipantType('INTERNAL');
     setInternalEmployeeId(user?.employeeId || '');
-    setInternalDoj('');
     setExternalName('');
     setExternalEmail('');
+    resetOtpChallenge();
     setVerifiedParticipant(null);
     setParticipantVerificationToken('');
     setResolvedCneId(cneId || '');
@@ -209,12 +228,89 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
     setFlowError('');
     setVerifiedParticipant(null);
     setParticipantVerificationToken('');
+    resetOtpChallenge();
     resetQuestionState();
   };
 
-  const handleVerifyParticipant = async (e: React.FormEvent) => {
+  const handleRequestOtp = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!qrToken || verificationLoading || loading || resendRemaining > 0) return;
+
+    const employeeId = normalizeEmployeeId(internalEmployeeId);
+    const name = externalName.trim();
+    const emailAddress = normalizeEmail(externalEmail);
+
+    if (participantType === 'INTERNAL' && !employeeId) {
+      setVerificationError('Please enter your Employee ID.');
+      return;
+    }
+    if (participantType === 'EXTERNAL' && (name.length < 2 || !emailAddress)) {
+      setVerificationError('Please enter your name and a valid email address.');
+      return;
+    }
+
+    const requestId = ++flowRequestRef.current;
+    const requestFlowKey = flowKeyRef.current;
+    const isCurrent = () => requestId === flowRequestRef.current && requestFlowKey === flowKeyRef.current;
+
+    setVerificationError('');
+    setFlowError('');
+    setVerificationLoading(true);
+    setOtpCode('');
+    resetQuestionState();
+
+    try {
+      const res = participantType === 'INTERNAL'
+        ? await ApiService.requestPostTestOtp({
+            qrToken,
+            participantType: 'INTERNAL',
+            employeeId
+          })
+        : await ApiService.requestPostTestOtp({
+            qrToken,
+            participantType: 'EXTERNAL',
+            name,
+            email: emailAddress
+          });
+
+      if (!isCurrent()) return;
+
+      if (!res.success || !res.data) {
+        const message = res.message || 'Unable to send the verification code.';
+        if (res.errorCode === 'CNE_CLOSED') setFlowError(message);
+        else setVerificationError(message);
+        error(message, 'OTP Not Sent');
+        return;
+      }
+
+      setOtpChallengeId(res.data.challengeId);
+      setMaskedEmail(res.data.maskedEmail || '');
+      setOtpExpiresInSeconds(Number(res.data.expiresInSeconds || 0));
+      setResendRemaining(Number(res.data.resendAfterSeconds || 60));
+      success(`Verification code sent to ${res.data.maskedEmail}.`, 'OTP Sent');
+    } catch (err: any) {
+      if (!isCurrent()) return;
+      const message = err?.message || 'Connection error. Please try again.';
+      setVerificationError(message);
+      error(message, 'Connection Error');
+    } finally {
+      if (isCurrent()) setVerificationLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!qrToken || verificationLoading || loading) return;
+    if (!qrToken || verificationLoading || loading || !otpChallengeId) return;
+
+    const employeeId = normalizeEmployeeId(internalEmployeeId);
+    const name = externalName.trim();
+    const emailAddress = normalizeEmail(externalEmail);
+    const otp = otpCode.replace(/\D/g, '').slice(0, 6);
+
+    if (!/^\d{6}$/.test(otp)) {
+      setVerificationError('Please enter the complete 6-digit verification code.');
+      return;
+    }
 
     const requestId = ++flowRequestRef.current;
     const requestFlowKey = flowKeyRef.current;
@@ -227,29 +323,35 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
 
     try {
       const res = participantType === 'INTERNAL'
-        ? await ApiService.verifyPostTestParticipant({
+        ? await ApiService.verifyPostTestOtp({
             qrToken,
             participantType: 'INTERNAL',
-            employeeId: normalizeEmployeeId(internalEmployeeId),
-            dateOfJoining: internalDoj
+            employeeId,
+            challengeId: otpChallengeId,
+            otp
           })
-        : await ApiService.verifyPostTestParticipant({
+        : await ApiService.verifyPostTestOtp({
             qrToken,
             participantType: 'EXTERNAL',
-            name: externalName.trim(),
-            email: normalizeEmail(externalEmail)
+            name,
+            email: emailAddress,
+            challengeId: otpChallengeId,
+            otp
           });
 
       if (!isCurrent()) return;
 
       if (!res.success || !res.data) {
-        const message = res.message || 'Participant verification failed.';
+        const message = res.message || 'Email verification failed.';
         if (res.errorCode === 'CNE_CLOSED') {
           setFlowError(message);
         } else {
           setVerificationError(message);
+          if (res.errorCode === 'OTP_EXPIRED' || res.errorCode === 'OTP_LOCKED' || res.errorCode === 'OTP_INVALID') {
+            resetOtpChallenge();
+          }
         }
-        error(message, participantType === 'EXTERNAL' ? 'Registration Failed' : 'Verification Failed');
+        error(message, 'Verification Failed');
         return;
       }
 
@@ -257,6 +359,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
       setVerifiedParticipant(verified);
       setParticipantVerificationToken(verified.verificationToken);
       setResolvedCneId(verified.cneId);
+      resetOtpChallenge();
 
       if (verified.participantType === 'INTERNAL') {
         setInternalEmployeeId(verified.employeeId || verified.participantId);
@@ -264,7 +367,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
       } else {
         setExternalName(verified.participantName);
         if (verified.email) setExternalEmail(verified.email);
-        success('External participant registration saved.', 'Registration Complete');
+        success('Email verified and external participant registered.', 'Verification Complete');
       }
 
       await loadTest({
@@ -409,15 +512,15 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
               </button>
             </div>
           ) : isPublicQrFlow && !verifiedParticipant && !loading ? (
-            /* Public QR participant verification / registration */
+            /* Public QR participant email-OTP verification */
             <div className="py-8 max-w-xl mx-auto space-y-5">
               <div className="text-center space-y-2">
                 <div className="w-14 h-14 rounded-2xl bg-teal-100 text-teal-800 flex items-center justify-center mx-auto border border-teal-200 shadow-xs">
-                  <Award className="w-7 h-7" />
+                  <Mail className="w-7 h-7" />
                 </div>
-                <h4 className="text-lg font-bold text-slate-900">Participant Verification</h4>
+                <h4 className="text-lg font-bold text-slate-900">Email Verification</h4>
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  Verify as an AIIMS Rishikesh employee or register as an external participant before opening the post-test.
+                  Verify your email before opening the Post-Test. Internal employees receive the code at the email registered in Officers data.
                 </p>
               </div>
 
@@ -448,109 +551,170 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                 </button>
               </div>
 
-              <form onSubmit={handleVerifyParticipant} className="space-y-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
-                {verificationError && (
-                  <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div>{verificationError}</div>
+              {!otpChallengeId ? (
+                <form onSubmit={handleRequestOtp} className="space-y-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+                  {verificationError && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div>{verificationError}</div>
+                    </div>
+                  )}
+
+                  {participantType === 'INTERNAL' ? (
+                    <>
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Employee ID *</label>
+                        <div className="relative">
+                          <UserRound className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                          <input
+                            type="text"
+                            required
+                            autoComplete="off"
+                            placeholder="e.g. RSNHO000001"
+                            value={internalEmployeeId}
+                            onChange={(e) => setInternalEmployeeId(e.target.value.toUpperCase())}
+                            disabled={verificationLoading}
+                            className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 uppercase focus:outline-hidden focus:ring-2 focus:ring-teal-700 shadow-xs disabled:bg-slate-50"
+                          />
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-1">
+                          The verification code will be sent to the registered EmailID in Officers data. You do not need to enter your email.
+                        </p>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={verificationLoading || !internalEmployeeId.trim()}
+                        className="w-full py-2.5 px-4 bg-teal-800 hover:bg-teal-900 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {verificationLoading ? (
+                          <><Loader2 className="w-4 h-4 animate-spin" /><span>Sending Code...</span></>
+                        ) : (
+                          <><Mail className="w-4 h-4" /><span>Send Verification Code</span></>
+                        )}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Participant Name *</label>
+                        <div className="relative">
+                          <UserRound className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                          <input
+                            type="text"
+                            required
+                            minLength={2}
+                            autoComplete="name"
+                            placeholder="Enter your full name"
+                            value={externalName}
+                            onChange={(e) => setExternalName(e.target.value)}
+                            disabled={verificationLoading}
+                            className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-600 shadow-xs disabled:bg-slate-50"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Email *</label>
+                        <div className="relative">
+                          <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                          <input
+                            type="email"
+                            required
+                            autoComplete="email"
+                            placeholder="name@example.com"
+                            value={externalEmail}
+                            onChange={(e) => setExternalEmail(e.target.value)}
+                            disabled={verificationLoading}
+                            className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-600 shadow-xs disabled:bg-slate-50"
+                          />
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-1">Registration is saved only after this email address is successfully verified.</p>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={verificationLoading || externalName.trim().length < 2 || !externalEmail.trim()}
+                        className="w-full py-2.5 px-4 bg-indigo-700 hover:bg-indigo-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {verificationLoading ? (
+                          <><Loader2 className="w-4 h-4 animate-spin" /><span>Sending Code...</span></>
+                        ) : (
+                          <><Mail className="w-4 h-4" /><span>Send Verification Code</span></>
+                        )}
+                      </button>
+                    </>
+                  )}
+                </form>
+              ) : (
+                <form onSubmit={handleVerifyOtp} className="space-y-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+                  <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-xs text-indigo-900">
+                    <div className="font-bold">Verification code sent</div>
+                    <div className="mt-1">Enter the 6-digit code sent to <strong>{maskedEmail || 'your email'}</strong>.</div>
+                    {otpExpiresInSeconds > 0 && (
+                      <div className="text-[11px] text-indigo-700 mt-1">Code validity: approximately {Math.max(1, Math.ceil(otpExpiresInSeconds / 60))} minutes.</div>
+                    )}
                   </div>
-                )}
 
-                {participantType === 'INTERNAL' ? (
-                  <>
-                    <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Employee ID *</label>
-                      <div className="relative">
-                        <UserRound className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                        <input
-                          type="text"
-                          required
-                          autoComplete="off"
-                          placeholder="e.g. EMP10001"
-                          value={internalEmployeeId}
-                          onChange={(e) => setInternalEmployeeId(e.target.value.toUpperCase())}
-                          className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 uppercase focus:outline-hidden focus:ring-2 focus:ring-teal-700 shadow-xs"
-                        />
-                      </div>
+                  {verificationError && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div>{verificationError}</div>
                     </div>
+                  )}
 
-                    <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Date of Joining *</label>
-                      <div className="relative">
-                        <CalendarDays className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                        <input
-                          type="date"
-                          required
-                          value={internalDoj}
-                          onChange={(e) => setInternalDoj(e.target.value)}
-                          className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-teal-700 shadow-xs"
-                        />
-                      </div>
-                      <p className="text-[11px] text-slate-400 mt-1">Employee ID and DOJ are matched against the institutional roster.</p>
-                    </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">6-digit verification code *</label>
+                    <input
+                      type="text"
+                      required
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      placeholder="000000"
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      disabled={verificationLoading}
+                      className="w-full px-4 py-3 bg-white border border-slate-300 rounded-xl text-center text-xl tracking-[0.35em] font-mono font-bold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-600 shadow-xs disabled:bg-slate-50"
+                    />
+                  </div>
 
+                  <button
+                    type="submit"
+                    disabled={verificationLoading || otpCode.length !== 6}
+                    className={`w-full py-2.5 px-4 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${participantType === 'INTERNAL' ? 'bg-teal-800 hover:bg-teal-900' : 'bg-indigo-700 hover:bg-indigo-800'}`}
+                  >
+                    {verificationLoading ? (
+                      <><Loader2 className="w-4 h-4 animate-spin" /><span>Verifying Code...</span></>
+                    ) : (
+                      <><CheckCircle2 className="w-4 h-4" /><span>Verify &amp; Open Post-Test</span></>
+                    )}
+                  </button>
+
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1">
                     <button
-                      type="submit"
-                      disabled={verificationLoading || !internalEmployeeId.trim() || !internalDoj}
-                      className="w-full py-2.5 px-4 bg-teal-800 hover:bg-teal-900 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      type="button"
+                      onClick={() => {
+                        flowRequestRef.current += 1;
+                        setVerificationError('');
+                        resetOtpChallenge();
+                      }}
+                      disabled={verificationLoading}
+                      className="text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer disabled:opacity-50"
                     >
-                      {verificationLoading ? (
-                        <><Loader2 className="w-4 h-4 animate-spin" /><span>Verifying Employee...</span></>
-                      ) : (
-                        <span>Verify &amp; Open Post-Test</span>
-                      )}
+                      Change details
                     </button>
-                  </>
-                ) : (
-                  <>
-                    <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Participant Name *</label>
-                      <div className="relative">
-                        <UserRound className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                        <input
-                          type="text"
-                          required
-                          minLength={2}
-                          autoComplete="name"
-                          placeholder="Enter your full name"
-                          value={externalName}
-                          onChange={(e) => setExternalName(e.target.value)}
-                          className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-600 shadow-xs"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">Email *</label>
-                      <div className="relative">
-                        <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                        <input
-                          type="email"
-                          required
-                          autoComplete="email"
-                          placeholder="name@example.com"
-                          value={externalEmail}
-                          onChange={(e) => setExternalEmail(e.target.value)}
-                          className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-600 shadow-xs"
-                        />
-                      </div>
-                      <p className="text-[11px] text-slate-400 mt-1">Your registration is saved before the post-test opens.</p>
-                    </div>
-
                     <button
-                      type="submit"
-                      disabled={verificationLoading || externalName.trim().length < 2 || !externalEmail.trim()}
-                      className="w-full py-2.5 px-4 bg-indigo-700 hover:bg-indigo-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      type="button"
+                      onClick={() => handleRequestOtp()}
+                      disabled={verificationLoading || resendRemaining > 0}
+                      className="text-xs font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer disabled:text-slate-400 disabled:cursor-not-allowed"
                     >
-                      {verificationLoading ? (
-                        <><Loader2 className="w-4 h-4 animate-spin" /><span>Saving Registration...</span></>
-                      ) : (
-                        <span>Save &amp; Open Post-Test</span>
-                      )}
+                      {resendRemaining > 0 ? `Resend in ${resendRemaining}s` : 'Resend verification code'}
                     </button>
-                  </>
-                )}
-              </form>
+                  </div>
+                </form>
+              )}
             </div>
           ) : loading ? (
             <div className="py-24 flex flex-col items-center justify-center gap-2 text-slate-500">

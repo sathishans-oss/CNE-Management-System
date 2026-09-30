@@ -36,7 +36,6 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
   const [upcomingClasses, setUpcomingClasses] = useState<CNERecord[]>([]);
   const [loadingClasses, setLoadingClasses] = useState(false);
   const [selectedCneId, setSelectedCneId] = useState<string>('');
-  const [resourcePerson, setResourcePerson] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
 
   // --- Nursing Reference Library State ---
@@ -62,7 +61,6 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
     setSelectedFile(null);
     setDragActive(false);
     setSelectedCneId('');
-    setResourcePerson('');
     setNotes('');
     setSelectedDriveFileId('');
     setResourceTitle('');
@@ -128,13 +126,17 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
 
   const handleSelectCneClass = (cneId: string) => {
     setSelectedCneId(cneId);
-    const matched = upcomingClasses.find(
-      (c) => (c.cneId || c.classId) === cneId
-    );
-    // Always synchronize the metadata with the newly selected CNE so a previous
-    // session's RP cannot leak into the next upload.
-    setResourcePerson(matched ? (matched.resourcePersonName || matched.instructor || '') : '');
   };
+
+  // Resource Person is authoritative metadata from the selected CNE.
+  // It is intentionally derived instead of editable so the uploader cannot
+  // change the assigned Resource Person from this screen.
+  const selectedCneForResource = upcomingClasses.find(
+    (c) => (c.cneId || c.classId) === selectedCneId
+  );
+  const resourcePerson = selectedCneForResource
+    ? String(selectedCneForResource.resourcePersonName || selectedCneForResource.instructor || '').trim()
+    : '';
 
   const handleFileSelect = (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
@@ -219,7 +221,6 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
           base64Data: base64,
           fileName: selectedFile.name,
           fileType: selectedFile.type || 'application/octet-stream',
-          resourcePersonName: resourcePerson.trim() || undefined,
           unifiedContent: notes.trim() || undefined
         });
 
@@ -389,8 +390,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                   setResourceType('NURSING_REFERENCE_LIB');
                   setSelectedFile(null);
                   setSelectedCneId('');
-                  setResourcePerson('');
-                  setNotes('');
+                                setNotes('');
                 }}
                 className={`p-3.5 rounded-xl border text-left flex items-start gap-3 transition-all cursor-pointer ${
                   resourceType === 'NURSING_REFERENCE_LIB'
@@ -463,11 +463,16 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                   <input
                     type="text"
                     value={resourcePerson}
-                    onChange={(e) => setResourcePerson(e.target.value)}
-                    placeholder="e.g., Dr. Ananya Sharma / Clinical Instructor"
-                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all"
+                    readOnly
+                    aria-readonly="true"
+                    placeholder="Select a CNE session to view the assigned Resource Person"
+                    title="Resource Person is automatically taken from the selected CNE and cannot be edited here."
+                    className="w-full pl-9 pr-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-xs text-slate-700 cursor-not-allowed select-none"
                   />
                 </div>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Auto-filled from the selected CNE session. Resource Person cannot be changed from Learning Resources.
+                </p>
               </div>
 
               <div>

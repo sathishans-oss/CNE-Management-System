@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, KeyRound, AlertCircle, ShieldAlert } from 'lucide-react';
+import { X, KeyRound, AlertCircle, ShieldAlert, Eye, EyeOff } from 'lucide-react';
 import { ApiService } from '../services/api';
 import { SessionUser } from '../types';
 import { useToast } from './Toast';
@@ -18,9 +18,13 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
   forced = false,
   onPasswordChanged
 }) => {
+  const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const loadingRef = useRef(false);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -28,9 +32,13 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) {
+      setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
       setErrorMsg('');
+      setShowCurrentPassword(false);
+      setShowNewPassword(false);
+      setShowConfirmPassword(false);
     }
   }, [isOpen]);
 
@@ -50,12 +58,21 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
     e.preventDefault();
     if (loadingRef.current || loading) return;
 
+    if (!currentPassword) {
+      setErrorMsg('Enter your current password.');
+      return;
+    }
+
     if (newPassword !== confirmPassword) {
       setErrorMsg('Passwords do not match.');
       return;
     }
-    if (newPassword.length < 6) {
-      setErrorMsg('Password must be at least 6 characters.');
+    if (newPassword.length < 8) {
+      setErrorMsg('Password must be at least 8 characters.');
+      return;
+    }
+    if (!/[A-Za-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+      setErrorMsg('Password must contain at least one letter and one number.');
       return;
     }
 
@@ -64,7 +81,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
     setErrorMsg('');
 
     try {
-      const response = await ApiService.changePassword(newPassword.trim());
+      const response = await ApiService.changePassword(currentPassword, newPassword);
       if (response.success) {
         success('Your password has been changed successfully.', 'Password Updated');
         if (onPasswordChanged) {
@@ -143,32 +160,82 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
+              Current Password
+            </label>
+            <div className="relative">
+              <input
+                type={showCurrentPassword ? 'text' : 'password'}
+                required
+                autoComplete="current-password"
+                placeholder="Enter current password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                className="w-full px-3 py-2 pr-10 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-slate-800"
+              />
+              <button
+                type="button"
+                onClick={() => setShowCurrentPassword((value) => !value)}
+                className="absolute inset-y-0 right-0 px-3 text-slate-500 hover:text-slate-700"
+                aria-label={showCurrentPassword ? 'Hide current password' : 'Show current password'}
+              >
+                {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
               New Password
             </label>
-            <input
-              type="password"
-              required
-              minLength={6}
-              placeholder="Minimum 6 characters"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-slate-800"
-            />
+            <div className="relative">
+              <input
+                type={showNewPassword ? 'text' : 'password'}
+                required
+                minLength={8}
+                autoComplete="new-password"
+                placeholder="Minimum 8 characters"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full px-3 py-2 pr-10 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-slate-800"
+              />
+              <button
+                type="button"
+                onClick={() => setShowNewPassword((value) => !value)}
+                className="absolute inset-y-0 right-0 px-3 text-slate-500 hover:text-slate-700"
+                aria-label={showNewPassword ? 'Hide new password' : 'Show new password'}
+              >
+                {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-1.5">
+              Use at least 8 characters with at least one letter and one number.
+            </p>
           </div>
 
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
               Confirm New Password
             </label>
-            <input
-              type="password"
-              required
-              minLength={6}
-              placeholder="Re-enter new password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-slate-800"
-            />
+            <div className="relative">
+              <input
+                type={showConfirmPassword ? 'text' : 'password'}
+                required
+                minLength={8}
+                autoComplete="new-password"
+                placeholder="Re-enter new password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full px-3 py-2 pr-10 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-slate-800"
+              />
+              <button
+                type="button"
+                onClick={() => setShowConfirmPassword((value) => !value)}
+                className="absolute inset-y-0 right-0 px-3 text-slate-500 hover:text-slate-700"
+                aria-label={showConfirmPassword ? 'Hide confirmation password' : 'Show confirmation password'}
+              >
+                {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
 
           <div className="flex items-center justify-end pt-2">

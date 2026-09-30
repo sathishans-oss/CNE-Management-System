@@ -14,6 +14,7 @@ import {
   SlidersHorizontal
 } from 'lucide-react';
 import { SessionUser, ViewMode } from '../types';
+import { prefetchRoute } from '../services/routePrefetch';
 
 interface TopToolbarProps {
   user: SessionUser | null;
@@ -125,6 +126,8 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                   key={tab.id}
                   id={`top-tab-${tab.id}`}
                   type="button"
+                  onMouseEnter={() => prefetchRoute(tab.id, isAdmin)}
+                  onFocus={() => prefetchRoute(tab.id, isAdmin)}
                   onClick={() => {
                     setIsControlCenterOpen(false);
                     onSelectView(tab.id);
@@ -212,6 +215,8 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                             key={item.id}
                             id={`control-center-item-${item.id}`}
                             type="button"
+                            onMouseEnter={() => prefetchRoute(item.id, true)}
+                            onFocus={() => prefetchRoute(item.id, true)}
                             onClick={() => {
                               setIsControlCenterOpen(false);
                               onSelectView(item.id);
