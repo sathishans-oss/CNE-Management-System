@@ -12,7 +12,7 @@ import { CNERecord } from '../types';
 import { ApiService } from '../services/api';
 import { formatCneDateTimeDisplay, parseToIsoDateString } from '../utils';
 
-type CalendarViewMode = 'month' | 'week' | 'agenda';
+type CalendarViewMode = 'month' | 'agenda';
 
 type CalendarEventType = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
 
@@ -297,49 +297,63 @@ export const CNECalendar: React.FC = () => {
       {/* Agenda / List View */}
       {viewMode === 'agenda' && (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6">
-          <div className="divide-y divide-slate-100">
-            {allEvents
-              .sort((a, b) => (parseToIsoDateString(b.date) || '').localeCompare(parseToIsoDateString(a.date) || ''))
-              .map((ev) => (
-                <div
-                  key={ev.id}
-                  onClick={() => setSelectedEvent(ev)}
-                  className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50 p-3 rounded-xl transition-all cursor-pointer"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          ev.type === 'UPCOMING'
-                            ? 'bg-purple-100 text-purple-800'
-                            : ev.type === 'CANCELED'
-                            ? 'bg-rose-100 text-rose-800'
-                            : 'bg-emerald-100 text-emerald-800'
-                        }`}
-                      >
-                        {ev.type === 'UPCOMING' ? 'Upcoming Class' : ev.type === 'CANCELED' ? 'Canceled CNE' : 'Completed CNE'}
-                      </span>
-                      <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
-                        <MapPin className="w-3.5 h-3.5" />
-                        {ev.area}
-                      </span>
+          {allEvents.length === 0 ? (
+            <div className="py-16 text-center space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-slate-50 text-slate-400 flex items-center justify-center mx-auto border border-slate-100">
+                <CalendarIcon className="w-6 h-6 text-slate-400" />
+              </div>
+              <h3 className="text-sm font-bold text-slate-800">
+                No CNE sessions scheduled for this period.
+              </h3>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                There are currently no training or education sessions on the agenda.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {allEvents
+                .sort((a, b) => (parseToIsoDateString(b.date) || '').localeCompare(parseToIsoDateString(a.date) || ''))
+                .map((ev) => (
+                  <div
+                    key={ev.id}
+                    onClick={() => setSelectedEvent(ev)}
+                    className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50 p-3 rounded-xl transition-all cursor-pointer"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            ev.type === 'UPCOMING'
+                              ? 'bg-purple-100 text-purple-800'
+                              : ev.type === 'CANCELED'
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-emerald-100 text-emerald-800'
+                          }`}
+                        >
+                          {ev.type === 'UPCOMING' ? 'Upcoming Class' : ev.type === 'CANCELED' ? 'Canceled CNE' : 'Completed CNE'}
+                        </span>
+                        <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
+                          <MapPin className="w-3.5 h-3.5" />
+                          {ev.area}
+                        </span>
+                      </div>
+                      <h4 className="text-sm font-bold text-slate-900">{ev.title}</h4>
+                      <p className="text-xs text-slate-500">
+                        Instructor: {ev.instructor} • Mode: {ev.mode}
+                      </p>
                     </div>
-                    <h4 className="text-sm font-bold text-slate-900">{ev.title}</h4>
-                    <p className="text-xs text-slate-500">
-                      Instructor: {ev.instructor} • Mode: {ev.mode}
-                    </p>
-                  </div>
 
-                  <div className="text-right shrink-0">
-                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1 sm:justify-end">
-                      <CalendarIcon className="w-3.5 h-3.5 text-slate-400" />
-                      <span>{formatCneDateTimeDisplay(ev.date, ev.toDate)}</span>
+                    <div className="text-right shrink-0">
+                      <div className="text-xs font-bold text-slate-800 flex items-center gap-1 sm:justify-end">
+                        <CalendarIcon className="w-3.5 h-3.5 text-slate-400" />
+                        <span>{formatCneDateTimeDisplay(ev.date, ev.toDate)}</span>
+                      </div>
+                      {ev.duration && <div className="text-xs text-slate-500 mt-0.5">Duration: {ev.duration}</div>}
                     </div>
-                    {ev.duration && <div className="text-xs text-slate-500 mt-0.5">Duration: {ev.duration}</div>}
                   </div>
-                </div>
-              ))}
-          </div>
+                ))}
+            </div>
+          )}
         </div>
       )}
 

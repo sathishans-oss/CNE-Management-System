@@ -10100,6 +10100,8 @@ function handleGetCNEActivityProgress(params, session) {
     cneId: cneId,
     materialStatus: materialStatus,
     questionsStatus: questionsStatus,
+    finalizedQuestionsCount: finalizedCount,
+    requiredQuestionsCount: 5,
     qrStatus: qrStatus,
     participantsCount: participantsCount,
     postTestStatus: postTestStatus,

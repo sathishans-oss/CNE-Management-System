@@ -346,70 +346,135 @@ export function generateCNESessionPdf(
   doc.setLineWidth(0.5);
   doc.line(14, 33, 196, 33);
 
-  // 2. Session Metadata Card
-  // Keep Date & Time inside the left metadata column even for multi-day ranges.
+  // 2. Session Metadata Card with dynamic text wrapping and row height scaling
   const scheduleText = formatCneDateTimeDisplay(cne.date || cne.fromDate, cne.toDate);
   const durText = formatDurationForPdf(cne.duration) !== '—' ? ` (${formatDurationForPdf(cne.duration)})` : '';
-  const wrappedScheduleText = doc.splitTextToSize(`${scheduleText}${durText}`, 61);
-  const metadataCardHeight = Math.max(42, 42 + Math.max(0, wrappedScheduleText.length - 1) * 4.2);
+  const fullScheduleText = `${scheduleText}${durText}`;
+
+  const allResourcePersons = [
+    cne.resourcePersonName,
+    ...(Array.isArray(cne.externalResourcePersons) ? cne.externalResourcePersons : [])
+  ].filter(Boolean).join(', ') || 'Clinical Instructor';
+
+  const leftColValWidth = 62;
+  const rightColValWidth = 44;
+  const lineHeight = 3.8;
+  const rowGap = 2.4;
+
+  const metadataRows = [
+    {
+      leftLabel: 'CNE ID:',
+      leftValue: doc.splitTextToSize(cne.cneId || cne.classId || '—', leftColValWidth),
+      rightLabel: 'Resource Person:',
+      rightValue: doc.splitTextToSize(allResourcePersons, rightColValWidth),
+      isRightStatus: false,
+      isRightScore: false
+    },
+    {
+      leftLabel: 'Type of CNE:',
+      leftValue: doc.splitTextToSize(
+        (cne.cneType || 'DEPARTMENTAL') === 'CENTRAL' ? 'Central CNE (Hospital-Wide)' : 'Departmental CNE',
+        leftColValWidth
+      ),
+      rightLabel: 'Mode of Teaching:',
+      rightValue: doc.splitTextToSize(cne.modeOfTeaching || 'Lecture / Discussion', rightColValWidth),
+      isRightStatus: false,
+      isRightScore: false
+    },
+    {
+      leftLabel: 'Topic:',
+      leftValue: doc.splitTextToSize(cne.topic || 'Clinical Nursing Topic', leftColValWidth),
+      rightLabel: 'Session Status:',
+      rightValue: [cne.status || 'Scheduled'],
+      isRightStatus: true,
+      isRightScore: false
+    },
+    {
+      leftLabel: 'Area / Ward:',
+      leftValue: doc.splitTextToSize(cne.area || 'General Clinical Area', leftColValWidth),
+      rightLabel: 'Total Attendees:',
+      rightValue: doc.splitTextToSize(
+        `${participants.length} (${postTestParticipants.length} Test, ${manualParticipants.length} Manual)`,
+        rightColValWidth
+      ),
+      isRightStatus: false,
+      isRightScore: false
+    },
+    {
+      leftLabel: 'Date & Time:',
+      leftValue: doc.splitTextToSize(fullScheduleText, leftColValWidth),
+      rightLabel: 'Avg Post-Test Score:',
+      rightValue: [avgScoreDisplay],
+      isRightStatus: false,
+      isRightScore: true
+    }
+  ];
+
+  const cardStartY = 36;
+  const headerOffset = 11;
+  let runningY = cardStartY + headerOffset;
+  const rowYPositions: number[] = [];
+
+  for (const row of metadataRows) {
+    rowYPositions.push(runningY);
+    const maxLines = Math.max(row.leftValue.length, row.rightValue.length);
+    const rowHeight = maxLines * lineHeight + rowGap;
+    runningY += rowHeight;
+  }
+
+  const metadataCardHeight = (runningY - cardStartY) + 2;
 
   doc.setFillColor(248, 250, 252);
-  doc.roundedRect(14, 36, 182, metadataCardHeight, 2, 2, 'F');
+  doc.roundedRect(14, cardStartY, 182, metadataCardHeight, 2, 2, 'F');
   doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(14, 36, 182, metadataCardHeight, 2, 2, 'D');
+  doc.roundedRect(14, cardStartY, 182, metadataCardHeight, 2, 2, 'D');
 
   doc.setFontSize(8.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(100, 116, 139);
   doc.text('CNE Session Specifications', 18, 42);
 
-  // Left Column
-  doc.setFontSize(8);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(51, 65, 85);
-  doc.text('CNE ID:', 18, 48);
-  doc.text('Type of CNE:', 18, 54);
-  doc.text('Topic:', 18, 60);
-  doc.text('Area / Ward:', 18, 66);
-  doc.text('Date & Time:', 18, 72);
+  // Render rows with precise alignment and no overlapping
+  metadataRows.forEach((row, i) => {
+    const yPos = rowYPositions[i];
 
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(15, 23, 42);
-  doc.text(cne.cneId || cne.classId || '—', 48, 48);
-  doc.text((cne.cneType || 'DEPARTMENTAL') === 'CENTRAL' ? 'Central CNE (Hospital-Wide)' : 'Departmental CNE', 48, 54);
-  
-  // Topic with truncation safeguard
-  const cleanTopic = (cne.topic || 'Clinical Nursing Topic').slice(0, 48);
-  doc.text(cleanTopic, 48, 60);
-  doc.text(cne.area || 'General Clinical Area', 48, 66);
-  doc.text(wrappedScheduleText, 48, 72, { lineHeightFactor: 1.15 });
+    // Left Column
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(51, 65, 85);
+    doc.text(row.leftLabel, 18, yPos);
 
-  // Right Column
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(51, 65, 85);
-  doc.text('Resource Person:', 116, 48);
-  doc.text('Mode of Teaching:', 116, 54);
-  doc.text('Session Status:', 116, 60);
-  doc.text('Total Attendees:', 116, 66);
-  doc.text('Avg Post-Test Score:', 116, 72);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(15, 23, 42);
+    doc.text(row.leftValue, 46, yPos, { lineHeightFactor: 1.15 });
 
-  const resourcePersonDisplay = cne.resourcePersonName || 'Clinical Instructor';
-  const modeDisplay = cne.modeOfTeaching || 'Lecture / Discussion';
+    // Right Column
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(51, 65, 85);
+    doc.text(row.rightLabel, 114, yPos);
 
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(15, 23, 42);
-  doc.text(resourcePersonDisplay, 152, 48);
-  doc.text(modeDisplay, 152, 54);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(cne.status === 'Completed' ? 16 : 30, cne.status === 'Completed' ? 185 : 41, cne.status === 'Completed' ? 129 : 59);
-  doc.text(cne.status || 'Scheduled', 152, 60);
-  
-  doc.setTextColor(15, 23, 42);
-  doc.text(`${participants.length} (${postTestParticipants.length} Test, ${manualParticipants.length} Manual)`, 152, 66);
-  
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(postTestParticipants.length > 0 ? 15 : 100, postTestParticipants.length > 0 ? 23 : 116, postTestParticipants.length > 0 ? 42 : 139);
-  doc.text(avgScoreDisplay, 152, 72);
+    if (row.isRightStatus) {
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(
+        cne.status === 'Completed' ? 16 : 30,
+        cne.status === 'Completed' ? 185 : 41,
+        cne.status === 'Completed' ? 129 : 59
+      );
+      doc.text(row.rightValue[0], 148, yPos);
+    } else if (row.isRightScore) {
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(
+        postTestParticipants.length > 0 ? 15 : 100,
+        postTestParticipants.length > 0 ? 23 : 116,
+        postTestParticipants.length > 0 ? 42 : 139
+      );
+      doc.text(row.rightValue[0], 148, yPos);
+    } else {
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(15, 23, 42);
+      doc.text(row.rightValue, 148, yPos, { lineHeightFactor: 1.15 });
+    }
+  });
 
   // 3. Participants Table
   doc.setFont('helvetica', 'bold');

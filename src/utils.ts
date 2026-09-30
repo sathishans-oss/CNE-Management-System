@@ -665,4 +665,22 @@ export function canManageCneActions(
   return isUserAssignedResourcePerson(user, assignedRpIds);
 }
 
+/**
+ * Validates and sanitizes external URLs.
+ * Strictly permits only http: and https: protocols.
+ * Explicitly rejects javascript:, data:, file:, vbscript:, and malformed strings.
+ */
+export function getSafeExternalUrl(value?: string | null): string | null {
+  if (!value || typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    return ['http:', 'https:'].includes(url.protocol.toLowerCase()) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+
 

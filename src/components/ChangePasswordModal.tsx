@@ -3,6 +3,7 @@ import { X, KeyRound, AlertCircle, ShieldAlert, Eye, EyeOff } from 'lucide-react
 import { ApiService } from '../services/api';
 import { SessionUser } from '../types';
 import { useToast } from './Toast';
+import { PasswordRequirementGuidance } from './common/PasswordRequirementGuidance';
 
 interface ChangePasswordModalProps {
   isOpen: boolean;
@@ -207,9 +208,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
                 {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
-            <p className="text-[11px] text-slate-500 mt-1.5">
-              Use at least 8 characters with at least one letter and one number.
-            </p>
+            <PasswordRequirementGuidance password={newPassword} />
           </div>
 
           <div>

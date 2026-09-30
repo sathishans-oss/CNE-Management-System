@@ -138,6 +138,8 @@ export interface CNEActivityProgress {
   cneId: string;
   materialStatus: 'Added' | 'Not Added';
   questionsStatus: 'Generated' | 'Not Generated';
+  finalizedQuestionsCount?: number;
+  requiredQuestionsCount?: number;
   qrStatus: 'Generated' | 'Not Generated';
   participantsCount: number;
   postTestStatus: 'Available' | 'Not Available' | 'Completed';

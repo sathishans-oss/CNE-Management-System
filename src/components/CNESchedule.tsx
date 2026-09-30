@@ -126,6 +126,20 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [isActivityLoading, setIsActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
 
+  // Responsive display mode: render only desktop table OR mobile cards, never both
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return false;
+    return window.matchMedia('(max-width: 767px)').matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mql = window.matchMedia('(max-width: 767px)');
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, []);
+
   // Edit CNE Modal State
   const [editingCne, setEditingCne] = useState<CNERecord | null>(null);
   const [editCneType, setEditCneType] = useState<'CENTRAL' | 'DEPARTMENTAL'>('CENTRAL');
@@ -1021,42 +1035,133 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           </div>
         ) : (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    <th className="py-3.5 px-4 whitespace-nowrap">Type of CNE</th>
-                    <th className="py-3.5 px-4 min-w-[200px]">Topic</th>
-                    <th className="py-3.5 px-4 whitespace-nowrap">Area/Ward</th>
-                    <th className="py-3.5 px-4 whitespace-nowrap">Date &amp; Time</th>
-                    <th className="py-3.5 px-4 min-w-[180px]">Resource Person</th>
-                    <th className="py-3.5 px-4 whitespace-nowrap">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
-                  {paginatedClasses.map((cls, idx) => {
-                    const rpDisplay = formatResourcePersonsDisplay({
-                      resourcePersonEmpId: cls.resourcePersonEmpId,
-                      resourcePersonName: cls.resourcePersonName,
-                      externalResourcePersons: cls.externalResourcePersons,
-                      officers: officerByEmployeeId
-                    });
+            {isMobile ? (
+              /* Mobile CNE Cards Layout */
+              <div className="p-3.5 space-y-3 bg-slate-50/50">
+                {paginatedClasses.map((cls, idx) => {
+                  const rpDisplay = formatResourcePersonsDisplay({
+                    resourcePersonEmpId: cls.resourcePersonEmpId,
+                    resourcePersonName: cls.resourcePersonName,
+                    externalResourcePersons: cls.externalResourcePersons,
+                    officers: officerByEmployeeId
+                  });
 
-                    return (
-                      <ScheduleRow
-                        key={cls.cneId ? `${cls.cneId}-${idx}` : `cne-class-${idx}`}
-                        cls={cls}
-                        idx={idx}
-                        user={user}
-                        isAreaIncharge={isAreaIncharge}
-                        rpDisplay={rpDisplay}
-                        onSelect={setSelectedDetailCne}
-                      />
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                  const isCompleted = (cls.status || '').toLowerCase() === 'completed';
+                  const isCanceled = (cls.status || '').toLowerCase().includes('cancel');
+
+                  return (
+                    <div
+                      key={cls.cneId ? `mobile-${cls.cneId}-${idx}` : `mobile-cne-${idx}`}
+                      onClick={() => setSelectedDetailCne(cls)}
+                      className="p-4 bg-white border border-slate-200 rounded-xl hover:border-teal-400 hover:shadow-xs transition-all cursor-pointer space-y-2.5 active:scale-[0.99]"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 ${
+                              (cls.cneType || 'CENTRAL').toUpperCase() === 'CENTRAL'
+                                ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                : 'bg-teal-50 text-teal-700 border border-teal-200'
+                            }`}
+                          >
+                            {(cls.cneType || 'CENTRAL').toUpperCase()}
+                          </span>
+                          {cls.cneId && (
+                            <span className="font-mono text-[10px] text-slate-500 font-semibold">
+                              #{cls.cneId}
+                            </span>
+                          )}
+                        </div>
+                        <span
+                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider shrink-0 ${
+                            isCompleted
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : isCanceled
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                              : 'bg-amber-50 text-amber-700 border border-amber-200'
+                          }`}
+                        >
+                          {isCompleted ? 'Completed' : isCanceled ? 'Canceled' : 'Scheduled'}
+                        </span>
+                      </div>
+
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900 leading-snug line-clamp-2">
+                          {cls.topic}
+                        </h4>
+                        {cls.isLocked && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-600 mt-1">
+                            <Lock className="w-2.5 h-2.5" /> Questions Locked
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="space-y-1.5 text-xs text-slate-600 pt-2 border-t border-slate-100">
+                        <div className="flex items-center gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span className="font-medium text-slate-800">{cls.area}</span>
+                          {isAreaIncharge && isCneAuthorized(user, cls.area, cls.cneType) && (
+                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
+                              Your Ward
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span className="font-medium text-slate-800">{formatCneDateTimeDisplay(cls.date, cls.toDate)}</span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <Users className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span className="truncate" title={rpDisplay}>
+                            <strong className="text-slate-700 font-semibold">RP:</strong> {rpDisplay}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* Desktop Schedule Table */
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3.5 px-4 whitespace-nowrap">Type of CNE</th>
+                      <th className="py-3.5 px-4 min-w-[200px]">Topic</th>
+                      <th className="py-3.5 px-4 whitespace-nowrap">Area/Ward</th>
+                      <th className="py-3.5 px-4 whitespace-nowrap">Date &amp; Time</th>
+                      <th className="py-3.5 px-4 min-w-[180px]">Resource Person</th>
+                      <th className="py-3.5 px-4 whitespace-nowrap">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
+                    {paginatedClasses.map((cls, idx) => {
+                      const rpDisplay = formatResourcePersonsDisplay({
+                        resourcePersonEmpId: cls.resourcePersonEmpId,
+                        resourcePersonName: cls.resourcePersonName,
+                        externalResourcePersons: cls.externalResourcePersons,
+                        officers: officerByEmployeeId
+                      });
+
+                      return (
+                        <ScheduleRow
+                          key={cls.cneId ? `${cls.cneId}-${idx}` : `cne-class-${idx}`}
+                          cls={cls}
+                          idx={idx}
+                          user={user}
+                          isAreaIncharge={isAreaIncharge}
+                          rpDisplay={rpDisplay}
+                          onSelect={setSelectedDetailCne}
+                        />
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             {/* Schedule Table Pagination Controls */}
             {availableClasses.length > 0 && (
@@ -1653,7 +1758,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                     {/* Header with Title and Dynamic "X of 5 Ready" */}
                     {(() => {
                       const isMaterialReady = activityProgress?.materialStatus === 'Added';
-                      const isQuestionsReady = activityProgress?.questionsStatus === 'Generated';
+                      const validQuestionsCount = activityProgress?.finalizedQuestionsCount ?? (activityProgress?.questionsStatus === 'Generated' ? 5 : 0);
+                      const requiredQuestionsCount = activityProgress?.requiredQuestionsCount ?? 5;
+                      const isQuestionsReady = validQuestionsCount >= requiredQuestionsCount;
+                      const questionsNeeded = Math.max(0, requiredQuestionsCount - validQuestionsCount);
                       const isQrReady = activityProgress?.qrStatus === 'Generated';
                       const isParticipantsReady = (activityProgress?.participantsCount || 0) > 0;
                       const isPostTestReady = activityProgress?.postTestStatus === 'Available' || activityProgress?.postTestStatus === 'Completed';
@@ -1666,6 +1774,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       const isAttendanceCompletionReady = isParticipantsReady && isFinalized;
                       const canOperate = canOperateCne(selectedDetailCne);
                       const canLifecycle = canManageLifecycle(selectedDetailCne);
+                      const canPostTest = canManageCneActions(user, selectedDetailCne);
+
+                      const canManageMaterial = canOperate && !isClosed;
+                      const canManageQuestions = canOperate && !isClosed;
+                      const canManageQR = canOperate && !isClosed;
+                      const canManagePT = canPostTest && !isClosed;
+                      const canManageAttendance = (canOperate || canLifecycle) && !isClosed;
 
                       const readyCount = activityProgress
                         ? (isMaterialReady ? 1 : 0) +
@@ -1733,9 +1848,15 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                     onClick={() => {
                                       setActiveReferenceCne(selectedDetailCne);
                                     }}
-                                    title={isMaterialReady ? "Material ready • Click to view or upload material" : "Material attention required • Click to upload material"}
-                                    aria-label={isMaterialReady ? "Material completed. Click to view or upload material" : "Material attention required. Click to upload material"}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
+                                    title={
+                                      canManageMaterial
+                                        ? isMaterialReady
+                                          ? "Material ready • Click to view or edit material"
+                                          : "Material attention required • Click to upload material"
+                                        : "Material • View only"
+                                    }
+                                    aria-label={isMaterialReady ? "Material completed. Click to view material" : "Material attention required. Click to view or upload material"}
+                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
                                       isMaterialReady
                                         ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
                                         : 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
@@ -1746,12 +1867,22 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                         <BookOpen className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                                         <span>Material</span>
                                       </span>
+                                      {canManageMaterial ? (
+                                        <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
+                                          <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                                        </span>
+                                      )}
                                     </div>
                                     <div className="mt-auto flex items-center justify-between">
+                                      <span className={`text-[10px] font-bold ${isMaterialReady ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                        {isMaterialReady ? 'Added' : 'Not Added'}
+                                      </span>
                                       {isMaterialReady ? (
-                                        <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" aria-label="Completed" />
+                                        <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
                                       ) : (
-                                        <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Attention required" />
+                                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" aria-label="Attention required" />
                                       )}
                                     </div>
                                   </button>
@@ -1762,12 +1893,18 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                     onClick={() => {
                                       setActiveQuestionsCne(selectedDetailCne);
                                     }}
-                                    title={isQuestionsReady ? "Questions ready • Click to view or edit questions" : "Questions attention required • Click to generate questions"}
-                                    aria-label={isQuestionsReady ? "Questions completed. Click to view or edit questions" : "Questions attention required. Click to generate questions"}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
+                                    title={
+                                      canManageQuestions
+                                        ? isQuestionsReady
+                                          ? `${validQuestionsCount} / ${requiredQuestionsCount} valid questions • Click to view or edit`
+                                          : `${validQuestionsCount} / ${requiredQuestionsCount} valid questions • Needs ${questionsNeeded} more • Click to generate`
+                                        : `${validQuestionsCount} / ${requiredQuestionsCount} valid questions • View only`
+                                    }
+                                    aria-label={`${validQuestionsCount} of ${requiredQuestionsCount} valid questions. ${isQuestionsReady ? 'Ready' : `Needs ${questionsNeeded} more`}`}
+                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
                                       isQuestionsReady
                                         ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
-                                        : 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
+                                        : 'bg-amber-50/80 border-amber-200 text-amber-950 shadow-2xs'
                                     }`}
                                   >
                                     <div className="flex items-center justify-between mb-1">
@@ -1775,13 +1912,28 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                         <HelpCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                                         <span>Questions</span>
                                       </span>
-                                    </div>
-                                    <div className="mt-auto flex items-center justify-between">
-                                      {isQuestionsReady ? (
-                                        <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" aria-label="Completed" />
+                                      {canManageQuestions ? (
+                                        <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
                                       ) : (
-                                        <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Attention required" />
+                                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
+                                          <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                                        </span>
                                       )}
+                                    </div>
+                                    <div className="mt-auto">
+                                      <div className="text-[11px] font-bold text-slate-900 leading-tight">
+                                        {validQuestionsCount} / {requiredQuestionsCount} valid
+                                      </div>
+                                      <div className="flex items-center justify-between mt-0.5">
+                                        <span className={`text-[10px] font-semibold ${isQuestionsReady ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                          {isQuestionsReady ? 'Ready' : `Needs ${questionsNeeded} more`}
+                                        </span>
+                                        {isQuestionsReady ? (
+                                          <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
+                                        ) : (
+                                          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" aria-label="Attention required" />
+                                        )}
+                                      </div>
                                     </div>
                                   </button>
 
@@ -1789,23 +1941,25 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      if (!canOperate || isClosed) return;
+                                      if (!canManageQR) return;
                                       setActiveQRCne(selectedDetailCne);
                                     }}
-                                    disabled={!canOperate || isClosed}
+                                    disabled={!canManageQR}
                                     title={
                                       isCancelled
                                         ? 'QR Code is disabled because this CNE was canceled'
                                         : isFinalized
                                         ? 'QR Code is disabled after CNE finalization'
+                                        : !canManageQR
+                                        ? 'QR Code management restricted • View only'
                                         : isQrReady
                                         ? 'QR Code ready • Click to view or print QR code'
                                         : 'QR Code attention required • Click to generate QR code'
                                     }
                                     aria-label={isClosed ? 'QR Code disabled for closed CNE' : isQrReady ? 'QR Code completed. Click to view or print QR code' : 'QR Code attention required. Click to generate QR code'}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left ${
-                                      (!canOperate || isClosed)
-                                        ? 'opacity-60 cursor-not-allowed bg-slate-50 border-slate-200 text-slate-400'
+                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
+                                      !canManageQR
+                                        ? 'bg-slate-50 border-slate-200 text-slate-500 cursor-not-allowed'
                                         : isQrReady
                                         ? 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
                                         : 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
@@ -1816,12 +1970,22 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                         <QrCode className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                                         <span>QR Code</span>
                                       </span>
+                                      {canManageQR ? (
+                                        <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
+                                          <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                                        </span>
+                                      )}
                                     </div>
                                     <div className="mt-auto flex items-center justify-between">
+                                      <span className={`text-[10px] font-bold ${isQrReady ? 'text-emerald-700' : 'text-slate-500'}`}>
+                                        {isQrReady ? 'Active' : 'Pending'}
+                                      </span>
                                       {isQrReady ? (
-                                        <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" aria-label="Completed" />
+                                        <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
                                       ) : (
-                                        <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Attention required" />
+                                        <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" aria-label="Attention required" />
                                       )}
                                     </div>
                                   </button>
@@ -1853,16 +2017,16 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                         ? "Post Test is disabled because this CNE was canceled"
                                         : isFinalized
                                         ? "Post Test is disabled after CNE finalization"
-                                        : !canOperate
-                                        ? "Post Test management restricted to Admin, concerned Area/Ward Incharge, and assigned Resource Person"
+                                        : !canManagePT
+                                        ? "Post Test management restricted • View only"
                                         : isPostTestReady
                                         ? "Post Test ready • Click to view or take evaluation test"
                                         : "Post Test attention required • Click to configure post test"
                                     }
                                     aria-label={isPostTestReady ? "Post Test ready. Click to view or take test" : "Post Test attention required. Click to configure"}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left ${
-                                      (!canOperate || isClosed)
-                                        ? 'opacity-60 cursor-not-allowed bg-slate-50 border-slate-200 text-slate-400'
+                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
+                                      !canManagePT
+                                        ? 'bg-slate-50 border-slate-200 text-slate-500 cursor-not-allowed'
                                         : isPostTestReady
                                         ? 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
                                         : 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
@@ -1873,24 +2037,34 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                         <ClipboardCheck className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                                         <span>Post Test</span>
                                       </span>
+                                      {canManagePT ? (
+                                        <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
+                                          <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                                        </span>
+                                      )}
                                     </div>
                                     <div className="mt-auto flex items-center justify-between">
+                                      <span className={`text-[10px] font-bold ${isPostTestReady ? 'text-emerald-700' : 'text-slate-500'}`}>
+                                        {isPostTestReady ? 'Available' : 'Pending'}
+                                      </span>
                                       {isPostTestReady ? (
-                                        <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" aria-label="Completed" />
+                                        <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
                                       ) : (
-                                        <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Attention required" />
+                                        <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" aria-label="Attention required" />
                                       )}
                                     </div>
                                   </button>
 
-                                  {/* 5. Attendance & Completion (Participants + Finalization merged) */}
+                                  {/* 5. Attendance & Completion (Deduplicated Roster + Finalization) */}
                                   <div
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[66px] text-left ${
+                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
                                       isCancelled
                                         ? 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
                                         : isAttendanceCompletionReady
                                         ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
-                                        : 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
+                                        : 'bg-slate-50 border-slate-200 text-slate-700 shadow-2xs'
                                     }`}
                                   >
                                     <button
@@ -1898,12 +2072,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                       onClick={() => setActiveParticipantsCne(selectedDetailCne)}
                                       title={
                                         isCancelled
-                                          ? `${activityProgress.participantsCount || 0} participant(s) • CNE canceled • View attendance record`
+                                          ? `${activityProgress.participantsCount || 0} deduplicated participant(s) • CNE canceled • View attendance record`
                                           : isFinalized
-                                          ? `Attendance & Completion finalized • ${activityProgress.participantsCount || 0} participant(s)`
-                                          : canOperate || canLifecycle
-                                          ? `${activityProgress.participantsCount || 0} participant(s) • Open attendance and completion`
-                                          : `${activityProgress.participantsCount || 0} participant(s) • View attendance and completion`
+                                          ? `Attendance & Completion finalized • ${activityProgress.participantsCount || 0} deduplicated participant(s)`
+                                          : canManageAttendance
+                                          ? `${activityProgress.participantsCount || 0} deduplicated participant(s) • Open attendance and completion`
+                                          : `${activityProgress.participantsCount || 0} deduplicated participant(s) • View attendance record (View only)`
                                       }
                                       aria-label="Open Attendance and Completion"
                                       className="w-full text-left cursor-pointer"
@@ -1913,15 +2087,22 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                           <Users className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                                           <span>Attendance &amp; Completion</span>
                                         </span>
+                                        {canManageAttendance ? (
+                                          <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
+                                        ) : (
+                                          <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
+                                            <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                                          </span>
+                                        )}
                                       </div>
                                       <div className="mt-auto flex items-center justify-between gap-2">
                                         <div className="flex items-center gap-1.5">
                                           {isCancelled ? (
-                                            <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Canceled" />
+                                            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" aria-label="Canceled" />
                                           ) : isAttendanceCompletionReady ? (
-                                            <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" aria-label="Completed" />
+                                            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
                                           ) : (
-                                            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" aria-label="Attention required" />
+                                            <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" aria-label="Attention required" />
                                           )}
                                           <span className="font-mono text-xs font-bold text-slate-800">
                                             ({activityProgress.participantsCount || 0})

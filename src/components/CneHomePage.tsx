@@ -20,7 +20,8 @@ import {
   INITIAL_QUICK_LINKS,
   INITIAL_PROGRAM_IMPACT
 } from '../services/initialData';
-import { formatCneDateTimeDisplay, parseToIsoDateString } from '../utils';
+import { formatCneDateTimeDisplay, parseToIsoDateString, getSafeExternalUrl } from '../utils';
+import { useToast } from './Toast';
 
 // Modular Child Widgets
 import { UpcomingClassesWidget } from './home/UpcomingClassesWidget';
@@ -58,6 +59,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   const [classesLoading, setClassesLoading] = useState(true);
   const homeRequestRef = useRef(0);
   const sessionKey = `${user?.employeeId || ''}:${user?.role || ''}:${user?.token || ''}`;
+  const { error: showErrorToast } = useToast();
 
   // Modals state
   const [selectedNews, setSelectedNews] = useState<NewsEventItem | null>(null);
@@ -123,12 +125,19 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
       onNavigate(item.target as ViewMode);
     } else if (item.actionType === 'modal' || item.modalContent) {
       setSelectedQuickLink(item);
-    } else if (item.actionType === 'external' && item.target) {
-      window.open(item.target, '_blank');
-    } else if ((item as any).url) {
-      window.open((item as any).url, '_blank');
-    } else if (item.target && item.target.startsWith('http')) {
-      window.open(item.target, '_blank');
+    } else {
+      const rawTarget = item.target || (item as any).url;
+      if (rawTarget) {
+        const safeUrl = getSafeExternalUrl(rawTarget);
+        if (safeUrl) {
+          window.open(safeUrl, '_blank', 'noopener,noreferrer');
+        } else {
+          showErrorToast(
+            'Unable to open link. Only secure web addresses (http:// or https://) are allowed.',
+            'Invalid Link'
+          );
+        }
+      }
     }
   };
 

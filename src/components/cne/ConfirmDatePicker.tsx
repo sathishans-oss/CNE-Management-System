@@ -43,6 +43,7 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
   const [stagedDate, setStagedDate] = useState(value);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const dateButtonsRef = useRef<{ [key: string]: HTMLButtonElement | null }>({});
   const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
 
   // Calendar view month & year
@@ -198,6 +199,7 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
   const handleCancel = () => {
     setStagedDate(value);
     setIsOpen(false);
+    triggerRef.current?.focus();
   };
 
   const handleOk = () => {
@@ -205,7 +207,76 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
       onChange(stagedDate);
     }
     setIsOpen(false);
+    triggerRef.current?.focus();
   };
+
+  // Keyboard navigation across the calendar grid
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      handleCancel();
+      return;
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleOk();
+      return;
+    }
+
+    if (e.key === ' ') {
+      e.preventDefault();
+      if (stagedDate) {
+        setStagedDate(stagedDate);
+      }
+      return;
+    }
+
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+      return;
+    }
+
+    e.preventDefault();
+    const currentDateStr = stagedDate || value || `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-01`;
+    const parts = currentDateStr.split('-').map(Number);
+    const dObj = new Date(parts[0], parts[1] - 1, parts[2]);
+
+    let offset = 0;
+    if (e.key === 'ArrowLeft') offset = -1;
+    else if (e.key === 'ArrowRight') offset = 1;
+    else if (e.key === 'ArrowUp') offset = -7;
+    else if (e.key === 'ArrowDown') offset = 7;
+
+    dObj.setDate(dObj.getDate() + offset);
+    const targetY = dObj.getFullYear();
+    const targetM = dObj.getMonth();
+    const targetD = dObj.getDate();
+    const newDateStr = `${targetY}-${String(targetM + 1).padStart(2, '0')}-${String(targetD).padStart(2, '0')}`;
+
+    if (minDate && newDateStr < minDate) {
+      return;
+    }
+
+    if (targetY !== viewYear || targetM !== viewMonth) {
+      setViewYear(targetY);
+      setViewMonth(targetM);
+    }
+    setStagedDate(newDateStr);
+
+    setTimeout(() => {
+      dateButtonsRef.current[newDateStr]?.focus();
+    }, 10);
+  };
+
+  // Focus management: focus selected date when dialog opens
+  useEffect(() => {
+    if (isOpen) {
+      const activeStr = stagedDate || value || `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-01`;
+      setTimeout(() => {
+        dateButtonsRef.current[activeStr]?.focus();
+      }, 50);
+    }
+  }, [isOpen]);
 
   // Month navigation
   const canGoPrev = () => {
@@ -253,6 +324,9 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
         id={id}
         disabled={disabled}
         onClick={handleOpen}
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        aria-label={value ? `Selected date: ${formatDisplayDate(value)}` : placeholder}
         className={`w-full ${compact ? 'px-2 py-1.5' : 'p-2.5'} bg-white border border-slate-300 rounded-lg text-xs flex items-center justify-between focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all ${
           disabled
             ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200'
@@ -280,8 +354,13 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
           {/* Calendar Modal Card */}
           <div
             ref={popoverRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Choose date"
+            tabIndex={-1}
+            onKeyDown={handleKeyDown}
             style={popoverStyle}
-            className="fixed z-[70] bg-white border border-slate-200 rounded-xl shadow-2xl p-3.5 text-slate-800 select-none animate-in fade-in zoom-in-95 duration-100"
+            className="fixed z-[70] bg-white border border-slate-200 rounded-xl shadow-2xl p-3.5 text-slate-800 select-none animate-in fade-in zoom-in-95 duration-100 focus:outline-hidden"
           >
             {/* Header: Month / Year & Prev / Next */}
             <div className="flex items-center justify-between pb-2.5 mb-2 border-b border-slate-100">
@@ -289,20 +368,22 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
                 type="button"
                 disabled={!canGoPrev()}
                 onClick={handlePrevMonth}
-                className="p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                aria-label="Previous Month"
+                className="p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-20 disabled:cursor-not-allowed transition-colors cursor-pointer"
                 title="Previous Month"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
 
-              <div className="text-xs font-bold text-slate-800">
+              <div className="text-xs font-bold text-slate-800" aria-live="polite">
                 {MONTH_NAMES[viewMonth]} {viewYear}
               </div>
 
               <button
                 type="button"
                 onClick={handleNextMonth}
-                className="p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+                aria-label="Next Month"
+                className="p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
                 title="Next Month"
               >
                 <ChevronRight className="w-4 h-4" />
@@ -310,7 +391,7 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
             </div>
 
             {/* Weekday Labels */}
-            <div className="grid grid-cols-7 gap-1 mb-1.5 text-center">
+            <div className="grid grid-cols-7 gap-1 mb-1.5 text-center" aria-hidden="true">
               {WEEKDAY_LABELS.map((label) => (
                 <div key={label} className="text-[10px] font-bold text-slate-400 uppercase py-0.5">
                   {label}
@@ -319,9 +400,9 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
             </div>
 
             {/* Day Cells Grid */}
-            <div className="grid grid-cols-7 gap-1 text-center">
+            <div className="grid grid-cols-7 gap-1 text-center" role="grid">
               {emptySlots.map((_, idx) => (
-                <div key={`empty-${idx}`} className="h-7 w-7" />
+                <div key={`empty-${idx}`} className="h-7 w-7" aria-hidden="true" />
               ))}
 
               {monthDays.map((d) => {
@@ -329,20 +410,33 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
                 const isDisabled = Boolean(minDate && dateStr < minDate);
                 const isStaged = stagedDate === dateStr;
                 const isConfirmed = value === dateStr;
+                const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                const isToday = todayStr === dateStr;
+
+                const dayLabel = `${d} ${MONTH_NAMES[viewMonth]} ${viewYear}${isConfirmed ? ', currently selected' : ''}${isStaged ? ', staged' : ''}${isToday ? ', today' : ''}`;
 
                 return (
                   <button
                     key={dateStr}
+                    ref={(el) => {
+                      dateButtonsRef.current[dateStr] = el;
+                    }}
                     type="button"
                     disabled={isDisabled}
                     onClick={() => setStagedDate(dateStr)}
-                    className={`h-7 w-7 rounded-lg text-xs font-medium flex items-center justify-center transition-all ${
+                    aria-label={dayLabel}
+                    aria-selected={isStaged || isConfirmed}
+                    aria-current={isToday ? 'date' : undefined}
+                    tabIndex={isStaged || (!stagedDate && d === 1) ? 0 : -1}
+                    className={`h-7 w-7 rounded-lg text-xs font-medium flex items-center justify-center transition-all focus:outline-hidden focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 ${
                       isDisabled
                         ? 'text-slate-300 opacity-35 cursor-not-allowed pointer-events-none'
                         : isStaged
-                        ? 'bg-indigo-600 text-white font-bold shadow-xs scale-105'
+                        ? 'bg-indigo-600 text-white font-bold shadow-xs scale-105 ring-2 ring-indigo-300'
                         : isConfirmed
                         ? 'border border-indigo-500 text-indigo-700 bg-indigo-50/50 font-semibold'
+                        : isToday
+                        ? 'border border-dashed border-indigo-300 text-indigo-700 font-semibold hover:bg-indigo-50'
                         : 'text-slate-700 hover:bg-indigo-50 hover:text-indigo-600 cursor-pointer'
                     }`}
                   >

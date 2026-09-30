@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   Award,
   CheckCircle2,
   Loader2,
@@ -33,6 +34,29 @@ type ParticipantType = 'INTERNAL' | 'EXTERNAL';
 
 const normalizeEmployeeId = (value: string) => value.trim().toUpperCase();
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
+
+function formatPostTestTimestamp(ts?: string | null): string {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    if (!isNaN(d.getTime())) {
+      const datePart = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric'
+      }).format(d);
+      const timePart = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Kolkata',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      }).format(d);
+      return `${datePart} • ${timePart}`;
+    }
+  } catch (e) {}
+  return String(ts);
+}
 
 export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
   cneId,
@@ -436,7 +460,13 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
 
       if (res.success && res.data) {
         setSubmissionResult(res.data);
-        success(`Post-test submitted! Your score: ${res.data.score}/${res.data.totalQuestions} (${res.data.percentage}%)`);
+        const passedTest = Boolean(res.data.passed ?? ((res.data.percentage || 0) >= 60));
+        const scoreMsg = `Post-test submitted! Score: ${res.data.score}/${res.data.totalQuestions} (${res.data.percentage}% • ${passedTest ? 'Passed' : 'Needs Improvement'})`;
+        if (passedTest) {
+          success(scoreMsg);
+        } else {
+          warning(scoreMsg);
+        }
         scrollContentToTop();
         if (onSubmitted) onSubmitted();
       } else if (res.errorCode === 'PARTICIPANT_VERIFICATION_REQUIRED') {
@@ -724,9 +754,19 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
           ) : alreadySubmitted ? (
             /* Already Submitted View */
             <div className="py-12 text-center space-y-4 max-w-lg mx-auto">
-              <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
-                <CheckCircle2 className="w-8 h-8" />
-              </div>
+              {(() => {
+                const isPriorPassed = (priorSubmission?.percentage !== undefined && priorSubmission.percentage !== null)
+                  ? Number(priorSubmission.percentage) >= 60
+                  : String(priorSubmission?.status || '').toUpperCase() === 'PASSED';
+
+                return (
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto ${
+                    isPriorPassed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                  }`}>
+                    {isPriorPassed ? <CheckCircle2 className="w-8 h-8" /> : <AlertTriangle className="w-8 h-8" />}
+                  </div>
+                );
+              })()}
 
               <div>
                 <h4 className="text-base font-bold text-slate-900">Post-Test Already Completed</h4>
@@ -741,32 +781,49 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                 </div>
               )}
 
-              {priorSubmission && (
-                <div className="p-4 bg-white rounded-2xl border border-slate-200 space-y-2 text-left shadow-xs">
-                  <div className="flex justify-between gap-3 text-xs">
-                    <span className="text-slate-500">Participant:</span>
-                    <span className="font-bold text-slate-800 text-right">{priorSubmission.name || priorSubmission.employeeId || verifiedParticipant?.participantName || 'Verified Participant'}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">Score:</span>
-                    <span className="font-bold text-slate-900 font-mono">{priorSubmission.score} / {priorSubmission.totalQuestions}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">Percentage:</span>
-                    <span className="font-bold text-emerald-700">{priorSubmission.percentage}%</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">Result:</span>
-                    <span className="font-bold text-emerald-700">{priorSubmission.status || 'COMPLETED'}</span>
-                  </div>
-                  {priorSubmission.submittedAt && (
-                    <div className="flex justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-200">
-                      <span>Completed:</span>
-                      <span>{priorSubmission.submittedAt}</span>
+              {priorSubmission && (() => {
+                const isPriorPassed = (priorSubmission.percentage !== undefined && priorSubmission.percentage !== null)
+                  ? Number(priorSubmission.percentage) >= 60
+                  : String(priorSubmission.status || '').toUpperCase() === 'PASSED';
+                const scoreDisplay = priorSubmission.percentage !== undefined && priorSubmission.percentage !== null
+                  ? `${priorSubmission.percentage}%`
+                  : `${priorSubmission.score} / ${priorSubmission.totalQuestions}`;
+                const submittedDateDisplay = formatPostTestTimestamp(priorSubmission.submittedAt);
+
+                return (
+                  <div className={`p-4.5 rounded-2xl border space-y-2 text-left shadow-xs ${
+                    isPriorPassed ? 'bg-emerald-50/40 border-emerald-200' : 'bg-amber-50/50 border-amber-200'
+                  }`}>
+                    <div className="flex justify-between gap-3 text-xs">
+                      <span className="text-slate-500 font-medium">Participant:</span>
+                      <span className="font-bold text-slate-800 text-right">
+                        {priorSubmission.name || priorSubmission.employeeId || verifiedParticipant?.participantName || 'Verified Participant'}
+                      </span>
                     </div>
-                  )}
-                </div>
-              )}
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500 font-medium">Score:</span>
+                      <span className={`font-mono font-bold ${isPriorPassed ? 'text-emerald-800' : 'text-amber-800'}`}>{scoreDisplay}</span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500 font-medium">Status:</span>
+                      <span className={`inline-flex items-center gap-1 font-bold ${isPriorPassed ? 'text-emerald-700' : 'text-amber-700'}`}>
+                        {isPriorPassed ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
+                        {isPriorPassed ? 'Passed' : 'Needs Improvement'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500 font-medium">Pass threshold:</span>
+                      <span className="font-bold text-slate-700">60%</span>
+                    </div>
+                    {priorSubmission.submittedAt && (
+                      <div className="flex justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-200/60">
+                        <span className="font-medium">Submitted:</span>
+                        <span className="font-semibold text-slate-700">{submittedDateDisplay}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <button
                 type="button"
@@ -779,27 +836,60 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
           ) : submissionResult ? (
             /* Post-Submission Results & Review View */
             <div className="space-y-6">
-              <div className="p-5 bg-emerald-50 rounded-2xl border border-emerald-200 text-center space-y-2">
-                <div className="w-12 h-12 rounded-full bg-emerald-200 text-emerald-800 flex items-center justify-center mx-auto">
-                  <Award className="w-6 h-6" />
-                </div>
-                <h4 className="text-base font-bold text-emerald-950">Evaluation Complete!</h4>
-                {verifiedLabel && <p className="text-xs font-semibold text-emerald-900">{verifiedLabel}</p>}
-                <div className="flex flex-wrap items-center justify-center gap-3 text-xs pt-1">
-                  <div className="bg-white px-4 py-2 rounded-xl border border-emerald-200 shadow-xs">
-                    <span className="text-slate-500">Score: </span>
-                    <strong className="font-mono text-emerald-800">{submissionResult.score} / {submissionResult.totalQuestions}</strong>
+              {(() => {
+                const isPassed = Boolean(submissionResult.passed ?? ((submissionResult.percentage || 0) >= 60));
+                return (
+                  <div className={`p-5 rounded-2xl border text-center space-y-2.5 ${
+                    isPassed
+                      ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950'
+                      : 'bg-amber-50/90 border-amber-200 text-amber-950'
+                  }`}>
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto ${
+                      isPassed ? 'bg-emerald-200 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      {isPassed ? <Award className="w-6 h-6 text-emerald-700" /> : <AlertTriangle className="w-6 h-6 text-amber-700" />}
+                    </div>
+                    <h4 className={`text-base font-bold ${isPassed ? 'text-emerald-950' : 'text-amber-950'}`}>
+                      {isPassed ? 'Passed' : 'Needs Improvement'}
+                    </h4>
+                    {verifiedLabel && (
+                      <p className={`text-xs font-semibold ${isPassed ? 'text-emerald-900' : 'text-amber-900'}`}>
+                        {verifiedLabel}
+                      </p>
+                    )}
+                    <div className="flex flex-wrap items-center justify-center gap-2.5 text-xs pt-1">
+                      <div className={`px-3.5 py-1.5 rounded-xl border shadow-xs ${
+                        isPassed ? 'bg-white border-emerald-200 text-emerald-800' : 'bg-white border-amber-200 text-amber-800'
+                      }`}>
+                        <span className="text-slate-500 font-medium">Score: </span>
+                        <strong className="font-mono font-bold">
+                          {submissionResult.score} / {submissionResult.totalQuestions}
+                        </strong>
+                      </div>
+                      <div className={`px-3.5 py-1.5 rounded-xl border shadow-xs ${
+                        isPassed ? 'bg-white border-emerald-200 text-emerald-800' : 'bg-white border-amber-200 text-amber-800'
+                      }`}>
+                        <span className="text-slate-500 font-medium">Percentage: </span>
+                        <strong className="font-mono font-bold">
+                          {submissionResult.percentage}%
+                        </strong>
+                      </div>
+                      <div className={`px-3.5 py-1.5 rounded-xl border shadow-xs ${
+                        isPassed ? 'bg-white border-emerald-200 text-emerald-700' : 'bg-white border-amber-200 text-amber-700'
+                      }`}>
+                        <span className="text-slate-500 font-medium">Status: </span>
+                        <strong className="font-bold">
+                          {isPassed ? 'Passed' : 'Needs Improvement'}
+                        </strong>
+                      </div>
+                      <div className="bg-white px-3.5 py-1.5 rounded-xl border border-slate-200 shadow-xs">
+                        <span className="text-slate-500 font-medium">Pass threshold: </span>
+                        <strong className="text-slate-700 font-bold">60%</strong>
+                      </div>
+                    </div>
                   </div>
-                  <div className="bg-white px-4 py-2 rounded-xl border border-emerald-200 shadow-xs">
-                    <span className="text-slate-500">Percentage: </span>
-                    <strong className="text-emerald-800">{submissionResult.percentage}%</strong>
-                  </div>
-                  <div className="bg-white px-4 py-2 rounded-xl border border-emerald-200 shadow-xs">
-                    <span className="text-slate-500">Status: </span>
-                    <strong className={submissionResult.passed ? 'text-emerald-700' : 'text-rose-700'}>{submissionResult.status}</strong>
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
 
               <div className="space-y-3">
                 <h5 className="font-bold text-slate-900 text-xs uppercase tracking-wider">Detailed Answer Review &amp; Clinical Rationales</h5>
