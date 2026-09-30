@@ -11793,6 +11793,17 @@ function handleGetQRToken(params, session) {
   
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
+
+  // Closed CNEs must never expose, regenerate, or create an active QR token.
+  // Frontend controls also block this, but the backend must enforce it independently
+  // so a direct API request with createIfMissing=true cannot bypass finalization/cancellation.
+  if (isCNEClosedForParticipantAccess(record)) {
+    return {
+      success: false,
+      errorCode: 'CNE_CLOSED',
+      message: 'QR Code is unavailable because this CNE has been finalized or canceled.'
+    };
+  }
   
   var finalizedCount = countActiveCNEQuestions(cneId);
 

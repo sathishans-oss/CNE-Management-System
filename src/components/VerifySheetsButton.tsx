@@ -158,9 +158,9 @@ export const VerifySheetsButton: React.FC<VerifySheetsButtonProps> = ({
                           <td className="px-3 py-2.5">
                             {item.error ? (
                               <span className="text-amber-600 font-medium">{item.status} ({item.error})</span>
-                            ) : item.status.toLowerCase().includes('created') ? (
+                            ) : (item.status || '').toLowerCase().includes('created') ? (
                               <span className="text-emerald-700 font-medium bg-emerald-50 px-2 py-0.5 rounded-md text-[11px]">{item.status}</span>
-                            ) : item.status.toLowerCase().includes('appended') ? (
+                            ) : (item.status || '').toLowerCase().includes('appended') ? (
                               <span className="text-blue-700 font-medium bg-blue-50 px-2 py-0.5 rounded-md text-[11px]">{item.status}</span>
                             ) : (
                               <span className="text-slate-700">{item.status}</span>

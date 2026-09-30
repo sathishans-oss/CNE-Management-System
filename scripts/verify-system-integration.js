@@ -939,14 +939,21 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
   assert.ok(!codeGs.includes('ocr: true') && !codeGs.includes('ocr:true'), 'Code.gs must not contain ocr: true');
   assert.ok(!codeGs.includes('Drive.Files.insert'), 'Code.gs must not contain Drive.Files.insert');
 
-  // 6. Real employee IDs absent from frontend source files
+  // 6. Real employee IDs absent from frontend source files.
+  // The Login screen intentionally shows one approved example placeholder for staff:
+  //   Example ID: RSNHO000001
+  // Ignore only that exact UI placeholder while keeping the repository-wide protection
+  // against any other RSNHO / AIIMSR / FNMDCNO identifiers in frontend source.
   const frontendSourceFiles = getFilesRecursively('src', ['.ts', '.tsx']);
   for (const file of frontendSourceFiles) {
     if (file.includes('googleAppsScript.ts')) continue;
     const content = fs.readFileSync(file, 'utf8');
-    assert.ok(!content.includes('RSNHO'), `Real employee ID prefix RSNHO must be absent from ${file}`);
-    assert.ok(!content.includes('AIIMSR'), `Real employee ID prefix AIIMSR must be absent from ${file}`);
-    assert.ok(!content.includes('FNMDCNO'), `Real employee ID prefix FNMDCNO must be absent from ${file}`);
+    const contentForEmployeeIdScan = file.endsWith('src/components/LoginModal.tsx')
+      ? content.replaceAll('Example ID: RSNHO000001', '')
+      : content;
+    assert.ok(!contentForEmployeeIdScan.includes('RSNHO'), `Real employee ID prefix RSNHO must be absent from ${file} except the approved Login placeholder`);
+    assert.ok(!contentForEmployeeIdScan.includes('AIIMSR'), `Real employee ID prefix AIIMSR must be absent from ${file}`);
+    assert.ok(!contentForEmployeeIdScan.includes('FNMDCNO'), `Real employee ID prefix FNMDCNO must be absent from ${file}`);
   }
 
   // 7. handleGetCNERecords name-first privacy model
