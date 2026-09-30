@@ -359,5 +359,6 @@ export interface HomeDashboardData {
   quickLinks: QuickLinkItem[];
   coordinatorDesk: CoordinatorDeskInfo;
   impactStats: ProgramImpactStats;
+  chairpersonPhotoUrl?: string;
 }
 

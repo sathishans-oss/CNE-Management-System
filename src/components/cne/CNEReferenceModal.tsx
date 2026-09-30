@@ -344,7 +344,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     : 'bg-slate-100 text-slate-700 border-slate-200';
 
   return (
-    <div id="cne-material-modal" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
+    <div id="cne-material-modal" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
       <div className="bg-white rounded-2xl w-[94vw] max-w-[1280px] max-h-[90vh] shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
         {/* Modal Header */}
         <div className="px-6 py-3.5 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/80">

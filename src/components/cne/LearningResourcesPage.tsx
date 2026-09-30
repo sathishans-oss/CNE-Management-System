@@ -805,7 +805,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
 
       {/* PDF In-App Preview Modal */}
       {previewItem && (
-        <div className="fixed inset-0 z-[70] bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-5">
+        <div className="fixed inset-0 z-[70] bg-slate-900/80 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-2 sm:p-5">
           <div className="bg-white rounded-2xl w-full max-w-5xl h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             {/* Modal Header */}
             <div className="px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between shrink-0">
@@ -852,7 +852,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
 
       {/* Delete Confirmation Modal */}
       {itemToDelete && (
-        <div className="fixed inset-0 z-[80] bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[80] bg-slate-900/80 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center gap-3 text-rose-600">
               <div className="w-10 h-10 rounded-xl bg-rose-50 flex items-center justify-center shrink-0">

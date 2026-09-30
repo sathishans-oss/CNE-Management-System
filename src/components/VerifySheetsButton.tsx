@@ -93,7 +93,7 @@ export const VerifySheetsButton: React.FC<VerifySheetsButtonProps> = ({
 
       {/* Verify / Initialize CNE Sheets Modal (Admin Only) */}
       {isVerifyModalOpen && user.role === 'ADMIN' && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
           {isVerifying ? (
             <div className="bg-white rounded-2xl max-w-md w-full p-8 shadow-xl border border-slate-200 text-center space-y-4">
               <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 mx-auto flex items-center justify-center">

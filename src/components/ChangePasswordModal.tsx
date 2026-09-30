@@ -102,7 +102,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4"
       onClick={(e) => {
         // Prevent dismissal on click outside if forced
         if (!forced && e.target === e.currentTarget) {

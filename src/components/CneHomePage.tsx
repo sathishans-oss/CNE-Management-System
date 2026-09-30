@@ -202,7 +202,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
 
       {/* 1. News / Circular Modal */}
       {selectedNews && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-none sm:backdrop-blur-xs">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -250,7 +250,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
 
       {/* 2. Quick Link Modal */}
       {selectedQuickLink && selectedQuickLink.modalContent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-none sm:backdrop-blur-xs">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 max-h-[85vh] overflow-y-auto">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -293,7 +293,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
 
       {/* 3. Class Details & Apply Modal */}
       {selectedClass && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-none sm:backdrop-blur-xs">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
             <div className="flex items-start justify-between gap-3">
               <div>

@@ -244,7 +244,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
   const stepLabel = step === 'EMPLOYEE' ? '1 of 3' : step === 'OTP' ? '2 of 3' : step === 'PASSWORD' ? '3 of 3' : 'Complete';
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl max-w-md w-full shadow-xl border border-slate-200 relative overflow-hidden">
         <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/70">
           <button

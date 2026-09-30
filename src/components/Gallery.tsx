@@ -270,7 +270,7 @@ export const Gallery: React.FC<GalleryProps> = ({ user }) => {
 
       {/* Admin Upload Modal */}
       {isUploadOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 relative">
             <button
               onClick={() => setIsUploadOpen(false)}
@@ -378,7 +378,7 @@ export const Gallery: React.FC<GalleryProps> = ({ user }) => {
 
       {/* Delete Confirmation Modal */}
       {deletingPhotoId && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-slate-200 text-center space-y-4">
             <div className="w-12 h-12 rounded-full bg-rose-100 text-rose-600 mx-auto flex items-center justify-center">
               <AlertCircle className="w-6 h-6" />

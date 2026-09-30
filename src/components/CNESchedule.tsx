@@ -1121,7 +1121,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
       {/* Modal: Admin Schedule Class */}
       {isAddClassOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
           <div className="bg-white rounded-2xl w-[92vw] max-w-[1440px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
             {/* Header */}
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50/70">
@@ -1455,7 +1455,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       {/* Part 2 Modals */}
       {/* Modal: CNE Details & Actions (Wide Horizontal Layout) */}
       {selectedDetailCne && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
           <div className="bg-white rounded-2xl w-[92vw] max-w-[1280px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             {/* Compact Header: CNE ID • CNE TYPE • STATUS */}
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50/80">
@@ -1611,7 +1611,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                           resourcePersonEmpId: selectedDetailCne.resourcePersonEmpId,
                           resourcePersonName: selectedDetailCne.resourcePersonName,
                           externalResourcePersons: selectedDetailCne.externalResourcePersons,
-                          officers: officersList
+                          officers: officerByEmployeeId
                         })}
                       </div>
                     </div>
@@ -2024,7 +2024,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
       {/* Modal: Edit CNE (Wide Horizontal Layout) */}
       {editingCne && (
-        <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
+        <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
           <div className="bg-white rounded-2xl w-[92vw] max-w-[1440px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
             {/* Header */}
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50/70">
@@ -2454,7 +2454,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
 
       {cancelTargetCne && (
-        <div className="fixed inset-0 z-[70] bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[70] bg-slate-900/65 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
           <div className="w-full max-w-xl bg-white rounded-2xl border border-rose-200 shadow-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 bg-rose-50/70 flex items-center justify-between gap-3">
               <div>
@@ -2534,7 +2534,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
       {/* Schedule CNE Choice Modal (Admin Only) */}
       {isAdmin && isScheduleChoiceOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 animate-in fade-in duration-150">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 animate-in fade-in duration-150">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-5 sm:p-6 overflow-hidden">
             <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
               <div className="flex items-center gap-2.5">
