@@ -10,8 +10,6 @@ import {
   X,
   Search,
   Loader2,
-  BookOpen,
-  QrCode,
   Lock,
   CheckCircle,
   AlertTriangle,
@@ -19,11 +17,8 @@ import {
   Edit3,
   RefreshCw,
   AlertCircle,
-  HelpCircle,
-  ClipboardCheck,
   Building2,
   GraduationCap,
-  FileDown,
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
@@ -31,6 +26,8 @@ import { SessionUser, CNERecord, CNEActivityProgress, Employee } from '../types'
 import { ApiService } from '../services/api';
 import { useToast } from './Toast';
 import { ScheduleRow } from './cne/ScheduleRow';
+import { ScheduleMobileCard } from './cne/ScheduleMobileCard';
+import { CneDetailsModal } from './cne/CneDetailsModal';
 import {
   formatResourcePersonsDisplay,
   isCneAuthorized,
@@ -1046,80 +1043,15 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                     officers: officerByEmployeeId
                   });
 
-                  const isCompleted = (cls.status || '').toLowerCase() === 'completed';
-                  const isCanceled = (cls.status || '').toLowerCase().includes('cancel');
-
                   return (
-                    <div
+                    <ScheduleMobileCard
                       key={cls.cneId ? `mobile-${cls.cneId}-${idx}` : `mobile-cne-${idx}`}
-                      onClick={() => setSelectedDetailCne(cls)}
-                      className="p-4 bg-white border border-slate-200 rounded-xl hover:border-teal-400 hover:shadow-xs transition-all cursor-pointer space-y-2.5 active:scale-[0.99]"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 ${
-                              (cls.cneType || 'CENTRAL').toUpperCase() === 'CENTRAL'
-                                ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                : 'bg-teal-50 text-teal-700 border border-teal-200'
-                            }`}
-                          >
-                            {(cls.cneType || 'CENTRAL').toUpperCase()}
-                          </span>
-                          {cls.cneId && (
-                            <span className="font-mono text-[10px] text-slate-500 font-semibold">
-                              #{cls.cneId}
-                            </span>
-                          )}
-                        </div>
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider shrink-0 ${
-                            isCompleted
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                              : isCanceled
-                              ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                              : 'bg-amber-50 text-amber-700 border border-amber-200'
-                          }`}
-                        >
-                          {isCompleted ? 'Completed' : isCanceled ? 'Canceled' : 'Scheduled'}
-                        </span>
-                      </div>
-
-                      <div>
-                        <h4 className="text-sm font-bold text-slate-900 leading-snug line-clamp-2">
-                          {cls.topic}
-                        </h4>
-                        {cls.isLocked && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-600 mt-1">
-                            <Lock className="w-2.5 h-2.5" /> Questions Locked
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="space-y-1.5 text-xs text-slate-600 pt-2 border-t border-slate-100">
-                        <div className="flex items-center gap-1.5">
-                          <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span className="font-medium text-slate-800">{cls.area}</span>
-                          {isAreaIncharge && isCneAuthorized(user, cls.area, cls.cneType) && (
-                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
-                              Your Ward
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span className="font-medium text-slate-800">{formatCneDateTimeDisplay(cls.date, cls.toDate)}</span>
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          <Users className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span className="truncate" title={rpDisplay}>
-                            <strong className="text-slate-700 font-semibold">RP:</strong> {rpDisplay}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
+                      cne={cls}
+                      user={user}
+                      isAreaIncharge={isAreaIncharge}
+                      rpDisplay={rpDisplay}
+                      onOpenDetails={setSelectedDetailCne}
+                    />
                   );
                 })}
               </div>
@@ -1558,649 +1490,39 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       )}
 
       {/* Part 2 Modals */}
-      {/* Modal: CNE Details & Actions (Wide Horizontal Layout) */}
+      {/* Modal: CNE Details & Actions (Extracted to CneDetailsModal & ProgressPanel) */}
       {selectedDetailCne && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-          <div className="bg-white rounded-2xl w-[92vw] max-w-[1280px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            {/* Compact Header: CNE ID • CNE TYPE • STATUS */}
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50/80">
-              <div className="flex flex-wrap items-center gap-2 text-sm sm:text-base font-bold text-slate-900">
-                <span className="font-mono text-slate-800">{selectedDetailCne.cneId}</span>
-                <span className="text-slate-400 font-sans">•</span>
-                <span className="text-slate-700 uppercase">
-                  {(selectedDetailCne.cneType || 'CENTRAL').toUpperCase() === 'CENTRAL' ? 'CENTRAL CNE' : 'DEPARTMENTAL CNE'}
-                </span>
-                <span className="text-slate-400 font-sans">•</span>
-                <span
-                  className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
-                    isCneCompleted(selectedDetailCne)
-                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                      : isCneCanceled(selectedDetailCne)
-                      ? 'bg-rose-50 text-rose-800 border border-rose-200'
-                      : 'bg-blue-50 text-blue-700 border border-blue-200'
-                  }`}
-                >
-                  {isCneCanceled(selectedDetailCne) ? 'Canceled' : selectedDetailCne.status || 'Scheduled'}
-                </span>
-                {selectedDetailCne.isLocked && (
-                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 inline-flex items-center gap-1">
-                    <Lock className="w-3 h-3" /> Questions Locked
-                  </span>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
-                {(() => {
-                  const isCompleted = isCneCompleted(selectedDetailCne);
-                  const isCanceled = isCneCanceled(selectedDetailCne);
-                  const canLifecycle = canManageLifecycle(selectedDetailCne);
-                  const canEditOrCancel = canLifecycle && !isCompleted && !isCanceled;
-
-                  return (
-                    <>
-                      {canOperateCne(selectedDetailCne) && (
-                        <button
-                          type="button"
-                          onClick={() => handleDownloadSessionReport(selectedDetailCne)}
-                          disabled={isDownloadingReport || !isCompleted}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
-                          title={isCompleted ? "Download finalized CNE session report" : "Available after finalization"}
-                        >
-                          {isDownloadingReport ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <FileDown className="w-3.5 h-3.5" />
-                          )}
-                          <span>Download Session Report</span>
-                        </button>
-                      )}
-
-                      {canEditOrCancel && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEditModal(selectedDetailCne)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs"
-                            title="Edit CNE workshop details"
-                          >
-                            <Edit3 className="w-3.5 h-3.5 text-amber-700" />
-                            <span>Edit CNE</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCancelTargetCne(selectedDetailCne);
-                              setCancelReason('');
-                            }}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs"
-                            title="Cancel CNE programme"
-                          >
-                            <AlertTriangle className="w-3.5 h-3.5 text-rose-700" />
-                            <span>Cancel</span>
-                          </button>
-                        </>
-                      )}
-                    </>
-                  );
-                })()}
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedDetailCne(null)}
-                  className="text-slate-400 hover:text-slate-600 p-1.5 cursor-pointer transition-colors rounded-lg hover:bg-slate-100"
-                  title="Close popup"
-                  aria-label="Close popup"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Scrollable Content Body (Wide Horizontal Landscape Layout) */}
-            <div className="p-6 overflow-y-auto flex-1 space-y-5 text-xs">
-              {/* Schedule Date & Time Display (Duration is strictly omitted) */}
-              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex flex-wrap items-center gap-4 text-xs">
-                <div className="flex items-center gap-2 text-slate-700 font-bold">
-                  <Calendar className="w-4 h-4 text-emerald-600" />
-                  <span className="text-[11px] uppercase tracking-wider text-slate-500">Schedule:</span>
-                </div>
-                <div className="flex flex-wrap items-center gap-3 font-semibold text-slate-800">
-                  <span>{formatCneDateTimeDisplay(selectedDetailCne.date)}</span>
-                  {selectedDetailCne.toDate && selectedDetailCne.toDate !== selectedDetailCne.date && (
-                    <>
-                      <span className="text-slate-400">to</span>
-                      <span>{formatCneDateTimeDisplay(selectedDetailCne.toDate)}</span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* 2-Column Landscape Split: Left = Topic & Faculty, Right = CNE Progress */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-                {/* Left Column (7 cols): CNE Details */}
-                <div className="lg:col-span-7 space-y-4">
-                  <div className="bg-slate-50/70 p-4 rounded-xl border border-slate-200 space-y-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block border-b border-slate-200 pb-1.5">
-                      Topic &amp; Clinical Scope
-                    </span>
-
-                    <div>
-                      <h3 className="text-base font-bold text-slate-900 leading-snug">
-                        {selectedDetailCne.topic}
-                      </h3>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-white text-teal-800 border border-teal-200 flex items-center gap-1">
-                        <MapPin className="w-3 h-3 text-teal-600" />
-                        <span>{selectedDetailCne.area}</span>
-                      </span>
-
-                      <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-white text-slate-700 border border-slate-200 flex items-center gap-1">
-                        <FileText className="w-3 h-3 text-slate-500" />
-                        <span>{selectedDetailCne.modeOfTeaching || 'Lecture Cum Discussion'}</span>
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-50/70 p-4 rounded-xl border border-slate-200 space-y-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block border-b border-slate-200 pb-1.5">
-                      Resource Persons &amp; Faculty
-                    </span>
-
-                    <div className="bg-white p-3 rounded-lg border border-slate-200 text-slate-800 leading-relaxed flex items-start gap-2">
-                      <User className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
-                      <div>
-                        {formatResourcePersonsDisplay({
-                          resourcePersonEmpId: selectedDetailCne.resourcePersonEmpId,
-                          resourcePersonName: selectedDetailCne.resourcePersonName,
-                          externalResourcePersons: selectedDetailCne.externalResourcePersons,
-                          officers: officerByEmployeeId
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                      {/* Max Capacity: ONLY for Central CNE */}
-                      {(selectedDetailCne.cneType || 'CENTRAL').toUpperCase() === 'CENTRAL' && (
-                        <div className="bg-white p-2.5 rounded-lg border border-slate-200">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Max Capacity</span>
-                          <div className="font-semibold text-slate-800 flex items-center gap-1 mt-0.5">
-                            <Users className="w-3.5 h-3.5 text-slate-500" />
-                            <span>{selectedDetailCne.maxParticipants || 40} Seats</span>
-                          </div>
-                        </div>
-                      )}
-
-                      <div className={`bg-white p-2.5 rounded-lg border border-slate-200 ${(selectedDetailCne.cneType || 'CENTRAL').toUpperCase() !== 'CENTRAL' ? 'sm:col-span-2' : ''}`}>
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Description</span>
-                        <div className="text-slate-800 text-xs mt-0.5 leading-relaxed break-words" title={selectedDetailCne.description || 'No description provided'}>
-                          {selectedDetailCne.description || 'No description provided'}
-                        </div>
-                      </div>
-                    </div>
-
-                    {selectedDetailCne.adminRemarks && (
-                      <div className="space-y-1 pt-1">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Admin Remarks</span>
-                        <div className="bg-white p-3 rounded-lg border border-slate-200 text-slate-700 italic">
-                          {selectedDetailCne.adminRemarks}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Right Column (5 cols): CNE Progress (Live Visual Status Tracker) */}
-                <div className="lg:col-span-5 flex flex-col">
-                  <div className="bg-slate-50/70 p-4 rounded-xl border border-slate-200 h-full flex flex-col justify-between">
-                    {/* Header with Title and Dynamic "X of 5 Ready" */}
-                    {(() => {
-                      const isMaterialReady = activityProgress?.materialStatus === 'Added';
-                      const validQuestionsCount = activityProgress?.finalizedQuestionsCount ?? (activityProgress?.questionsStatus === 'Generated' ? 5 : 0);
-                      const requiredQuestionsCount = activityProgress?.requiredQuestionsCount ?? 5;
-                      const isQuestionsReady = validQuestionsCount >= requiredQuestionsCount;
-                      const questionsNeeded = Math.max(0, requiredQuestionsCount - validQuestionsCount);
-                      const isQrReady = activityProgress?.qrStatus === 'Generated';
-                      const isParticipantsReady = (activityProgress?.participantsCount || 0) > 0;
-                      const isPostTestReady = activityProgress?.postTestStatus === 'Available' || activityProgress?.postTestStatus === 'Completed';
-                      const isFinalizationReady = activityProgress?.finalizationStatus === 'Finalized';
-                      const isCancelled = isCneCanceled(selectedDetailCne);
-                      const isCompleted = isCneCompleted(selectedDetailCne);
-                      // Cancellation and finalization are intentionally separate states. A cancelled CNE must never render as Finalized.
-                      const isFinalized = !isCancelled && (isCompleted || isFinalizationReady);
-                      const isClosed = isCancelled || isFinalized;
-                      const isAttendanceCompletionReady = isParticipantsReady && isFinalized;
-                      const canOperate = canOperateCne(selectedDetailCne);
-                      const canLifecycle = canManageLifecycle(selectedDetailCne);
-                      const canPostTest = canManageCneActions(user, selectedDetailCne);
-
-                      const canManageMaterial = canOperate && !isClosed;
-                      const canManageQuestions = canOperate && !isClosed;
-                      const canManageQR = canOperate && !isClosed;
-                      const canManagePT = canPostTest && !isClosed;
-                      const canManageAttendance = (canOperate || canLifecycle) && !isClosed;
-
-                      const readyCount = activityProgress
-                        ? (isMaterialReady ? 1 : 0) +
-                          (isQuestionsReady ? 1 : 0) +
-                          (isQrReady ? 1 : 0) +
-                          (isPostTestReady ? 1 : 0) +
-                          (isAttendanceCompletionReady ? 1 : 0)
-                        : 0;
-
-                      const readyPercentage = Math.round((readyCount / 5) * 100);
-
-                      return (
-                        <>
-                          <div className="border-b border-slate-200 pb-2.5 mb-3 flex items-center justify-between gap-2">
-                            <div>
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                                  CNE Progress
-                                </span>
-                                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" title="Live status" />
-                              </div>
-                              <span className="text-[10px] text-slate-500">Live readiness status</span>
-                            </div>
-
-                            {activityProgress && !isActivityLoading && (
-                              <div
-                                className={`px-2.5 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 shadow-2xs ${
-                                  readyCount === 5
-                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                    : readyCount >= 4
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                    : readyCount >= 2
-                                    ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                    : 'bg-rose-50 text-rose-700 border-rose-200'
-                                }`}
-                              >
-                                {readyCount === 5 ? (
-                                  <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                                ) : readyCount === 0 ? (
-                                  <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
-                                ) : (
-                                  <span className="w-2 h-2 rounded-full bg-amber-500" />
-                                )}
-                                <span className="whitespace-nowrap">{readyCount} of 5 Ready</span>
-                              </div>
-                            )}
-                          </div>
-
-                          {isActivityLoading ? (
-                            <div className="flex-1 flex flex-col items-center justify-center py-12 text-center space-y-3">
-                              <Loader2 className="w-7 h-7 animate-spin text-teal-600" />
-                              <div className="text-xs font-medium text-slate-500">
-                                Loading CNE progress...
-                              </div>
-                            </div>
-                          ) : activityProgress ? (
-                            <div className="flex-1 flex flex-col justify-between space-y-3">
-                              {/* 2-Row Diagrammatic Stage Tracker */}
-                              <div className="space-y-2">
-                                 {/* Stage 1: Proposal (Material, Questions, QR Code) */}
-                                <div className="grid grid-cols-3 gap-2">
-                                  {/* 1. Material */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setActiveReferenceCne(selectedDetailCne);
-                                    }}
-                                    title={
-                                      canManageMaterial
-                                        ? isMaterialReady
-                                          ? "Material ready • Click to view or edit material"
-                                          : "Material attention required • Click to upload material"
-                                        : "Material • View only"
-                                    }
-                                    aria-label={isMaterialReady ? "Material completed. Click to view material" : "Material attention required. Click to view or upload material"}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
-                                      isMaterialReady
-                                        ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
-                                        : 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
-                                    }`}
-                                  >
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                                        <BookOpen className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                        <span>Material</span>
-                                      </span>
-                                      {canManageMaterial ? (
-                                        <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                                          <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="mt-auto flex items-center justify-between">
-                                      <span className={`text-[10px] font-bold ${isMaterialReady ? 'text-emerald-700' : 'text-rose-700'}`}>
-                                        {isMaterialReady ? 'Added' : 'Not Added'}
-                                      </span>
-                                      {isMaterialReady ? (
-                                        <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
-                                      ) : (
-                                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" aria-label="Attention required" />
-                                      )}
-                                    </div>
-                                  </button>
-
-                                  {/* 2. Questions */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setActiveQuestionsCne(selectedDetailCne);
-                                    }}
-                                    title={
-                                      canManageQuestions
-                                        ? isQuestionsReady
-                                          ? `${validQuestionsCount} / ${requiredQuestionsCount} valid questions • Click to view or edit`
-                                          : `${validQuestionsCount} / ${requiredQuestionsCount} valid questions • Needs ${questionsNeeded} more • Click to generate`
-                                        : `${validQuestionsCount} / ${requiredQuestionsCount} valid questions • View only`
-                                    }
-                                    aria-label={`${validQuestionsCount} of ${requiredQuestionsCount} valid questions. ${isQuestionsReady ? 'Ready' : `Needs ${questionsNeeded} more`}`}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
-                                      isQuestionsReady
-                                        ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
-                                        : 'bg-amber-50/80 border-amber-200 text-amber-950 shadow-2xs'
-                                    }`}
-                                  >
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                                        <HelpCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                        <span>Questions</span>
-                                      </span>
-                                      {canManageQuestions ? (
-                                        <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                                          <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="mt-auto">
-                                      <div className="text-[11px] font-bold text-slate-900 leading-tight">
-                                        {validQuestionsCount} / {requiredQuestionsCount} valid
-                                      </div>
-                                      <div className="flex items-center justify-between mt-0.5">
-                                        <span className={`text-[10px] font-semibold ${isQuestionsReady ? 'text-emerald-700' : 'text-amber-700'}`}>
-                                          {isQuestionsReady ? 'Ready' : `Needs ${questionsNeeded} more`}
-                                        </span>
-                                        {isQuestionsReady ? (
-                                          <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
-                                        ) : (
-                                          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" aria-label="Attention required" />
-                                        )}
-                                      </div>
-                                    </div>
-                                  </button>
-
-                                  {/* 3. QR Code */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (!canManageQR) return;
-                                      setActiveQRCne(selectedDetailCne);
-                                    }}
-                                    disabled={!canManageQR}
-                                    title={
-                                      isCancelled
-                                        ? 'QR Code is disabled because this CNE was canceled'
-                                        : isFinalized
-                                        ? 'QR Code is disabled after CNE finalization'
-                                        : !canManageQR
-                                        ? 'QR Code management restricted • View only'
-                                        : isQrReady
-                                        ? 'QR Code ready • Click to view or print QR code'
-                                        : 'QR Code attention required • Click to generate QR code'
-                                    }
-                                    aria-label={isClosed ? 'QR Code disabled for closed CNE' : isQrReady ? 'QR Code completed. Click to view or print QR code' : 'QR Code attention required. Click to generate QR code'}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
-                                      !canManageQR
-                                        ? 'bg-slate-50 border-slate-200 text-slate-500 cursor-not-allowed'
-                                        : isQrReady
-                                        ? 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
-                                        : 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
-                                    }`}
-                                  >
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                                        <QrCode className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                        <span>QR Code</span>
-                                      </span>
-                                      {canManageQR ? (
-                                        <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                                          <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="mt-auto flex items-center justify-between">
-                                      <span className={`text-[10px] font-bold ${isQrReady ? 'text-emerald-700' : 'text-slate-500'}`}>
-                                        {isQrReady ? 'Active' : 'Pending'}
-                                      </span>
-                                      {isQrReady ? (
-                                        <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
-                                      ) : (
-                                        <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" aria-label="Attention required" />
-                                      )}
-                                    </div>
-                                  </button>
-                                </div>
-
-                                {/* Subtle Connecting Track / Stage Bridge */}
-                                <div className="relative flex items-center justify-center py-1">
-                                  <div className="absolute inset-0 flex items-center">
-                                    <div className="w-full border-t border-dashed border-slate-300" />
-                                  </div>
-                                  <div className="relative bg-white px-2.5 py-0.5 rounded-full text-[9px] font-bold text-slate-500 border border-slate-200 flex items-center gap-1.5 shadow-2xs">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
-                                    <span>Proposal ➔ Completion</span>
-                                  </div>
-                                </div>
-
-                                {/* Stage 2: Completion (Post Test + Attendance & Completion) */}
-                                <div className="grid grid-cols-2 gap-2">
-                                  {/* 4. Post Test */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (!canManageCneActions(user, selectedDetailCne)) return;
-                                      setActivePostTest({ cneId: selectedDetailCne.cneId });
-                                    }}
-                                    disabled={!canManageCneActions(user, selectedDetailCne)}
-                                    title={
-                                      isCancelled
-                                        ? "Post Test is disabled because this CNE was canceled"
-                                        : isFinalized
-                                        ? "Post Test is disabled after CNE finalization"
-                                        : !canManagePT
-                                        ? "Post Test management restricted • View only"
-                                        : isPostTestReady
-                                        ? "Post Test ready • Click to view or take evaluation test"
-                                        : "Post Test attention required • Click to configure post test"
-                                    }
-                                    aria-label={isPostTestReady ? "Post Test ready. Click to view or take test" : "Post Test attention required. Click to configure"}
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
-                                      !canManagePT
-                                        ? 'bg-slate-50 border-slate-200 text-slate-500 cursor-not-allowed'
-                                        : isPostTestReady
-                                        ? 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
-                                        : 'cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
-                                    }`}
-                                  >
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                                        <ClipboardCheck className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                        <span>Post Test</span>
-                                      </span>
-                                      {canManagePT ? (
-                                        <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                                          <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="mt-auto flex items-center justify-between">
-                                      <span className={`text-[10px] font-bold ${isPostTestReady ? 'text-emerald-700' : 'text-slate-500'}`}>
-                                        {isPostTestReady ? 'Available' : 'Pending'}
-                                      </span>
-                                      {isPostTestReady ? (
-                                        <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
-                                      ) : (
-                                        <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" aria-label="Attention required" />
-                                      )}
-                                    </div>
-                                  </button>
-
-                                  {/* 5. Attendance & Completion (Deduplicated Roster + Finalization) */}
-                                  <div
-                                    className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
-                                      isCancelled
-                                        ? 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
-                                        : isAttendanceCompletionReady
-                                        ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
-                                        : 'bg-slate-50 border-slate-200 text-slate-700 shadow-2xs'
-                                    }`}
-                                  >
-                                    <button
-                                      type="button"
-                                      onClick={() => setActiveParticipantsCne(selectedDetailCne)}
-                                      title={
-                                        isCancelled
-                                          ? `${activityProgress.participantsCount || 0} deduplicated participant(s) • CNE canceled • View attendance record`
-                                          : isFinalized
-                                          ? `Attendance & Completion finalized • ${activityProgress.participantsCount || 0} deduplicated participant(s)`
-                                          : canManageAttendance
-                                          ? `${activityProgress.participantsCount || 0} deduplicated participant(s) • Open attendance and completion`
-                                          : `${activityProgress.participantsCount || 0} deduplicated participant(s) • View attendance record (View only)`
-                                      }
-                                      aria-label="Open Attendance and Completion"
-                                      className="w-full text-left cursor-pointer"
-                                    >
-                                      <div className="flex items-center justify-between mb-1">
-                                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                                          <Users className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                          <span>Attendance &amp; Completion</span>
-                                        </span>
-                                        {canManageAttendance ? (
-                                          <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                                        ) : (
-                                          <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                                            <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
-                                          </span>
-                                        )}
-                                      </div>
-                                      <div className="mt-auto flex items-center justify-between gap-2">
-                                        <div className="flex items-center gap-1.5">
-                                          {isCancelled ? (
-                                            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" aria-label="Canceled" />
-                                          ) : isAttendanceCompletionReady ? (
-                                            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
-                                          ) : (
-                                            <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" aria-label="Attention required" />
-                                          )}
-                                          <span className="font-mono text-xs font-bold text-slate-800">
-                                            ({activityProgress.participantsCount || 0})
-                                          </span>
-                                        </div>
-                                        <span
-                                          className={`text-[9px] font-bold uppercase tracking-wide ${
-                                            isCancelled
-                                              ? 'text-rose-700'
-                                              : isFinalized
-                                              ? 'text-emerald-700'
-                                              : 'text-slate-500'
-                                          }`}
-                                        >
-                                          {isCancelled ? 'Canceled' : isFinalized ? 'Finalized' : canLifecycle ? 'Finalize Pending' : 'In Progress'}
-                                        </span>
-                                      </div>
-                                    </button>
-
-                                    {canLifecycle && !isClosed && (
-                                      <button
-                                        type="button"
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          setActiveFinalizeCne(selectedDetailCne);
-                                        }}
-                                        disabled={!isParticipantsReady}
-                                        title={
-                                          !isParticipantsReady
-                                            ? 'Record at least one participant before finalization'
-                                            : 'Finalize and complete this CNE'
-                                        }
-                                        className="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                                      >
-                                        <CheckCircle className="w-3.5 h-3.5" />
-                                        <span>Finalize CNE</span>
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-
-                              {/* Progress Bar & Percentage */}
-                              <div className="pt-3 border-t border-slate-200/90 mt-auto space-y-1.5">
-                                <div className="flex items-center justify-end text-xs">
-                                  <span
-                                    className={`font-extrabold text-xs ${
-                                      readyPercentage >= 80
-                                        ? 'text-emerald-700'
-                                        : readyPercentage >= 40
-                                        ? 'text-amber-700'
-                                        : 'text-rose-700'
-                                    }`}
-                                  >
-                                    {readyPercentage}% READY
-                                  </span>
-                                </div>
-                                <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-                                  <div
-                                    className={`h-full rounded-full transition-all duration-500 ${
-                                      readyPercentage >= 80
-                                        ? 'bg-emerald-500'
-                                        : readyPercentage >= 40
-                                        ? 'bg-amber-500'
-                                        : 'bg-rose-500'
-                                    }`}
-                                    style={{ width: `${readyPercentage}%` }}
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex-1 flex flex-col items-center justify-center py-8 text-center space-y-2 text-slate-400">
-                              <AlertTriangle className="w-6 h-6 text-amber-500" />
-                              <p className="text-xs text-slate-600 font-medium">
-                                {activityError || 'Unable to load CNE progress'}
-                              </p>
-                              {selectedDetailCne?.cneId && (
-                                <button
-                                  type="button"
-                                  onClick={() => fetchActivityProgress(selectedDetailCne.cneId)}
-                                  className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs transition-colors"
-                                >
-                                  <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
-                                  <span>Retry</span>
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <CneDetailsModal
+          cne={selectedDetailCne}
+          user={user}
+          officerByEmployeeId={officerByEmployeeId}
+          activityProgress={activityProgress}
+          isActivityLoading={isActivityLoading}
+          activityError={activityError}
+          isDownloadingReport={isDownloadingReport}
+          canOperate={canOperateCne(selectedDetailCne)}
+          canLifecycle={canManageLifecycle(selectedDetailCne)}
+          canManagePostTest={canManageCneActions(user, selectedDetailCne)}
+          disabled={!canManageCneActions(user, selectedDetailCne)}
+          onClose={() => setSelectedDetailCne(null)}
+          onDownloadSessionReport={handleDownloadSessionReport}
+          onEdit={handleOpenEditModal}
+          onCancel={(cne) => {
+            setCancelTargetCne(cne);
+            setCancelReason('');
+          }}
+          onRetryProgress={() => {
+            if (selectedDetailCne?.cneId) {
+              fetchActivityProgress(selectedDetailCne.cneId);
+            }
+          }}
+          onOpenMaterial={(cne) => setActiveReferenceCne(cne)}
+          onOpenQuestions={(cne) => setActiveQuestionsCne(cne)}
+          onOpenQR={(cne) => setActiveQRCne(cne)}
+          onOpenPostTest={(cne) => setActivePostTest({ cneId: cne.cneId })}
+          onOpenParticipants={(cne) => setActiveParticipantsCne(cne)}
+          onOpenFinalize={(cne) => setActiveFinalizeCne(cne)}
+        />
       )}
 
       {/* Modal: Edit CNE (Wide Horizontal Layout) */}

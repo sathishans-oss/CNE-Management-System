@@ -218,17 +218,9 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
       return;
     }
 
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       handleOk();
-      return;
-    }
-
-    if (e.key === ' ') {
-      e.preventDefault();
-      if (stagedDate) {
-        setStagedDate(stagedDate);
-      }
       return;
     }
 
