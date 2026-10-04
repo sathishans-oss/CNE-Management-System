@@ -128,6 +128,7 @@ export interface CNERecord {
   isLocked?: boolean;
   isUnscheduled?: boolean;
   qrToken?: string;
+  myPostTestScore?: number | null;
   createdAt?: string;
   createdBy?: string;
   updatedAt?: string;

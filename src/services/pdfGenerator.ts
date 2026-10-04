@@ -60,6 +60,13 @@ const formatDurationForPdf = (duration: unknown): string => {
   return seconds === null ? '—' : formatSecondsToDuration(seconds);
 };
 
+const formatPostTestScoreForPdf = (score: number | null | undefined): string => {
+  if (score === null || score === undefined || Number.isNaN(Number(score))) {
+    return '';
+  }
+  return `${Math.round(Number(score))}%`;
+};
+
 const formatTrainingDurationSummary = (totalSeconds: number): string => {
   const safeSeconds = Math.max(0, Math.round(totalSeconds));
   const hours = Math.floor(safeSeconds / 3600);
@@ -110,17 +117,26 @@ export function generateCNERecordsPdf(
     filterLines.push('All Available Records');
   }
 
-  // Match the My CNE Records screen exactly:
-  // - only participant attendance earns training time
-  // - RP-only assignments remain listed but do not add participant training hours
-  // - missing/invalid durations contribute zero
-  // - decimal hours such as 1.5 are parsed as 1h 30m
-  const totalTrainingSeconds = records.reduce((sum, rec) => {
-    if (!isUserParticipantInRecord(user, rec)) return sum;
-    return sum + (getDurationSeconds(rec.duration) ?? 0);
-  }, 0);
+  // Compute earned training duration and resource person hours independently.
+  // If the same employee was both Participant and Resource Person for the same CNE, count that CNE duration in both totals.
+  // Missing/invalid durations contribute zero; decimal-hour values such as 1.5 are parsed as 1 hour 30 minutes.
+  let participantTrainingSeconds = 0;
+  let resourcePersonTrainingSeconds = 0;
 
-  const durationSummaryStr = formatTrainingDurationSummary(totalTrainingSeconds);
+  records.forEach((rec) => {
+    const seconds = getDurationSeconds(rec.duration) ?? 0;
+
+    if (isUserParticipantInRecord(user, rec)) {
+      participantTrainingSeconds += seconds;
+    }
+
+    if (isUserResourcePersonInRecord(user, rec)) {
+      resourcePersonTrainingSeconds += seconds;
+    }
+  });
+
+  const participantDurationStr = formatTrainingDurationSummary(participantTrainingSeconds);
+  const resourcePersonDurationStr = formatTrainingDurationSummary(resourcePersonTrainingSeconds);
 
   // 1. Institutional header
   doc.setFont('helvetica', 'bold');
@@ -152,10 +168,11 @@ export function generateCNERecordsPdf(
   const filterValueStartY = 62;
   const filterLineHeight = 4.2;
   const filterEndY = filterValueStartY + Math.max(0, wrappedFilterLines.length - 1) * filterLineHeight;
-  const sessionsY = filterEndY + 7;
-  const durationY = sessionsY + 7;
-  const minimumCardHeight = 34;
-  const requiredCardHeight = durationY - cardY + 6;
+  const sessionsY = filterEndY + 6;
+  const participantY = sessionsY + 6;
+  const resourcePersonY = participantY + 6;
+  const minimumCardHeight = 38;
+  const requiredCardHeight = resourcePersonY - cardY + 6;
   const cardHeight = Math.max(minimumCardHeight, requiredCardHeight);
 
   doc.setFillColor(248, 250, 252);
@@ -196,29 +213,33 @@ export function generateCNERecordsPdf(
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(51, 65, 85);
   doc.text('CNE Sessions:', rightColumnX, sessionsY);
-  doc.text('Training Duration:', rightColumnX, durationY);
+  doc.text('Participant Hours:', rightColumnX, participantY);
+  doc.text('Resource Person Hours:', rightColumnX, resourcePersonY);
 
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
   doc.text(`${records.length} Sessions`, 154, sessionsY);
-  doc.text(durationSummaryStr, 154, durationY);
+  doc.text(participantDurationStr, 154, participantY);
+  doc.text(resourcePersonDurationStr, 154, resourcePersonY);
 
   // 4. CNE records table
   const tableData = records.map((rec, index) => {
     const isParticipant = isUserParticipantInRecord(user, rec);
     const isResourcePerson = isUserResourcePersonInRecord(user, rec);
-    // Participant takes precedence when the same employee was both participant and RP.
+    // Role label display
     const roleLabel = isParticipant ? 'Participant' : isResourcePerson ? 'Resource Person' : 'Linked Record';
     const dateDisplay = formatCneDateRangeDisplay(rec.fromDate, rec.toDate);
+
+    const scoreDisplay = formatPostTestScoreForPdf(rec.myPostTestScore);
 
     return [
       (index + 1).toString(),
       dateDisplay,
-      rec.area || 'General',
       rec.topic || 'Clinical Nursing Topic',
       rec.modeOfTeaching || 'Lecture',
       roleLabel,
-      formatDurationForPdf(rec.duration)
+      formatDurationForPdf(rec.duration),
+      scoreDisplay
     ];
   });
 
@@ -226,7 +247,7 @@ export function generateCNERecordsPdf(
 
   autoTable(doc, {
     startY: tableStartY,
-    head: [['sn.', 'Date', 'Area / Ward', 'CNE Topic', 'Mode', 'Role', 'Duration']],
+    head: [['sn.', 'Date', 'CNE Topic', 'Mode', 'Role', 'Duration', 'Post-Test Score']],
     body: tableData.length > 0
       ? tableData
       : [['-', '-', 'No CNE activities recorded for the selected filters', '-', '-', '-', '-']],
@@ -241,11 +262,11 @@ export function generateCNERecordsPdf(
     },
     columnStyles: {
       0: { cellWidth: 10, halign: 'center' },
-      1: { cellWidth: 26, halign: 'center' },
-      2: { cellWidth: 32 },
-      3: { cellWidth: 52 },
-      4: { cellWidth: 26 },
-      5: { cellWidth: 20, halign: 'center' },
+      1: { cellWidth: 25, halign: 'center' },
+      2: { cellWidth: 75 },
+      3: { cellWidth: 22 },
+      4: { cellWidth: 20, halign: 'center' },
+      5: { cellWidth: 14, halign: 'center' },
       6: { cellWidth: 16, halign: 'center' }
     },
     styles: {

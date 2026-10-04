@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import {
   X
 } from 'lucide-react';
@@ -23,16 +23,26 @@ import {
 import { formatCneDateTimeDisplay, parseToIsoDateString, getSafeExternalUrl } from '../utils';
 import { useToast } from './Toast';
 
-// Modular Child Widgets
+// Critical Above-the-fold Widgets (Immediately Available)
 import { UpcomingClassesWidget } from './home/UpcomingClassesWidget';
 import { InstitutionalImpactWidget } from './home/InstitutionalImpactWidget';
 import { NewsCircularsWidget } from './home/NewsCircularsWidget';
 import { QuickLinksWidget } from './home/QuickLinksWidget';
 import { CnoLeadershipCard } from './home/CnoLeadershipCard';
-import { SpecialtyModulesWidget } from './home/SpecialtyModulesWidget';
-import { CertificationWorkflowWidget } from './home/CertificationWorkflowWidget';
-import { CoordinatorDeskCard } from './home/CoordinatorDeskCard';
-import { GuidelinesCard } from './home/GuidelinesCard';
+
+// Below-the-fold Informational Widgets (Loaded on Demand)
+const SpecialtyModulesWidget = lazy(() =>
+  import('./home/SpecialtyModulesWidget').then((m) => ({ default: m.SpecialtyModulesWidget }))
+);
+const CertificationWorkflowWidget = lazy(() =>
+  import('./home/CertificationWorkflowWidget').then((m) => ({ default: m.CertificationWorkflowWidget }))
+);
+const CoordinatorDeskCard = lazy(() =>
+  import('./home/CoordinatorDeskCard').then((m) => ({ default: m.CoordinatorDeskCard }))
+);
+const GuidelinesCard = lazy(() =>
+  import('./home/GuidelinesCard').then((m) => ({ default: m.GuidelinesCard }))
+);
 
 interface CneHomePageProps {
   user: SessionUser | null;
@@ -174,7 +184,9 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             accentColor="teal"
           />
           {/* Core Clinical Specialty Modules: restricted to main content flow */}
-          <SpecialtyModulesWidget accentColor="teal" />
+          <Suspense fallback={<div className="h-44 rounded-3xl bg-slate-50 border border-slate-200/60" />}>
+            <SpecialtyModulesWidget accentColor="teal" />
+          </Suspense>
         </main>
 
         {/* Right Column (5 cols: Impact, Circulars, Quick Links, Guidelines, Desk, Certification) */}
@@ -198,9 +210,11 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             onQuickLinkClick={handleQuickLinkClick}
             accentColor="teal"
           />
-          <GuidelinesCard accentColor="teal" />
-          <CoordinatorDeskCard coordinatorDesk={coordinatorDesk} accentColor="teal" />
-          <CertificationWorkflowWidget accentColor="teal" />
+          <Suspense fallback={<div className="h-72 rounded-2xl bg-slate-50 border border-slate-200/60" />}>
+            <GuidelinesCard accentColor="teal" />
+            <CoordinatorDeskCard coordinatorDesk={coordinatorDesk} accentColor="teal" />
+            <CertificationWorkflowWidget accentColor="teal" />
+          </Suspense>
         </aside>
       </div>
 

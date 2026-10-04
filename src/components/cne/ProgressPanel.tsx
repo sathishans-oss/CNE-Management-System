@@ -141,11 +141,17 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                 title={
                   canManageMaterial
                     ? isMaterialReady
-                      ? "Material ready • Click to view or edit material"
-                      : "Material attention required • Click to upload material"
-                    : "Material • View only"
+                      ? "Manage learning material • Ready"
+                      : "Manage learning material • Action required"
+                    : "Learning material • View only"
                 }
-                aria-label={isMaterialReady ? "Material completed. Click to view material" : "Material attention required. Click to view or upload material"}
+                aria-label={
+                  canManageMaterial
+                    ? isMaterialReady
+                      ? "Manage learning material, ready"
+                      : "Manage learning material, action required"
+                    : "Learning material, view only"
+                }
                 className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
                   isMaterialReady
                     ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
@@ -157,18 +163,13 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                     <BookOpen className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                     <span>Material</span>
                   </span>
-                  {canManageMaterial ? (
-                    <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                  ) : (
-                    <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                      <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                  {!canManageMaterial && (
+                    <span className="inline-flex items-center text-slate-400" title="View only" aria-label="View only">
+                      <Lock className="w-3 h-3 text-slate-400" />
                     </span>
                   )}
                 </div>
-                <div className="mt-auto flex items-center justify-between">
-                  <span className={`text-[10px] font-bold ${isMaterialReady ? 'text-emerald-700' : 'text-rose-700'}`}>
-                    {isMaterialReady ? 'Added' : 'Not Added'}
-                  </span>
+                <div className="mt-auto flex items-center justify-end">
                   {isMaterialReady ? (
                     <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
                   ) : (
@@ -184,11 +185,15 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                 title={
                   canManageQuestions
                     ? isQuestionsReady
-                      ? `${validQuestionsCount} / ${requiredQuestionsCount} valid questions • Click to view or edit`
-                      : `${validQuestionsCount} / ${requiredQuestionsCount} valid questions • Needs ${questionsNeeded} more • Click to generate`
-                    : `${validQuestionsCount} / ${requiredQuestionsCount} valid questions • View only`
+                      ? `Manage questions • ${validQuestionsCount} / ${requiredQuestionsCount} valid questions`
+                      : `Manage questions • ${validQuestionsCount} / ${requiredQuestionsCount} valid questions • Needs ${questionsNeeded} more`
+                    : `Questions • ${validQuestionsCount} / ${requiredQuestionsCount} valid questions • View only`
                 }
-                aria-label={`${validQuestionsCount} of ${requiredQuestionsCount} valid questions. ${isQuestionsReady ? 'Ready' : `Needs ${questionsNeeded} more`}`}
+                aria-label={
+                  canManageQuestions
+                    ? `Manage questions, ${validQuestionsCount} of ${requiredQuestionsCount} valid`
+                    : `Questions, ${validQuestionsCount} of ${requiredQuestionsCount} valid, view only`
+                }
                 className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
                   isQuestionsReady
                     ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
@@ -200,22 +205,24 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                     <HelpCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                     <span>Questions</span>
                   </span>
-                  {canManageQuestions ? (
-                    <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                  ) : (
-                    <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                      <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                  {!canManageQuestions && (
+                    <span className="inline-flex items-center text-slate-400" title="View only" aria-label="View only">
+                      <Lock className="w-3 h-3 text-slate-400" />
                     </span>
                   )}
                 </div>
                 <div className="mt-auto">
                   <div className="text-[11px] font-bold text-slate-900 leading-tight">
-                    {validQuestionsCount} / {requiredQuestionsCount} valid
+                    {validQuestionsCount} / {requiredQuestionsCount} valid questions
                   </div>
-                  <div className="flex items-center justify-between mt-0.5">
-                    <span className={`text-[10px] font-semibold ${isQuestionsReady ? 'text-emerald-700' : 'text-amber-700'}`}>
-                      {isQuestionsReady ? 'Ready' : `Needs ${questionsNeeded} more`}
-                    </span>
+                  <div className="flex items-center justify-between mt-0.5 min-h-[16px]">
+                    {!isQuestionsReady && questionsNeeded > 0 ? (
+                      <span className="text-[10px] font-semibold text-amber-700">
+                        Needs {questionsNeeded} more
+                      </span>
+                    ) : (
+                      <span />
+                    )}
                     {isQuestionsReady ? (
                       <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
                     ) : (
@@ -239,12 +246,18 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                     : isFinalized
                     ? 'QR Code is disabled after CNE finalization'
                     : !canManageQR
-                    ? 'QR Code management restricted • View only'
+                    ? 'QR Code • View only'
                     : isQrReady
-                    ? 'QR Code ready • Click to view or print QR code'
-                    : 'QR Code attention required • Click to generate QR code'
+                    ? 'Manage QR code • Ready'
+                    : 'Manage QR code • Action required'
                 }
-                aria-label={isClosed ? 'QR Code disabled for closed CNE' : isQrReady ? 'QR Code completed. Click to view or print QR code' : 'QR Code attention required. Click to generate QR code'}
+                aria-label={
+                  isClosed
+                    ? 'QR Code disabled for closed CNE'
+                    : canManageQR
+                    ? 'Manage QR code'
+                    : 'QR Code, view only'
+                }
                 className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
                   !canManageQR
                     ? 'bg-slate-50 border-slate-200 text-slate-500 cursor-not-allowed'
@@ -258,18 +271,13 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                     <QrCode className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                     <span>QR Code</span>
                   </span>
-                  {canManageQR ? (
-                    <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                  ) : (
-                    <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                      <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                  {!canManageQR && (
+                    <span className="inline-flex items-center text-slate-400" title="View only" aria-label="View only">
+                      <Lock className="w-3 h-3 text-slate-400" />
                     </span>
                   )}
                 </div>
-                <div className="mt-auto flex items-center justify-between">
-                  <span className={`text-[10px] font-bold ${isQrReady ? 'text-emerald-700' : 'text-slate-500'}`}>
-                    {isQrReady ? 'Active' : 'Pending'}
-                  </span>
+                <div className="mt-auto flex items-center justify-end">
                   {isQrReady ? (
                     <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
                   ) : (
@@ -306,12 +314,18 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                     : isFinalized
                     ? "Post Test is disabled after CNE finalization"
                     : !canManagePT
-                    ? "Post Test management restricted • View only"
+                    ? "Post Test • View only"
                     : isPostTestReady
-                    ? "Post Test ready • Click to view or take evaluation test"
-                    : "Post Test attention required • Click to configure post test"
+                    ? "Manage post test • Ready"
+                    : "Manage post test • Action required"
                 }
-                aria-label={isPostTestReady ? "Post Test ready. Click to view or take test" : "Post Test attention required. Click to configure"}
+                aria-label={
+                  canManagePT
+                    ? isPostTestReady
+                      ? "Manage post test, ready"
+                      : "Manage post test, action required"
+                    : "Post test, view only"
+                }
                 className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
                   !canManagePT
                     ? 'bg-slate-50 border-slate-200 text-slate-500 cursor-not-allowed'
@@ -325,18 +339,13 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                     <ClipboardCheck className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                     <span>Post Test</span>
                   </span>
-                  {canManagePT ? (
-                    <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                  ) : (
-                    <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                      <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                  {!canManagePT && (
+                    <span className="inline-flex items-center text-slate-400" title="View only" aria-label="View only">
+                      <Lock className="w-3 h-3 text-slate-400" />
                     </span>
                   )}
                 </div>
-                <div className="mt-auto flex items-center justify-between">
-                  <span className={`text-[10px] font-bold ${isPostTestReady ? 'text-emerald-700' : 'text-slate-500'}`}>
-                    {isPostTestReady ? 'Available' : 'Pending'}
-                  </span>
+                <div className="mt-auto flex items-center justify-end">
                   {isPostTestReady ? (
                     <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
                   ) : (
@@ -360,14 +369,18 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                   onClick={() => onOpenParticipants(cne)}
                   title={
                     isCancelled
-                      ? `${activityProgress.participantsCount || 0} deduplicated participant(s) • CNE canceled • View attendance record`
+                      ? `${activityProgress.participantsCount || 0} attendee(s) • CNE canceled • View attendance record`
                       : isFinalized
-                      ? `Attendance & Completion finalized • ${activityProgress.participantsCount || 0} deduplicated participant(s)`
+                      ? `Attendance & Completion finalized • ${activityProgress.participantsCount || 0} attendee(s)`
                       : canManageAttendance
-                      ? `${activityProgress.participantsCount || 0} deduplicated participant(s) • Open attendance and completion`
-                      : `${activityProgress.participantsCount || 0} deduplicated participant(s) • View attendance record (View only)`
+                      ? `Manage attendance and completion • ${activityProgress.participantsCount || 0} attendee(s)`
+                      : `Attendance and completion • ${activityProgress.participantsCount || 0} attendee(s) • View only`
                   }
-                  aria-label="Open Attendance and Completion"
+                  aria-label={
+                    canManageAttendance
+                      ? `Manage attendance and completion, ${activityProgress.participantsCount || 0} attendees`
+                      : `Attendance and completion, ${activityProgress.participantsCount || 0} attendees, view only`
+                  }
                   className="w-full text-left cursor-pointer"
                 >
                   <div className="flex items-center justify-between mb-1">
@@ -375,16 +388,17 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                       <Users className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                       <span>Attendance &amp; Completion</span>
                     </span>
-                    {canManageAttendance ? (
-                      <span className="text-[9px] font-bold text-teal-700 uppercase">Manage</span>
-                    ) : (
-                      <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-slate-500">
-                        <Lock className="w-2.5 h-2.5 text-slate-400" /> View only
+                    {!canManageAttendance && (
+                      <span className="inline-flex items-center text-slate-400" title="View only" aria-label="View only">
+                        <Lock className="w-3 h-3 text-slate-400" />
                       </span>
                     )}
                   </div>
                   <div className="mt-auto flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-bold text-slate-900 leading-tight">
+                      {activityProgress.participantsCount || 0} attendee{(activityProgress.participantsCount || 0) === 1 ? '' : 's'}
+                    </span>
+                    <div>
                       {isCancelled ? (
                         <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" aria-label="Canceled" />
                       ) : isAttendanceCompletionReady ? (
@@ -392,21 +406,7 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                       ) : (
                         <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" aria-label="Attention required" />
                       )}
-                      <span className="font-mono text-xs font-bold text-slate-800">
-                        ({activityProgress.participantsCount || 0})
-                      </span>
                     </div>
-                    <span
-                      className={`text-[9px] font-bold uppercase tracking-wide ${
-                        isCancelled
-                          ? 'text-rose-700'
-                          : isFinalized
-                          ? 'text-emerald-700'
-                          : 'text-slate-500'
-                      }`}
-                    >
-                      {isCancelled ? 'Canceled' : isFinalized ? 'Finalized' : canLifecycle ? 'Finalize Pending' : 'In Progress'}
-                    </span>
                   </div>
                 </button>
 

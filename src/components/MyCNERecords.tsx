@@ -47,6 +47,13 @@ const formatDurationForDisplay = (duration: unknown): string => {
   return parts.length > 0 ? parts.join(' ') : '0m';
 };
 
+const formatPostTestScore = (value: number | null | undefined): string => {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return '';
+  }
+  return `${Math.round(Number(value))}%`;
+};
+
 const normalizeEmployeeId = (value: unknown): string => String(value ?? '').trim().toUpperCase();
 
 const splitEmployeeIds = (value: unknown): string[] => {
@@ -162,26 +169,12 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
           const matchTopic = searchable(rec?.topic).includes(q);
           const matchArea = searchable(rec?.area).includes(q);
           const matchMode = searchable(rec?.modeOfTeaching).includes(q);
-          const rpDisplay = searchable(
-            formatResourcePersonsDisplay({
-              resourcePersonEmpId: rec?.resourcePersonEmpId,
-              resourcePersonName: rec?.resourcePersonName,
-              externalResourcePersons: Array.isArray(rec?.externalResourcePersons)
-                ? rec.externalResourcePersons
-                : []
-            })
-          );
-          const rpIds = [
-            rec?.resourcePersonEmpId,
-            ...(Array.isArray(rec?.resourcePersonEmpIds) ? rec.resourcePersonEmpIds : [])
-          ]
-            .map(searchable)
-            .join(' ');
-          const matchRp = rpDisplay.includes(q) || rpIds.includes(q);
+          const matchRpName = searchable(rec?.resourcePersonName).includes(q);
+          const matchRpId = searchable(rec?.resourcePersonEmpId).includes(q);
           const matchExtRp = Array.isArray(rec?.externalResourcePersons)
             ? rec.externalResourcePersons.some((p) => searchable(p).includes(q))
             : false;
-          if (!matchTopic && !matchArea && !matchMode && !matchRp && !matchExtRp) return false;
+          if (!matchTopic && !matchArea && !matchMode && !matchRpName && !matchRpId && !matchExtRp) return false;
         }
 
         return true;
@@ -193,17 +186,10 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
       });
   }, [records, startDate, endDate, searchTerm]);
 
-  // Compute earned training time only for CNEs where the logged-in user participated.
-  // RP-only assignments remain visible in My CNE Records but do not count as participant training hours.
-  // If the same user was both a participant and an RP, participant status takes precedence and the duration is counted.
+  // Compute earned training duration and resource person hours independently.
+  // If the same employee was both Participant and Resource Person for the same CNE, count that CNE duration in both totals.
   // Missing/invalid duration contributes zero; decimal-hour values such as 1.5 are parsed as 1 hour 30 minutes.
-  const totalDurationStats = useMemo(() => {
-    const totalSeconds = filteredRecords.reduce((sum, rec) => {
-      if (!isUserParticipantInRecord(user, rec)) return sum;
-      const seconds = getDurationSeconds(rec?.duration);
-      return sum + (seconds ?? 0);
-    }, 0);
-
+  const formatTotalSeconds = (totalSeconds: number): string => {
     const hrs = Math.floor(totalSeconds / 3600);
     const mins = Math.floor((totalSeconds % 3600) / 60);
     const secs = totalSeconds % 60;
@@ -212,6 +198,28 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     if (mins > 0) parts.push(`${mins}m`);
     if (secs > 0) parts.push(`${secs}s`);
     return parts.join(' ');
+  };
+
+  const trainingDurationStats = useMemo(() => {
+    let participantSeconds = 0;
+    let resourcePersonSeconds = 0;
+
+    filteredRecords.forEach((rec) => {
+      const seconds = getDurationSeconds(rec?.duration) ?? 0;
+
+      if (isUserParticipantInRecord(user, rec)) {
+        participantSeconds += seconds;
+      }
+
+      if (isUserResourcePersonInRecord(user, rec)) {
+        resourcePersonSeconds += seconds;
+      }
+    });
+
+    return {
+      participant: formatTotalSeconds(participantSeconds),
+      resourcePerson: formatTotalSeconds(resourcePersonSeconds)
+    };
   }, [filteredRecords, user.employeeId]);
 
   // Responsive display mode: render only desktop table OR mobile cards, never both
@@ -288,7 +296,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
               id="input-my-cne-search"
               value={searchTerm}
               onChange={setSearchTerm}
-              placeholder="Search topic, area, instructor..."
+              placeholder="Search topic, area, mode..."
             />
           </div>
 
@@ -313,8 +321,12 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             />
           </div>
 
-          <div className="whitespace-nowrap rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-slate-600">
-            Training: <strong className="text-emerald-700">{totalDurationStats}</strong>
+          <div className="whitespace-nowrap rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs text-slate-600">
+            Participant Hours: <strong className="text-emerald-700">{trainingDurationStats.participant}</strong>
+          </div>
+
+          <div className="whitespace-nowrap rounded-lg border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs text-slate-600">
+            Resource Person Hours: <strong className="text-purple-700">{trainingDurationStats.resourcePerson}</strong>
           </div>
 
           {(searchTerm || startDate || endDate) && (
@@ -383,11 +395,26 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                   const isResourcePerson = isUserResourcePersonInRecord(user, rec);
                   const globalIdx = (safeCurrentPage - 1) * PAGE_SIZE + index;
                   return (
-                    <div key={rec.cneId || rec.dataId || `mob-rec-${globalIdx}`} className="p-4 space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-semibold text-slate-500">#{globalIdx + 1} • {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}</span>
+                    <div
+                      key={rec.cneId || rec.dataId || `mob-rec-${globalIdx}`}
+                      onClick={() => setSelectedRecord(rec)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedRecord(rec);
+                        }
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`View details for ${rec.topic}`}
+                      className="p-4 space-y-2 hover:bg-slate-50/80 cursor-pointer transition-colors focus:outline-none focus:bg-slate-50 active:scale-[0.99]"
+                    >
+                      <div className="flex items-center justify-between text-xs gap-2">
+                        <span className="font-semibold text-slate-500">
+                          #{globalIdx + 1} • {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}
+                        </span>
                         <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
                             isParticipant
                               ? 'bg-emerald-100 text-emerald-800'
                               : isResourcePerson
@@ -399,35 +426,28 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                         </span>
                       </div>
 
-                      <h4 className="text-sm font-bold text-slate-900 leading-snug">
+                      <h4 className="text-sm font-bold text-slate-900 leading-snug line-clamp-2">
                         {rec.topic}
                       </h4>
 
-                      <div className="flex flex-wrap gap-2 text-xs text-slate-600">
-                        <span className="bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                          {rec.area}
-                        </span>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 pt-0.5">
                         <span className="flex items-center gap-1 text-slate-500">
                           <Clock className="w-3 h-3" />
                           {formatDurationForDisplay(rec.duration)}
                         </span>
-                      </div>
-
-                      <div className="flex items-center justify-between pt-1">
-                        <span className="text-xs text-slate-500 truncate max-w-[200px]">
-                          Instructor:{' '}
-                          {formatResourcePersonsDisplay({
-                            resourcePersonEmpId: rec.resourcePersonEmpId,
-                            resourcePersonName: rec.resourcePersonName,
-                            externalResourcePersons: rec.externalResourcePersons
-                          })}
-                        </span>
-                        <button
-                          onClick={() => setSelectedRecord(rec)}
-                          className="text-xs font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer"
-                        >
-                          Details →
-                        </button>
+                        {rec.myPostTestScore !== null &&
+                        rec.myPostTestScore !== undefined &&
+                        !Number.isNaN(Number(rec.myPostTestScore)) && (
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                              Number(rec.myPostTestScore) >= 60
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : 'bg-amber-50 text-amber-800 border-amber-200'
+                            }`}
+                          >
+                            Score: {formatPostTestScore(rec.myPostTestScore)}
+                          </span>
+                        )}
                       </div>
                     </div>
                   );
@@ -439,14 +459,12 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
-                      <th className="py-3.5 px-4 w-12 text-center">Sr.</th>
-                      <th className="py-3.5 px-4">Date &amp; Time</th>
-                      <th className="py-3.5 px-4">Area / Ward</th>
-                      <th className="py-3.5 px-4">Topic / Skills</th>
-                      <th className="py-3.5 px-4">Role</th>
-                      <th className="py-3.5 px-4">Instructor / Resource Person</th>
-                      <th className="py-3.5 px-4">Duration</th>
-                      <th className="py-3.5 px-4 text-right">Details</th>
+                      <th className="py-3.5 px-3 w-12 text-center">Sr.</th>
+                      <th className="py-3.5 px-4 whitespace-nowrap text-left">Date &amp; Time</th>
+                      <th className="py-3.5 px-4 text-left w-2/5 min-w-[280px]">Topic / Skills</th>
+                      <th className="py-3.5 px-4 text-left whitespace-nowrap">Role</th>
+                      <th className="py-3.5 px-4 text-center whitespace-nowrap">Duration</th>
+                      <th className="py-3.5 px-4 text-center whitespace-nowrap">Post-Test Score</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -457,23 +475,30 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                       return (
                         <tr
                           key={rec.cneId || rec.dataId || `rec-${globalIdx}`}
-                          className="hover:bg-slate-50/80 transition-colors"
+                          onClick={() => setSelectedRecord(rec)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setSelectedRecord(rec);
+                            }
+                          }}
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`View details for ${rec.topic}`}
+                          className="hover:bg-slate-50/90 cursor-pointer transition-colors focus:outline-none focus:bg-slate-100/80"
                         >
-                          <td className="py-3 px-4 text-center font-medium text-slate-500">
+                          <td className="py-3 px-3 text-center font-medium text-slate-500">
                             {globalIdx + 1}
                           </td>
-                          <td className="py-3 px-4 whitespace-nowrap font-medium text-slate-800">
+                          <td className="py-3 px-4 whitespace-nowrap font-medium text-slate-800 text-left">
                             {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}
                           </td>
-                          <td className="py-3 px-4">
-                            <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                              {rec.area}
-                            </span>
+                          <td className="py-3 px-4 font-semibold text-slate-900 text-left">
+                            <div className="line-clamp-2" title={rec.topic}>
+                              {rec.topic}
+                            </div>
                           </td>
-                          <td className="py-3 px-4 font-semibold text-slate-900 max-w-xs">
-                            {rec.topic}
-                          </td>
-                          <td className="py-3 px-4">
+                          <td className="py-3 px-4 whitespace-nowrap text-left">
                             <span
                               className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                                 isParticipant
@@ -486,25 +511,26 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                               {isParticipant ? 'Participant (You)' : isResourcePerson ? 'Resource Person' : 'Linked Record'}
                             </span>
                           </td>
-                          <td className="py-3 px-4 text-slate-600">
-                            {formatResourcePersonsDisplay({
-                              resourcePersonEmpId: rec.resourcePersonEmpId,
-                              resourcePersonName: rec.resourcePersonName,
-                              externalResourcePersons: rec.externalResourcePersons
-                            })}
+                          <td className="py-3 px-4 whitespace-nowrap text-slate-700 text-center">
+                            <span className="inline-flex items-center gap-1 font-medium">
+                              <Clock className="w-3.5 h-3.5 text-slate-400" />
+                              <span>{formatDurationForDisplay(rec.duration)}</span>
+                            </span>
                           </td>
-                          <td className="py-3 px-4 whitespace-nowrap text-slate-700 flex items-center gap-1">
-                            <Clock className="w-3.5 h-3.5 text-slate-400" />
-                            <span>{formatDurationForDisplay(rec.duration)}</span>
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <button
-                              id={`btn-view-rec-${rec.cneId || rec.dataId || globalIdx}`}
-                              onClick={() => setSelectedRecord(rec)}
-                              className="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors cursor-pointer"
-                            >
-                              View
-                            </button>
+                          <td className="py-3 px-4 text-center whitespace-nowrap">
+                            {rec.myPostTestScore !== null &&
+                            rec.myPostTestScore !== undefined &&
+                            !Number.isNaN(Number(rec.myPostTestScore)) && (
+                              <span
+                                className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                                  Number(rec.myPostTestScore) >= 60
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                    : 'bg-amber-50 text-amber-800 border-amber-200'
+                                }`}
+                              >
+                                {formatPostTestScore(rec.myPostTestScore)}
+                              </span>
+                            )}
                           </td>
                         </tr>
                       );
@@ -616,6 +642,23 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                   </span>
                 </div>
               </div>
+
+              {selectedRecord.myPostTestScore !== null &&
+              selectedRecord.myPostTestScore !== undefined &&
+              !Number.isNaN(Number(selectedRecord.myPostTestScore)) && (
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
+                  <span className="block text-slate-500 font-semibold uppercase text-[10px]">Post-Test Score</span>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${
+                      Number(selectedRecord.myPostTestScore) >= 60
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : 'bg-amber-50 text-amber-800 border-amber-200'
+                    }`}
+                  >
+                    {formatPostTestScore(selectedRecord.myPostTestScore)}
+                  </span>
+                </div>
+              )}
 
               {selectedRecord.remarks && (
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">

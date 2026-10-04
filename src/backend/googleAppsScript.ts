@@ -2903,6 +2903,36 @@ function handleGetCNERecords(params, session) {
   var proposedByCol = colMap['proposedby'] !== undefined ? colMap['proposedby'] : -1;
   var statusCol = colMap['status'] !== undefined ? colMap['status'] : -1;
 
+  var myPostTestScores = {};
+  if (isMyRecordsOnly && loggedInId) {
+    var responsesSheet = getResponsesSheet();
+    if (responsesSheet && responsesSheet.getLastRow() > 1) {
+      var responseRows = responsesSheet
+        .getRange(2, 2, responsesSheet.getLastRow() - 1, 9)
+        .getValues();
+
+      for (var p = 0; p < responseRows.length; p++) {
+        var pRow = responseRows[p];
+        var pCneId = String(pRow[0] || '').trim().toUpperCase();
+        var pParticipantId = normalizeEmpId(pRow[1]);
+        var pPercentage = pRow[7];
+        var pSource = String(pRow[8] || '').trim().toUpperCase();
+
+        if (
+          pCneId &&
+          pParticipantId === loggedInId &&
+          pSource === 'POST_TEST' &&
+          pPercentage !== '' &&
+          pPercentage !== null &&
+          pPercentage !== undefined &&
+          !isNaN(Number(pPercentage))
+        ) {
+          myPostTestScores[pCneId] = Number(pPercentage);
+        }
+      }
+    }
+  }
+
   var records = [];
   for (var r = 1; r < data.length; r++) {
     var row = data[r];
@@ -3053,7 +3083,10 @@ function handleGetCNERecords(params, session) {
       adminRemarks: canSeeInternalManagementFields ? adminRemarks : '',
       cneType: cneType,
       proposedByEmpId: canSeeInternalManagementFields ? proposedBy : '',
-      proposedByName: proposedByName
+      proposedByName: proposedByName,
+      myPostTestScore: (isMyRecordsOnly && Object.prototype.hasOwnProperty.call(myPostTestScores, String(dataId).trim().toUpperCase()))
+        ? myPostTestScores[String(dataId).trim().toUpperCase()]
+        : null
     });
   }
 

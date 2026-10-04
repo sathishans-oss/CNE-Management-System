@@ -35,12 +35,36 @@ export function prefetchRoute(view: ViewMode, isAdmin = false): void {
   });
 }
 
+interface NetworkConnectionInfo {
+  saveData?: boolean;
+  effectiveType?: 'slow-2g' | '2g' | '3g' | '4g';
+}
+
+function getNetworkConnection(): NetworkConnectionInfo | undefined {
+  if (typeof navigator === 'undefined') return undefined;
+  return (
+    (navigator as unknown as { connection?: NetworkConnectionInfo }).connection ||
+    (navigator as unknown as { mozConnection?: NetworkConnectionInfo }).mozConnection ||
+    (navigator as unknown as { webkitConnection?: NetworkConnectionInfo }).webkitConnection
+  );
+}
+
 /**
  * Schedules background idle prefetching for primary staff routes after the main page is idle.
  * Uses requestIdleCallback where available, with a safe setTimeout fallback.
+ * Automatically checks navigator.connection to avoid competing on slow connections or data saver.
  */
 export function scheduleIdlePrefetch(isAuthenticated: boolean, delayMs: number = 2000): () => void {
   if (!isAuthenticated || typeof window === 'undefined') return () => {};
+
+  const conn = getNetworkConnection();
+  // Skip automatic background prefetching on slow-2g, 2g, or when user has Data Saver enabled
+  if (conn?.saveData || conn?.effectiveType === 'slow-2g' || conn?.effectiveType === '2g') {
+    return () => {};
+  }
+
+  // On 3g connections, increase idle delay and prefetch only the primary route
+  const effectiveDelay = conn?.effectiveType === '3g' ? Math.max(delayMs, 5000) : delayMs;
 
   let cancelled = false;
   let timerId: ReturnType<typeof setTimeout> | null = null;
@@ -48,7 +72,10 @@ export function scheduleIdlePrefetch(isAuthenticated: boolean, delayMs: number =
 
   const runPrefetch = () => {
     if (cancelled) return;
-    const primaryRoutes: ViewMode[] = ['cne-schedule', 'my-cne-records', 'learning-resources'];
+    const primaryRoutes: ViewMode[] = conn?.effectiveType === '3g'
+      ? ['cne-schedule']
+      : ['cne-schedule', 'my-cne-records', 'learning-resources'];
+
     primaryRoutes.forEach((route, idx) => {
       setTimeout(() => {
         if (!cancelled) {
@@ -66,7 +93,7 @@ export function scheduleIdlePrefetch(isAuthenticated: boolean, delayMs: number =
     }
   };
 
-  timerId = setTimeout(scheduleWork, delayMs);
+  timerId = setTimeout(scheduleWork, effectiveDelay);
 
   return () => {
     cancelled = true;
