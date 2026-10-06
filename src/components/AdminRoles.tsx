@@ -223,6 +223,7 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
   const [officers, setOfficers] = useState<Employee[]>(() => getCachedOfficers() || []);
   const [rolesMap, setRolesMap] = useState<{ [empId: string]: OfficerRoleState }>({});
   const [areasList, setAreasList] = useState<string[]>([]);
+  const [inactiveAreaNames, setInactiveAreaNames] = useState<Set<string>>(() => new Set<string>());
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [resettingId, setResettingId] = useState<string | null>(null);
@@ -259,6 +260,14 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
 
       if (areasRes.success && areasRes.data) {
         setAreasList(areasRes.data.filter((a) => a.status === 'ACTIVE').map((a) => a.name));
+        setInactiveAreaNames(
+          new Set(
+            areasRes.data
+              .filter((a) => a.status === 'INACTIVE')
+              .map((a) => String(a.name || '').trim().toUpperCase())
+              .filter(Boolean)
+          )
+        );
       }
 
       if (rolesRes.success && rolesRes.data) {
@@ -385,7 +394,11 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
           }
         }));
       } else {
-        error(res.message || 'Failed to update role.');
+        if (res.errorCode === 'AREA_INACTIVE') {
+          error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else {
+          error(res.message || 'Failed to update role.');
+        }
         setRolesMap((prevMap) => ({
           ...prevMap,
           [normId]: prev
@@ -626,13 +639,18 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
                               const removeKey = `${officer.employeeId}:${ward}`;
                               const isRemoving = removingWardKeys.has(removeKey);
                               const isOfficerUpdating = updatingEmpId === officer.employeeId;
+                              const isWardInactive = inactiveAreaNames.has(ward.trim().toUpperCase());
 
                               return (
                                 <span
                                   key={ward}
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-teal-50 text-teal-900 border border-teal-200"
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border ${
+                                    isWardInactive
+                                      ? 'bg-slate-100 text-slate-600 border-slate-300'
+                                      : 'bg-teal-50 text-teal-900 border-teal-200'
+                                  }`}
                                 >
-                                  <span>{ward}</span>
+                                  <span>{isWardInactive ? `${ward} — Inactive` : ward}</span>
                                   <button
                                     type="button"
                                     disabled={isRemoving || isOfficerUpdating}

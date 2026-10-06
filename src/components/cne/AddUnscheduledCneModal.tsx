@@ -92,6 +92,8 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
 
     if (areasList.length > 0 && (!area || !areasList.includes(area))) {
       setArea(areasList[0]);
+    } else if (areasList.length === 0 && area) {
+      setArea('');
     }
 
     if (officersList && officersList.length > 0) {
@@ -217,6 +219,10 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       error('Clinical Area is required.');
       return;
     }
+    if (!areasList.some((a) => String(a || '').trim().toUpperCase() === area.trim().toUpperCase())) {
+      error('This ward/area is currently inactive. Please select an active ward/area.');
+      return;
+    }
     if (!fullFromDate) {
       error('Conducted From (Date & Time) is required.');
       return;
@@ -299,7 +305,11 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
         onSuccess(res.data?.cneId);
         onClose();
       } else {
-        error(res.message || 'Failed to record unscheduled CNE.');
+        if (res.errorCode === 'AREA_INACTIVE') {
+          error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else {
+          error(res.message || 'Failed to record unscheduled CNE.');
+        }
       }
     } catch (err: any) {
       error(err?.message || 'Error recording unscheduled CNE.');

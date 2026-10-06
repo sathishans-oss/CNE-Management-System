@@ -464,12 +464,27 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     syncNewDatesAndDuration(scheduleFromDate, scheduleFromTime, scheduleToDate, val);
   };
 
+  const userAssignedAreas = getUserAssignedAreas(user);
+  const activeAreaNames = useMemo(
+    () => new Set(areasList.map((areaName) => String(areaName || '').trim().toUpperCase()).filter(Boolean)),
+    [areasList]
+  );
+  const selectableAssignedAreas = useMemo(
+    () => userAssignedAreas.filter((name) => activeAreaNames.has(String(name || '').trim().toUpperCase())),
+    [userAssignedAreas, activeAreaNames]
+  );
+
   const handleCreateCNE = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submittingRef.current || isSubmitting) return;
 
     if (!newTopic.trim() || !newArea.trim() || !newDate.trim()) {
       error('Please fill in all required fields (Topic, Area, From Date & Time).');
+      return;
+    }
+
+    if (!activeAreaNames.has(newArea.trim().toUpperCase())) {
+      error('This ward/area is currently inactive. Please select an active ward/area.');
       return;
     }
 
@@ -557,7 +572,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         setNewMode('Lecture Cum Discussion');
         loadData();
       } else {
-        error(res.message || 'Failed to schedule CNE.');
+        if (res.errorCode === 'AREA_INACTIVE') {
+          error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else {
+          error(res.message || 'Failed to schedule CNE.');
+        }
       }
     } catch (err: any) {
       error(err?.message || 'Error creating CNE.');
@@ -653,6 +672,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       error('Please fill in all required fields (Topic, Area, From Date & Time).');
       return;
     }
+    const storedEditArea = String(editingCne.area || '').trim();
+    const isEditAreaChanged = editArea.trim().toUpperCase() !== storedEditArea.toUpperCase();
+    if (isEditAreaChanged && !activeAreaNames.has(editArea.trim().toUpperCase())) {
+      error('This ward/area is currently inactive. Please select an active ward/area.');
+      return;
+    }
     if (!editToDate.trim()) {
       error('To Date & Time is required.');
       return;
@@ -737,7 +762,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         }
         setEditingCne(null);
       } else {
-        error(res.message || 'Failed to update CNE workshop.');
+        if (res.errorCode === 'AREA_INACTIVE') {
+          error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else {
+          error(res.message || 'Failed to update CNE workshop.');
+        }
       }
     } catch (err: any) {
       error(err?.message || 'Error updating CNE.');
@@ -771,8 +800,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     const all = [...internalNames, ...externalNames];
     return all.length > 0 ? all.join(', ') : cls.resourcePersonName || 'TBD';
   }, [officerByEmployeeId]);
-
-  const userAssignedAreas = getUserAssignedAreas(user);
 
   const hasActiveFilters = Boolean(searchTerm.trim() || fromDateFilter || toDateFilter);
 
@@ -1604,9 +1631,16 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                     </div>
 
                     <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                        Target Area / Department *
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                          Target Area / Department *
+                        </label>
+                        {editingCne?.area && !activeAreaNames.has(editingCne.area.trim().toUpperCase()) && (
+                          <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
+                            Current Area: {editingCne.area.trim()} (Inactive)
+                          </span>
+                        )}
+                      </div>
                       <select
                         required
                         value={editArea}
@@ -1614,7 +1648,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
                       >
                         <option value="">Select Area / Unit</option>
-                        {(isAdmin ? areasList : (userAssignedAreas.length > 0 ? userAssignedAreas : areasList)).map((a, idx) => (
+                        {editingCne?.area &&
+                          !activeAreaNames.has(editingCne.area.trim().toUpperCase()) && (
+                            <option value={editingCne.area}>
+                              {editingCne.area.trim()} (Inactive) — current
+                            </option>
+                          )}
+                        {(isAdmin ? areasList : selectableAssignedAreas).map((a, idx) => (
                           <option key={`edit-area-opt-${a}-${idx}`} value={a}>
                             {a}
                           </option>

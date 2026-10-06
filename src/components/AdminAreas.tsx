@@ -270,15 +270,31 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
                       </td>
 
                       <td className="py-3 px-4">
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                        <button
+                          type="button"
+                          onClick={() => handleToggleStatus(area)}
+                          disabled={Boolean(savingEditId || togglingId)}
+                          title={
                             area.status === 'ACTIVE'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-slate-200 text-slate-600'
+                              ? 'Click to deactivate this ward/area'
+                              : 'Click to activate this ward/area'
+                          }
+                          aria-label={
+                            area.status === 'ACTIVE'
+                              ? `Deactivate ${area.name}`
+                              : `Activate ${area.name}`
+                          }
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
+                            area.status === 'ACTIVE'
+                              ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                              : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
                           }`}
                         >
-                          {area.status}
-                        </span>
+                          {togglingId === area.id && (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          )}
+                          <span>{area.status}</span>
+                        </button>
                       </td>
 
                       <td className="py-3 px-4 text-right">

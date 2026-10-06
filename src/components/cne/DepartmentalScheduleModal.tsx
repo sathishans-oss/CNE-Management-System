@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { Plus, Trash2, Loader2, X, PlusCircle } from 'lucide-react';
 import { DepartmentalScheduleRow, Employee, SessionUser } from '../../types';
 import { ApiService } from '../../services/api';
@@ -56,7 +56,17 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   const { success, error } = useToast();
   const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
   const assignedAreas = getUserAssignedAreas(user);
-  const defaultArea = (isAreaIncharge && assignedAreas.length > 0) ? assignedAreas[0] : (areasList[0] || '');
+  const activeAreaNames = useMemo(
+    () => new Set(areasList.map((areaName) => String(areaName || '').trim().toUpperCase()).filter(Boolean)),
+    [areasList]
+  );
+  const selectableAssignedAreas = useMemo(
+    () => assignedAreas.filter((name) => activeAreaNames.has(String(name || '').trim().toUpperCase())),
+    [assignedAreas, activeAreaNames]
+  );
+  const defaultArea = isAreaIncharge
+    ? (selectableAssignedAreas[0] || '')
+    : (areasList[0] || '');
   const todayStr = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
     year: 'numeric',
@@ -234,11 +244,19 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         return;
       }
       if (!r.area.trim()) {
-        error(`Row #${rowNum}: Area/Department is required.`);
+        if (isAreaIncharge && selectableAssignedAreas.length === 0 && assignedAreas.length > 0) {
+          error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else {
+          error(`Row #${rowNum}: Area/Department is required.`);
+        }
         return;
       }
-      if (isAreaIncharge && assignedAreas.length > 0 && !assignedAreas.some((a) => String(a || '').trim().toLowerCase() === r.area.trim().toLowerCase())) {
-        error(`Row #${rowNum}: You are not authorized to schedule for "${r.area}". Authorized areas: ${assignedAreas.join(', ')}`);
+      if (!activeAreaNames.has(r.area.trim().toUpperCase())) {
+        error('This ward/area is currently inactive. Please select an active ward/area.');
+        return;
+      }
+      if (isAreaIncharge && !selectableAssignedAreas.some((a) => String(a || '').trim().toLowerCase() === r.area.trim().toLowerCase())) {
+        error(`Row #${rowNum}: You are not authorized to schedule for "${r.area}". Authorized areas: ${selectableAssignedAreas.join(', ') || 'None'}`);
         return;
       }
       if (!r.date) {
@@ -325,7 +343,11 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         onSuccess();
         onClose();
       } else {
-        error(res.message || 'Failed to schedule departmental CNE sessions.');
+        if (res.errorCode === 'AREA_INACTIVE') {
+          error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else {
+          error(res.message || 'Failed to schedule departmental CNE sessions.');
+        }
       }
     } catch (err: any) {
       error(err?.message || 'Error scheduling departmental CNE batch.');
@@ -440,19 +462,19 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                           Department / Ward <span className="text-rose-500">*</span>
                         </label>
                         {isAreaIncharge ? (
-                          assignedAreas.length === 1 ? (
+                          selectableAssignedAreas.length === 1 ? (
                             <div className="relative">
                               <input
                                 type="text"
                                 disabled
-                                value={assignedAreas[0]}
+                                value={selectableAssignedAreas[0]}
                                 className="w-full p-2.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg text-xs font-semibold cursor-not-allowed"
                               />
                               <span className="absolute right-2.5 top-2.5 text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded">
                                 Locked to Your Ward
                               </span>
                             </div>
-                          ) : assignedAreas.length > 1 ? (
+                          ) : selectableAssignedAreas.length > 1 ? (
                             <select
                               required
                               value={row.area}
@@ -460,7 +482,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                               className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none text-purple-900 font-semibold"
                             >
                               <option value="">Select from Your Assigned Wards</option>
-                              {assignedAreas.map((a, aIdx) => (
+                              {selectableAssignedAreas.map((a, aIdx) => (
                                 <option key={`dept-assigned-area-${a}-${aIdx}`} value={a}>
                                   {a}
                                 </option>
@@ -471,11 +493,11 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                               <input
                                 type="text"
                                 disabled
-                                value={user?.assignedArea || 'No Ward Assigned'}
+                                value={assignedAreas.length > 0 ? `${assignedAreas[0]} (Inactive)` : (user?.assignedArea || 'No Ward Assigned')}
                                 className="w-full p-2.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg text-xs font-semibold cursor-not-allowed"
                               />
                               <span className="absolute right-2.5 top-2.5 text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded">
-                                Locked
+                                {assignedAreas.length > 0 ? 'Inactive' : 'Locked'}
                               </span>
                             </div>
                           )

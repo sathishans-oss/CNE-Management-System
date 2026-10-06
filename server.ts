@@ -81,17 +81,23 @@ async function startServer() {
   });
 
   const distPath = path.join(process.cwd(), 'dist');
-  const hasDist = fs.existsSync(distPath) && fs.existsSync(path.join(distPath, 'index.html'));
-  const isProduction = process.env.NODE_ENV === 'production' || !!process.env.K_SERVICE || (!process.env.DEV && hasDist);
+  const distIndexHtml = path.join(distPath, 'index.html');
+  const isProduction = process.env.NODE_ENV === 'production';
 
-  // In production / containerized environments with built assets, serve static build directly
-  if (isProduction && hasDist) {
+  // In production environments with built assets, serve static build directly
+  if (isProduction && fs.existsSync(distIndexHtml)) {
     app.use(express.static(distPath));
-    app.use((req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+    app.use((req, res, next) => {
+      if (fs.existsSync(distIndexHtml)) {
+        res.sendFile(distIndexHtml, (err) => {
+          if (err) next(err);
+        });
+      } else {
+        res.status(503).send('Application build is updating. Please refresh in a moment.');
+      }
     });
   } else {
-    // Vite middleware setup for local development
+    // Vite middleware setup for development and preview
     const vite = await createViteServer({
       server: { middlewareMode: true, host: '0.0.0.0', port: PORT },
       appType: 'spa'
