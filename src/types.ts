@@ -21,7 +21,8 @@ export type ViewMode =
   | 'admin-areas'
   | 'admin-roles'
   | 'admin-content'
-  | 'admin-reports';
+  | 'admin-reports'
+  | 'admin-teaching-modes';
 
 export interface NewsEventItem {
   id: string;
@@ -79,6 +80,13 @@ export interface Area {
   name: string;
   status: 'ACTIVE' | 'INACTIVE';
   createdAt?: string;
+}
+
+export interface TeachingMode {
+  id?: string;
+  name: string;
+  status: 'ACTIVE' | 'INACTIVE';
+  updatedAt?: string;
 }
 
 export interface RoleMapping {

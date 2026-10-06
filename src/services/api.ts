@@ -1,6 +1,7 @@
 import {
   ApiResponse,
   Area,
+  TeachingMode,
   CNERecord,
   ProgramImpactStats,
   HomeDashboardData,
@@ -166,6 +167,7 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getCNERecords',
   'getProgramImpact',
   'getAreas',
+  'getTeachingModes',
   'getOfficersDropdown',
   'listLearningResources',
   'downloadLearningResource',
@@ -436,6 +438,19 @@ export class ApiService {
 
       case 'getAreas':
         return { success: true, data: [..._inMemoryAreas] as any };
+
+      case 'getTeachingModes':
+        return {
+          success: true,
+          data: [
+            { name: 'Case Study Presentation', status: 'ACTIVE' },
+            { name: 'Demonstration', status: 'ACTIVE' },
+            { name: 'Hands-on Training', status: 'ACTIVE' },
+            { name: 'Lecture Cum Discussion', status: 'ACTIVE' },
+            { name: 'Simulation', status: 'ACTIVE' },
+            { name: 'Workshop', status: 'ACTIVE' }
+          ] as any
+        };
 
       case 'getNewsEvents':
         return { success: true, data: [..._inMemoryNews] as any };
@@ -877,6 +892,27 @@ export class ApiService {
     const res = await this.executeAction('updateArea', { oldName, name, status });
     if (res.success) {
       this.invalidateCache('getAreas');
+    }
+    return res;
+  }
+
+  static async getTeachingModes(): Promise<ApiResponse<TeachingMode[]>> {
+    return this.executeAction<TeachingMode[]>('getTeachingModes');
+  }
+
+  static async addTeachingMode(name: string): Promise<ApiResponse> {
+    const res = await this.executeAction('addTeachingMode', { name });
+    if (res.success) {
+      this.invalidateCache('getTeachingModes');
+    }
+    return res;
+  }
+
+  static async updateTeachingMode(oldName: string, name: string, status: 'ACTIVE' | 'INACTIVE'): Promise<ApiResponse> {
+    const res = await this.executeAction('updateTeachingMode', { oldName, name, status });
+    if (res.success) {
+      this.invalidateCache('getTeachingModes');
+      this.invalidateCache('getCNERecords');
     }
     return res;
   }
