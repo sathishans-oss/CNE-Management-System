@@ -602,6 +602,355 @@ runTest('Admin area rename enforces duplicate name validation in backend handleU
   );
 });
 
+// -----------------------------------------------------------------------------
+// 9. Ward / Area Referential Rename Propagation
+// -----------------------------------------------------------------------------
+runTest('handleUpdateArea rename updates Area master name and status together', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+
+  assert.ok(
+    updateAreaFunc.includes('getRange(targetAreaRow, 1, 1, 2)'),
+    'handleUpdateArea must target Area master Name + Status together'
+  );
+
+  assert.ok(
+    updateAreaFunc.includes('setValues([[newName, targetStatus]])'),
+    'handleUpdateArea must write newName and targetStatus in one operation'
+  );
+
+  assert.ok(
+    updateAreaFunc.includes('var isRename = Boolean(newName && newName.toLowerCase() !== oldName.toLowerCase());'),
+    'handleUpdateArea must identify rename operations'
+  );
+});
+
+runTest('rename propagates exact match into Role assignments', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes("ss.getSheetByName('Role')"),
+    'handleUpdateArea must access Role sheet during rename'
+  );
+  assert.ok(
+    updateAreaFunc.includes('tokenStr.toUpperCase() === oldNorm'),
+    'handleUpdateArea must match tokens using normalized uppercase equality'
+  );
+  assert.ok(
+    updateAreaFunc.includes('updatedTokens.push(newName);'),
+    'handleUpdateArea must replace matching token with newName'
+  );
+  assert.ok(
+    updateAreaFunc.includes('roleSheet.getRange(rItem.row, rItem.col).setValue(rItem.newVal);'),
+    'handleUpdateArea must update affected Role cells'
+  );
+});
+
+runTest('rename propagates exact match into CNE Schedule', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes("ss.getSheetByName('CNE Schedule')"),
+    'handleUpdateArea must access CNE Schedule sheet during rename'
+  );
+  assert.ok(
+    updateAreaFunc.includes('cneAreaVal.toUpperCase() === oldNorm'),
+    'handleUpdateArea must match CNE Area/Ward using normalized uppercase equality'
+  );
+  assert.ok(
+    updateAreaFunc.includes('cneSheet.getRange(cItem.row, cItem.col).setValue(cItem.newVal);'),
+    'handleUpdateArea must update affected CNE Schedule cells'
+  );
+});
+
+runTest('rename does not modify partial names such as MICU/PICU/NICU', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    !updateAreaFunc.includes('.replace(oldName, newName)'),
+    'handleUpdateArea must NOT use blind substring replacement'
+  );
+  assert.ok(
+    updateAreaFunc.includes('tokenStr.toUpperCase() === oldNorm'),
+    'Role sheet must use exact token comparison'
+  );
+  assert.ok(
+    updateAreaFunc.includes('cneAreaVal.toUpperCase() === oldNorm'),
+    'CNE Schedule must use exact area equality'
+  );
+});
+
+runTest('rename preserves ACTIVE/INACTIVE status', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+
+  assert.ok(
+    updateAreaFunc.includes('var targetStatus = rawStatus ? status : currentStatus;'),
+    'handleUpdateArea must preserve currentStatus when status is not explicitly passed'
+  );
+
+  assert.ok(
+    updateAreaFunc.includes('setValues([[newName, targetStatus]])'),
+    'Area master grouped write must preserve targetStatus'
+  );
+});
+
+runTest('rename remains Admin-only and ScriptLock-protected', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes('var adminError = requireAdmin(session);'),
+    'handleUpdateArea must enforce requireAdmin'
+  );
+  assert.ok(
+    updateAreaFunc.includes('lock.waitLock(10000);'),
+    'handleUpdateArea must wait for ScriptLock before any mutation'
+  );
+  assert.ok(
+    updateAreaFunc.includes('lock.releaseLock();'),
+    'handleUpdateArea must release ScriptLock in finally block'
+  );
+});
+
+runTest('relevant caches are invalidated after rename', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes("CacheService.getScriptCache().remove('cne_areas_list');"),
+    'handleUpdateArea must invalidate cne_areas_list cache'
+  );
+  assert.ok(
+    updateAreaFunc.includes('invalidateUserRoleCache(roleAffectedEmpIds[sa]);'),
+    'handleUpdateArea must invalidate affected officer role cache'
+  );
+  assert.ok(
+    updateAreaFunc.includes('_inMemoryRoleCache = {};'),
+    'handleUpdateArea must reset in-memory role cache'
+  );
+});
+
+runTest('Active/Inactive enforcement still works after rename', () => {
+  assert.ok(
+    codeGs.includes("CacheService.getScriptCache().remove('cne_areas_list');"),
+    'cne_areas_list cache removal ensures fresh status map'
+  );
+  assert.ok(
+    codeGs.includes('function requireActiveArea_(areaName, forceFresh)'),
+    'requireActiveArea_ helper functions across fresh reads'
+  );
+  const createFunc = codeGs.substring(
+    codeGs.indexOf('function handleCreateCNE('),
+    codeGs.indexOf('function handleUpdateCNE(')
+  );
+  assert.ok(
+    createFunc.includes('requireActiveArea_(area, true)'),
+    'handleCreateCNE uses forceFresh=true under lock to validate newly renamed area'
+  );
+});
+
+// -----------------------------------------------------------------------------
+// 10. Ward / Area Rename Production Hardening & Atomicity
+// -----------------------------------------------------------------------------
+runTest('Rename propagation errors are not silently swallowed', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    !updateAreaFunc.includes('console.warn(\'Error propagating area rename'),
+    'handleUpdateArea must NOT silently swallow rename errors with console.warn'
+  );
+  assert.ok(
+    updateAreaFunc.includes('catch (writeErr) {'),
+    'handleUpdateArea must catch write errors to perform rollback and fail closed'
+  );
+});
+
+runTest('Failure does not return success and returns explicit error codes', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes("errorCode: 'AREA_RENAME_FAILED'"),
+    'handleUpdateArea must return AREA_RENAME_FAILED error code on write failure'
+  );
+  assert.ok(
+    updateAreaFunc.includes("errorCode: 'AREA_RENAME_RECONCILIATION_REQUIRED'"),
+    'handleUpdateArea must return AREA_RENAME_RECONCILIATION_REQUIRED if rollback fails'
+  );
+  assert.ok(
+    updateAreaFunc.includes('success: false'),
+    'Write failure must strictly return success: false'
+  );
+});
+
+runTest('Only affected Role cells are updated', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes('roleSheet.getRange(rItem.row, rItem.col).setValue(rItem.newVal);'),
+    'handleUpdateArea must update only specific cell coordinates on matching Role rows'
+  );
+});
+
+runTest('Only affected CNE Area cells are updated', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes('cneSheet.getRange(cItem.row, cItem.col).setValue(cItem.newVal);'),
+    'handleUpdateArea must update only specific cell coordinates on matching CNE rows'
+  );
+});
+
+runTest('Unrelated columns and formulas are preserved without full-sheet overwrites', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    !updateAreaFunc.includes('roleSheet.getRange(1, 1, rData.length, rData[0].length).setValues(rData)'),
+    'handleUpdateArea must not overwrite full Role sheet range'
+  );
+  assert.ok(
+    !updateAreaFunc.includes('cneSheet.getRange(1, 1, cneData.length, cneData[0].length).setValues(cneData)'),
+    'handleUpdateArea must not overwrite full CNE Schedule sheet range'
+  );
+});
+
+runTest('Rollback and restoration are attempted on partial failure', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes('var executedRollbacks = [];'),
+    'handleUpdateArea must track executed rollbacks'
+  );
+  const renameTryBlock = updateAreaFunc.substring(
+    updateAreaFunc.indexOf('// EXECUTE WRITES WITH ROLLBACK TRACKING'),
+    updateAreaFunc.indexOf('} catch (writeErr) {')
+  );
+  assert.ok(
+    renameTryBlock.indexOf('executedRollbacks.push({ sheet: roleSheet') < renameTryBlock.indexOf('roleSheet.getRange(rItem.row, rItem.col).setValue'),
+    'Rollback entry must be registered before role write'
+  );
+  assert.ok(
+    renameTryBlock.indexOf('executedRollbacks.push({ sheet: cneSheet') < renameTryBlock.indexOf('cneSheet.getRange(cItem.row, cItem.col).setValue'),
+    'Rollback entry must be registered before CNE write'
+  );
+  const masterGroupedWriteIndex = renameTryBlock.indexOf('getRange(targetAreaRow, 1, 1, 2)');
+  const nameRollbackIndex = renameTryBlock.indexOf('col: 1, oldVal: oldAreaMasterName');
+  const statusRollbackIndex = renameTryBlock.indexOf('col: 2, oldVal: oldAreaMasterStatus');
+
+  assert.ok(
+    nameRollbackIndex !== -1 && nameRollbackIndex < masterGroupedWriteIndex,
+    'Area master name rollback must be registered before grouped write'
+  );
+
+  assert.ok(
+    statusRollbackIndex !== -1 && statusRollbackIndex < masterGroupedWriteIndex,
+    'Area master status rollback must be registered before grouped write'
+  );
+
+  assert.ok(
+    renameTryBlock.includes('setValues([[newName, targetStatus]])'),
+    'Area master Name + Status must be written together'
+  );
+  assert.ok(
+    updateAreaFunc.includes('rbItem.sheet.getRange(rbItem.row, rbItem.col).setValue(rbItem.oldVal);'),
+    'handleUpdateArea must restore cells to oldVal during rollback'
+  );
+});
+
+runTest('AREA_RENAME_FAILED error is returned appropriately on safe rollback', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes("message: 'Ward/area rename could not be completed safely. No changes were finalized. Please try again.'"),
+    'handleUpdateArea must return safe rollback failure message'
+  );
+});
+
+runTest('Caches are invalidated on both success and failure', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  const catchSection = updateAreaFunc.substring(
+    updateAreaFunc.indexOf('catch (writeErr) {'),
+    updateAreaFunc.indexOf('// ---------------------------------------------------------\n    // SUCCESS:')
+  );
+  assert.ok(
+    catchSection.includes("CacheService.getScriptCache().remove('cne_areas_list');"),
+    'Caches must be removed on failure'
+  );
+  assert.ok(
+    catchSection.includes('_inMemoryRoleCache = {};'),
+    'In-memory role cache must be cleared on failure'
+  );
+  assert.ok(
+    catchSection.includes('invalidateUserRoleCache(roleAffectedEmpIds[fa]);'),
+    'User role cache must be invalidated on failure'
+  );
+});
+
+runTest('Active/Inactive status remains unchanged when renaming area', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+
+  assert.ok(
+    updateAreaFunc.includes('var targetStatus = rawStatus ? status : currentStatus;'),
+    'targetStatus must resolve to currentStatus if status not specified'
+  );
+
+  assert.ok(
+    updateAreaFunc.includes('setValues([[newName, targetStatus]])'),
+    'Grouped Area master write must preserve resolved targetStatus'
+  );
+});
+
+runTest('Audit logging records AREA_RENAMED with row counts on success and AREA_RENAME_FAILED on failure', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes("logAuditAction(\n      'AREA_RENAMED',"),
+    'handleUpdateArea must log AREA_RENAMED on success'
+  );
+  assert.ok(
+    updateAreaFunc.includes("' (Role rows updated: ' + roleUpdates.length + ', CNE rows updated: ' + cneUpdates.length + ')'"),
+    'Audit log must record updated Role and CNE counts'
+  );
+  assert.ok(
+    updateAreaFunc.includes("logAuditAction(\n        'AREA_RENAME_FAILED',"),
+    'handleUpdateArea must log AREA_RENAME_FAILED on failure'
+  );
+});
+
 console.log('\n========================================================');
 console.log(`Passed: ${passedTests}/${totalTests}`);
 console.log('ALL CNE WORKFLOWS & SCHEMA TESTS PASSED!');

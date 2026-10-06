@@ -2765,7 +2765,11 @@ function handleUpdateArea(params, session) {
     if (!sheet) return { success: false, message: 'Area sheet not found.' };
     
     var data = sheet.getDataRange().getValues();
-    if (newName && newName.toLowerCase() !== oldName.toLowerCase()) {
+    var isRename = Boolean(newName && newName.toLowerCase() !== oldName.toLowerCase());
+    var oldNorm = oldName.toUpperCase();
+
+    // Validate duplicate name if renaming
+    if (isRename) {
       for (var dr = 1; dr < data.length; dr++) {
         if (String(data[dr][0]).trim().toLowerCase() === newName.toLowerCase()) {
           return { success: false, message: 'An area with this name already exists.' };
@@ -2773,60 +2777,236 @@ function handleUpdateArea(params, session) {
       }
     }
 
+    var targetAreaRow = -1;
+    var currentStatus = 'ACTIVE';
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0]).trim().toLowerCase() === oldName.toLowerCase()) {
-        var currentStatus = String(data[r][1] || 'ACTIVE').trim().toUpperCase();
-        var targetStatus = rawStatus ? status : currentStatus;
-        sheet.getRange(r + 1, 1).setValue(newName || oldName);
-        sheet.getRange(r + 1, 2).setValue(targetStatus);
-        try {
-          CacheService.getScriptCache().remove('cne_areas_list');
-        } catch (e) {}
-
-        // Invalidate incharge cached role if incharge column is present in Area sheet
-        var inchargeCol = -1;
-        for (var c = 0; c < data[0].length; c++) {
-          var ah = String(data[0][c]).toLowerCase().trim();
-          if (ah.indexOf('incharge') !== -1 && ah.indexOf('id') !== -1) inchargeCol = c;
-        }
-        if (inchargeCol !== -1 && data[r][inchargeCol]) {
-          invalidateUserRoleCache(data[r][inchargeCol]);
-        }
-        if (params.inchargeEmpId || params.inchargeId || params.employeeId) {
-          invalidateUserRoleCache(params.inchargeEmpId || params.inchargeId || params.employeeId);
-        }
-
-        // If area was renamed or status changed, invalidate role cache for all officers assigned to oldName
-        try {
-          var roleSheet = ss.getSheetByName('Role');
-          if (roleSheet) {
-            var rData = roleSheet.getDataRange().getValues();
-            if (rData.length > 1) {
-              var rHeaders = rData[0];
-              var rEmpCol = 0;
-              var rAreaCol = 4;
-              for (var rc = 0; rc < rHeaders.length; rc++) {
-                var rh = String(rHeaders[rc] || '').toLowerCase();
-                if (rh.indexOf('emp') !== -1 && rh.indexOf('id') !== -1) rEmpCol = rc;
-                if (rh.indexOf('area') !== -1 || rh.indexOf('dept') !== -1 || rh.indexOf('ward') !== -1) rAreaCol = rc;
-              }
-              var oldLower = oldName.toLowerCase();
-              for (var ri = 1; ri < rData.length; ri++) {
-                var rawEmpArea = String(rData[ri][rAreaCol] || '').toLowerCase();
-                if (rawEmpArea.indexOf(oldLower) !== -1) {
-                  var rEmpId = normalizeEmpId(rData[ri][rEmpCol]);
-                  if (rEmpId) invalidateUserRoleCache(rEmpId);
-                }
-              }
-            }
-          }
-        } catch (re) {}
-
-        logAuditAction('UPDATE_AREA', session.employeeId, 'Updated area: ' + oldName + ' -> ' + (newName || oldName), 'SUCCESS');
-        return { success: true, message: 'Area updated successfully.' };
+        targetAreaRow = r + 1;
+        currentStatus = String(data[r][1] || 'ACTIVE').trim().toUpperCase();
+        break;
       }
     }
-    return { success: false, message: 'Area not found.' };
+
+    if (targetAreaRow === -1) {
+      return { success: false, message: 'Area not found.' };
+    }
+
+    var targetStatus = rawStatus ? status : currentStatus;
+
+    // If NOT renaming (status update only), perform simple atomic master update
+    if (!isRename) {
+      sheet.getRange(targetAreaRow, 2).setValue(targetStatus);
+      try {
+        CacheService.getScriptCache().remove('cne_areas_list');
+      } catch (e) {}
+
+      // Invalidate incharge cached role if incharge column is present in Area sheet
+      var inchargeCol = -1;
+      for (var c = 0; c < data[0].length; c++) {
+        var ah = String(data[0][c]).toLowerCase().trim();
+        if (ah.indexOf('incharge') !== -1 && ah.indexOf('id') !== -1) inchargeCol = c;
+      }
+      if (inchargeCol !== -1 && data[targetAreaRow - 1][inchargeCol]) {
+        invalidateUserRoleCache(data[targetAreaRow - 1][inchargeCol]);
+      }
+      if (params.inchargeEmpId || params.inchargeId || params.employeeId) {
+        invalidateUserRoleCache(params.inchargeEmpId || params.inchargeId || params.employeeId);
+      }
+
+      logAuditAction('UPDATE_AREA', session.employeeId, 'Updated area: ' + oldName + ' status: ' + targetStatus, 'SUCCESS');
+      return { success: true, message: 'Area updated successfully.' };
+    }
+
+    // ---------------------------------------------------------
+    // RENAME FLOW: Prepare dependent updates in memory first
+    // ---------------------------------------------------------
+    var roleUpdates = [];
+    var roleAffectedEmpIds = [];
+    var roleSheet = ss.getSheetByName('Role');
+    if (roleSheet) {
+      var rData = roleSheet.getDataRange().getValues();
+      if (rData.length > 1) {
+        var rHeaders = rData[0];
+        var rEmpCol = 0;
+        var rAreaCol = 4;
+        for (var rc = 0; rc < rHeaders.length; rc++) {
+          var rh = String(rHeaders[rc] || '').toLowerCase();
+          if (rh.indexOf('emp') !== -1 && rh.indexOf('id') !== -1) rEmpCol = rc;
+          if (rh.indexOf('area') !== -1 || rh.indexOf('dept') !== -1 || rh.indexOf('ward') !== -1) rAreaCol = rc;
+        }
+
+        for (var ri = 1; ri < rData.length; ri++) {
+          var rawEmpArea = String(rData[ri][rAreaCol] || '').trim();
+          if (!rawEmpArea) continue;
+
+          var isJson = false;
+          var tokens = [];
+          if (rawEmpArea.charAt(0) === '[' && rawEmpArea.charAt(rawEmpArea.length - 1) === ']') {
+            try {
+              var parsedJson = JSON.parse(rawEmpArea);
+              if (Array.isArray(parsedJson)) {
+                tokens = parsedJson;
+                isJson = true;
+              }
+            } catch (pe) {}
+          }
+          if (!isJson) {
+            tokens = rawEmpArea.split(/[,;\n]+/).map(function(s) { return String(s).trim(); }).filter(Boolean);
+          }
+
+          var rowChanged = false;
+          var updatedTokens = [];
+          for (var ti = 0; ti < tokens.length; ti++) {
+            var tokenStr = String(tokens[ti] || '').trim();
+            if (tokenStr.toUpperCase() === oldNorm) {
+              updatedTokens.push(newName);
+              rowChanged = true;
+            } else {
+              updatedTokens.push(tokenStr);
+            }
+          }
+
+          if (rowChanged) {
+            var serializedArea = isJson ? JSON.stringify(updatedTokens) : updatedTokens.join(', ');
+            var rEmpId = normalizeEmpId(rData[ri][rEmpCol]);
+            if (rEmpId && roleAffectedEmpIds.indexOf(rEmpId) === -1) {
+              roleAffectedEmpIds.push(rEmpId);
+            }
+            roleUpdates.push({
+              row: ri + 1,
+              col: rAreaCol + 1,
+              oldVal: rawEmpArea,
+              newVal: serializedArea
+            });
+          }
+        }
+      }
+    }
+
+    var cneUpdates = [];
+    var cneSheet = ss.getSheetByName('CNE Schedule');
+    if (cneSheet) {
+      var cneData = cneSheet.getDataRange().getValues();
+      if (cneData.length > 1) {
+        var cneColMap = getHeaderMap(cneSheet);
+        var cneAreaCol = cneColMap['area'] !== undefined ? cneColMap['area'] : 2;
+        for (var ci = 1; ci < cneData.length; ci++) {
+          var cneAreaVal = String(cneData[ci][cneAreaCol] || '').trim();
+          if (cneAreaVal.toUpperCase() === oldNorm) {
+            cneUpdates.push({
+              row: ci + 1,
+              col: cneAreaCol + 1,
+              oldVal: cneData[ci][cneAreaCol],
+              newVal: newName
+            });
+          }
+        }
+      }
+    }
+
+    // ---------------------------------------------------------
+    // EXECUTE WRITES WITH ROLLBACK TRACKING
+    // Preferred order:
+    // 1. Role references (only affected cells, rollback registered BEFORE write)
+    // 2. CNE Schedule references (only affected cells, rollback registered BEFORE write)
+    // 3. Area master name and status last (atomically with setValues, rollback registered BEFORE write)
+    // ---------------------------------------------------------
+    var executedRollbacks = [];
+    try {
+      // 1. Update dependent Role references (only affected cells)
+      if (roleSheet && roleUpdates.length > 0) {
+        for (var ru = 0; ru < roleUpdates.length; ru++) {
+          var rItem = roleUpdates[ru];
+          executedRollbacks.push({ sheet: roleSheet, row: rItem.row, col: rItem.col, oldVal: rItem.oldVal });
+          roleSheet.getRange(rItem.row, rItem.col).setValue(rItem.newVal);
+        }
+      }
+
+      // 2. Update dependent CNE Schedule references (only affected cells)
+      if (cneSheet && cneUpdates.length > 0) {
+        for (var cu = 0; cu < cneUpdates.length; cu++) {
+          var cItem = cneUpdates[cu];
+          executedRollbacks.push({ sheet: cneSheet, row: cItem.row, col: cItem.col, oldVal: cItem.oldVal });
+          cneSheet.getRange(cItem.row, cItem.col).setValue(cItem.newVal);
+        }
+      }
+
+      // 3. Update Area master name + status together.
+      // Register BOTH rollback values BEFORE attempting the grouped write.
+      var oldAreaMasterName = String(data[targetAreaRow - 1][0] || '').trim();
+      var oldAreaMasterStatus = String(data[targetAreaRow - 1][1] || 'ACTIVE').trim().toUpperCase();
+
+      executedRollbacks.push({ sheet: sheet, row: targetAreaRow, col: 1, oldVal: oldAreaMasterName });
+      executedRollbacks.push({ sheet: sheet, row: targetAreaRow, col: 2, oldVal: oldAreaMasterStatus });
+
+      // Write Name + Status in one Sheets operation.
+      sheet.getRange(targetAreaRow, 1, 1, 2).setValues([[newName, targetStatus]]);
+    } catch (writeErr) {
+      // Propagation failure encountered: Attempt rollback
+      var rollbackSucceeded = true;
+      for (var rb = executedRollbacks.length - 1; rb >= 0; rb--) {
+        try {
+          var rbItem = executedRollbacks[rb];
+          rbItem.sheet.getRange(rbItem.row, rbItem.col).setValue(rbItem.oldVal);
+        } catch (rbErr) {
+          rollbackSucceeded = false;
+          console.error('Rollback step failed at row ' + rbItem.row + ', col ' + rbItem.col + ': ' + (rbErr.message || rbErr));
+        }
+      }
+
+      // Invalidate caches even on failure to avoid serving stale data
+      try { CacheService.getScriptCache().remove('cne_areas_list'); } catch (e) {}
+      _inMemoryRoleCache = {};
+      for (var fa = 0; fa < roleAffectedEmpIds.length; fa++) {
+        invalidateUserRoleCache(roleAffectedEmpIds[fa]);
+      }
+
+      logAuditAction(
+        'AREA_RENAME_FAILED',
+        session.employeeId,
+        'Failed renaming ' + oldName + ' -> ' + newName + ': ' + (writeErr.message || writeErr) + (rollbackSucceeded ? ' (Rollback completed)' : ' (Rollback partial/failed)'),
+        'FAILURE'
+      );
+
+      if (!rollbackSucceeded) {
+        return {
+          success: false,
+          errorCode: 'AREA_RENAME_RECONCILIATION_REQUIRED',
+          message: 'Ward/area rename encountered an unexpected error and requires administrator review.'
+        };
+      }
+
+      return {
+        success: false,
+        errorCode: 'AREA_RENAME_FAILED',
+        message: 'Ward/area rename could not be completed safely. No changes were finalized. Please try again.'
+      };
+    }
+
+    // ---------------------------------------------------------
+    // SUCCESS: Invalidate caches & audit log
+    // ---------------------------------------------------------
+    try {
+      CacheService.getScriptCache().remove('cne_areas_list');
+    } catch (e) {}
+    _inMemoryRoleCache = {};
+
+    for (var sa = 0; sa < roleAffectedEmpIds.length; sa++) {
+      invalidateUserRoleCache(roleAffectedEmpIds[sa]);
+    }
+
+    if (params.inchargeEmpId || params.inchargeId || params.employeeId) {
+      invalidateUserRoleCache(params.inchargeEmpId || params.inchargeId || params.employeeId);
+    }
+
+    logAuditAction(
+      'AREA_RENAMED',
+      session.employeeId,
+      'Renamed area: ' + oldName + ' -> ' + newName + ' (Role rows updated: ' + roleUpdates.length + ', CNE rows updated: ' + cneUpdates.length + ')',
+      'SUCCESS'
+    );
+
+    return { success: true, message: 'Area updated successfully.' };
   } finally {
     lock.releaseLock();
   }
