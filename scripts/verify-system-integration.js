@@ -1130,13 +1130,13 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
   assert.ok(
     !apiTs.includes('static async getChairpersonMessage(') &&
     !codeGs.includes("case 'getChairpersonMessage':") &&
-    !codeGs.includes('function handleGetChairpersonMessage(') &&
+    !codeGs.includes('function handleUpdateChairpersonMessage(') &&
     cneHomeTs.includes('...INITIAL_CHAIRPERSON_MESSAGE') &&
     cneHomeTs.includes('ApiService.getHomeDashboard()') &&
-    cneHomeTs.includes('res.data.chairpersonPhotoUrl') &&
-    !cneHomeTs.includes('ApiService.getChairpersonPhoto()') &&
+    cneHomeTs.includes('ApiService.getChairpersonPhoto()') &&
+    !cneHomeTs.includes('res.data.chairpersonPhotoUrl') &&
     !cneHomeTs.includes('ApiService.getChairpersonMessage('),
-    'Chairperson text content must remain static while the photo is loaded dynamically through the consolidated Home Dashboard response'
+    'Chairperson text content must remain static while the photo loads independently so Drive/image latency cannot block Home Dashboard data'
   );
   assert.ok(
     !codeGs.includes('CHAIRPERSON_MESSAGE') &&
@@ -1148,6 +1148,39 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
     codeGs.includes("getProperty('CHAIRPERSON_PHOTO')") &&
     apiTs.includes('static async getChairpersonPhoto'),
     'Only the CHAIRPERSON_PHOTO photo-only endpoint may remain as a Chairperson backend dependency'
+  );
+});
+
+
+runTest('Home Dashboard reuses one CNE Schedule snapshot for Schedule and Impact', () => {
+  const homeSection = codeGs.substring(
+    codeGs.indexOf('function handleGetHomeDashboard('),
+    codeGs.indexOf('/**\n * Format Date Helper')
+  );
+  assert.ok(
+    codeGs.includes('function getCNEScheduleSnapshot_(') &&
+    homeSection.includes('var scheduleSnapshot = getCNEScheduleSnapshot_();') &&
+    homeSection.includes("handleGetCNERecords({ status: 'Scheduled' }, null, scheduleSnapshot)") &&
+    homeSection.includes('handleGetProgramImpact({}, session, scheduleSnapshot)'),
+    'Home Dashboard must read CNE Schedule once and reuse the snapshot for upcoming classes and impact metrics'
+  );
+  assert.ok(
+    !homeSection.includes('handleGetChairpersonPhoto()'),
+    'Home Dashboard must not wait for Drive/remote Chairperson photo loading'
+  );
+});
+
+runTest('Officer display-name map reads only Employee ID and Name columns on cache miss', () => {
+  const mapSection = codeGs.substring(
+    codeGs.indexOf('function getOfficerNameMap()'),
+    codeGs.indexOf('/**\n * ============================================================================\n * AUTHENTICATION V2')
+  );
+  assert.ok(
+    mapSection.includes('var empCol = meta.colMap.empCol + 1;') &&
+    mapSection.includes('var nameCol = meta.colMap.nameCol + 1;') &&
+    mapSection.includes('getDisplayValues()') &&
+    !mapSection.includes('getExecutionRosterData()'),
+    'Name resolution must avoid a full Officers A:L roster read when only ID and Name are required'
   );
 });
 

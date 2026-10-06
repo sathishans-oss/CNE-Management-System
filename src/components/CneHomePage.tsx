@@ -94,9 +94,22 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
     setChairpersonPhotoUrl('');
     setClassesLoading(true);
 
-    // One optimized bootstrap request supplies all homepage datasets, including
-    // the Chairperson photo. The backend still applies session-aware impact
-    // scoping once per request.
+    // Load the Chairperson photo independently because Drive/remote image access can
+    // occasionally be slow. A photo delay must never block Schedule/Impact/CMS data.
+    ApiService.getChairpersonPhoto()
+      .then((res) => {
+        if (!isCurrent()) return;
+        setChairpersonPhotoUrl(res.success && res.data?.photoUrl ? res.data.photoUrl : '');
+      })
+      .catch((err) => {
+        if (!isCurrent()) return;
+        console.warn('[Home Data] Chairperson photo error:', err);
+        setChairpersonPhotoUrl('');
+      });
+
+    // One optimized bootstrap request supplies the lightweight homepage datasets.
+    // The backend applies session-aware impact scoping and reuses one CNE Schedule
+    // snapshot for both upcoming classes and Program Impact.
     ApiService.getHomeDashboard()
       .then((res) => {
         if (!isCurrent()) return;
@@ -106,7 +119,6 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
           setQuickLinks(res.data.quickLinks || INITIAL_QUICK_LINKS);
           setCoordinatorDesk(res.data.coordinatorDesk || INITIAL_COORDINATOR_DESK);
           setImpactStats(res.data.impactStats || cachedImpact || INITIAL_PROGRAM_IMPACT);
-          setChairpersonPhotoUrl(res.data.chairpersonPhotoUrl || '');
           setImpactError(null);
         } else {
           if (!cachedImpact) setImpactError(res.message || 'Unable to load impact metrics');

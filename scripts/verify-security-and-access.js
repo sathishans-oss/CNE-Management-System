@@ -614,6 +614,50 @@ runTest('Authentication hot paths use targeted single-row lookups and reuse the 
   );
 });
 
+
+runTest('Authenticated request path avoids duplicate credential reads while mutations still revalidate fresh', () => {
+  const requestSection = codeGs.substring(
+    codeGs.indexOf('function handleRequest('),
+    codeGs.indexOf('/**\n * Administrative Dispatch Wrapper')
+  );
+  const refreshSection = codeGs.substring(
+    codeGs.indexOf('function refreshMutationSession('),
+    codeGs.indexOf('function requireFreshAdminMutation(')
+  );
+  assert.ok(
+    !requestSection.includes('getUserCredentialSecurityState(session.employeeId)') &&
+    requestSection.includes('verifySession(params.token, params.loggedInEmployeeId)'),
+    'handleRequest must rely on the already-authoritative verifySession result instead of rereading Auth_Credentials'
+  );
+  assert.ok(
+    refreshSection.includes('getAuthCredentialRecord(employeeId, true)') &&
+    refreshSection.includes('getUserRoleInfo(employeeId, true)'),
+    'Protected mutations must retain fresh credential and role revalidation under the mutation flow'
+  );
+});
+
+runTest('Fresh role resolution is targeted and request-local spreadsheet handles are reused', () => {
+  const roleSection = codeGs.substring(
+    codeGs.indexOf('function getUserRoleInfo('),
+    codeGs.indexOf('function invalidateUserRoleCache(')
+  );
+  const spreadsheetSection = codeGs.substring(
+    codeGs.indexOf('function getSpreadsheet('),
+    codeGs.indexOf('function getCNESpreadsheet(')
+  );
+  assert.ok(
+    roleSection.includes('findExactEmployeeRow_(roleMeta.sheet, roleMeta.empIdCol + 1, normId, 2)') &&
+    roleSection.includes('getRange(roleRowIndex, 1, 1, width).getValues()[0]') &&
+    !roleSection.includes('roleSheet.getDataRange().getValues()'),
+    'Authoritative role checks must locate only the requested employee row instead of scanning the complete Role sheet'
+  );
+  assert.ok(
+    spreadsheetSection.includes('_executionSpreadsheetCache[cacheKey]') &&
+    spreadsheetSection.includes('return _executionSpreadsheetCache[cacheKey]'),
+    'Spreadsheet handles must be reused within the same Apps Script request execution'
+  );
+});
+
 runTest('Registered-email password OTP flow is rate-limited, hashed, single-use, and Officers-data authoritative', () => {
   assert.ok(codeGs.includes("var OTP_PURPOSE_PASSWORD = 'PASSWORD_CREATE_RESET'"), 'Password OTP purpose must be explicit');
   assert.ok(codeGs.includes('function handleRequestPasswordOtp('), 'requestPasswordOtp backend handler must exist');

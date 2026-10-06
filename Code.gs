@@ -54,32 +54,47 @@ var _inMemoryRoleCache = {};
 var _inMemoryOfficerMap = null;
 var _executionRosterData = null;
 var _officerHeaderMeta = null;
+var _executionSpreadsheetCache = {};
+var _executionCredentialCache = {};
+var _executionOfficerById = {};
+var _executionCneScheduleSnapshot = null;
+var _roleHeaderMeta = null;
+var _areaInchargeHeaderMeta = null;
 
 // Global Configuration & Sheet Resolution (Strict separation: Officers Roster requires DROPDOWN_SPREADSHEET_ID)
 function getSpreadsheet(type) {
+  var cacheKey = String(type || 'CNE').toUpperCase() === 'OFFICERS' ? 'OFFICERS' : 'CNE';
+  if (_executionSpreadsheetCache && _executionSpreadsheetCache[cacheKey]) {
+    return _executionSpreadsheetCache[cacheKey];
+  }
+
   var props = PropertiesService.getScriptProperties();
-  
-  if (type === 'OFFICERS') {
+  var spreadsheet;
+
+  if (cacheKey === 'OFFICERS') {
     var dropdownId = props.getProperty('DROPDOWN_SPREADSHEET_ID');
     if (!dropdownId || dropdownId.trim() === '') {
       throw new Error('DROPDOWN_SPREADSHEET_ID is not configured in Script Properties. Institutional roster lookup requires DROPDOWN_SPREADSHEET_ID to prevent reading operational CNE sheets.');
     }
     try {
-      return SpreadsheetApp.openById(dropdownId.trim());
+      spreadsheet = SpreadsheetApp.openById(dropdownId.trim());
     } catch (e) {
       throw new Error('Could not open Employee Master spreadsheet with DROPDOWN_SPREADSHEET_ID: ' + e.message);
     }
   } else {
     var cneId = props.getProperty('CNE_SPREADSHEET_ID');
-    if (cneId && cneId.trim() !== '') {
-      try {
-        return SpreadsheetApp.openById(cneId.trim());
-      } catch (e) {
-        throw new Error('Could not open CNE spreadsheet with CNE_SPREADSHEET_ID: ' + e.message);
-      }
+    if (!cneId || cneId.trim() === '') {
+      throw new Error('CNE_SPREADSHEET_ID is not configured in Script Properties. Please configure the CNE Database Spreadsheet ID.');
     }
-    throw new Error('CNE_SPREADSHEET_ID is not configured in Script Properties. Please configure the CNE Database Spreadsheet ID.');
+    try {
+      spreadsheet = SpreadsheetApp.openById(cneId.trim());
+    } catch (e) {
+      throw new Error('Could not open CNE spreadsheet with CNE_SPREADSHEET_ID: ' + e.message);
+    }
   }
+
+  _executionSpreadsheetCache[cacheKey] = spreadsheet;
+  return spreadsheet;
 }
 
 function getCNESpreadsheet() {
@@ -288,7 +303,7 @@ function refreshMutationSession(session) {
   }
 
   var employeeId = normalizeEmpId(session.employeeId);
-  var credential = getAuthCredentialRecord(employeeId);
+  var credential = getAuthCredentialRecord(employeeId, true);
   if (!credential || credential.accountStatus === 'INACTIVE' || !credential.passwordHash || !credential.passwordSalt) {
     return {
       success: false,
@@ -612,6 +627,12 @@ function handleRequest(e, method) {
   _inMemoryOfficerMap = null;
   _executionRosterData = null;
   _officerHeaderMeta = null;
+  _executionSpreadsheetCache = {};
+  _executionCredentialCache = {};
+  _executionOfficerById = {};
+  _executionCneScheduleSnapshot = null;
+  _roleHeaderMeta = null;
+  _areaInchargeHeaderMeta = null;
 
   var output = { success: false, message: 'Invalid request' };
   
@@ -638,17 +659,10 @@ function handleRequest(e, method) {
       session = verifySession(params.token, params.loggedInEmployeeId);
     }
     
-    // Authoritative account-status enforcement for protected actions.
-    // Password creation/reset is completed through registered-email OTP; no default password exists.
-    var isPublicQrAction = (action === 'requestPostTestOtp' || action === 'verifyPostTestOtp' || action === 'getPostTestQuestions' || action === 'submitPostTest') && Boolean(params.qrToken);
-    if (session && !isPublicQrAction && action !== 'login') {
-      var secState = getUserCredentialSecurityState(session.employeeId);
-      if (secState.accountStatus === 'INACTIVE') {
-        output = { success: false, errorCode: 'ACCOUNT_INACTIVE', message: 'Your CNE account is inactive. Please contact Nursing Administration.' };
-        if (output && typeof output === 'object') output._perfMs = Date.now() - requestStart;
-        return ContentService.createTextOutput(JSON.stringify(output)).setMimeType(ContentService.MimeType.JSON);
-      }
-    }
+    // verifySession() already performs an authoritative, fresh Auth_Credentials check for
+    // every authenticated request. Do not read the credential row a second time here.
+    // Protected mutations still call refreshMutationSession() under ScriptLock for a second,
+    // commit-time revalidation so password/account/role changes cannot race a write.
     
     switch (action) {
       // Public & Authentication Endpoints
@@ -968,20 +982,69 @@ function handleAdminAction(params, session, handlerFn, actionName) {
  * Comprehensive User Role & Assigned Area Resolution
  * Supports ADMIN, AREA_INCHARGE, and EMPLOYEE roles with server-side caching (TTL 60s)
  */
+function getRoleHeaderMeta_() {
+  if (_roleHeaderMeta && _roleHeaderMeta.sheet) return _roleHeaderMeta;
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('Role');
+  if (!sheet || sheet.getLastColumn() < 1) {
+    _roleHeaderMeta = { sheet: sheet, empIdCol: 0, roleCol: 3, areaCol: -1, lastCol: 0 };
+    return _roleHeaderMeta;
+  }
+
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+  var empIdCol = 0;
+  var roleCol = 3;
+  var areaCol = -1;
+  for (var i = 0; i < headers.length; i++) {
+    var h = String(headers[i] || '').toLowerCase().trim();
+    var normalized = h.replace(/[^a-z0-9]/g, '');
+    if ((h.indexOf('emp') !== -1 && h.indexOf('id') !== -1) || normalized === 'employeeid' || normalized === 'employeeidno' || normalized === 'empid') empIdCol = i;
+    if (h === 'role' || normalized === 'assignedrole' || normalized === 'userrole') roleCol = i;
+    if (areaCol === -1 && (h.indexOf('area') !== -1 || h.indexOf('department') !== -1 || h.indexOf('ward') !== -1)) areaCol = i;
+  }
+
+  _roleHeaderMeta = { sheet: sheet, empIdCol: empIdCol, roleCol: roleCol, areaCol: areaCol, lastCol: headers.length };
+  return _roleHeaderMeta;
+}
+
+function getAreaInchargeHeaderMeta_() {
+  if (_areaInchargeHeaderMeta && _areaInchargeHeaderMeta.sheet) return _areaInchargeHeaderMeta;
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('Area');
+  if (!sheet || sheet.getLastColumn() < 1) {
+    _areaInchargeHeaderMeta = { sheet: sheet, inchargeCol: -1 };
+    return _areaInchargeHeaderMeta;
+  }
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+  var inchargeCol = -1;
+  for (var i = 0; i < headers.length; i++) {
+    var h = String(headers[i] || '').toLowerCase().trim();
+    if (h.indexOf('incharge') !== -1 && h.indexOf('id') !== -1) {
+      inchargeCol = i;
+      break;
+    }
+  }
+  _areaInchargeHeaderMeta = { sheet: sheet, inchargeCol: inchargeCol };
+  return _areaInchargeHeaderMeta;
+}
+
+/**
+ * Comprehensive User Role & Assigned Area Resolution.
+ * Normal reads use a 60-second server cache. Authoritative forceFresh reads still
+ * bypass CacheService, but now locate only the requested employee row instead of
+ * scanning the complete Role sheet on every authenticated request.
+ */
 function getUserRoleInfo(employeeId, forceFresh) {
   var normId = normalizeEmpId(employeeId);
   var result = { role: 'EMPLOYEE', assignedArea: '', assignedAreas: [] };
   if (!normId) return result;
-  
-  // 1. In-memory execution cache for current request (bypassed for mutation revalidation)
+
   if (!forceFresh && _inMemoryRoleCache[normId]) {
     return _inMemoryRoleCache[normId];
   }
 
   var startedAt = Date.now();
   var cacheKey = 'cne_user_role_' + normId;
-  
-  // 2. Server-side CacheService (short TTL: 60 seconds), bypassed for mutation revalidation
   try {
     var cached = forceFresh ? null : CacheService.getScriptCache().get(cacheKey);
     if (cached) {
@@ -994,90 +1057,51 @@ function getUserRoleInfo(employeeId, forceFresh) {
     }
   } catch (e) {}
 
-  // 3. Authoritative Google Sheet read
   try {
-    var ss = getSpreadsheet('CNE');
-    var roleSheet = ss.getSheetByName('Role');
-    if (roleSheet) {
-      var data = roleSheet.getDataRange().getValues();
-      if (data.length > 1) {
-        var empIdCol = 0;
-        var roleCol = 3;
-        var areaCol = -1;
-        var headers = data[0];
-        for (var i = 0; i < headers.length; i++) {
-          var h = String(headers[i]).toLowerCase().trim();
-          if (h.indexOf('emp') !== -1 && h.indexOf('id') !== -1) empIdCol = i;
-          if (h === 'role') roleCol = i;
-          if (h.indexOf('area') !== -1 || h.indexOf('department') !== -1) areaCol = i;
+    var roleMeta = getRoleHeaderMeta_();
+    if (roleMeta.sheet && roleMeta.sheet.getLastRow() > 1) {
+      var roleRowIndex = findExactEmployeeRow_(roleMeta.sheet, roleMeta.empIdCol + 1, normId, 2);
+      if (roleRowIndex >= 2) {
+        var width = Math.max(1, roleMeta.lastCol || roleMeta.sheet.getLastColumn());
+        var row = roleMeta.sheet.getRange(roleRowIndex, 1, 1, width).getValues()[0];
+        var rVal = String(row[roleMeta.roleCol] || '').toUpperCase().trim();
+        if (rVal === 'ADMIN' || rVal.indexOf('ADMIN') !== -1) {
+          result.role = 'ADMIN';
+        } else if (rVal === 'AREA_INCHARGE' || rVal === 'INCHARGE' || rVal.indexOf('INCHARGE') !== -1) {
+          result.role = 'AREA_INCHARGE';
         }
-        
-        for (var r = 1; r < data.length; r++) {
-          var rowEmpId = normalizeEmpId(data[r][empIdCol]);
-          if (rowEmpId === normId) {
-            var rVal = String(data[r][roleCol] || '').toUpperCase().trim();
-            if (rVal === 'ADMIN') {
-              result.role = 'ADMIN';
-            } else if (rVal === 'AREA_INCHARGE' || rVal === 'INCHARGE') {
-              result.role = 'AREA_INCHARGE';
-            }
-            if (areaCol !== -1 && data[r][areaCol]) {
-              var rawArea = String(data[r][areaCol]).trim();
-              result.assignedArea = rawArea;
-              result.assignedAreas = rawArea ? rawArea.split(/[,;\n]+/).map(function(s) { return s.trim(); }).filter(Boolean) : [];
-              if (result.role !== 'ADMIN' && result.assignedAreas.length > 0) {
-                result.role = 'AREA_INCHARGE';
-              }
-            }
-            try {
-              CacheService.getScriptCache().put(cacheKey, JSON.stringify(result), 60);
-            } catch (ce) {}
-            _inMemoryRoleCache[normId] = result;
-            logPerf('getUserRoleInfo [sheet-read-role]', startedAt, 'id: ' + normId);
-            return result;
-          }
+        if (roleMeta.areaCol !== -1 && row[roleMeta.areaCol]) {
+          var rawArea = String(row[roleMeta.areaCol]).trim();
+          result.assignedArea = rawArea;
+          result.assignedAreas = rawArea.split(/[,;\n]+/).map(function(v) { return v.trim(); }).filter(Boolean);
+          if (result.role !== 'ADMIN' && result.assignedAreas.length > 0) result.role = 'AREA_INCHARGE';
         }
+        try { CacheService.getScriptCache().put(cacheKey, JSON.stringify(result), 60); } catch (ce) {}
+        _inMemoryRoleCache[normId] = result;
+        logPerf('getUserRoleInfo [targeted-role-row]', startedAt, 'id: ' + normId);
+        return result;
       }
     }
-    
-    // Also check Area sheet if assigned as Incharge
-    var areaSheet = ss.getSheetByName('Area');
-    if (areaSheet) {
-      var aData = areaSheet.getDataRange().getValues();
-      if (aData.length > 1) {
-        var inchargeCol = -1;
-        for (var c = 0; c < aData[0].length; c++) {
-          var ah = String(aData[0][c]).toLowerCase().trim();
-          if (ah.indexOf('incharge') !== -1 && ah.indexOf('id') !== -1) inchargeCol = c;
-        }
-        if (inchargeCol !== -1) {
-          for (var ar = 1; ar < aData.length; ar++) {
-            if (normalizeEmpId(aData[ar][inchargeCol]) === normId) {
-              result.role = 'AREA_INCHARGE';
-              var aArea = String(aData[ar][0]).trim();
-              result.assignedArea = aArea;
-              result.assignedAreas = aArea ? [aArea] : [];
-              try {
-                CacheService.getScriptCache().put(cacheKey, JSON.stringify(result), 60);
-              } catch (ce) {}
-              _inMemoryRoleCache[normId] = result;
-              logPerf('getUserRoleInfo [sheet-read-area]', startedAt, 'id: ' + normId);
-              return result;
-            }
-          }
-        }
+
+    // Backward-compatible fallback for installations that still store an Incharge ID
+    // directly in the Area sheet. Read only the Incharge-ID column and the matching area name.
+    var areaMeta = getAreaInchargeHeaderMeta_();
+    if (areaMeta.sheet && areaMeta.inchargeCol !== -1 && areaMeta.sheet.getLastRow() > 1) {
+      var areaRowIndex = findExactEmployeeRow_(areaMeta.sheet, areaMeta.inchargeCol + 1, normId, 2);
+      if (areaRowIndex >= 2) {
+        var areaName = String(areaMeta.sheet.getRange(areaRowIndex, 1).getDisplayValue() || '').trim();
+        result.role = 'AREA_INCHARGE';
+        result.assignedArea = areaName;
+        result.assignedAreas = areaName ? [areaName] : [];
       }
     }
   } catch (e) {
     console.warn('Error reading role info: ' + e.message);
   }
-  
-  // Cache default EMPLOYEE result as well
-  try {
-    CacheService.getScriptCache().put(cacheKey, JSON.stringify(result), 60);
-  } catch (ce) {}
+
+  try { CacheService.getScriptCache().put(cacheKey, JSON.stringify(result), 60); } catch (ce) {}
   _inMemoryRoleCache[normId] = result;
-  logPerf('getUserRoleInfo [sheet-read-default]', startedAt, 'id: ' + normId);
+  logPerf('getUserRoleInfo [targeted-default]', startedAt, 'id: ' + normId);
   return result;
 }
 
@@ -1539,17 +1563,25 @@ function buildOfficerFromRosterRow_(dataRow, displayRow, colMap) {
  * Targeted one-employee Officers-data lookup used by authentication/session revalidation.
  * Reads the header, Employee-ID column, and only the matching A:L row instead of the full roster.
  */
-function findOfficerByIdTargeted_(employeeId) {
+function findOfficerByIdTargeted_(employeeId, forceFresh) {
   var normId = normalizeEmpId(employeeId);
   if (!normId) return null;
+  if (!forceFresh && _executionOfficerById[normId] !== undefined) {
+    return _executionOfficerById[normId];
+  }
   var meta = getOfficerHeaderMeta_();
   var rowIndex = findExactEmployeeRow_(meta.sheet, meta.colMap.empCol + 1, normId, 2);
-  if (rowIndex < 2) return null;
+  if (rowIndex < 2) {
+    _executionOfficerById[normId] = null;
+    return null;
+  }
   var rowRange = meta.sheet.getRange(rowIndex, 1, 1, 12);
   var dataRow = rowRange.getValues()[0];
   var displayRow = rowRange.getDisplayValues()[0];
   var officer = buildOfficerFromRosterRow_(dataRow, displayRow, meta.colMap);
-  return officer && normalizeEmpId(officer.employeeId) === normId ? officer : null;
+  var resolved = officer && normalizeEmpId(officer.employeeId) === normId ? officer : null;
+  _executionOfficerById[normId] = resolved;
+  return resolved;
 }
 
 /** Execution employee-directory cache. Reads ONLY A:L. */
@@ -1585,6 +1617,8 @@ function findOfficerById(employeeId) {
  * The Officers spreadsheet may be edited by an external workflow that ScriptLock cannot serialize.
  */
 function findOfficerByIdFresh_(employeeId) {
+  var normId = normalizeEmpId(employeeId);
+  if (normId) delete _executionOfficerById[normId];
   return findOfficerByIdTargeted_(employeeId);
 }
 
@@ -1725,10 +1759,44 @@ function handleGetOfficersDropdown(params, session) {
  */
 function getOfficerNameMap() {
   if (_inMemoryOfficerMap) return _inMemoryOfficerMap;
-  var startedAt=Date.now(),cacheKey='cne_officer_name_map';
-  try { var cached=getFromScriptCache(cacheKey); if (cached&&typeof cached==='object') { _inMemoryOfficerMap=cached; return cached; } } catch(e) {}
-  var map={};
-  try { var roster=getExecutionRosterData(); if (roster&&roster.byNormId) for (var k in roster.byNormId) if (Object.prototype.hasOwnProperty.call(roster.byNormId,k)) { var e=roster.byNormId[k]; if (e&&e.name) map[k]=e.name; } putToScriptCache(cacheKey,map,60); _inMemoryOfficerMap=map; logPerf('getOfficerNameMap [Officers data A:L]',startedAt,'count: '+Object.keys(map).length); } catch(e) { Logger.log('[Officers data Map Warning] '+e.message); }
+  var startedAt = Date.now();
+  var cacheKey = 'cne_officer_name_map';
+  try {
+    var cached = getFromScriptCache(cacheKey);
+    if (cached && typeof cached === 'object') {
+      _inMemoryOfficerMap = cached;
+      return cached;
+    }
+  } catch (e) {}
+
+  var map = {};
+  try {
+    var meta = getOfficerHeaderMeta_();
+    var sheet = meta.sheet;
+    var lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      var empCol = meta.colMap.empCol + 1;
+      var nameCol = meta.colMap.nameCol + 1;
+      var minCol = Math.min(empCol, nameCol);
+      var maxCol = Math.max(empCol, nameCol);
+      var width = maxCol - minCol + 1;
+      // Names need only Employee ID + Name, not the full A:L roster. One compact
+      // display-value read is substantially cheaper on cold Apps Script executions.
+      var rows = sheet.getRange(2, minCol, lastRow - 1, width).getDisplayValues();
+      var empOffset = empCol - minCol;
+      var nameOffset = nameCol - minCol;
+      for (var r = 0; r < rows.length; r++) {
+        var id = normalizeEmpId(rows[r][empOffset]);
+        var name = String(rows[r][nameOffset] || '').trim();
+        if (id && name && !map[id]) map[id] = name;
+      }
+    }
+    putToScriptCache(cacheKey, map, 60);
+    _inMemoryOfficerMap = map;
+    logPerf('getOfficerNameMap [ID+Name columns only]', startedAt, 'count: ' + Object.keys(map).length);
+  } catch (e) {
+    Logger.log('[Officers data Map Warning] ' + e.message);
+  }
   return map;
 }
 
@@ -1906,18 +1974,29 @@ function migrateLegacyCredentialsToAuthCredentials(authSheet) {
   props.setProperty('AUTH_CREDENTIALS_V2_MIGRATED', 'YES');
 }
 
-function getAuthCredentialRecord(employeeId) {
+function getAuthCredentialRecord(employeeId, forceFresh) {
   var cleanId = normalizeEmpId(employeeId);
   if (!cleanId) return null;
 
+  // Request-local reuse only. This cache is reset at the start of every doGet/doPost,
+  // so account/password changes are still authoritative on the very next request.
+  if (!forceFresh && Object.prototype.hasOwnProperty.call(_executionCredentialCache, cleanId)) {
+    return _executionCredentialCache[cleanId];
+  }
+
   var sheet = getAuthCredentialsSheet();
   var rowIndex = findExactEmployeeRow_(sheet, 1, cleanId, 2);
-  if (rowIndex < 2) return null;
+  if (rowIndex < 2) {
+    _executionCredentialCache[cleanId] = null;
+    return null;
+  }
 
-  // Read only the matching credential row; never load the whole credential table for one user.
   var row = sheet.getRange(rowIndex, 1, 1, 12).getValues()[0];
-  if (normalizeEmpId(row[0]) !== cleanId) return null;
-  return {
+  if (normalizeEmpId(row[0]) !== cleanId) {
+    _executionCredentialCache[cleanId] = null;
+    return null;
+  }
+  var record = {
     rowIndex: rowIndex,
     employeeId: cleanId,
     passwordHash: String(row[1] || '').trim(),
@@ -1932,6 +2011,8 @@ function getAuthCredentialRecord(employeeId) {
     createdAt: String(row[10] || '').trim(),
     updatedAt: String(row[11] || '').trim()
   };
+  _executionCredentialCache[cleanId] = record;
+  return record;
 }
 
 function getUserCredentialSecurityState(employeeId) {
@@ -1956,7 +2037,10 @@ function getUserCredentialSecurityState(employeeId) {
 
 function clearCredentialSecurityCache(employeeId) {
   var cleanId = normalizeEmpId(employeeId);
-  if (cleanId) CacheService.getScriptCache().remove('cred_sec_' + cleanId);
+  if (cleanId) {
+    CacheService.getScriptCache().remove('cred_sec_' + cleanId);
+    delete _executionCredentialCache[cleanId];
+  }
 }
 
 function upsertPasswordCredential(employeeId, newPassword) {
@@ -3502,10 +3586,48 @@ function formatDurationValue(rawValue, displayValue) {
  * Returns number (day fraction), or null if unparseable.
  */
 
+function buildHeaderMapFromRow_(headers) {
+  var map = {};
+  var row = Array.isArray(headers) ? headers : [];
+  for (var c = 0; c < row.length; c++) {
+    var key = String(row[c] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (key) map[key] = c;
+  }
+  return map;
+}
+
+/**
+ * Request-local CNE Schedule snapshot. A homepage request needs both the upcoming
+ * schedule and Program Impact; sharing this snapshot avoids reading the same sheet
+ * twice (and avoids a second getDisplayValues call) in one Apps Script execution.
+ */
+function getCNEScheduleSnapshot_() {
+  if (_executionCneScheduleSnapshot) return _executionCneScheduleSnapshot;
+  var startedAt = Date.now();
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('CNE Schedule');
+  if (!sheet || sheet.getLastRow() < 1 || sheet.getLastColumn() < 1) {
+    _executionCneScheduleSnapshot = { sheet: sheet, data: [], displayValues: [], colMap: {} };
+    return _executionCneScheduleSnapshot;
+  }
+  var range = sheet.getDataRange();
+  var data = range.getValues();
+  var displayValues = range.getDisplayValues();
+  var headers = data.length ? data[0] : [];
+  _executionCneScheduleSnapshot = {
+    sheet: sheet,
+    data: data,
+    displayValues: displayValues,
+    colMap: buildHeaderMapFromRow_(headers)
+  };
+  logPerf('getCNEScheduleSnapshot [single read]', startedAt, 'rows: ' + data.length);
+  return _executionCneScheduleSnapshot;
+}
+
 /**
  * 6. CNE Records Retrieval with Strict Server-Side Role and Privacy Filtering
  */
-function handleGetCNERecords(params, session) {
+function handleGetCNERecords(params, session, scheduleSnapshot) {
   var isMyRecordsOnly = Boolean(params && (params.myRecordsOnly || params.scope === 'my-cne-records'));
   if (isMyRecordsOnly && !session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Unauthorized session.' };
@@ -3516,15 +3638,13 @@ function handleGetCNERecords(params, session) {
   var isAdmin = sessionRole === 'ADMIN';
   var loggedInId = session ? normalizeEmpId(session.employeeId) : '';
 
-  var ss = getSpreadsheet('CNE');
-  var sheet = ss.getSheetByName('CNE Schedule');
-  if (!sheet) return { success: true, data: [] };
-
-  var dataRange = sheet.getDataRange();
-  var data = dataRange.getValues();
-  if (data.length <= 1) return { success: true, data: [] };
+  var snapshot = scheduleSnapshot || getCNEScheduleSnapshot_();
+  var sheet = snapshot.sheet;
+  var data = snapshot.data || [];
+  var displayValues = snapshot.displayValues || [];
+  if (!sheet || data.length <= 1) return { success: true, data: [] };
   var officerMap = getOfficerNameMap();
-  var colMap = getHeaderMap(sheet);
+  var colMap = snapshot.colMap || buildHeaderMapFromRow_(data[0] || []);
 
   var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : (colMap['dataid'] !== undefined ? colMap['dataid'] : 0));
   var areaCol = colMap['area'] !== undefined ? colMap['area'] : (colMap['wardnamearea'] !== undefined ? colMap['wardnamearea'] : 1);
@@ -3585,7 +3705,8 @@ function handleGetCNERecords(params, session) {
     var area = String(row[areaCol] || '').trim();
     var fromDate = formatDateValue(row[fromDateCol]);
     var toDate = formatDateValue(row[toDateCol] || row[fromDateCol]);
-    var duration = formatDurationValue(row[durCol]);
+    var durationDisplay = displayValues[r] ? displayValues[r][durCol] : '';
+    var duration = formatDurationValue(row[durCol], durationDisplay);
     var topic = String(row[topicCol] || '').trim();
     var resourcePersonEmpId = String(row[rpCol] || '').trim();
     var mode = String(row[modeCol] || 'Lecture Cum Discussion').trim();
@@ -6172,7 +6293,7 @@ function handleUpdateCoordinatorDesk(params, session) {
  * - Authenticated (session exists): Returns personalized impact metrics for the authenticated user (RP or participant).
  * Uses server-side session identity exclusively; does not accept unverified client-supplied employee IDs.
  */
-function handleGetProgramImpact(params, session) {
+function handleGetProgramImpact(params, session, scheduleSnapshot) {
   var isUserLoggedIn = Boolean(session && session.employeeId);
   var loggedInId = isUserLoggedIn ? normalizeEmpId(session.employeeId) : null;
   var impactCacheKey = isUserLoggedIn ? ('cne_impact_user_' + loggedInId) : 'cne_impact_public';
@@ -6184,8 +6305,8 @@ function handleGetProgramImpact(params, session) {
     }
   }
 
-  var ss = getSpreadsheet('CNE');
-  var dataSheet = ss.getSheetByName('CNE Schedule');
+  var snapshot = scheduleSnapshot || getCNEScheduleSnapshot_();
+  var dataSheet = snapshot.sheet;
   
   if (!dataSheet) {
     return {
@@ -6199,8 +6320,7 @@ function handleGetProgramImpact(params, session) {
     };
   }
   
-  var dataRange = dataSheet.getDataRange();
-  var data = dataRange.getValues();
+  var data = snapshot.data || [];
   if (data.length <= 1) {
     return {
       success: true,
@@ -6213,7 +6333,7 @@ function handleGetProgramImpact(params, session) {
     };
   }
   
-  var colMap = getHeaderMap(dataSheet);
+  var colMap = snapshot.colMap || buildHeaderMapFromRow_(data[0] || []);
   var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['dataid'] !== undefined ? colMap['dataid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 0));
   var durCol = colMap['duration'] !== undefined ? colMap['duration'] : (colMap['dur'] !== undefined ? colMap['dur'] : 4);
   var rpCol = colMap['resourcepersonempid'] !== undefined ? colMap['resourcepersonempid'] : 6;
@@ -6221,7 +6341,7 @@ function handleGetProgramImpact(params, session) {
   var countCol = colMap['staffcount'] !== undefined ? colMap['staffcount'] : 9;
   var statusCol = colMap['status'] !== undefined ? colMap['status'] : -1;
 
-  var displayValues = dataRange.getDisplayValues();
+  var displayValues = snapshot.displayValues || [];
   var completedClasses = 0;
   var totalDurationSeconds = 0;
   var uniqueStaffMap = {};
@@ -6321,16 +6441,15 @@ function handleGetProgramImpact(params, session) {
  * management-only identifiers in the homepage payload.
  */
 function handleGetHomeDashboard(params, session) {
-  var scheduleRes = handleGetCNERecords({ status: 'Scheduled' }, null);
+  var startedAt = Date.now();
+  var scheduleSnapshot = getCNEScheduleSnapshot_();
+  var scheduleRes = handleGetCNERecords({ status: 'Scheduled' }, null, scheduleSnapshot);
   var newsRes = handleGetNewsEvents({});
   var linksRes = handleGetQuickLinks({});
   var coordinatorRes = handleGetCoordinatorDesk({});
-  var impactRes = handleGetProgramImpact({}, session);
-  // Reuse the existing cached photo loader so the homepage still performs only
-  // one client -> Apps Script request while preserving the current fallback rules.
-  var chairpersonPhotoRes = handleGetChairpersonPhoto();
+  var impactRes = handleGetProgramImpact({}, session, scheduleSnapshot);
 
-  return {
+  var response = {
     success: true,
     data: {
       upcomingClasses: scheduleRes && scheduleRes.success && Array.isArray(scheduleRes.data) ? scheduleRes.data : [],
@@ -6341,12 +6460,11 @@ function handleGetHomeDashboard(params, session) {
         : { note: '', coordinators: [], email: '' },
       impactStats: impactRes && impactRes.success && impactRes.data
         ? impactRes.data
-        : { totalCompletedClasses: 0, cneDuration: '0 Hrs', uniqueStaffTrained: 0, scope: session && session.employeeId ? 'user' : 'institutional' },
-      chairpersonPhotoUrl: chairpersonPhotoRes && chairpersonPhotoRes.success && chairpersonPhotoRes.data
-        ? String(chairpersonPhotoRes.data.photoUrl || '')
-        : ''
+        : { totalCompletedClasses: 0, cneDuration: '0 Hrs', uniqueStaffTrained: 0, scope: session && session.employeeId ? 'user' : 'institutional' }
     }
   };
+  logPerf('handleGetHomeDashboard', startedAt, 'single CNE Schedule snapshot');
+  return response;
 }
 
 
@@ -6372,18 +6490,10 @@ function formatDateValue(val) {
  * Maps all headers to lowercase alphanumeric keys for resilient column lookups
  */
 function getHeaderMap(sheet) {
-  var map = {};
-  if (!sheet) return map;
+  if (!sheet) return {};
   var lastCol = sheet.getLastColumn();
-  if (lastCol < 1) return map;
-  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  for (var c = 0; c < headers.length; c++) {
-    var key = String(headers[c] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (key) {
-      map[key] = c;
-    }
-  }
-  return map;
+  if (lastCol < 1) return {};
+  return buildHeaderMapFromRow_(sheet.getRange(1, 1, 1, lastCol).getValues()[0]);
 }
 
 /**
