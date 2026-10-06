@@ -58,6 +58,7 @@ function logPerf(tag, startedAt, extra) {
 var _inMemoryRoleCache = {};
 var _inMemoryOfficerMap = null;
 var _executionRosterData = null;
+var _officerHeaderMeta = null;
 
 // Global Configuration & Sheet Resolution (Strict separation: Officers Roster requires DROPDOWN_SPREADSHEET_ID)
 function getSpreadsheet(type) {
@@ -177,9 +178,13 @@ function computePasswordHash(password, salt) {
  * Session tokens carry the persistent Password Version from Auth_Credentials.
  * Any password create/reset/change increments the version and invalidates older sessions immediately.
  */
-function generateSessionToken(employeeId) {
+function generateSessionToken(employeeId, credentialRecord) {
   var normId = normalizeEmpId(employeeId);
-  var credential = getAuthCredentialRecord(normId);
+  // Login already holds an authoritative credential row under ScriptLock.
+  // Reuse it when supplied instead of scanning Auth_Credentials a second time.
+  var credential = credentialRecord && normalizeEmpId(credentialRecord.employeeId) === normId
+    ? credentialRecord
+    : getAuthCredentialRecord(normId);
   if (!credential || credential.accountStatus === 'INACTIVE' || !credential.passwordHash || !credential.passwordSalt) {
     throw new Error('Active credentials are required before a session can be issued.');
   }
@@ -611,6 +616,7 @@ function handleRequest(e, method) {
   _inMemoryRoleCache = {};
   _inMemoryOfficerMap = null;
   _executionRosterData = null;
+  _officerHeaderMeta = null;
 
   var output = { success: false, message: 'Invalid request' };
   
@@ -1456,6 +1462,101 @@ function getRosterSheet() {
   return sheet;
 }
 
+/**
+ * Resolve and cache the Officers-data A:L header map for this request.
+ * This reads only the header row and is safe to reuse within one Apps Script execution.
+ */
+function getOfficerHeaderMeta_() {
+  if (_officerHeaderMeta && _officerHeaderMeta.colMap) return _officerHeaderMeta;
+  var sheet = getRosterSheet();
+  var headers = sheet.getRange(1, 1, 1, 12).getDisplayValues()[0];
+  var colMap = findOfficerHeaders(headers);
+  if (colMap.empCol===-1||colMap.nameCol===-1||colMap.emailCol===-1) {
+    throw new Error('System configuration error: Officers data must contain Employee ID No., Name of the Officers, and EmailID within A:L.');
+  }
+  _officerHeaderMeta = { sheet: sheet, colMap: colMap };
+  return _officerHeaderMeta;
+}
+
+/**
+ * Find one row by exact normalized Employee ID while reading only the ID column.
+ * TextFinder is attempted first; a single-column display-value scan is the safe fallback
+ * for numeric/formatted IDs whose displayed value differs from the raw stored value.
+ */
+function findExactEmployeeRow_(sheet, columnNumber, employeeId, firstDataRow) {
+  var cleanId = normalizeEmpId(employeeId);
+  if (!cleanId) return -1;
+  var firstRow = firstDataRow || 2;
+  var lastRow = sheet.getLastRow();
+  if (lastRow < firstRow) return -1;
+  var idRange = sheet.getRange(firstRow, columnNumber, lastRow - firstRow + 1, 1);
+
+  try {
+    var match = idRange.createTextFinder(cleanId)
+      .matchEntireCell(true)
+      .matchCase(false)
+      .findNext();
+    if (match && normalizeEmpId(match.getDisplayValue()) === cleanId) {
+      return match.getRow();
+    }
+  } catch (finderErr) {
+    // Fall through to the one-column display scan below.
+  }
+
+  var displayIds = idRange.getDisplayValues();
+  for (var i = 0; i < displayIds.length; i++) {
+    if (normalizeEmpId(displayIds[i][0]) === cleanId) return firstRow + i;
+  }
+  return -1;
+}
+
+/** Build the standard officer object from one authoritative A:L row. */
+function buildOfficerFromRosterRow_(dataRow, displayRow, colMap) {
+  if (!dataRow || !displayRow || !colMap) return null;
+  var cellVal=dataRow[colMap.empCol];
+  var dispVal=displayRow[colMap.empCol];
+  var rowEmpId=normalizeEmpId(dispVal||cellVal);
+  if (!rowEmpId) rowEmpId=normalizeEmpId(cellVal);
+  if (!rowEmpId) return null;
+  var rawDoj=colMap.dojCol!==-1?dataRow[colMap.dojCol]:'';
+  var dispDoj=colMap.dojCol!==-1?String(displayRow[colMap.dojCol]||'').trim():'';
+  var rawName=colMap.nameCol!==-1?String(displayRow[colMap.nameCol]||dataRow[colMap.nameCol]||'').trim():'';
+  var rawDesig=colMap.desigCol!==-1?String(displayRow[colMap.desigCol]||dataRow[colMap.desigCol]||'').trim():'';
+  var rawEmpType=colMap.empTypeCol!==-1?String(displayRow[colMap.empTypeCol]||dataRow[colMap.empTypeCol]||'').trim():'';
+  var rawContact=colMap.contactCol!==-1?String(displayRow[colMap.contactCol]||dataRow[colMap.contactCol]||'').trim():'';
+  var rawEmail=colMap.emailCol!==-1?String(displayRow[colMap.emailCol]||dataRow[colMap.emailCol]||'').trim().toLowerCase():'';
+  return {
+    employeeId:String(dispVal||cellVal||'').trim(),
+    name:rawName,
+    designation:rawDesig,
+    employmentType:rawEmpType,
+    typeOfEmployment:rawEmpType,
+    contactNo:rawContact,
+    email:rawEmail,
+    doj:rawDoj,
+    dojFormatted:dispDoj||formatDateDisplay(rawDoj),
+    dojColMissing:(colMap.dojCol===-1),
+    emailColMissing:(colMap.emailCol===-1)
+  };
+}
+
+/**
+ * Targeted one-employee Officers-data lookup used by authentication/session revalidation.
+ * Reads the header, Employee-ID column, and only the matching A:L row instead of the full roster.
+ */
+function findOfficerByIdTargeted_(employeeId) {
+  var normId = normalizeEmpId(employeeId);
+  if (!normId) return null;
+  var meta = getOfficerHeaderMeta_();
+  var rowIndex = findExactEmployeeRow_(meta.sheet, meta.colMap.empCol + 1, normId, 2);
+  if (rowIndex < 2) return null;
+  var rowRange = meta.sheet.getRange(rowIndex, 1, 1, 12);
+  var dataRow = rowRange.getValues()[0];
+  var displayRow = rowRange.getDisplayValues()[0];
+  var officer = buildOfficerFromRosterRow_(dataRow, displayRow, meta.colMap);
+  return officer && normalizeEmpId(officer.employeeId) === normId ? officer : null;
+}
+
 /** Execution employee-directory cache. Reads ONLY A:L. */
 function getExecutionRosterData() {
   if (_executionRosterData) return _executionRosterData;
@@ -1469,17 +1570,11 @@ function getExecutionRosterData() {
   if (colMap.empCol===-1||colMap.nameCol===-1||colMap.emailCol===-1) throw new Error('System configuration error: Officers data must contain Employee ID No., Name of the Officers, and EmailID within A:L.');
   _executionRosterData={sheetName:sheet.getName(),data:data,displayData:displayData,colMap:colMap,byNormId:{}};
   for (var r=1;r<data.length;r++) {
-    var cellVal=data[r][colMap.empCol]; var dispVal=displayData[r]?displayData[r][colMap.empCol]:'';
-    var rowEmpId=normalizeEmpId(dispVal||cellVal); if (!rowEmpId) rowEmpId=normalizeEmpId(cellVal);
+    var officer = buildOfficerFromRosterRow_(data[r], displayData[r] || [], colMap);
+    if (!officer) continue;
+    var rowEmpId = normalizeEmpId(officer.employeeId);
     if (!rowEmpId||_executionRosterData.byNormId[rowEmpId]) continue;
-    var rawDoj=colMap.dojCol!==-1?data[r][colMap.dojCol]:'';
-    var dispDoj=(colMap.dojCol!==-1&&displayData[r])?String(displayData[r][colMap.dojCol]||'').trim():'';
-    var rawName=colMap.nameCol!==-1?String((displayData[r]&&displayData[r][colMap.nameCol])||data[r][colMap.nameCol]||'').trim():'';
-    var rawDesig=colMap.desigCol!==-1?String((displayData[r]&&displayData[r][colMap.desigCol])||data[r][colMap.desigCol]||'').trim():'';
-    var rawEmpType=colMap.empTypeCol!==-1?String((displayData[r]&&displayData[r][colMap.empTypeCol])||data[r][colMap.empTypeCol]||'').trim():'';
-    var rawContact=colMap.contactCol!==-1?String((displayData[r]&&displayData[r][colMap.contactCol])||data[r][colMap.contactCol]||'').trim():'';
-    var rawEmail=colMap.emailCol!==-1?String((displayData[r]&&displayData[r][colMap.emailCol])||data[r][colMap.emailCol]||'').trim().toLowerCase():'';
-    _executionRosterData.byNormId[rowEmpId]={employeeId:String(dispVal||cellVal||'').trim(),name:rawName,designation:rawDesig,employmentType:rawEmpType,typeOfEmployment:rawEmpType,contactNo:rawContact,email:rawEmail,doj:rawDoj,dojFormatted:dispDoj||formatDateDisplay(rawDoj),dojColMissing:(colMap.dojCol===-1),emailColMissing:(colMap.emailCol===-1)};
+    _executionRosterData.byNormId[rowEmpId]=officer;
   }
   return _executionRosterData;
 }
@@ -1491,15 +1586,12 @@ function findOfficerById(employeeId) {
 }
 
 /**
- * Bypass the per-request Officers-data cache for commit-time identity revalidation.
+ * Fresh commit-time identity revalidation without rebuilding the complete Officers map.
  * The Officers spreadsheet may be edited by an external workflow that ScriptLock cannot serialize.
  */
 function findOfficerByIdFresh_(employeeId) {
-  _executionRosterData = null;
-  _inMemoryOfficerMap = null;
-  return findOfficerById(employeeId);
+  return findOfficerByIdTargeted_(employeeId);
 }
-
 
 /**
  * Cache Limits & Chunking Constants
@@ -1824,29 +1916,27 @@ function getAuthCredentialRecord(employeeId) {
   if (!cleanId) return null;
 
   var sheet = getAuthCredentialsSheet();
-  var lastRow = sheet.getLastRow();
-  if (lastRow <= 1) return null;
+  var rowIndex = findExactEmployeeRow_(sheet, 1, cleanId, 2);
+  if (rowIndex < 2) return null;
 
-  var rows = sheet.getRange(2, 1, lastRow - 1, 12).getValues();
-  for (var i = 0; i < rows.length; i++) {
-    if (normalizeEmpId(rows[i][0]) !== cleanId) continue;
-    return {
-      rowIndex: i + 2,
-      employeeId: cleanId,
-      passwordHash: String(rows[i][1] || '').trim(),
-      passwordSalt: String(rows[i][2] || '').trim(),
-      passwordVersion: Math.max(1, parseInt(rows[i][3] || '1', 10) || 1),
-      passwordCreatedAt: String(rows[i][4] || '').trim(),
-      passwordChangedAt: String(rows[i][5] || '').trim(),
-      lastLoginAt: String(rows[i][6] || '').trim(),
-      accountStatus: String(rows[i][7] || '').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
-      failedLoginCount: parseInt(rows[i][8] || '0', 10) || 0,
-      lockedUntil: String(rows[i][9] || '').trim(),
-      createdAt: String(rows[i][10] || '').trim(),
-      updatedAt: String(rows[i][11] || '').trim()
-    };
-  }
-  return null;
+  // Read only the matching credential row; never load the whole credential table for one user.
+  var row = sheet.getRange(rowIndex, 1, 1, 12).getValues()[0];
+  if (normalizeEmpId(row[0]) !== cleanId) return null;
+  return {
+    rowIndex: rowIndex,
+    employeeId: cleanId,
+    passwordHash: String(row[1] || '').trim(),
+    passwordSalt: String(row[2] || '').trim(),
+    passwordVersion: Math.max(1, parseInt(row[3] || '1', 10) || 1),
+    passwordCreatedAt: String(row[4] || '').trim(),
+    passwordChangedAt: String(row[5] || '').trim(),
+    lastLoginAt: String(row[6] || '').trim(),
+    accountStatus: String(row[7] || '').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+    failedLoginCount: parseInt(row[8] || '0', 10) || 0,
+    lockedUntil: String(row[9] || '').trim(),
+    createdAt: String(row[10] || '').trim(),
+    updatedAt: String(row[11] || '').trim()
+  };
 }
 
 function getUserCredentialSecurityState(employeeId) {
@@ -1924,7 +2014,7 @@ function handleLogin(params) {
   // Fast public-directory check before waiting for the auth transaction lock.
   var officer;
   try {
-    officer = findOfficerById(employeeId);
+    officer = findOfficerByIdTargeted_(employeeId);
   } catch (err) {
     return { success: false, message: err.message || 'Error accessing Officers data.' };
   }
@@ -1999,7 +2089,7 @@ function handleLogin(params) {
     clearCredentialSecurityCache(employeeId);
 
     var roleInfo = getUserRoleInfo(employeeId, true);
-    var token = generateSessionToken(employeeId);
+    var token = generateSessionToken(employeeId, record);
     logAuditAction('LOGIN_SUCCESS', employeeId, 'Role: ' + roleInfo.role, 'SUCCESS');
 
     return {

@@ -525,7 +525,7 @@ runTest('Login uses Officers data, requires a personal password, rate-limits fai
   );
 
   assert.ok(
-    loginSection.includes('findOfficerById(employeeId)') && loginSection.includes('Officers data'),
+    loginSection.includes('findOfficerByIdTargeted_(employeeId)') && loginSection.includes('Officers data'),
     'handleLogin must resolve Employee ID from Officers data'
   );
   assert.ok(
@@ -544,7 +544,7 @@ runTest('Login uses Officers data, requires a personal password, rate-limits fai
   );
 
   const inactiveIndex = loginSection.indexOf("errorCode: 'ACCOUNT_INACTIVE'");
-  const tokenGenIndex = loginSection.indexOf('generateSessionToken(employeeId)');
+  const tokenGenIndex = loginSection.indexOf('generateSessionToken(employeeId, record)');
   assert.ok(
     inactiveIndex !== -1 && tokenGenIndex !== -1 && inactiveIndex < tokenGenIndex,
     'Inactive account rejection must occur before session-token issuance'
@@ -561,6 +561,56 @@ runTest('Login uses Officers data, requires a personal password, rate-limits fai
     loginSection.includes('getRange(record.rowIndex, 9).setValue(0)') &&
     loginSection.includes("getRange(record.rowIndex, 10).setValue('')"),
     'Successful login must clear the failed-login counter and lock timestamp'
+  );
+});
+
+runTest('Authentication hot paths use targeted single-row lookups and reuse the login credential record', () => {
+  const targetedOfficerSection = codeGs.substring(
+    codeGs.indexOf('function findOfficerByIdTargeted_('),
+    codeGs.indexOf('/** Execution employee-directory cache')
+  );
+  const freshOfficerSection = codeGs.substring(
+    codeGs.indexOf('function findOfficerByIdFresh_('),
+    codeGs.indexOf('/**\n * Cache Limits & Chunking Constants')
+  );
+  const credentialSection = codeGs.substring(
+    codeGs.indexOf('function getAuthCredentialRecord('),
+    codeGs.indexOf('function getUserCredentialSecurityState(')
+  );
+  const tokenSection = codeGs.substring(
+    codeGs.indexOf('function generateSessionToken('),
+    codeGs.indexOf('function timingSafeEqual(')
+  );
+  const loginSection = codeGs.substring(
+    codeGs.indexOf('function handleLogin('),
+    codeGs.indexOf('function handleChangePassword(')
+  );
+
+  assert.ok(
+    codeGs.includes('function findExactEmployeeRow_(') &&
+    codeGs.includes('.createTextFinder(cleanId)') &&
+    codeGs.includes('.matchEntireCell(true)'),
+    'Targeted employee lookup must use exact TextFinder lookup with a one-column fallback'
+  );
+  assert.ok(
+    targetedOfficerSection.includes('getRange(rowIndex, 1, 1, 12)') &&
+    !targetedOfficerSection.includes('getRange(1,1,lastRow,12)'),
+    'Authentication officer lookup must read only the matching A:L row, not the full roster'
+  );
+  assert.ok(
+    freshOfficerSection.includes('return findOfficerByIdTargeted_(employeeId);'),
+    'Fresh session/mutation officer revalidation must use the targeted lookup'
+  );
+  assert.ok(
+    credentialSection.includes('findExactEmployeeRow_(sheet, 1, cleanId, 2)') &&
+    credentialSection.includes('getRange(rowIndex, 1, 1, 12)') &&
+    !credentialSection.includes('getRange(2, 1, lastRow - 1, 12)'),
+    'Auth_Credentials lookup must read only the matching credential row'
+  );
+  assert.ok(
+    tokenSection.includes('credentialRecord') &&
+    loginSection.includes('generateSessionToken(employeeId, record)'),
+    'Successful login must reuse the already-fresh credential record when issuing the session token'
   );
 });
 
