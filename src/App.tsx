@@ -17,6 +17,7 @@ const CNESchedule = lazy(() => import('./components/CNESchedule').then((m) => ({
 const LearningResourcesPage = lazy(() => import('./components/cne/LearningResourcesPage').then((m) => ({ default: m.LearningResourcesPage })));
 const Gallery = lazy(() => import('./components/Gallery').then((m) => ({ default: m.Gallery })));
 const AdminAreas = lazy(() => import('./components/AdminAreas').then((m) => ({ default: m.AdminAreas })));
+const AdminTeachingModes = lazy(() => import('./components/AdminTeachingModes').then((m) => ({ default: m.AdminTeachingModes })));
 const AdminRoles = lazy(() => import('./components/AdminRoles').then((m) => ({ default: m.AdminRoles })));
 const AdminReports = lazy(() => import('./components/AdminReports').then((m) => ({ default: m.AdminReports })));
 const AdminContent = lazy(() => import('./components/AdminContent').then((m) => ({ default: m.AdminContent })));
@@ -83,7 +84,7 @@ const AppContent: React.FC = () => {
   const handleNavigate = (view: ViewMode) => {
     // If not logged in and attempting to access staff/admin protected views, prompt login
     if (!user || !user.employeeId) {
-      if (['my-cne-records', 'admin-areas', 'admin-roles', 'admin-content', 'admin-reports'].includes(view)) {
+      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports'].includes(view)) {
         info('Please log in with your Employee ID to access this section.', 'Authentication Required');
         setIsLoginOpen(true);
         return;
@@ -142,6 +143,10 @@ const AppContent: React.FC = () => {
           {/* Admin Protected Views */}
           {activeView === 'admin-areas' && user?.role === 'ADMIN' && (
             <AdminAreas user={user} />
+          )}
+
+          {activeView === 'admin-teaching-modes' && user?.role === 'ADMIN' && (
+            <AdminTeachingModes user={user} />
           )}
 
           {activeView === 'admin-roles' && user?.role === 'ADMIN' && (

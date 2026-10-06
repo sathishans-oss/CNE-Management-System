@@ -21,13 +21,14 @@ interface DepartmentalScheduleModalProps {
   onClose: () => void;
   user: SessionUser | null;
   areasList: string[];
+  teachingModes: string[];
   officersList: Employee[];
   isOfficersLoading?: boolean;
   onOfficersLoaded?: (officers: Employee[]) => void;
   onSuccess: () => void;
 }
 
-const createInitialRow = (userArea: string = ''): DepartmentalScheduleRow => ({
+const createInitialRow = (userArea: string = '', teachingMode: string = ''): DepartmentalScheduleRow => ({
   id: `dept-row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
   topic: '',
   area: userArea,
@@ -38,7 +39,7 @@ const createInitialRow = (userArea: string = ''): DepartmentalScheduleRow => ({
   resourcePersonEmpIds: [],
   resourcePersonName: '',
   externalResourcePersons: [],
-  modeOfTeaching: 'Lecture Cum Discussion',
+  modeOfTeaching: teachingMode,
   description: '',
   adminRemarks: ''
 });
@@ -48,6 +49,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   onClose,
   user,
   areasList,
+  teachingModes,
   officersList,
   isOfficersLoading: isOfficersLoadingProp,
   onOfficersLoaded,
@@ -67,6 +69,10 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   const defaultArea = isAreaIncharge
     ? (selectableAssignedAreas[0] || '')
     : (areasList[0] || '');
+  const defaultTeachingMode = useMemo(() => {
+    const lecture = teachingModes.find((name) => name.trim().toLowerCase() === 'lecture cum discussion');
+    return lecture || teachingModes[0] || '';
+  }, [teachingModes]);
   const todayStr = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
     year: 'numeric',
@@ -76,7 +82,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
 
   // Initially show exactly 1 blank CNE schedule row
   const [rows, setRows] = useState<DepartmentalScheduleRow[]>([
-    createInitialRow(defaultArea)
+    createInitialRow(defaultArea, defaultTeachingMode)
   ]);
   const [internalOfficers, setInternalOfficers] = useState<Employee[]>(() => {
     if (officersList && officersList.length > 0) return officersList;
@@ -157,16 +163,16 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   // Reset to exactly 1 blank schedule row whenever modal is opened
   React.useEffect(() => {
     if (isOpen) {
-      setRows([createInitialRow(defaultArea)]);
+      setRows([createInitialRow(defaultArea, defaultTeachingMode)]);
       setExtRpInputMap({});
       setRpSearchMap({});
     }
-  }, [isOpen, defaultArea]);
+  }, [isOpen, defaultArea, defaultTeachingMode]);
 
   if (!isOpen) return null;
 
   const handleAddRow = () => {
-    setRows((prev) => [...prev, createInitialRow(defaultArea)]);
+    setRows((prev) => [...prev, createInitialRow(defaultArea, defaultTeachingMode)]);
   };
 
   const handleRemoveRow = (index: number) => {
@@ -255,6 +261,10 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         error('This ward/area is currently inactive. Please select an active ward/area.');
         return;
       }
+      if (!r.modeOfTeaching.trim() || !teachingModes.some((mode) => mode.toLowerCase() === r.modeOfTeaching.trim().toLowerCase())) {
+        error(`Row #${rowNum}: Please select an active Teaching Mode.`);
+        return;
+      }
       if (isAreaIncharge && !selectableAssignedAreas.some((a) => String(a || '').trim().toLowerCase() === r.area.trim().toLowerCase())) {
         error(`Row #${rowNum}: You are not authorized to schedule for "${r.area}". Authorized areas: ${selectableAssignedAreas.join(', ') || 'None'}`);
         return;
@@ -328,7 +338,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
           resourcePersonEmpIds: rpIds,
           resourcePersonName: rpNames.join(', '),
           externalResourcePersons: r.externalResourcePersons || [],
-          modeOfTeaching: r.modeOfTeaching || 'Lecture Cum Discussion',
+          modeOfTeaching: r.modeOfTeaching || '',
           description: r.description?.trim() || '',
           proposedByEmpId: user?.employeeId,
           proposedByName: user?.name,
@@ -345,6 +355,8 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
       } else {
         if (res.errorCode === 'AREA_INACTIVE') {
           error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else if (res.errorCode === 'TEACHING_MODE_INACTIVE') {
+          error('The selected Teaching Mode is inactive. Please select an active Teaching Mode.');
         } else {
           error(res.message || 'Failed to schedule departmental CNE sessions.');
         }
@@ -528,12 +540,13 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                           onChange={(e) => handleFieldChange(idx, 'modeOfTeaching', e.target.value)}
                           className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
                         >
-                          <option value="Lecture Cum Discussion">Lecture Cum Discussion</option>
-                          <option value="Demonstration">Demonstration</option>
-                          <option value="Hands-on Training">Hands-on Training</option>
-                          <option value="Workshop">Workshop</option>
-                          <option value="Case Study Presentation">Case Study Presentation</option>
-                          <option value="Simulation">Simulation</option>
+                          {teachingModes.length === 0 ? (
+                            <option value="">No active Teaching Modes available</option>
+                          ) : (
+                            teachingModes.map((mode) => (
+                              <option key={`dept-teaching-mode-${mode}`} value={mode}>{mode}</option>
+                            ))
+                          )}
                         </select>
                       </div>
 

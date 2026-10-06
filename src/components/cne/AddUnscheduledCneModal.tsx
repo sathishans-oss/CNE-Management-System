@@ -30,6 +30,7 @@ interface AddUnscheduledCneModalProps {
   onClose: () => void;
   onSuccess: (cneId?: string) => void;
   areasList: string[];
+  teachingModes: string[];
   officersList: Employee[];
   user: SessionUser | null;
 }
@@ -39,6 +40,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   onClose,
   onSuccess,
   areasList,
+  teachingModes,
   officersList,
   user
 }) => {
@@ -58,7 +60,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   const [duration, setDuration] = useState('01:00:00');
   const [fullFromDate, setFullFromDate] = useState(() => `${getIndiaToday()}T09:00`);
   const [fullToDate, setFullToDate] = useState(() => `${getIndiaToday()}T10:00`);
-  const [modeOfTeaching, setModeOfTeaching] = useState('Lecture Cum Discussion');
+  const [modeOfTeaching, setModeOfTeaching] = useState('');
   const [description, setDescription] = useState('');
   const adminRemarks = '';
 
@@ -131,6 +133,14 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       }
     };
   }, [isOpen, areasList, officersList.length]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const preferred = teachingModes.find((name) => name.trim().toLowerCase() === 'lecture cum discussion') || teachingModes[0] || '';
+    if (!modeOfTeaching || !teachingModes.some((name) => name.toLowerCase() === modeOfTeaching.toLowerCase())) {
+      setModeOfTeaching(preferred);
+    }
+  }, [isOpen, teachingModes, modeOfTeaching]);
 
   if (!isOpen) return null;
 
@@ -223,6 +233,10 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       error('This ward/area is currently inactive. Please select an active ward/area.');
       return;
     }
+    if (!modeOfTeaching.trim() || !teachingModes.some((mode) => mode.toLowerCase() === modeOfTeaching.trim().toLowerCase())) {
+      error('Please select an active Teaching Mode.');
+      return;
+    }
     if (!fullFromDate) {
       error('Conducted From (Date & Time) is required.');
       return;
@@ -307,6 +321,8 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       } else {
         if (res.errorCode === 'AREA_INACTIVE') {
           error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else if (res.errorCode === 'TEACHING_MODE_INACTIVE') {
+          error('The selected Teaching Mode is inactive. Please select an active Teaching Mode.');
         } else {
           error(res.message || 'Failed to record unscheduled CNE.');
         }
@@ -442,12 +458,13 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                     onChange={(e) => setModeOfTeaching(e.target.value)}
                     className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   >
-                    <option value="Lecture Cum Discussion">Lecture Cum Discussion</option>
-                    <option value="Demonstration">Demonstration</option>
-                    <option value="Hands-on Training">Hands-on Training</option>
-                    <option value="Workshop">Workshop</option>
-                    <option value="Case Study Presentation">Case Study Presentation</option>
-                    <option value="Simulation">Simulation</option>
+                    {teachingModes.length === 0 ? (
+                      <option value="">No active Teaching Modes available</option>
+                    ) : (
+                      teachingModes.map((mode) => (
+                        <option key={`unscheduled-teaching-mode-${mode}`} value={mode}>{mode}</option>
+                      ))
+                    )}
                   </select>
                 </div>
 

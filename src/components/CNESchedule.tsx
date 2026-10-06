@@ -22,7 +22,7 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
-import { SessionUser, CNERecord, CNEActivityProgress, Employee } from '../types';
+import { SessionUser, CNERecord, CNEActivityProgress, Employee, TeachingMode } from '../types';
 import { ApiService } from '../services/api';
 import { useToast } from './Toast';
 import { ScheduleRow } from './cne/ScheduleRow';
@@ -96,10 +96,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [rpSearchQuery, setRpSearchQuery] = useState('');
   const [newExternalRpList, setNewExternalRpList] = useState<string[]>([]);
   const [newExternalRpInput, setNewExternalRpInput] = useState('');
-  const [newMode, setNewMode] = useState('Lecture Cum Discussion');
+  const [newMode, setNewMode] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newMaxParticipants, setNewMaxParticipants] = useState(40);
   const [areasList, setAreasList] = useState<string[]>([]);
+  const [teachingModes, setTeachingModes] = useState<TeachingMode[]>([]);
   const [officersList, setOfficersList] = useState<any[]>(() => getCachedOfficers() || []);
   const [isResourcePersonsLoading, setIsResourcePersonsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -149,7 +150,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [editRpSearchQuery, setEditRpSearchQuery] = useState('');
   const [editExternalRpList, setEditExternalRpList] = useState<string[]>([]);
   const [editExternalRpInput, setEditExternalRpInput] = useState('');
-  const [editMode, setEditMode] = useState('Lecture Cum Discussion');
+  const [editMode, setEditMode] = useState('');
   const [editDescription, setEditDescription] = useState('');
   const [editMaxParticipants, setEditMaxParticipants] = useState(40);
   const [editAdminRemarks, setEditAdminRemarks] = useState('');
@@ -168,6 +169,27 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const isAdmin = user?.role === 'ADMIN';
   const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
   const canScheduleCne = isAdmin || isAreaIncharge;
+  const activeTeachingModeNames = useMemo(() =>
+    teachingModes
+      .filter((mode) => mode.status === 'ACTIVE')
+      .map((mode) => mode.name.trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+    [teachingModes]
+  );
+  const preferredTeachingMode = useMemo(() => {
+    const lecture = activeTeachingModeNames.find((name) => name.toLowerCase() === 'lecture cum discussion');
+    return lecture || activeTeachingModeNames[0] || '';
+  }, [activeTeachingModeNames]);
+  const editTeachingModeOptions = useMemo(() => {
+    const current = String(editingCne?.modeOfTeaching || editMode || '').trim();
+    const active = [...activeTeachingModeNames];
+    const currentIsActive = active.some((name) => name.toLowerCase() === current.toLowerCase());
+    if (current && !currentIsActive) {
+      return [{ name: current, inactiveCurrent: true }, ...active.map((name) => ({ name, inactiveCurrent: false }))];
+    }
+    return active.map((name) => ({ name, inactiveCurrent: false }));
+  }, [activeTeachingModeNames, editingCne?.modeOfTeaching, editMode]);
   const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const isFromComplete = Boolean(scheduleFromDate && scheduleFromTime);
 
@@ -222,6 +244,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   useEffect(() => {
     setClasses([]);
     setAreasList([]);
+    setTeachingModes([]);
     setOfficersList(getCachedOfficers() || []);
     setSelectedDetailCne(null);
     setActiveReferenceCne(null);
@@ -293,9 +316,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     const isCurrent = () => requestId === dataRequestRef.current && requestSession === sessionKeyRef.current;
     setLoading(true);
     try {
-      const [clsRes, areasRes] = await Promise.all([
+      const [clsRes, areasRes, teachingModesRes] = await Promise.all([
         ApiService.getCNERecords(),
-        ApiService.getAreas()
+        ApiService.getAreas(),
+        ApiService.getTeachingModes()
       ]);
 
       if (!isCurrent()) return;
@@ -309,6 +333,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         );
         setAreasList(uniqueAreas);
       }
+      if (teachingModesRes.success && Array.isArray(teachingModesRes.data)) {
+        setTeachingModes(
+          [...teachingModesRes.data].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+        );
+      } else {
+        throw new Error(teachingModesRes.message || 'Failed to load Teaching Modes.');
+      }
 
       return clsRes.data;
     } catch (e: any) {
@@ -317,6 +348,15 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       if (isCurrent()) setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!activeTeachingModeNames.length) {
+      if (newMode) setNewMode('');
+      return;
+    }
+    const currentIsActive = activeTeachingModeNames.some((name) => name.toLowerCase() === newMode.toLowerCase());
+    if (!currentIsActive) setNewMode(preferredTeachingMode);
+  }, [activeTeachingModeNames, preferredTeachingMode, newMode]);
 
   // On-demand fetch of officers when Central CNE Add or Edit modal opens for authorized roles if not yet loaded
   useEffect(() => {
@@ -488,6 +528,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       return;
     }
 
+    if (!newMode.trim() || !activeTeachingModeNames.some((mode) => mode.toLowerCase() === newMode.trim().toLowerCase())) {
+      error('Please select an active Teaching Mode.');
+      return;
+    }
+
     if (!newToDate.trim()) {
       error('To Date & Time is required.');
       return;
@@ -569,11 +614,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         setRpSearchQuery('');
         setNewExternalRpList([]);
         setNewExternalRpInput('');
-        setNewMode('Lecture Cum Discussion');
+        setNewMode(preferredTeachingMode);
         loadData();
       } else {
         if (res.errorCode === 'AREA_INACTIVE') {
           error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else if (res.errorCode === 'TEACHING_MODE_INACTIVE') {
+          error('The selected Teaching Mode is inactive. Please select an active Teaching Mode.');
         } else {
           error(res.message || 'Failed to schedule CNE.');
         }
@@ -628,7 +675,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setEditRpSearchQuery('');
     setEditExternalRpList(cls.externalResourcePersons ? [...cls.externalResourcePersons] : []);
     setEditExternalRpInput('');
-    setEditMode(cls.modeOfTeaching || 'Lecture Cum Discussion');
+    setEditMode(cls.modeOfTeaching || preferredTeachingMode);
     setEditDescription(cls.description || '');
     setEditMaxParticipants(cls.maxParticipants || 40);
     setEditAdminRemarks(cls.adminRemarks || '');
@@ -700,6 +747,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       return;
     }
 
+    const originalTeachingMode = String(editingCne.modeOfTeaching || '').trim();
+    const teachingModeChanged = editMode.trim().toLowerCase() !== originalTeachingMode.toLowerCase();
+    if (teachingModeChanged && !activeTeachingModeNames.some((mode) => mode.toLowerCase() === editMode.trim().toLowerCase())) {
+      error('The selected Teaching Mode is inactive. Please select an active Teaching Mode.');
+      return;
+    }
+
     if (editSelectedRpEmpIds.length === 0 && editExternalRpList.length === 0) {
       error('Please select at least one Resource Person (Internal or External).');
       return;
@@ -764,6 +818,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       } else {
         if (res.errorCode === 'AREA_INACTIVE') {
           error('This ward/area is currently inactive. Please select an active ward/area.');
+        } else if (res.errorCode === 'TEACHING_MODE_INACTIVE') {
+          error('The selected Teaching Mode is inactive. Please select an active Teaching Mode.');
         } else {
           error(res.message || 'Failed to update CNE workshop.');
         }
@@ -1261,12 +1317,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         onChange={(e) => setNewMode(e.target.value)}
                         className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
                       >
-                        <option value="Lecture Cum Discussion">Lecture Cum Discussion</option>
-                        <option value="Demonstration">Demonstration</option>
-                        <option value="Hands-on Training">Hands-on Training</option>
-                        <option value="Workshop">Workshop</option>
-                        <option value="Case Study Presentation">Case Study Presentation</option>
-                        <option value="Simulation">Simulation</option>
+                        {activeTeachingModeNames.length === 0 ? (
+                          <option value="">No active Teaching Modes available</option>
+                        ) : (
+                          activeTeachingModeNames.map((mode) => (
+                            <option key={`central-teaching-mode-${mode}`} value={mode}>{mode}</option>
+                          ))
+                        )}
                       </select>
                     </div>
 
@@ -1721,13 +1778,22 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                         Mode of Teaching
                       </label>
-                      <input
-                        type="text"
+                      <select
+                        required
                         value={editMode}
                         onChange={(e) => setEditMode(e.target.value)}
-                        placeholder="Lecture Cum Discussion"
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
-                      />
+                      >
+                        {editTeachingModeOptions.length === 0 ? (
+                          <option value="">No active Teaching Modes available</option>
+                        ) : (
+                          editTeachingModeOptions.map((option) => (
+                            <option key={`edit-teaching-mode-${option.name}`} value={option.name}>
+                              {option.inactiveCurrent ? `${option.name} (Current — Inactive)` : option.name}
+                            </option>
+                          ))
+                        )}
+                      </select>
                     </div>
 
                     {/* Max Capacity: ONLY for Central CNE */}
@@ -2057,6 +2123,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           onClose={() => setIsDeptScheduleOpen(false)}
           user={user}
           areasList={areasList}
+          teachingModes={activeTeachingModeNames}
           officersList={officersList}
           isOfficersLoading={isResourcePersonsLoading}
           onOfficersLoaded={(fresh) => setOfficersList(fresh)}
@@ -2070,6 +2137,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           onClose={() => setIsUnscheduledOpen(false)}
           onSuccess={() => loadData()}
           areasList={areasList}
+          teachingModes={activeTeachingModeNames}
           officersList={officersList}
           user={user}
         />

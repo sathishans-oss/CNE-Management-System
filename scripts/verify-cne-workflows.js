@@ -951,6 +951,140 @@ runTest('Audit logging records AREA_RENAMED with row counts on success and AREA_
   );
 });
 
+
+// -----------------------------------------------------------------------------
+// 11. Admin-Controlled Teaching Mode Master
+// -----------------------------------------------------------------------------
+runTest('Teaching Mode master backend handlers and router actions exist', () => {
+  assert.ok(codeGs.includes('function handleGetTeachingModes(params)'), 'getTeachingModes handler must exist');
+  assert.ok(codeGs.includes('function handleAddTeachingMode(params, session)'), 'addTeachingMode handler must exist');
+  assert.ok(codeGs.includes('function handleUpdateTeachingMode(params, session)'), 'updateTeachingMode handler must exist');
+  assert.ok(codeGs.includes("case 'getTeachingModes':"), 'getTeachingModes router action must exist');
+  assert.ok(codeGs.includes("case 'addTeachingMode':"), 'addTeachingMode router action must exist');
+  assert.ok(codeGs.includes("case 'updateTeachingMode':"), 'updateTeachingMode router action must exist');
+});
+
+runTest('Teaching Mode mutations remain Admin-only and ScriptLock protected', () => {
+  const addStart = codeGs.indexOf('function handleAddTeachingMode(');
+  const updateStart = codeGs.indexOf('function handleUpdateTeachingMode(');
+  const addFunc = codeGs.substring(addStart, updateStart);
+  const updateEnd = codeGs.indexOf('/**\n * Helper: Safely normalize Duration', updateStart);
+  const updateFunc = codeGs.substring(updateStart, updateEnd);
+  assert.ok(addFunc.includes('requireAdmin(session)'), 'add Teaching Mode must require Admin');
+  assert.ok(addFunc.includes('LockService.getScriptLock()'), 'add Teaching Mode must use ScriptLock');
+  assert.ok(updateFunc.includes('requireAdmin(session)'), 'update Teaching Mode must require Admin');
+  assert.ok(updateFunc.includes('LockService.getScriptLock()'), 'update Teaching Mode must use ScriptLock');
+});
+
+runTest('Teaching Mode duplicate names are rejected case-insensitively', () => {
+  const updateStart = codeGs.indexOf('function handleUpdateTeachingMode(');
+  const updateEnd = codeGs.indexOf('/**\n * Helper: Safely normalize Duration', updateStart);
+  const updateFunc = codeGs.substring(updateStart, updateEnd);
+  assert.ok(updateFunc.includes("candidate.toUpperCase() === newNorm"), 'rename duplicate validation must use normalized exact match');
+  assert.ok(updateFunc.includes('A Teaching Mode with this name already exists.'), 'duplicate message must be present');
+});
+
+runTest('Authoritative Teaching Mode ACTIVE/INACTIVE helpers exist', () => {
+  assert.ok(codeGs.includes('function getTeachingModeStatusMap_(forceFresh)'), 'status map helper must exist');
+  assert.ok(codeGs.includes('function isTeachingModeActive_(modeName, forceFresh)'), 'active helper must exist');
+  assert.ok(codeGs.includes('function requireActiveTeachingMode_(modeName, forceFresh)'), 'require-active helper must exist');
+  assert.ok(codeGs.includes("errorCode: 'TEACHING_MODE_INACTIVE'"), 'standard inactive error code must exist');
+});
+
+runTest('New CNE creation validates Teaching Mode before and after the lock', () => {
+  const createFunc = codeGs.substring(codeGs.indexOf('function handleCreateCNE('), codeGs.indexOf('function handleUpdateCNE('));
+  assert.ok(createFunc.includes('requireActiveTeachingMode_(modeOfTeaching, false)'), 'create pre-lock validation required');
+  assert.ok(createFunc.includes('requireActiveTeachingMode_(modeOfTeaching, true)'), 'create post-lock validation required');
+});
+
+runTest('Departmental CNE batch validates Teaching Modes pre-lock and with one fresh map under lock', () => {
+  const deptStart = codeGs.indexOf('function handleAddDepartmentalSchedule(');
+  const deptEnd = codeGs.indexOf('/**', deptStart + 20);
+  const deptFunc = codeGs.substring(deptStart, deptEnd > deptStart ? deptEnd : codeGs.length);
+  assert.ok(deptFunc.includes('requireActiveTeachingMode_(teachingMode, false)'), 'departmental pre-lock Teaching Mode validation required');
+  assert.ok(deptFunc.includes('var liveTeachingModeStatusMap = getTeachingModeStatusMap_(true);'), 'departmental lock-time validation must read status map once');
+  assert.ok(deptFunc.includes("errorCode: 'TEACHING_MODE_INACTIVE'"), 'departmental inactive mode must fail closed');
+});
+
+runTest('Edit CNE requires ACTIVE Teaching Mode only when the Teaching Mode changes', () => {
+  const updateFunc = codeGs.substring(codeGs.indexOf('function handleUpdateCNE('), codeGs.indexOf('function handleAddDepartmentalSchedule('));
+  assert.ok(updateFunc.includes('preNewTeachingMode !== preOldTeachingMode'), 'pre-lock mode check must compare old and new');
+  assert.ok(updateFunc.includes('liveNewTeachingMode !== liveOldTeachingMode'), 'post-lock mode check must compare old and new');
+  assert.ok(updateFunc.includes('requireActiveTeachingMode_(params.modeOfTeaching, true)'), 'changed mode must be freshly validated');
+});
+
+runTest('Existing CNE with inactive current Teaching Mode can remain unchanged', () => {
+  const updateFunc = codeGs.substring(codeGs.indexOf('function handleUpdateCNE('), codeGs.indexOf('function handleAddDepartmentalSchedule('));
+  assert.ok(!updateFunc.includes('requireActiveTeachingMode_(liveUpdateRecord.modeOfTeaching'), 'current stored Teaching Mode must not be globally blocked');
+  assert.ok(updateFunc.includes('liveNewTeachingMode !== liveOldTeachingMode'), 'only a changed target is enforced');
+});
+
+runTest('Teaching Mode rename propagates exact matches to CNE Schedule only', () => {
+  const start = codeGs.indexOf('function handleUpdateTeachingMode(');
+  const end = codeGs.indexOf('/**\n * Helper: Safely normalize Duration', start);
+  const fn = codeGs.substring(start, end);
+  assert.ok(fn.includes("String(oldCell || '').trim().toUpperCase() === oldNorm"), 'rename must use exact normalized match');
+  assert.ok(fn.includes('cneSheet.getRange(cItem.row, cItem.col).setValue(cItem.newVal);'), 'only affected CNE cells must be updated');
+  assert.ok(!fn.includes('.replace(oldName'), 'substring replacement must not be used');
+});
+
+runTest('Teaching Mode rename registers rollback before dependent and master writes', () => {
+  const start = codeGs.indexOf('function handleUpdateTeachingMode(');
+  const end = codeGs.indexOf('/**\n * Helper: Safely normalize Duration', start);
+  const fn = codeGs.substring(start, end);
+  const depRollback = fn.indexOf('executedRollbacks.push({ sheet: cneSheet');
+  const depWrite = fn.indexOf('cneSheet.getRange(cItem.row, cItem.col).setValue');
+  const masterRollback = fn.indexOf('col: 1, oldVal: data[targetRow - 1][0]');
+  const masterWrite = fn.indexOf('getRange(targetRow, 1, 1, 3).setValues');
+  assert.ok(depRollback !== -1 && depRollback < depWrite, 'CNE rollback must be registered before write');
+  assert.ok(masterRollback !== -1 && masterRollback < masterWrite, 'master rollback must be registered before grouped write');
+  assert.ok(fn.includes("errorCode: 'TEACHING_MODE_RENAME_FAILED'"), 'safe rollback failure code must exist');
+  assert.ok(fn.includes("errorCode: 'TEACHING_MODE_RENAME_RECONCILIATION_REQUIRED'"), 'reconciliation failure code must exist');
+});
+
+runTest('Teaching Mode cache is invalidated after mutations and failures', () => {
+  const tmStart = codeGs.indexOf('function handleAddTeachingMode(');
+  const tmEnd = codeGs.indexOf('/**\n * Helper: Safely normalize Duration', tmStart);
+  const tmSection = codeGs.substring(tmStart, tmEnd);
+  const removals = (tmSection.match(/remove\('cne_teaching_modes_list'\)/g) || []).length;
+  assert.ok(removals >= 3, 'Teaching Mode cache must be cleared on add/update/rename failure paths');
+});
+
+runTest('Teaching Mode master schema has no Sort Order field', () => {
+  assert.ok(codeGs.includes("'Teaching Mode': ['Mode Name', 'Status', 'Updated At']"), 'Teaching Mode sheet must contain Name, Status, Updated At only');
+  assert.ok(!codeGs.includes("'Teaching Mode': ['Mode Name', 'Status', 'Sort Order'"), 'Teaching Mode master must not use Sort Order');
+});
+
+runTest('Frontend Control Center exposes Teaching Modes Admin page', () => {
+  const app = fs.readFileSync('src/App.tsx', 'utf8');
+  const toolbar = fs.readFileSync('src/components/TopToolbar.tsx', 'utf8');
+  const adminModes = fs.readFileSync('src/components/AdminTeachingModes.tsx', 'utf8');
+  assert.ok(app.includes("activeView === 'admin-teaching-modes'"), 'App must render Teaching Modes Admin page');
+  assert.ok(toolbar.includes("id: 'admin-teaching-modes'"), 'Control Center must link to Teaching Modes');
+  assert.ok(adminModes.includes('Teaching Mode | Status') || (adminModes.includes('Teaching Mode') && adminModes.includes('Status')), 'Admin page must expose Teaching Mode and Status columns');
+  assert.ok(!adminModes.includes('Sort Order'), 'Admin Teaching Modes page must not expose Sort Order');
+});
+
+runTest('All CNE Teaching Mode selectors use the centralized master instead of hardcoded option lists', () => {
+  const schedule = fs.readFileSync('src/components/CNESchedule.tsx', 'utf8');
+  const dept = fs.readFileSync('src/components/cne/DepartmentalScheduleModal.tsx', 'utf8');
+  const unscheduled = fs.readFileSync('src/components/cne/AddUnscheduledCneModal.tsx', 'utf8');
+  assert.ok(schedule.includes('ApiService.getTeachingModes()'), 'CNE Schedule must load master Teaching Modes');
+  assert.ok(schedule.includes('activeTeachingModeNames.map'), 'Central CNE dropdown must use active master modes');
+  assert.ok(dept.includes('teachingModes.map'), 'Departmental CNE dropdown must use master modes');
+  assert.ok(unscheduled.includes('teachingModes.map'), 'Unscheduled CNE dropdown must use master modes');
+  for (const source of [schedule, dept, unscheduled]) {
+    assert.ok(!source.includes('<option value="Demonstration">Demonstration</option>'), 'hardcoded Teaching Mode option arrays must be removed');
+  }
+});
+
+runTest('Edit CNE displays current inactive Teaching Mode while new selections remain ACTIVE-only', () => {
+  const schedule = fs.readFileSync('src/components/CNESchedule.tsx', 'utf8');
+  assert.ok(schedule.includes('(Current — Inactive)'), 'Edit dropdown must label current inactive Teaching Mode');
+  assert.ok(schedule.includes('teachingModeChanged'), 'Edit validation must distinguish unchanged historical mode from a new target');
+  assert.ok(schedule.includes('activeTeachingModeNames.some'), 'Changed Teaching Mode must be checked against active master values');
+});
+
 console.log('\n========================================================');
 console.log(`Passed: ${passedTests}/${totalTests}`);
 console.log('ALL CNE WORKFLOWS & SCHEMA TESTS PASSED!');
