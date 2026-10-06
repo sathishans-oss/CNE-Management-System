@@ -2633,6 +2633,72 @@ function handleGetAreas(params) {
   return { success: true, data: areas };
 }
 
+/**
+ * Authoritative Area Status Helpers
+ * Normalizes area names: String(areaName || '').trim().toUpperCase()
+ * Uses existing Area cache (cne_areas_list) when safe, or performs authoritative sheet read when forceFresh is true.
+ */
+function getAreaStatusMap_(forceFresh) {
+  var map = {};
+  var areas = [];
+  var cacheKey = 'cne_areas_list';
+  if (!forceFresh) {
+    try {
+      var cached = CacheService.getScriptCache().get(cacheKey);
+      if (cached) {
+        var parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          areas = parsed;
+        }
+      }
+    } catch (e) {}
+  }
+  if (areas.length === 0) {
+    var sheet = getOrCreateSheet('Area');
+    var data = sheet.getDataRange().getValues();
+    for (var r = 1; r < data.length; r++) {
+      var name = String(data[r][0] || '').trim();
+      var status = String(data[r][1] || 'ACTIVE').trim().toUpperCase();
+      if (name) {
+        areas.push({
+          id: 'AREA-' + r,
+          name: name,
+          status: (status === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE',
+          createdAt: data[r][2] ? String(data[r][2]) : ''
+        });
+      }
+    }
+    try {
+      CacheService.getScriptCache().put(cacheKey, JSON.stringify(areas), 60);
+    } catch (ce) {}
+  }
+  for (var i = 0; i < areas.length; i++) {
+    var normName = String(areas[i].name || '').trim().toUpperCase();
+    if (normName) {
+      map[normName] = (areas[i].status === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
+    }
+  }
+  return map;
+}
+
+function isAreaActive_(areaName, forceFresh) {
+  var norm = String(areaName || '').trim().toUpperCase();
+  if (!norm) return false;
+  var map = getAreaStatusMap_(forceFresh);
+  return map[norm] === 'ACTIVE';
+}
+
+function requireActiveArea_(areaName, forceFresh) {
+  if (!isAreaActive_(areaName, forceFresh)) {
+    return {
+      success: false,
+      errorCode: 'AREA_INACTIVE',
+      message: 'The selected ward/area is inactive. Please select an active area.'
+    };
+  }
+  return null;
+}
+
 function handleAddArea(params, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
@@ -2680,7 +2746,8 @@ function handleUpdateArea(params, session) {
 
   var oldName = String(params.oldName || '').trim();
   var newName = sanitizeCellInput(params.name);
-  var status = (params.status || 'ACTIVE').toUpperCase();
+  var rawStatus = params.status !== undefined ? String(params.status).trim().toUpperCase() : '';
+  var status = (rawStatus === 'INACTIVE' || rawStatus === 'ACTIVE') ? rawStatus : 'ACTIVE';
   
   var lock = LockService.getScriptLock();
   try {
@@ -2698,10 +2765,20 @@ function handleUpdateArea(params, session) {
     if (!sheet) return { success: false, message: 'Area sheet not found.' };
     
     var data = sheet.getDataRange().getValues();
+    if (newName && newName.toLowerCase() !== oldName.toLowerCase()) {
+      for (var dr = 1; dr < data.length; dr++) {
+        if (String(data[dr][0]).trim().toLowerCase() === newName.toLowerCase()) {
+          return { success: false, message: 'An area with this name already exists.' };
+        }
+      }
+    }
+
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0]).trim().toLowerCase() === oldName.toLowerCase()) {
+        var currentStatus = String(data[r][1] || 'ACTIVE').trim().toUpperCase();
+        var targetStatus = rawStatus ? status : currentStatus;
         sheet.getRange(r + 1, 1).setValue(newName || oldName);
-        sheet.getRange(r + 1, 2).setValue(status);
+        sheet.getRange(r + 1, 2).setValue(targetStatus);
         try {
           CacheService.getScriptCache().remove('cne_areas_list');
         } catch (e) {}
@@ -3167,6 +3244,11 @@ function handleCreateCNE(params, session) {
     return areaAuthErr;
   }
 
+  var preActiveAreaErr = requireActiveArea_(area, false);
+  if (preActiveAreaErr) {
+    return preActiveAreaErr;
+  }
+
   var dFrom = new Date(fromDate);
   var dTo = new Date(toDate);
   if (isNaN(dFrom.getTime()) || isNaN(dTo.getTime())) {
@@ -3327,6 +3409,9 @@ function handleCreateCNE(params, session) {
     var liveAreaAuthErr = checkCNEAuthorized(session, area, cneType);
     if (liveAreaAuthErr) return liveAreaAuthErr;
 
+    var activeAreaErr = requireActiveArea_(area, true);
+    if (activeAreaErr) return activeAreaErr;
+
     // Revalidate internal identities against a fresh Officers-data snapshot at commit time.
     _executionRosterData = null;
     _inMemoryOfficerMap = null;
@@ -3479,6 +3564,15 @@ function handleUpdateCNE(params, session) {
     }
   }
 
+  if (params.area !== undefined) {
+    var preOldArea = String(record.area || '').trim().toUpperCase();
+    var preNewArea = String(params.area || '').trim().toUpperCase();
+    if (preNewArea && preNewArea !== preOldArea) {
+      var preAreaActiveErr = requireActiveArea_(params.area, false);
+      if (preAreaActiveErr) return preAreaActiveErr;
+    }
+  }
+
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
@@ -3533,6 +3627,15 @@ function handleUpdateCNE(params, session) {
             message: 'Permission denied. Area Incharge cannot transfer a Departmental CNE to another area/ward.'
           };
         }
+      }
+    }
+
+    if (params.area !== undefined) {
+      var liveOldArea = String(liveUpdateRecord.area || '').trim().toUpperCase();
+      var liveNewArea = String(params.area || '').trim().toUpperCase();
+      if (liveNewArea && liveNewArea !== liveOldArea) {
+        var liveAreaActiveErr = requireActiveArea_(params.area, true);
+        if (liveAreaActiveErr) return liveAreaActiveErr;
       }
     }
 
@@ -3935,6 +4038,11 @@ function handleAddDepartmentalSchedule(params, session) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Row ' + (i + 1) + ' (' + area + '): ' + authErr.message };
     }
 
+    var rowActiveAreaErr = requireActiveArea_(area, false);
+    if (rowActiveAreaErr) {
+      return { success: false, errorCode: 'AREA_INACTIVE', message: 'Row ' + (i + 1) + ' (' + area + '): ' + rowActiveAreaErr.message };
+    }
+
     // Internal RP validation
     var rawRp = c.resourcePersonEmpIds !== undefined ? c.resourcePersonEmpIds : c.resourcePersonEmpId;
     var listRp = Array.isArray(rawRp) ? rawRp : (rawRp || '').split(',');
@@ -4006,10 +4114,19 @@ function handleAddDepartmentalSchedule(params, session) {
     }
     _executionRosterData = null;
     _inMemoryOfficerMap = null;
+    var liveAreaStatusMap = getAreaStatusMap_(true);
     for (var liveIdx = 0; liveIdx < validatedList.length; liveIdx++) {
       var liveItem = validatedList[liveIdx];
       var liveDeptAuth = checkCNEAuthorized(session, liveItem.area, 'DEPARTMENTAL');
       if (liveDeptAuth) return { success: false, errorCode: 'FORBIDDEN', message: 'Row ' + (liveIdx + 1) + ' (' + liveItem.area + '): ' + liveDeptAuth.message };
+      var normLiveArea = String(liveItem.area || '').trim().toUpperCase();
+      if (liveAreaStatusMap[normLiveArea] !== 'ACTIVE') {
+        return {
+          success: false,
+          errorCode: 'AREA_INACTIVE',
+          message: 'The selected ward/area is inactive. Please select an active area.'
+        };
+      }
       for (var liveRpIdx = 0; liveRpIdx < liveItem.rpClean.length; liveRpIdx++) {
         if (!findOfficerById(liveItem.rpClean[liveRpIdx])) {
           return { success: false, errorCode: 'OFFICER_DATA_CHANGED', message: 'Row ' + (liveIdx + 1) + ': Resource Person Employee ID is no longer present in Officers data: ' + liveItem.rpClean[liveRpIdx] };
@@ -4563,6 +4680,41 @@ function handleUpdateRole(params, session) {
         success: false,
         message: 'Cannot remove the last administrator account. Please assign another administrator first.'
       };
+    }
+    
+    // Authoritatively enforce active area for newly added Area Incharge assignments
+    // Existing historical assignments may remain or be removed without reactivation.
+    var prevAreas = [];
+    if (targetRow > 0) {
+      var rawPrevArea = String(data[targetRow - 1][areaCol] || '');
+      prevAreas = rawPrevArea.split(/[,;\n]+/).map(function(s) {
+        return String(s || '').trim().toUpperCase();
+      }).filter(Boolean);
+    }
+
+    var reqAreas = String(area || '').split(/[,;\n]+/).map(function(s) {
+      return String(s || '').trim().toUpperCase();
+    }).filter(Boolean);
+
+    var newlyAddedAreas = [];
+    for (var rqa = 0; rqa < reqAreas.length; rqa++) {
+      if (prevAreas.indexOf(reqAreas[rqa]) === -1) {
+        newlyAddedAreas.push(reqAreas[rqa]);
+      }
+    }
+
+    if (newlyAddedAreas.length > 0) {
+      var roleAreaStatusMap = getAreaStatusMap_(true);
+      for (var naIdx = 0; naIdx < newlyAddedAreas.length; naIdx++) {
+        var naNorm = newlyAddedAreas[naIdx];
+        if (roleAreaStatusMap[naNorm] !== 'ACTIVE') {
+          return {
+            success: false,
+            errorCode: 'AREA_INACTIVE',
+            message: 'The selected ward/area is inactive. Please select an active area.'
+          };
+        }
+      }
     }
     
     var roleColNumber = roleCol + 1;

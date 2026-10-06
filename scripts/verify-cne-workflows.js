@@ -412,6 +412,196 @@ runTest('CNE Applications is absent from active schema, Verify / Initialize, and
   );
 });
 
+// -----------------------------------------------------------------------------
+// 8. Ward / Area Active–Inactive Backend Enforcement
+// -----------------------------------------------------------------------------
+runTest('Authoritative area-status helpers exist with normalized uppercase lookup', () => {
+  assert.ok(codeGs.includes('function getAreaStatusMap_(forceFresh)'), 'getAreaStatusMap_ must exist in Code.gs');
+  assert.ok(codeGs.includes('function isAreaActive_(areaName, forceFresh)'), 'isAreaActive_ must exist in Code.gs');
+  assert.ok(codeGs.includes('function requireActiveArea_(areaName, forceFresh)'), 'requireActiveArea_ must exist in Code.gs');
+  assert.ok(codeGs.includes("errorCode: 'AREA_INACTIVE'"), 'Standard AREA_INACTIVE error code must be used');
+  assert.ok(codeGs.includes("map[normName] = (areas[i].status === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE'"), 'Map must normalize ACTIVE / INACTIVE');
+  assert.ok(codeGs.includes("toUpperCase()"), 'Helpers must normalize area names using toUpperCase()');
+});
+
+runTest('handleCreateCNE rejects inactive area with standard AREA_INACTIVE error code both pre-lock and post-lock', () => {
+  const createFunc = codeGs.substring(
+    codeGs.indexOf('function handleCreateCNE('),
+    codeGs.indexOf('function handleUpdateCNE(')
+  );
+  assert.ok(
+    createFunc.includes('requireActiveArea_(area, false)'),
+    'handleCreateCNE must check requireActiveArea_ pre-lock'
+  );
+  assert.ok(
+    createFunc.includes('requireActiveArea_(area, true)'),
+    'handleCreateCNE must check requireActiveArea_ post-lock with forceFresh=true'
+  );
+});
+
+runTest('Departmental CNE creation rejects inactive area in batch scheduling pre-lock and post-lock with AREA_INACTIVE', () => {
+  const deptFunc = codeGs.substring(
+    codeGs.indexOf('function handleAddDepartmentalSchedule('),
+    codeGs.indexOf('function handleGetRoles(')
+  );
+  assert.ok(
+    deptFunc.includes('requireActiveArea_(area, false)'),
+    'handleAddDepartmentalSchedule must check active area pre-lock'
+  );
+  assert.ok(
+    deptFunc.includes('getAreaStatusMap_(true)'),
+    'handleAddDepartmentalSchedule must obtain authoritative status map inside lock'
+  );
+  assert.ok(
+    deptFunc.includes("liveAreaStatusMap[normLiveArea] !== 'ACTIVE'"),
+    'handleAddDepartmentalSchedule must verify each row is ACTIVE inside lock'
+  );
+  assert.ok(
+    deptFunc.includes("errorCode: 'AREA_INACTIVE'"),
+    'handleAddDepartmentalSchedule must return AREA_INACTIVE on inactive area'
+  );
+});
+
+runTest('Unscheduled CNE creation is covered and rejects inactive area via shared handleCreateCNE', () => {
+  assert.ok(
+    codeGs.includes("case 'addUnscheduledCNE':"),
+    'addUnscheduledCNE action must route to handleCreateCNE'
+  );
+  assert.ok(
+    codeGs.includes("params.action === 'addUnscheduledCNE'"),
+    'handleCreateCNE must recognize addUnscheduledCNE action'
+  );
+  const createFunc = codeGs.substring(
+    codeGs.indexOf('function handleCreateCNE('),
+    codeGs.indexOf('function handleUpdateCNE(')
+  );
+  assert.ok(
+    createFunc.includes('requireActiveArea_(area, true)'),
+    'Unscheduled CNE path must be guarded by authoritative requireActiveArea_'
+  );
+});
+
+runTest('handleUpdateCNE checks active status only when target area changes and rejects with AREA_INACTIVE', () => {
+  const updateFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateCNE('),
+    codeGs.indexOf('function handleFinalizeCNE(')
+  );
+  assert.ok(
+    updateFunc.includes('preNewArea && preNewArea !== preOldArea'),
+    'handleUpdateCNE must compare proposed area with old area pre-lock'
+  );
+  assert.ok(
+    updateFunc.includes('liveNewArea && liveNewArea !== liveOldArea'),
+    'handleUpdateCNE must compare proposed area with live old area post-lock'
+  );
+  assert.ok(
+    updateFunc.includes('requireActiveArea_(params.area, true)'),
+    'handleUpdateCNE must require active area when target area changed'
+  );
+});
+
+runTest('handleUpdateCNE permits editing other fields of an existing CNE when its current area is inactive', () => {
+  const updateFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateCNE('),
+    codeGs.indexOf('function handleFinalizeCNE(')
+  );
+  assert.ok(
+    updateFunc.includes('if (preNewArea && preNewArea !== preOldArea) {'),
+    'Active area check is gated on area change pre-lock'
+  );
+  assert.ok(
+    updateFunc.includes('if (liveNewArea && liveNewArea !== liveOldArea) {'),
+    'Active area check is gated on area change post-lock'
+  );
+});
+
+runTest('handleUpdateRole rejects newly added Area Incharge assignments to inactive areas with AREA_INACTIVE', () => {
+  const roleFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateRole('),
+    codeGs.indexOf('function handleGetNewsEvents(')
+  );
+  assert.ok(
+    roleFunc.includes('newlyAddedAreas'),
+    'handleUpdateRole must compute newlyAddedAreas'
+  );
+  assert.ok(
+    roleFunc.includes("roleAreaStatusMap[naNorm] !== 'ACTIVE'"),
+    'handleUpdateRole must verify newly added areas against roleAreaStatusMap'
+  );
+  assert.ok(
+    roleFunc.includes("errorCode: 'AREA_INACTIVE'"),
+    'handleUpdateRole must reject with AREA_INACTIVE for inactive assigned area'
+  );
+});
+
+runTest('handleUpdateRole permits existing inactive historical assignments to remain or be removed without reactivation', () => {
+  const roleFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateRole('),
+    codeGs.indexOf('function handleGetNewsEvents(')
+  );
+  assert.ok(
+    roleFunc.includes('prevAreas.indexOf(reqAreas[rqa]) === -1'),
+    'handleUpdateRole must filter only areas not already present in prevAreas'
+  );
+});
+
+runTest('No blanket inactive-area block exists in historical or read authorization', () => {
+  const authFunc = codeGs.substring(
+    codeGs.indexOf('function checkCNEAuthorized('),
+    codeGs.indexOf('function checkCNEActionAuthorized(')
+  );
+  assert.ok(
+    !authFunc.includes('isAreaActive_'),
+    'checkCNEAuthorized must not contain isAreaActive_ check to preserve historical access'
+  );
+  assert.ok(
+    !authFunc.includes('requireActiveArea_'),
+    'checkCNEAuthorized must not contain requireActiveArea_ check'
+  );
+  const getCneFunc = codeGs.substring(
+    codeGs.indexOf('function getCNEScheduleRecord('),
+    codeGs.indexOf('function handleSaveReferenceMaterial(')
+  );
+  assert.ok(
+    !getCneFunc.includes('isAreaActive_'),
+    'getCNEScheduleRecord must not block inactive areas from being retrieved'
+  );
+});
+
+runTest('Admin area status toggle and update handlers remain protected by Admin authorization and ScriptLock', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes('var adminError = requireAdmin(session);'),
+    'handleUpdateArea must require admin session'
+  );
+  assert.ok(
+    updateAreaFunc.includes('var freshAdminCheck = requireFreshAdminMutation(session);'),
+    'handleUpdateArea must perform fresh mutation check inside lock'
+  );
+  assert.ok(
+    updateAreaFunc.includes('LockService.getScriptLock()'),
+    'handleUpdateArea must acquire ScriptLock'
+  );
+});
+
+runTest('Admin area rename enforces duplicate name validation in backend handleUpdateArea', () => {
+  const updateAreaFunc = codeGs.substring(
+    codeGs.indexOf('function handleUpdateArea('),
+    codeGs.indexOf('function formatDurationValue(')
+  );
+  assert.ok(
+    updateAreaFunc.includes('newName.toLowerCase() !== oldName.toLowerCase()'),
+    'handleUpdateArea must check for name changes'
+  );
+  assert.ok(
+    updateAreaFunc.includes('An area with this name already exists.'),
+    'handleUpdateArea must reject duplicate area names'
+  );
+});
+
 console.log('\n========================================================');
 console.log(`Passed: ${passedTests}/${totalTests}`);
 console.log('ALL CNE WORKFLOWS & SCHEMA TESTS PASSED!');

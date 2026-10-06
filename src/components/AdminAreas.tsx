@@ -28,13 +28,16 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
 
-  // Edit Area Inline
+  // Edit Area Inline (Directly on Ward / Area Name)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [savingEditId, setSavingEditId] = useState<string | null>(null);
   const savingEditRef = useRef<string | null>(null);
+
+  // Status toggle & confirmation
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const togglingRef = useRef<string | null>(null);
+  const [deactivatingArea, setDeactivatingArea] = useState<Area | null>(null);
 
   const { success, error } = useToast();
 
@@ -80,15 +83,24 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
     }
   };
 
+  const handleStatusClick = (area: Area) => {
+    if (savingEditId || togglingId || togglingRef.current) return;
+    if (area.status === 'ACTIVE') {
+      setDeactivatingArea(area);
+    } else {
+      handleToggleStatus(area);
+    }
+  };
+
   const handleToggleStatus = async (area: Area) => {
-    if (togglingRef.current || togglingId) return;
+    if (togglingRef.current || togglingId || savingEditId) return;
     togglingRef.current = area.id;
     const newStatus = area.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
     setTogglingId(area.id);
     try {
       const res = await ApiService.updateArea(area.name, area.name, newStatus);
       if (res.success) {
-        success(`Area marked as ${newStatus}.`, 'Status Updated');
+        success(`Area "${area.name}" marked as ${newStatus}.`, 'Status Updated');
         await loadAreas();
       } else {
         error(res.message || 'Failed to update area status.');
@@ -102,13 +114,23 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
   };
 
   const handleSaveEdit = async (area: Area) => {
-    if (!editName.trim() || savingEditRef.current || savingEditId) return;
+    const trimmed = editName.trim();
+    if (!trimmed) {
+      error('Area name cannot be blank.');
+      return;
+    }
+    if (trimmed.toLowerCase() === area.name.trim().toLowerCase()) {
+      setEditingId(null);
+      setEditName('');
+      return;
+    }
+    if (savingEditRef.current || savingEditId || togglingId) return;
     savingEditRef.current = area.id;
     setSavingEditId(area.id);
     try {
-      const res = await ApiService.updateArea(area.name, editName.trim(), area.status);
+      const res = await ApiService.updateArea(area.name, trimmed, area.status);
       if (res.success) {
-        success('Area name updated successfully.', 'Area Updated');
+        success(`Area renamed to "${trimmed}" successfully.`, 'Area Updated');
         setEditingId(null);
         setEditName('');
         await loadAreas();
@@ -175,7 +197,7 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
             placeholder="Search ward or clinical area..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg"
+            className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-teal-500"
           />
         </div>
 
@@ -183,26 +205,32 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
           <span>Filter Status:</span>
           <button
             onClick={() => setStatusFilter('ALL')}
-            className={`px-3 py-1.5 rounded-lg ${statusFilter === 'ALL' ? 'bg-slate-900 text-white' : 'bg-slate-100 hover:bg-slate-200'}`}
+            className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+              statusFilter === 'ALL' ? 'bg-slate-900 text-white' : 'bg-slate-100 hover:bg-slate-200'
+            }`}
           >
             All
           </button>
           <button
             onClick={() => setStatusFilter('ACTIVE')}
-            className={`px-3 py-1.5 rounded-lg ${statusFilter === 'ACTIVE' ? 'bg-emerald-600 text-white' : 'bg-slate-100 hover:bg-slate-200'}`}
+            className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+              statusFilter === 'ACTIVE' ? 'bg-emerald-600 text-white' : 'bg-slate-100 hover:bg-slate-200'
+            }`}
           >
             Active Only
           </button>
           <button
             onClick={() => setStatusFilter('INACTIVE')}
-            className={`px-3 py-1.5 rounded-lg ${statusFilter === 'INACTIVE' ? 'bg-rose-600 text-white' : 'bg-slate-100 hover:bg-slate-200'}`}
+            className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+              statusFilter === 'INACTIVE' ? 'bg-rose-600 text-white' : 'bg-slate-100 hover:bg-slate-200'
+            }`}
           >
             Inactive
           </button>
         </div>
       </div>
 
-      {/* Areas Table */}
+      {/* Areas Table - Redesigned to contain only Ward / Area Name and Status */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
         {loading ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
@@ -214,125 +242,186 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase text-[11px]">
-                  <th className="py-3 px-4 w-16 text-center">Sr.</th>
+                  <th className="py-3 px-4 w-14 text-center">Sr.</th>
                   <th className="py-3 px-4">Ward / Area Name</th>
-                  <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
+                  <th className="py-3 px-4 w-36 text-center">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredAreas.map((area, index) => {
-                  const isEditing = editingId === area.id;
+                {filteredAreas.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="py-12 text-center text-slate-400">
+                      No wards or clinical areas found.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredAreas.map((area, index) => {
+                    const isEditing = editingId === area.id;
 
-                  return (
-                    <tr key={area.id} className="hover:bg-slate-50">
-                      <td className="py-3 px-4 text-center font-medium text-slate-500">
-                        {index + 1}
-                      </td>
+                    return (
+                      <tr key={area.id} className="hover:bg-slate-50 transition-colors">
+                        <td className="py-3.5 px-4 text-center font-medium text-slate-400">
+                          {index + 1}
+                        </td>
 
-                      <td className="py-3 px-4 font-semibold text-slate-900">
-                        {isEditing ? (
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value={editName}
-                              onChange={(e) => setEditName(e.target.value)}
-                              disabled={savingEditId === area.id}
-                              className="px-2 py-1 border border-slate-300 rounded text-xs w-full max-w-sm disabled:bg-slate-100"
-                            />
+                        <td className="py-3.5 px-4">
+                          {isEditing ? (
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-2 max-w-lg">
+                              <input
+                                type="text"
+                                value={editName}
+                                onChange={(e) => setEditName(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleSaveEdit(area);
+                                  } else if (e.key === 'Escape') {
+                                    e.preventDefault();
+                                    setEditingId(null);
+                                    setEditName('');
+                                  }
+                                }}
+                                disabled={savingEditId === area.id}
+                                className="px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs w-full focus:outline-hidden focus:ring-2 focus:ring-teal-500 disabled:bg-slate-100"
+                                placeholder="Ward / Area name"
+                                autoFocus
+                              />
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveEdit(area)}
+                                  disabled={savingEditId === area.id}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-semibold disabled:opacity-50 cursor-pointer shadow-2xs transition-colors"
+                                  title="Save changes"
+                                >
+                                  {savingEditId === area.id ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Check className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>Save</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingId(null);
+                                    setEditName('');
+                                  }}
+                                  disabled={savingEditId === area.id}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold disabled:opacity-50 cursor-pointer transition-colors"
+                                  title="Cancel edit"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  <span>Cancel</span>
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
                             <button
-                              onClick={() => handleSaveEdit(area)}
-                              disabled={savingEditId === area.id}
-                              className="p-1 text-emerald-700 hover:bg-emerald-100 rounded disabled:opacity-50 flex items-center gap-1"
-                              title="Save changes"
-                            >
-                              {savingEditId === area.id ? (
-                                <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
-                              ) : (
-                                <Check className="w-4 h-4" />
-                              )}
-                            </button>
-                            <button
+                              type="button"
                               onClick={() => {
-                                setEditingId(null);
-                                setEditName('');
+                                setEditingId(area.id);
+                                setEditName(area.name);
                               }}
-                              disabled={savingEditId === area.id}
-                              className="p-1 text-slate-400 hover:bg-slate-200 rounded disabled:opacity-50"
-                              title="Cancel edit"
+                              disabled={Boolean(savingEditId || togglingId)}
+                              aria-label={`Rename ${area.name}`}
+                              title="Click to rename ward/area"
+                              className="group inline-flex items-center gap-2 text-left font-semibold text-slate-900 hover:text-teal-700 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              <X className="w-4 h-4" />
+                              <span className="break-words">{area.name}</span>
+                              <Edit2 className="w-3 h-3 text-slate-400 group-hover:text-teal-600 transition-colors opacity-70 group-hover:opacity-100 shrink-0" />
                             </button>
-                          </div>
-                        ) : (
-                          <span>{area.name}</span>
-                        )}
-                      </td>
-
-                      <td className="py-3 px-4">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleStatus(area)}
-                          disabled={Boolean(savingEditId || togglingId)}
-                          title={
-                            area.status === 'ACTIVE'
-                              ? 'Click to deactivate this ward/area'
-                              : 'Click to activate this ward/area'
-                          }
-                          aria-label={
-                            area.status === 'ACTIVE'
-                              ? `Deactivate ${area.name}`
-                              : `Activate ${area.name}`
-                          }
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
-                            area.status === 'ACTIVE'
-                              ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
-                              : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
-                          }`}
-                        >
-                          {togglingId === area.id && (
-                            <Loader2 className="w-3 h-3 animate-spin" />
                           )}
-                          <span>{area.status}</span>
-                        </button>
-                      </td>
+                        </td>
 
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
+                        <td className="py-3.5 px-4 text-center">
                           <button
-                            onClick={() => {
-                              setEditingId(area.id);
-                              setEditName(area.name);
-                            }}
+                            type="button"
+                            onClick={() => handleStatusClick(area)}
                             disabled={Boolean(savingEditId || togglingId)}
-                            className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-md disabled:opacity-40"
-                            title="Edit area name"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-
-                          <button
-                            onClick={() => handleToggleStatus(area)}
-                            disabled={Boolean(savingEditId || togglingId)}
-                            className={`px-2 py-1 rounded text-[11px] font-bold transition-colors disabled:opacity-50 flex items-center gap-1 ${
+                            title={
                               area.status === 'ACTIVE'
-                                ? 'text-amber-700 bg-amber-50 hover:bg-amber-100'
-                                : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
+                                ? 'Click to deactivate this ward/area'
+                                : 'Click to activate this ward/area'
+                            }
+                            aria-label={
+                              area.status === 'ACTIVE'
+                                ? `Deactivate ${area.name}`
+                                : `Activate ${area.name}`
+                            }
+                            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
+                              area.status === 'ACTIVE'
+                                ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                                : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
                             }`}
                           >
-                            {togglingId === area.id && <Loader2 className="w-3 h-3 animate-spin" />}
-                            <span>{area.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}</span>
+                            {togglingId === area.id && (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            )}
+                            <span className="text-[9px]">{area.status === 'ACTIVE' ? '🟢' : '⚪'}</span>
+                            <span>{area.status}</span>
                           </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
         )}
       </div>
+
+      {/* Deactivation Confirmation Modal */}
+      {deactivatingArea && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 relative">
+            <button
+              type="button"
+              onClick={() => setDeactivatingArea(null)}
+              disabled={Boolean(togglingId)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1 disabled:opacity-40 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <h3 className="text-base font-bold text-slate-900 mb-2">
+              Deactivate {deactivatingArea.name}?
+            </h3>
+            <p className="text-xs text-slate-600 leading-relaxed mb-6">
+              <strong className="font-semibold text-slate-900">{deactivatingArea.name}</strong> will no longer be available for new CNEs or new Area Incharge assignments.
+              <br />
+              Existing and historical CNE records will remain available.
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setDeactivatingArea(null)}
+                disabled={Boolean(togglingId)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const target = deactivatingArea;
+                  setDeactivatingArea(null);
+                  await handleToggleStatus(target);
+                }}
+                disabled={Boolean(togglingId)}
+                className="flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+              >
+                {togglingId === deactivatingArea.id && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                )}
+                <span>Deactivate</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Modal */}
       {isAddOpen && (
@@ -341,7 +430,7 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
             <button
               onClick={() => setIsAddOpen(false)}
               disabled={isSubmitting}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1 disabled:opacity-40"
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1 disabled:opacity-40 cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -367,7 +456,7 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
                   placeholder="e.g. 248A(IPD)-(Vascular Surgery)"
                   value={newAreaName}
                   onChange={(e) => setNewAreaName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-hidden focus:ring-2 focus:ring-teal-500"
                 />
               </div>
 
