@@ -675,6 +675,10 @@ function handleRequest(e, method) {
       case 'getAreas':
         output = handleGetAreas(params);
         break;
+
+      case 'getTeachingModes':
+        output = handleGetTeachingModes(params);
+        break;
         
       case 'getCNERecords':
         output = handleGetCNERecords(params, session);
@@ -720,6 +724,14 @@ function handleRequest(e, method) {
         
       case 'updateArea':
         output = handleAdminAction(params, session, handleUpdateArea, 'UPDATE_AREA');
+        break;
+
+      case 'addTeachingMode':
+        output = handleAdminAction(params, session, handleAddTeachingMode, 'ADD_TEACHING_MODE');
+        break;
+
+      case 'updateTeachingMode':
+        output = handleAdminAction(params, session, handleUpdateTeachingMode, 'UPDATE_TEACHING_MODE');
         break;
         
       case 'getRoles':
@@ -3012,6 +3024,349 @@ function handleUpdateArea(params, session) {
     );
 
     return { success: true, message: 'Area updated successfully.' };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Teaching Mode Management & Master Sheet Helpers
+ * Columns: Mode Name | Status | Updated At
+ * Uses CacheService (TTL 60s) to avoid repeated sheet reads for frequent UI dropdowns.
+ */
+function getOrCreateTeachingModeSheet_() {
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('Teaching Mode');
+  var defaultModes = [
+    'Lecture Cum Discussion',
+    'Demonstration',
+    'Hands-on Training',
+    'Workshop',
+    'Case Study Presentation',
+    'Simulation'
+  ];
+  var nowIso = new Date().toISOString();
+
+  if (!sheet) {
+    sheet = ss.insertSheet('Teaching Mode');
+    sheet.appendRow(['Mode Name', 'Status', 'Updated At']);
+    for (var i = 0; i < defaultModes.length; i++) {
+      sheet.appendRow([defaultModes[i], 'ACTIVE', nowIso]);
+    }
+  } else if (sheet.getLastRow() <= 1) {
+    if (sheet.getLastRow() === 0) {
+      sheet.appendRow(['Mode Name', 'Status', 'Updated At']);
+    }
+    for (var j = 0; j < defaultModes.length; j++) {
+      sheet.appendRow([defaultModes[j], 'ACTIVE', nowIso]);
+    }
+  }
+  return sheet;
+}
+
+function handleGetTeachingModes(params) {
+  var startedAt = Date.now();
+  var cacheKey = 'cne_teaching_modes_list';
+  try {
+    var cached = CacheService.getScriptCache().get(cacheKey);
+    if (cached) {
+      var parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        logPerf('handleGetTeachingModes [cache-hit]', startedAt);
+        return { success: true, data: parsed, _cached: true };
+      }
+    }
+  } catch (e) {}
+
+  var sheet = getOrCreateTeachingModeSheet_();
+  var data = sheet.getDataRange().getValues();
+  var modes = [];
+
+  for (var r = 1; r < data.length; r++) {
+    var name = String(data[r][0] || '').trim();
+    var status = String(data[r][1] || 'ACTIVE').trim().toUpperCase();
+    if (name) {
+      modes.push({
+        name: name,
+        status: (status === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE',
+        updatedAt: data[r][2] ? String(data[r][2]) : ''
+      });
+    }
+  }
+
+  modes.sort(function(a, b) {
+    return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+  });
+
+  try {
+    CacheService.getScriptCache().put(cacheKey, JSON.stringify(modes), 60);
+  } catch (ce) {}
+
+  logPerf('handleGetTeachingModes [sheet-read]', startedAt, 'count: ' + modes.length);
+  return { success: true, data: modes };
+}
+
+/**
+ * Authoritative Teaching Mode Status Helpers
+ * Normalizes mode names: String(modeName || '').trim().toUpperCase()
+ * Uses existing cache (cne_teaching_modes_list) when safe, or performs authoritative sheet read when forceFresh is true.
+ */
+function getTeachingModeStatusMap_(forceFresh) {
+  var map = {};
+  var modes = [];
+  var cacheKey = 'cne_teaching_modes_list';
+  if (!forceFresh) {
+    try {
+      var cached = CacheService.getScriptCache().get(cacheKey);
+      if (cached) {
+        var parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          modes = parsed;
+        }
+      }
+    } catch (e) {}
+  }
+  if (modes.length === 0) {
+    var sheet = getOrCreateTeachingModeSheet_();
+    var data = sheet.getDataRange().getValues();
+    for (var r = 1; r < data.length; r++) {
+      var name = String(data[r][0] || '').trim();
+      var status = String(data[r][1] || 'ACTIVE').trim().toUpperCase();
+      if (name) {
+        modes.push({
+          name: name,
+          status: (status === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE'
+        });
+      }
+    }
+    try {
+      CacheService.getScriptCache().put(cacheKey, JSON.stringify(modes), 60);
+    } catch (ce) {}
+  }
+  for (var i = 0; i < modes.length; i++) {
+    var normName = String(modes[i].name || '').trim().toUpperCase();
+    if (normName) {
+      map[normName] = (modes[i].status === 'INACTIVE') ? 'INACTIVE' : 'ACTIVE';
+    }
+  }
+  return map;
+}
+
+function isTeachingModeActive_(modeName, forceFresh) {
+  var norm = String(modeName || '').trim().toUpperCase();
+  if (!norm) return false;
+  var map = getTeachingModeStatusMap_(forceFresh);
+  return map[norm] === 'ACTIVE';
+}
+
+function requireActiveTeachingMode_(modeName, forceFresh) {
+  if (!isTeachingModeActive_(modeName, forceFresh)) {
+    return {
+      success: false,
+      errorCode: 'TEACHING_MODE_INACTIVE',
+      message: 'The selected Teaching Mode is inactive. Please select an active Teaching Mode.'
+    };
+  }
+  return null;
+}
+
+function handleAddTeachingMode(params, session) {
+  var adminError = requireAdmin(session);
+  if (adminError) return adminError;
+
+  var modeName = sanitizeCellInput(params.name);
+  if (!modeName) return { success: false, message: 'Teaching Mode name is required.' };
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
+  } catch (e) {
+    return { success: false, message: 'Server is busy processing another request. Please try again.' };
+  }
+
+  try {
+    var sheet = getOrCreateTeachingModeSheet_();
+    var data = sheet.getDataRange().getValues();
+
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][0]).trim().toLowerCase() === modeName.toLowerCase()) {
+        return { success: false, message: 'A Teaching Mode with this name already exists.' };
+      }
+    }
+
+    sheet.appendRow([modeName, 'ACTIVE', new Date().toISOString()]);
+    try {
+      CacheService.getScriptCache().remove('cne_teaching_modes_list');
+    } catch (e) {}
+
+    logAuditAction('ADD_TEACHING_MODE', session.employeeId, 'Added Teaching Mode: ' + modeName, 'SUCCESS');
+    return { success: true, message: 'Teaching Mode added successfully.' };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleUpdateTeachingMode(params, session) {
+  var adminError = requireAdmin(session);
+  if (adminError) return adminError;
+
+  var oldName = String(params.oldName || '').trim();
+  var newName = sanitizeCellInput(params.name);
+  var rawStatus = params.status !== undefined ? String(params.status).trim().toUpperCase() : '';
+  var status = (rawStatus === 'INACTIVE' || rawStatus === 'ACTIVE') ? rawStatus : 'ACTIVE';
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    var freshAdminCheck = requireFreshAdminMutation(session);
+    if (!freshAdminCheck.success) return freshAdminCheck;
+    session = freshAdminCheck.session;
+  } catch (e) {
+    return { success: false, message: 'Server is busy. Please try again.' };
+  }
+
+  try {
+    var ss = getSpreadsheet('CNE');
+    var sheet = getOrCreateTeachingModeSheet_();
+    var data = sheet.getDataRange().getValues();
+    var isRename = Boolean(newName && newName.toLowerCase() !== oldName.toLowerCase());
+    var oldNorm = oldName.toUpperCase();
+
+    // Validate duplicate name if renaming
+    if (isRename) {
+      for (var dr = 1; dr < data.length; dr++) {
+        if (String(data[dr][0]).trim().toLowerCase() === newName.toLowerCase()) {
+          return { success: false, message: 'A Teaching Mode with this name already exists.' };
+        }
+      }
+    }
+
+    var targetModeRow = -1;
+    var currentStatus = 'ACTIVE';
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][0]).trim().toLowerCase() === oldName.toLowerCase()) {
+        targetModeRow = r + 1;
+        currentStatus = String(data[r][1] || 'ACTIVE').trim().toUpperCase();
+        break;
+      }
+    }
+
+    if (targetModeRow === -1) {
+      return { success: false, message: 'Teaching Mode not found.' };
+    }
+
+    var targetStatus = rawStatus ? status : currentStatus;
+
+    // If NOT renaming (status update only)
+    if (!isRename) {
+      sheet.getRange(targetModeRow, 2).setValue(targetStatus);
+      sheet.getRange(targetModeRow, 3).setValue(new Date().toISOString());
+      try {
+        CacheService.getScriptCache().remove('cne_teaching_modes_list');
+      } catch (e) {}
+
+      logAuditAction('UPDATE_TEACHING_MODE', session.employeeId, 'Updated Teaching Mode: ' + oldName + ' status: ' + targetStatus, 'SUCCESS');
+      return { success: true, message: 'Teaching Mode updated successfully.' };
+    }
+
+    // ---------------------------------------------------------
+    // RENAME FLOW: Prepare dependent updates in CNE Schedule
+    // ---------------------------------------------------------
+    var cneUpdates = [];
+    var cneSheet = ss.getSheetByName('CNE Schedule');
+    if (cneSheet) {
+      var cneData = cneSheet.getDataRange().getValues();
+      if (cneData.length > 1) {
+        var cneColMap = getHeaderMap(cneSheet);
+        var cneModeCol = cneColMap['modeofteaching'] !== undefined ? cneColMap['modeofteaching'] : (cneColMap['mode'] !== undefined ? cneColMap['mode'] : 7);
+        for (var ci = 1; ci < cneData.length; ci++) {
+          var cneModeVal = String(cneData[ci][cneModeCol] || '').trim();
+          // Exact match only - no substring replacement
+          if (cneModeVal.toUpperCase() === oldNorm) {
+            cneUpdates.push({
+              row: ci + 1,
+              col: cneModeCol + 1,
+              oldVal: cneData[ci][cneModeCol],
+              newVal: newName
+            });
+          }
+        }
+      }
+    }
+
+    // EXECUTE WRITES WITH ROLLBACK TRACKING
+    var executedRollbacks = [];
+    try {
+      // 1. Update dependent CNE Schedule references (only affected cells)
+      if (cneSheet && cneUpdates.length > 0) {
+        for (var cu = 0; cu < cneUpdates.length; cu++) {
+          var cItem = cneUpdates[cu];
+          executedRollbacks.push({ sheet: cneSheet, row: cItem.row, col: cItem.col, oldVal: cItem.oldVal });
+          cneSheet.getRange(cItem.row, cItem.col).setValue(cItem.newVal);
+        }
+      }
+
+      // 2. Update Teaching Mode master name and status
+      var oldModeMasterName = String(data[targetModeRow - 1][0] || '').trim();
+      var oldModeMasterStatus = String(data[targetModeRow - 1][1] || 'ACTIVE').trim().toUpperCase();
+      executedRollbacks.push({ sheet: sheet, row: targetModeRow, col: 1, oldVal: oldModeMasterName });
+      executedRollbacks.push({ sheet: sheet, row: targetModeRow, col: 2, oldVal: oldModeMasterStatus });
+
+      sheet.getRange(targetModeRow, 1, 1, 2).setValues([[newName, targetStatus]]);
+      sheet.getRange(targetModeRow, 3).setValue(new Date().toISOString());
+    } catch (writeErr) {
+      // Rollback
+      var rollbackSucceeded = true;
+      for (var rb = executedRollbacks.length - 1; rb >= 0; rb--) {
+        try {
+          var rbItem = executedRollbacks[rb];
+          rbItem.sheet.getRange(rbItem.row, rbItem.col).setValue(rbItem.oldVal);
+        } catch (rbErr) {
+          rollbackSucceeded = false;
+          console.error('Rollback step failed at row ' + rbItem.row + ', col ' + rbItem.col + ': ' + (rbErr.message || rbErr));
+        }
+      }
+
+      try { CacheService.getScriptCache().remove('cne_teaching_modes_list'); } catch (e) {}
+
+      logAuditAction(
+        'TEACHING_MODE_RENAME_FAILED',
+        session.employeeId,
+        'Failed renaming Teaching Mode ' + oldName + ' -> ' + newName + ': ' + (writeErr.message || writeErr) + (rollbackSucceeded ? ' (Rollback completed)' : ' (Rollback partial/failed)'),
+        'FAILURE'
+      );
+
+      if (!rollbackSucceeded) {
+        return {
+          success: false,
+          errorCode: 'TEACHING_MODE_RENAME_RECONCILIATION_REQUIRED',
+          message: 'Teaching Mode rename encountered a write error and could not be fully rolled back. Please contact system administrator.'
+        };
+      }
+
+      return {
+        success: false,
+        errorCode: 'TEACHING_MODE_RENAME_FAILED',
+        message: 'Teaching Mode rename could not be completed safely. No changes were finalized. Please try again.'
+      };
+    }
+
+    try { CacheService.getScriptCache().remove('cne_teaching_modes_list'); } catch (e) {}
+
+    logAuditAction(
+      'TEACHING_MODE_RENAMED',
+      session.employeeId,
+      'Renamed Teaching Mode ' + oldName + ' -> ' + newName + ' with status ' + targetStatus + ' (CNE rows updated: ' + cneUpdates.length + ')',
+      'SUCCESS'
+    );
+
+    return {
+      success: true,
+      message: 'Teaching Mode renamed successfully. Updated ' + cneUpdates.length + ' CNE schedule reference(s).'
+    };
   } finally {
     lock.releaseLock();
   }
@@ -5998,7 +6353,8 @@ var CNE_SHEET_HEADERS = {
   'CNE_QR_Tokens': ['QR Token', 'CNE ID', 'Created At', 'Created By', 'Status'],
   'CNE_AI_Quota': ['CNE ID', 'Topic', 'Attempts Used', 'Max Quota', 'Last Attempt At', 'Last Generated By', 'Reservation Token', 'Reserved Until', 'Last Committed Token'],
   'CNE_Reference_Index': ['Index ID', 'Source Type', 'CNE ID', 'Drive File ID', 'Resource Title', 'Topic', 'Section / Heading', 'Chunk Index', 'Chunk Text', 'Clinical Keywords', 'Extraction Status', 'Updated At'],
-  'CNE_Reference_Library': ['Resource ID', 'Source Type', 'Resource Title', 'Drive File ID', 'Author / Organization', 'License', 'Version', 'File Type', 'Active', 'Indexed At', 'Updated At']
+  'CNE_Reference_Library': ['Resource ID', 'Source Type', 'Resource Title', 'Drive File ID', 'Author / Organization', 'License', 'Version', 'File Type', 'Active', 'Indexed At', 'Updated At'],
+  'Teaching Mode': ['Mode Name', 'Status', 'Updated At']
 };
 
 /**
@@ -6127,7 +6483,8 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
       'CNE_QR_Tokens',
       'CNE_AI_Quota',
       'CNE_Reference_Index',
-      'CNE_Reference_Library'
+      'CNE_Reference_Library',
+      'Teaching Mode'
     ];
 
     var auditReport = [];
