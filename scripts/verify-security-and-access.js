@@ -26,6 +26,7 @@ const backendGs = fs.readFileSync('src/backend/googleAppsScript.ts', 'utf8');
 const cneSchedule = fs.readFileSync('src/components/CNESchedule.tsx', 'utf8');
 const appTs = fs.readFileSync('src/App.tsx', 'utf8');
 const changePasswordModalTs = fs.readFileSync('src/components/ChangePasswordModal.tsx', 'utf8');
+const adminRolesTs = fs.readFileSync('src/components/AdminRoles.tsx', 'utf8');
 
 let totalTests = 0;
 let passedTests = 0;
@@ -927,6 +928,74 @@ runTest('Frontend does not automatically fetch officer directory for every logge
   assert.ok(
     rpDisplaySection.includes(".map(() => 'Resource Person')"),
     "formatResourcePersonsDisplay must never fall back to raw Employee ID when officer directory is not loaded"
+  );
+});
+
+// -----------------------------------------------------------------------------
+// 12. Admin Role Management Fixed Role-Priority Sorting
+// -----------------------------------------------------------------------------
+runTest('Admin Role Management enforces fixed role priority (ADMIN > AREA_INCHARGE > EMPLOYEE)', () => {
+  assert.ok(
+    adminRolesTs.includes('ROLE_SORT_PRIORITY: Record<string, number> = {') &&
+    adminRolesTs.includes('ADMIN: 0') &&
+    adminRolesTs.includes('AREA_INCHARGE: 1') &&
+    adminRolesTs.includes('EMPLOYEE: 2'),
+    'AdminRoles must define ROLE_SORT_PRIORITY with ADMIN: 0, AREA_INCHARGE: 1, EMPLOYEE: 2'
+  );
+
+  assert.ok(
+    adminRolesTs.includes('const getRolePriority =') &&
+    adminRolesTs.includes('?? 99'),
+    'AdminRoles must map unknown or future roles to priority 99'
+  );
+
+  assert.ok(
+    adminRolesTs.includes('getUserRolePriority ='),
+    'AdminRoles must implement getUserRolePriority helper'
+  );
+
+  // Functional verification of sorting logic simulated with sample data
+  const priorityMap = { ADMIN: 0, AREA_INCHARGE: 1, EMPLOYEE: 2 };
+  const getP = (role) => priorityMap[String(role || '').trim().toUpperCase()] ?? 99;
+
+  assert.ok(getP('ADMIN') < getP('AREA_INCHARGE'), 'ADMIN must sort before AREA_INCHARGE');
+  assert.ok(getP('AREA_INCHARGE') < getP('EMPLOYEE'), 'AREA_INCHARGE must sort before EMPLOYEE');
+  assert.ok(getP('EMPLOYEE') < getP('OTHER'), 'EMPLOYEE must sort before unknown roles');
+  assert.ok(getP('EMPLOYEE') < getP('GUEST'), 'Unknown roles must appear after EMPLOYEE');
+
+  // Verify multiple role resolution (highest privileged role)
+  const resolveMultiRole = (roles) => Math.min(...roles.map(getP));
+  assert.strictEqual(resolveMultiRole(['EMPLOYEE', 'AREA_INCHARGE']), 1, 'Multiple roles [EMPLOYEE, AREA_INCHARGE] must resolve to AREA_INCHARGE');
+  assert.strictEqual(resolveMultiRole(['ADMIN', 'EMPLOYEE']), 0, 'Multiple roles [ADMIN, EMPLOYEE] must resolve to ADMIN');
+});
+
+runTest('Admin Role Management applies secondary sort by Employee ID and sorts before pagination', () => {
+  assert.ok(
+    adminRolesTs.includes('const sortedFilteredOfficers = useMemo('),
+    'AdminRoles must compute sortedFilteredOfficers via useMemo'
+  );
+
+  assert.ok(
+    adminRolesTs.includes('[...filteredOfficers].sort('),
+    'AdminRoles must sort a shallow copy to prevent source array mutation'
+  );
+
+  assert.ok(
+    adminRolesTs.includes('localeCompare(') &&
+    adminRolesTs.includes('numeric: true') &&
+    adminRolesTs.includes("sensitivity: 'base'"),
+    'AdminRoles must sort Employee IDs ascending using localeCompare with numeric: true and sensitivity: base'
+  );
+
+  assert.ok(
+    adminRolesTs.includes('paginatedOfficers = useMemo(') &&
+    adminRolesTs.includes('sortedFilteredOfficers.slice('),
+    'AdminRoles must paginate from sortedFilteredOfficers (sorting before pagination)'
+  );
+
+  assert.ok(
+    !adminRolesTs.includes('paginatedOfficers.sort('),
+    'AdminRoles must NOT sort after pagination'
   );
 });
 

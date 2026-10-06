@@ -19,11 +19,87 @@ interface AdminRolesProps {
   user: SessionUser;
 }
 
-interface OfficerRoleState {
+export interface OfficerRoleState {
   role: UserRole;
   assignedAreas: string[];
   area?: string;
 }
+
+export const ROLE_SORT_PRIORITY: Record<string, number> = {
+  ADMIN: 0,
+  AREA_INCHARGE: 1,
+  EMPLOYEE: 2,
+};
+
+export const getRolePriority = (role?: string): number => {
+  const norm = String(role || '').trim().toUpperCase();
+  if (norm === 'INCHARGE') return ROLE_SORT_PRIORITY.AREA_INCHARGE;
+  return ROLE_SORT_PRIORITY[norm] ?? 99;
+};
+
+export const getUserRolePriority = (
+  officer: Employee,
+  rolesMap?: { [empId: string]: OfficerRoleState }
+): number => {
+  const empId = (officer.employeeId || '').toLowerCase().trim();
+  const roleState = rolesMap ? rolesMap[empId] : undefined;
+
+  const rolesToEvaluate: string[] = [];
+
+  if (roleState) {
+    if (roleState.role) rolesToEvaluate.push(roleState.role);
+    if ((roleState as any).roles && Array.isArray((roleState as any).roles)) {
+      rolesToEvaluate.push(...(roleState as any).roles);
+    }
+    if (roleState.assignedAreas && roleState.assignedAreas.length > 0 && roleState.role !== 'ADMIN') {
+      rolesToEvaluate.push('AREA_INCHARGE');
+    }
+  }
+
+  if ((officer as any).role) rolesToEvaluate.push((officer as any).role);
+  if ((officer as any).roles && Array.isArray((officer as any).roles)) {
+    rolesToEvaluate.push(...(officer as any).roles);
+  }
+
+  if (rolesToEvaluate.length === 0) {
+    return getRolePriority('EMPLOYEE');
+  }
+
+  let highestPriority = 99;
+  for (const r of rolesToEvaluate) {
+    const p = getRolePriority(r);
+    if (p < highestPriority) {
+      highestPriority = p;
+    }
+  }
+
+  return highestPriority;
+};
+
+export const compareEmployeeIdOrName = (a: Employee, b: Employee): number => {
+  const idA = String(a.employeeId || '').trim();
+  const idB = String(b.employeeId || '').trim();
+  if (idA && idB) {
+    const comp = idA.localeCompare(idB, undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+    if (comp !== 0) return comp;
+  } else if (idA) {
+    return -1;
+  } else if (idB) {
+    return 1;
+  }
+
+  return String(a.name || '').localeCompare(
+    String(b.name || ''),
+    undefined,
+    {
+      numeric: true,
+      sensitivity: 'base',
+    }
+  );
+};
 
 interface AreaMultiSelectProps {
   employeeId: string;
@@ -478,13 +554,19 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
     if (!searchTerm.trim()) return officers;
     const q = searchTerm.toLowerCase();
     return officers.filter((o) => {
+      const empId = (o.employeeId || '').toLowerCase().trim();
+      const roleObj = rolesMap[empId];
+      const roleStr = (roleObj?.role || 'EMPLOYEE').toLowerCase();
+      const areaStr = (roleObj?.area || (roleObj?.assignedAreas || []).join(', ')).toLowerCase();
       return (
         (o.name || '').toLowerCase().includes(q) ||
         (o.employeeId || '').toLowerCase().includes(q) ||
-        (o.designation || '').toLowerCase().includes(q)
+        (o.designation || '').toLowerCase().includes(q) ||
+        roleStr.includes(q) ||
+        areaStr.includes(q)
       );
     });
-  }, [officers, searchTerm]);
+  }, [officers, searchTerm, rolesMap]);
 
   // Reset to page 1 whenever the search term changes
   const handleSearchChange = (val: string) => {
@@ -492,13 +574,27 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
     setCurrentPage(1);
   };
 
-  const totalPages = Math.max(1, Math.ceil(filteredOfficers.length / PAGE_SIZE));
+  const sortedFilteredOfficers = useMemo(() => {
+    return [...filteredOfficers].sort((a, b) => {
+      const roleDiff =
+        getUserRolePriority(a, rolesMap) -
+        getUserRolePriority(b, rolesMap);
+
+      if (roleDiff !== 0) {
+        return roleDiff;
+      }
+
+      return compareEmployeeIdOrName(a, b);
+    });
+  }, [filteredOfficers, rolesMap]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedFilteredOfficers.length / PAGE_SIZE));
   const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
 
   const paginatedOfficers = useMemo(() => {
     const start = (safeCurrentPage - 1) * PAGE_SIZE;
-    return filteredOfficers.slice(start, start + PAGE_SIZE);
-  }, [filteredOfficers, safeCurrentPage]);
+    return sortedFilteredOfficers.slice(start, start + PAGE_SIZE);
+  }, [sortedFilteredOfficers, safeCurrentPage]);
 
   return (
     <div className="space-y-6 pb-12">
@@ -698,12 +794,12 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
           </div>
 
           {/* Pagination Controls */}
-          {filteredOfficers.length > 0 && (
+          {sortedFilteredOfficers.length > 0 && (
             <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
               <div className="font-medium">
                 Showing <span className="font-bold text-slate-900">{(safeCurrentPage - 1) * PAGE_SIZE + 1}</span> to{' '}
-                <span className="font-bold text-slate-900">{Math.min(safeCurrentPage * PAGE_SIZE, filteredOfficers.length)}</span> of{' '}
-                <span className="font-bold text-slate-900">{filteredOfficers.length}</span> officers
+                <span className="font-bold text-slate-900">{Math.min(safeCurrentPage * PAGE_SIZE, sortedFilteredOfficers.length)}</span> of{' '}
+                <span className="font-bold text-slate-900">{sortedFilteredOfficers.length}</span> officers
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-slate-500 mr-2">
