@@ -7264,7 +7264,7 @@ function ensureReferenceLibrarySheetHeaders(sheet, lockAlreadyHeld) {
  */
 function getOrCreateLearningResourcesFolder() {
   try {
-    var rootId = getProperty('LEARNING_RESOURCES_ROOT_FOLDER_ID');
+    var rootId = PropertiesService.getScriptProperties().getProperty('LEARNING_RESOURCES_ROOT_FOLDER_ID');
     var rootFolder = rootId ? DriveApp.getFolderById(rootId) : DriveApp.getRootFolder();
     return { success: true, folder: getOrCreateChildFolderSafe_(rootFolder, 'CNE Learning Resources') };
   } catch (e) {
@@ -7355,6 +7355,41 @@ function sanitizeFileNamePart(str) {
     .replace(/\\.\\.+/g, '')
     .replace(/\\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Safely extract a file extension from a file name.
+ * Returns the extension without the leading dot.
+ * Examples:
+ *   "guide.pdf"        -> "pdf"
+ *   "document.PDF"     -> "pdf"
+ *   "file"             -> ""
+ *   ".hidden"          -> ""
+ */
+function getFileExtension(fileName) {
+  var name = String(fileName || '').trim();
+
+  if (!name) {
+    return '';
+  }
+
+  // Remove query/hash suffix if ever supplied as part of a URL-like name.
+  name = name.split('?')[0].split('#')[0];
+
+  var dotIndex = name.lastIndexOf('.');
+
+  // No extension, hidden file only, or trailing dot.
+  if (
+    dotIndex <= 0 ||
+    dotIndex === name.length - 1
+  ) {
+    return '';
+  }
+
+  return name
+    .substring(dotIndex + 1)
+    .trim()
+    .toLowerCase();
 }
 
 /**

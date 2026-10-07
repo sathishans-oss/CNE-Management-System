@@ -7259,7 +7259,7 @@ function ensureReferenceLibrarySheetHeaders(sheet, lockAlreadyHeld) {
  */
 function getOrCreateLearningResourcesFolder() {
   try {
-    var rootId = getProperty('LEARNING_RESOURCES_ROOT_FOLDER_ID');
+    var rootId = PropertiesService.getScriptProperties().getProperty('LEARNING_RESOURCES_ROOT_FOLDER_ID');
     var rootFolder = rootId ? DriveApp.getFolderById(rootId) : DriveApp.getRootFolder();
     return { success: true, folder: getOrCreateChildFolderSafe_(rootFolder, 'CNE Learning Resources') };
   } catch (e) {
