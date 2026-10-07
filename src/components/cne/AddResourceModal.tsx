@@ -572,7 +572,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                     type="text"
                     value={authorOrg}
                     onChange={(e) => setAuthorOrg(e.target.value)}
-                    placeholder=""
+                    placeholder="e.g., Dr. ABC"
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
                   />
                 </div>
@@ -586,7 +586,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                       type="text"
                       value={license}
                       onChange={(e) => setLicense(e.target.value)}
-                      placeholder=""
+                      placeholder="CC"
                       className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
                     />
                     <input
