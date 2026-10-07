@@ -253,6 +253,19 @@ export interface CNENursingReferenceDriveFile {
   resourceTitle: string;
 }
 
+
+export interface CNENursingReferenceIndexStatus {
+  driveFileId: string;
+  resourceId: string | null;
+  resourceTitle: string;
+  indexStatus: 'PENDING' | 'INDEXED' | 'FAILED';
+  chunksCount: number;
+  errorCode: string | null;
+  message: string;
+  indexedAt: string;
+  updatedAt: string;
+}
+
 export interface CNEAiQuotaInfo {
   cneId: string;
   topic?: string;

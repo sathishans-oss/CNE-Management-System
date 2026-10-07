@@ -18,6 +18,7 @@ import {
   CNELearningResourceMetadata,
   CNENursingReferenceResource,
   CNENursingReferenceDriveFile,
+  CNENursingReferenceIndexStatus,
   CNEAiQuotaInfo,
   CNEParticipantsSummary,
   CNEActivityProgress,
@@ -439,6 +440,7 @@ export class ApiService {
       case 'uploadLearningResource':
       case 'deleteLearningResource':
       case 'indexNursingReferenceResource':
+      case 'getNursingReferenceIndexStatus':
       case 'uploadNursingReferenceResource':
       case 'deleteNursingReferenceResource':
       case 'updateCoordinatorDesk':
@@ -562,7 +564,12 @@ export class ApiService {
 
       try {
         const controller = new AbortController();
-        const timeoutMs = action === 'generateCNEQuestions' ? 120000 : 45000;
+        const timeoutMs = (
+          action === 'generateCNEQuestions' ||
+          action === 'uploadLearningResource' ||
+          action === 'uploadNursingReferenceResource' ||
+          action === 'indexNursingReferenceResource'
+        ) ? 120000 : 45000;
         timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         const response = await fetch(apiUrl, {
@@ -1382,7 +1389,21 @@ export class ApiService {
   }
 
   /**
-   * Phase 4B: Upload an Open RN reference resource into the approved Drive folder and index it.
+   * Read the persisted indexing status for one uploaded Nursing Reference Library file.
+   * Strictly Admin-only.
+   */
+  static async getNursingReferenceIndexStatus(
+    driveFileId: string
+  ): Promise<ApiResponse<CNENursingReferenceIndexStatus>> {
+    return this.executeAction<CNENursingReferenceIndexStatus>(
+      'getNursingReferenceIndexStatus',
+      { driveFileId }
+    );
+  }
+
+  /**
+   * Phase 4B: Upload an Open RN reference resource into the approved Drive folder.
+   * Indexing is intentionally a separate second request.
    * Strictly Admin-only.
    */
   static async uploadNursingReferenceResource(params: {
@@ -1393,14 +1414,20 @@ export class ApiService {
     license?: string;
     version?: string;
   }): Promise<ApiResponse<{
+    driveFileId: string;
+    fileName: string;
     resourceId: string;
-    chunksCount: number;
-    message?: string;
+    uploadStatus: 'UPLOADED';
+    indexStatus: 'PENDING';
+    registryWarning?: string;
   }>> {
     return this.executeAction<{
+      driveFileId: string;
+      fileName: string;
       resourceId: string;
-      chunksCount: number;
-      message?: string;
+      uploadStatus: 'UPLOADED';
+      indexStatus: 'PENDING';
+      registryWarning?: string;
     }>('uploadNursingReferenceResource', params);
   }
 

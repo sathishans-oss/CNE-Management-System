@@ -877,6 +877,10 @@ function handleRequest(e, method) {
         output = handleIndexNursingReferenceResource(params, session);
         break;
 
+      case 'getNursingReferenceIndexStatus':
+        output = handleGetNursingReferenceIndexStatus(params, session);
+        break;
+
       case 'uploadNursingReferenceResource':
         output = handleUploadNursingReferenceResource(params, session);
         break;
@@ -1640,13 +1644,7 @@ function findOfficerById(employeeId) {
  */
 function findOfficerByIdFresh_(employeeId) {
   var normId = normalizeEmpId(employeeId);
-
-  if (normId) {
-    delete _executionOfficerById[normId];
-  }
-
-  // Force a real fresh lookup from the Officers sheet.
-  // Do not reuse _executionRosterData or request-level officer cache here.
+  if (normId) delete _executionOfficerById[normId];
   return findOfficerByIdTargeted_(employeeId, true);
 }
 
@@ -7354,37 +7352,17 @@ function sanitizeFileNamePart(str) {
 
 /**
  * Safely extract a file extension from a file name.
- * Returns the extension without the leading dot.
- * Examples:
- *   "guide.pdf"        -> "pdf"
- *   "document.PDF"     -> "pdf"
- *   "file"             -> ""
- *   ".hidden"          -> ""
+ * Returns the extension without the leading dot, normalized to lower-case.
  */
 function getFileExtension(fileName) {
   var name = String(fileName || '').trim();
+  if (!name) return '';
 
-  if (!name) {
-    return '';
-  }
-
-  // Remove query/hash suffix if ever supplied as part of a URL-like name.
   name = name.split('?')[0].split('#')[0];
-
   var dotIndex = name.lastIndexOf('.');
+  if (dotIndex <= 0 || dotIndex === name.length - 1) return '';
 
-  // No extension, hidden file only, or trailing dot.
-  if (
-    dotIndex <= 0 ||
-    dotIndex === name.length - 1
-  ) {
-    return '';
-  }
-
-  return name
-    .substring(dotIndex + 1)
-    .trim()
-    .toLowerCase();
+  return name.substring(dotIndex + 1).trim().toLowerCase();
 }
 
 /**
@@ -9714,9 +9692,150 @@ function listNursingReferenceResources(session) {
 }
 
 /**
- * Upload an Open RN reference resource directly into the Open RN folder and index it.
+ * Read the authoritative indexing state for one Nursing Reference Library Drive file.
+ * Status is derived from persisted CNE_Reference_Index / CNE_Reference_Library rows:
+ *   INDEXED = at least one SUCCESS chunk exists
+ *   FAILED  = no SUCCESS chunk exists and at least one FAILED row exists
+ *   PENDING = file is uploaded but no committed index result exists yet
+ * Strictly Admin-only.
+ */
+function getNursingReferenceIndexStatus(driveFileId, session) {
+  var adminError = requireAdmin(session);
+  if (adminError) return adminError;
+
+  var cleanDriveFileId = String(driveFileId || '').trim();
+  if (!cleanDriveFileId) {
+    return { success: false, errorCode: 'INVALID_PARAMS', message: 'Drive File ID is required.' };
+  }
+
+  var resourceId = '';
+  var resourceTitle = '';
+  var indexedAt = '';
+  var updatedAt = '';
+
+  // Metadata lookup is optional; status still works if the pending metadata write was skipped.
+  try {
+    var libSheet = getSpreadsheet('CNE').getSheetByName('CNE_Reference_Library');
+    if (libSheet && libSheet.getLastRow() > 1) {
+      ensureReferenceLibrarySheetHeaders(libSheet);
+      var libMap = getHeaderMap(libSheet);
+      var driveColLib = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
+      var libRow = findExactRowInColumn_(libSheet, driveColLib, cleanDriveFileId, 2);
+      if (libRow > 1) {
+        var libWidth = libSheet.getLastColumn();
+        var libValues = libSheet.getRange(libRow, 1, 1, libWidth).getValues()[0];
+        var resIdCol = libMap['resourceid'] !== undefined ? libMap['resourceid'] : 0;
+        var titleCol = libMap['resourcetitle'] !== undefined ? libMap['resourcetitle'] : 2;
+        var indexedAtCol = libMap['indexedat'] !== undefined ? libMap['indexedat'] : 9;
+        var updatedAtCol = libMap['updatedat'] !== undefined ? libMap['updatedat'] : 10;
+
+        resourceId = String(libValues[resIdCol] || '').trim();
+        resourceTitle = String(libValues[titleCol] || '').trim();
+        indexedAt = String(libValues[indexedAtCol] || '').trim();
+        updatedAt = String(libValues[updatedAtCol] || '').trim();
+      }
+    }
+  } catch (libStatusErr) {
+    // Non-blocking: authoritative index rows below remain sufficient.
+  }
+
+  var successChunks = 0;
+  var failedFound = false;
+  var failureCode = '';
+  var failureMessage = '';
+  var latestIndexUpdatedAt = '';
+
+  try {
+    var indexSheet = getSpreadsheet('CNE').getSheetByName('CNE_Reference_Index');
+    if (indexSheet && indexSheet.getLastRow() > 1) {
+      ensureReferenceIndexSheetHeaders(indexSheet);
+      var idxMap = getHeaderMap(indexSheet);
+      var driveColIdx = idxMap['drivefileid'] !== undefined ? idxMap['drivefileid'] : 3;
+      var srcTypeCol = idxMap['sourcetype'] !== undefined ? idxMap['sourcetype'] : 1;
+      var textCol = idxMap['chunktext'] !== undefined ? idxMap['chunktext'] : 8;
+      var statusCol = idxMap['extractionstatus'] !== undefined ? idxMap['extractionstatus'] : 10;
+      var updatedCol = idxMap['updatedat'] !== undefined ? idxMap['updatedat'] : 11;
+
+      var searchRange = indexSheet.getRange(2, driveColIdx + 1, indexSheet.getLastRow() - 1, 1);
+      var matches = searchRange.createTextFinder(cleanDriveFileId).matchEntireCell(true).findAll();
+
+      if (matches && matches.length > 0) {
+        var minRow = matches[0].getRow();
+        var maxRow = matches[0].getRow();
+        for (var m = 1; m < matches.length; m++) {
+          minRow = Math.min(minRow, matches[m].getRow());
+          maxRow = Math.max(maxRow, matches[m].getRow());
+        }
+
+        // Read the bounded block once, then filter exact Drive File ID rows in memory.
+        var block = indexSheet.getRange(minRow, 1, maxRow - minRow + 1, indexSheet.getLastColumn()).getValues();
+        for (var r = 0; r < block.length; r++) {
+          var row = block[r];
+          var rowDrive = String(row[driveColIdx] || '').trim();
+          var rowSrc = String(row[srcTypeCol] || '').trim().toUpperCase();
+          if (rowDrive !== cleanDriveFileId || rowSrc !== 'LOCAL_REFERENCE_LIB') continue;
+
+          var rowStatus = String(row[statusCol] || '').trim().toUpperCase();
+          var rowUpdated = String(row[updatedCol] || '').trim();
+          if (rowUpdated && rowUpdated > latestIndexUpdatedAt) latestIndexUpdatedAt = rowUpdated;
+
+          if (rowStatus === 'SUCCESS') {
+            successChunks++;
+          } else if (rowStatus === 'FAILED') {
+            failedFound = true;
+            var rawFailure = String(row[textCol] || '').trim();
+            var separatorIndex = rawFailure.indexOf(':');
+            if (separatorIndex > 0) {
+              failureCode = rawFailure.substring(0, separatorIndex).trim();
+              failureMessage = rawFailure.substring(separatorIndex + 1).trim();
+            } else if (rawFailure) {
+              failureMessage = rawFailure;
+            }
+          }
+        }
+      }
+    }
+  } catch (statusErr) {
+    return {
+      success: false,
+      errorCode: 'INDEX_STATUS_READ_FAILED',
+      message: 'Unable to read reference indexing status: ' + (statusErr && statusErr.message ? statusErr.message : String(statusErr))
+    };
+  }
+
+  var indexStatus = successChunks > 0 ? 'INDEXED' : (failedFound ? 'FAILED' : 'PENDING');
+  var message = indexStatus === 'INDEXED'
+    ? 'Reference resource is indexed and ready.'
+    : indexStatus === 'FAILED'
+      ? (failureMessage || 'Reference resource indexing failed.')
+      : 'Reference file is uploaded. Indexing has not completed yet.';
+
+  return {
+    success: true,
+    data: {
+      driveFileId: cleanDriveFileId,
+      resourceId: resourceId || null,
+      resourceTitle: resourceTitle || '',
+      indexStatus: indexStatus,
+      chunksCount: successChunks,
+      errorCode: failureCode || null,
+      message: message,
+      indexedAt: indexedAt || latestIndexUpdatedAt || '',
+      updatedAt: latestIndexUpdatedAt || updatedAt || ''
+    }
+  };
+}
+
+/**
+ * Upload an Open RN reference resource directly into the approved Open RN folder.
  * Strictly Admin-only.
  * Document Policy: PDF only (.pdf). No application-defined size limit.
+ *
+ * IMPORTANT:
+ * This action ONLY uploads the file and registers PENDING metadata.
+ * Text extraction/indexing is intentionally performed by the separate
+ * indexNursingReferenceResource action so a slow index can never cause
+ * the browser to re-upload the same PDF.
  */
 function uploadNursingReferenceResource(params, session) {
   var adminError = requireAdmin(session);
@@ -9725,73 +9844,169 @@ function uploadNursingReferenceResource(params, session) {
   var fileName = params ? params.fileName : null;
   var base64Data = params ? params.base64Data : null;
   var resourceTitle = params ? params.resourceTitle : null;
-  if (!fileName || !base64Data) return { success: false, errorCode: 'INVALID_PARAMS', message: 'File name and file content are required.' };
+  if (!fileName || !base64Data) {
+    return { success: false, errorCode: 'INVALID_PARAMS', message: 'File name and file content are required.' };
+  }
 
   var ext = getFileExtension(fileName).toLowerCase();
   var ALLOWED_EXTS = ['pdf'];
-  if (ALLOWED_EXTS.indexOf(ext) === -1) return { success: false, errorCode: 'UNSUPPORTED_FILE_TYPE', message: 'Only PDF (.pdf) documents are permitted.' };
-
-  var folderResult = getOrCreateOpenRnFolder();
-  if (!folderResult.success || !folderResult.folder) return { success: false, errorCode: folderResult.errorCode || 'FOLDER_ERROR', message: folderResult.message || 'Failed to access Open RN folder.' };
-
-  var cleanBase64 = base64Data;
-  if (cleanBase64.indexOf(',') !== -1) cleanBase64 = cleanBase64.split(',')[1];
-  var fileBytes;
-  try { fileBytes = Utilities.base64Decode(cleanBase64); }
-  catch (decErr) { return { success: false, errorCode: 'INVALID_PAYLOAD', message: 'Invalid file payload: unable to decode base64 content.' }; }
-  if (!fileBytes || fileBytes.length === 0) return { success: false, errorCode: 'EMPTY_FILE', message: 'Uploaded file is empty (0 bytes).' };
-  if (fileBytes.length < 4 || (fileBytes[0] & 0xFF) !== 0x25 || (fileBytes[1] & 0xFF) !== 0x50 || (fileBytes[2] & 0xFF) !== 0x44 || (fileBytes[3] & 0xFF) !== 0x46) {
-    return { success: false, errorCode: 'INVALID_FILE_CONTENT', message: 'File content does not match standard PDF document structure (%PDF header missing).' };
+  if (ALLOWED_EXTS.indexOf(ext) === -1) {
+    return { success: false, errorCode: 'UNSUPPORTED_FILE_TYPE', message: 'Only PDF (.pdf) documents are permitted.' };
   }
 
+  var folderResult = getOrCreateOpenRnFolder();
+  if (!folderResult.success || !folderResult.folder) {
+    return {
+      success: false,
+      errorCode: folderResult.errorCode || 'FOLDER_ERROR',
+      message: folderResult.message || 'Failed to access Open RN folder.'
+    };
+  }
+
+  var cleanBase64 = String(base64Data || '');
+  if (cleanBase64.indexOf(',') !== -1) cleanBase64 = cleanBase64.split(',')[1];
+
+  var fileBytes;
+  try {
+    fileBytes = Utilities.base64Decode(cleanBase64);
+  } catch (decErr) {
+    return { success: false, errorCode: 'INVALID_PAYLOAD', message: 'Invalid file payload: unable to decode base64 content.' };
+  }
+
+  if (!fileBytes || fileBytes.length === 0) {
+    return { success: false, errorCode: 'EMPTY_FILE', message: 'Uploaded file is empty (0 bytes).' };
+  }
+
+  if (
+    fileBytes.length < 4 ||
+    (fileBytes[0] & 0xFF) !== 0x25 ||
+    (fileBytes[1] & 0xFF) !== 0x50 ||
+    (fileBytes[2] & 0xFF) !== 0x44 ||
+    (fileBytes[3] & 0xFF) !== 0x46
+  ) {
+    return {
+      success: false,
+      errorCode: 'INVALID_FILE_CONTENT',
+      message: 'File content does not match standard PDF document structure (%PDF header missing).'
+    };
+  }
+
+  // Fresh Admin identity immediately before the authoritative Drive mutation.
   var freshAdmin = requireFreshAdminMutation(session);
   if (!freshAdmin.success) return freshAdmin;
   session = freshAdmin.session;
 
-  var safeName = sanitizeFileNamePart(fileName.replace(/\.[^/.]+$/, '')) + '.' + ext;
+  var safeBaseName = sanitizeFileNamePart(String(fileName).replace(/\.[^/.]+$/, '')) || 'Nursing_Reference';
+  var safeName = safeBaseName + '.' + ext;
   var blob = Utilities.newBlob(fileBytes, 'application/pdf', safeName);
+
   var createdFile;
   try {
     createdFile = folderResult.folder.createFile(blob);
+
+    // Reference library files must remain private.
     createdFile.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
-  } catch (createErr) {
-    return { success: false, errorCode: 'FILE_CREATION_FAILED', message: 'Failed to create file in Open RN folder: ' + createErr.message };
-  }
 
-  var indexResult = null;
-  try {
-    indexResult = indexReferenceLibraryResource(createdFile.getId(), {
-      resourceTitle: resourceTitle || safeName.replace(/\.[^/.]+$/, ''),
-      authorOrganization: params.authorOrganization,
-      license: params.license,
-      version: params.version,
-      reindex: false
-    }, session);
-  } catch (idxException) {
-    indexResult = { success: false, errorCode: 'INDEXING_UNEXPECTED_ERROR', message: idxException && idxException.message ? idxException.message : String(idxException) };
-  }
-
-  if (!indexResult || !indexResult.success) {
-    var rolledBack = false;
-    try { createdFile.setTrashed(true); rolledBack = true; } catch (trashErr) {}
-    if (rolledBack) {
-      logAuditAction('UPLOAD_REFERENCE_RESOURCE_ROLLED_BACK', session ? session.employeeId : 'SYSTEM', 'Indexing failed for uploaded reference file "' + safeName + '". Newly created Drive file rolled back (trashed): ' + createdFile.getId() + '. Reason: ' + (indexResult ? indexResult.message : 'Unknown error'), 'FAILED');
-      return { success: false, errorCode: (indexResult && indexResult.errorCode) ? indexResult.errorCode : 'INDEXING_FAILED_ROLLED_BACK', message: 'Failed to index uploaded reference resource. The uploaded file was rolled back. ' + (indexResult ? indexResult.message : '') };
+    var sharingAccess = createdFile.getSharingAccess();
+    if (sharingAccess === DriveApp.Access.ANYONE || sharingAccess === DriveApp.Access.ANYONE_WITH_LINK) {
+      try { createdFile.setTrashed(true); } catch (privacyCleanupErr) {}
+      return {
+        success: false,
+        errorCode: 'PUBLIC_ACCESS_FORBIDDEN',
+        message: 'Security policy violation: uploaded reference file could not be kept private.'
+      };
     }
-    logAuditAction('UPLOAD_REFERENCE_RESOURCE_ORPHANED', session ? session.employeeId : 'SYSTEM', 'CRITICAL: Reference resource indexing failed AND Drive rollback failed. Orphaned Drive File ID: ' + createdFile.getId() + '. Index error: ' + (indexResult ? indexResult.message : 'Unknown error'), 'FAILED');
-    return { success: false, errorCode: 'INDEXING_FAILED_CLEANUP_FAILED', message: 'Failed to index uploaded reference resource, and cleanup of the newly created Drive file also failed. Administrative reconciliation may be required.' };
+  } catch (createErr) {
+    if (createdFile) {
+      try { createdFile.setTrashed(true); } catch (createCleanupErr) {}
+    }
+    return {
+      success: false,
+      errorCode: 'FILE_CREATION_FAILED',
+      message: 'Failed to create private file in Open RN folder: ' + (createErr && createErr.message ? createErr.message : String(createErr))
+    };
   }
 
-  logAuditAction('UPLOAD_REFERENCE_RESOURCE', session ? session.employeeId : 'SYSTEM', 'Uploaded and indexed reference resource "' + safeName + '" (' + createdFile.getId() + ')', 'SUCCESS');
+  var driveFileId = createdFile.getId();
+  var nowIso = new Date().toISOString();
+  var pendingResourceId = 'LIB_OPENRN_' + driveFileId.substring(0, 10);
+  var cleanTitle = String(resourceTitle || safeBaseName).trim();
+  var cleanAuthor = String((params && params.authorOrganization) || 'Open RN Project / Chippewa Valley Technical College').trim();
+  var cleanLicense = String((params && params.license) || 'CC BY 4.0').trim();
+  var cleanVersion = String((params && params.version) || 'Latest').trim();
+  var registryWarning = '';
+
+  // Persist PENDING metadata quickly. If this small metadata write is temporarily busy,
+  // do NOT report the Drive upload as failed and do NOT ask the browser to upload again.
+  var lock = LockService.getScriptLock();
+  var lockAcquired = false;
+  try {
+    lock.tryLock(8000);
+    lockAcquired = lock.hasLock();
+
+    if (lockAcquired) {
+      var liveAdmin = requireFreshAdminMutation(session);
+      if (liveAdmin.success) {
+        session = liveAdmin.session;
+        var libSheet = getOrCreateSheet('CNE_Reference_Library');
+        ensureReferenceLibrarySheetHeaders(libSheet, true);
+        var libMap = getHeaderMap(libSheet);
+        var driveColLib = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
+        var existingRow = findExactRowInColumn_(libSheet, driveColLib, driveFileId, 2);
+
+        var pendingRow = [
+          pendingResourceId,
+          'LOCAL_REFERENCE_LIB',
+          cleanTitle,
+          driveFileId,
+          cleanAuthor,
+          cleanLicense,
+          cleanVersion,
+          ext.toUpperCase(),
+          'FALSE',
+          '',
+          nowIso
+        ];
+
+        if (existingRow > 1) {
+          libSheet.getRange(existingRow, 1, 1, pendingRow.length).setValues([pendingRow]);
+        } else {
+          libSheet.appendRow(pendingRow);
+        }
+      } else {
+        registryWarning = 'Pending metadata registration was deferred. Indexing can still continue using the uploaded Drive file.';
+      }
+    } else {
+      registryWarning = 'Pending metadata registration was deferred because the server was busy. Indexing can still continue using the uploaded Drive file.';
+    }
+  } catch (registryErr) {
+    registryWarning = 'Pending metadata registration was deferred: ' + (registryErr && registryErr.message ? registryErr.message : String(registryErr));
+  } finally {
+    if (lockAcquired) {
+      try { lock.releaseLock(); } catch (releaseErr) {}
+    }
+  }
+
+  logAuditAction(
+    'UPLOAD_REFERENCE_RESOURCE',
+    session ? session.employeeId : 'SYSTEM',
+    'Uploaded reference resource "' + safeName + '" (' + driveFileId + '). Index status: PENDING.',
+    'SUCCESS'
+  );
+
   return {
     success: true,
     data: {
-      driveFileId: createdFile.getId(),
+      driveFileId: driveFileId,
       fileName: safeName,
-      resourceId: indexResult.resourceId,
-      chunksCount: indexResult.chunksCount || 0
+      resourceId: pendingResourceId,
+      uploadStatus: 'UPLOADED',
+      indexStatus: 'PENDING',
+      registryWarning: registryWarning || undefined
     },
-    message: 'Reference resource uploaded and indexed successfully.'
+    message: registryWarning
+      ? 'Reference file uploaded successfully. Indexing is pending. ' + registryWarning
+      : 'Reference file uploaded successfully. Indexing is pending.'
   };
 }
 
@@ -9805,6 +10020,13 @@ function handleIndexNursingReferenceResource(params, session) {
     var driveFileId = p ? (p.driveFileId || p.fileId) : null;
     return indexReferenceLibraryResource(driveFileId, p, s);
   }, 'INDEX_NURSING_REFERENCE_RESOURCE');
+}
+
+function handleGetNursingReferenceIndexStatus(params, session) {
+  var adminError = requireAdmin(session);
+  if (adminError) return adminError;
+  var driveFileId = params ? (params.driveFileId || params.fileId) : null;
+  return getNursingReferenceIndexStatus(driveFileId, session);
 }
 
 function handleUploadNursingReferenceResource(params, session) {

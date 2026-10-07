@@ -6,7 +6,10 @@ import {
   Library,
   FileText,
   Loader2,
-  User
+  User,
+  CheckCircle2,
+  AlertTriangle,
+  Clock3
 } from 'lucide-react';
 import {
   CNERecord,
@@ -22,6 +25,16 @@ interface AddResourceModalProps {
   onSuccess: () => void;
   initialType?: 'CNE_LEARNING_MATERIAL' | 'NURSING_REFERENCE_LIB';
 }
+
+type ReferenceWorkflowStage =
+  | 'idle'
+  | 'uploading'
+  | 'uploaded'
+  | 'indexing'
+  | 'checking'
+  | 'ready'
+  | 'pending'
+  | 'failed';
 
 export const AddResourceModal: React.FC<AddResourceModalProps> = ({
   isOpen,
@@ -46,6 +59,10 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
   const [authorOrg, setAuthorOrg] = useState<string>('Open RN Project / Chippewa Valley Technical College');
   const [license, setLicense] = useState<string>('CC BY 4.0');
   const [version, setVersion] = useState<string>('2nd Edition');
+  const [referenceStage, setReferenceStage] = useState<ReferenceWorkflowStage>('idle');
+  const [referenceStatusMessage, setReferenceStatusMessage] = useState<string>('');
+  const [uploadedReferenceFileId, setUploadedReferenceFileId] = useState<string>('');
+  const [referenceChunksCount, setReferenceChunksCount] = useState<number>(0);
 
   // --- File Selection State ---
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -65,6 +82,10 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
     setSelectedDriveFileId('');
     setResourceTitle('');
     setRefMode('upload');
+    setReferenceStage('idle');
+    setReferenceStatusMessage('');
+    setUploadedReferenceFileId('');
+    setReferenceChunksCount(0);
   };
 
   useEffect(() => {
@@ -193,6 +214,61 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
     });
   };
 
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const reconcileReferenceIndexStatus = async (
+    driveFileId: string,
+    fallbackMessage?: string
+  ): Promise<void> => {
+    setReferenceStage('checking');
+    setReferenceStatusMessage('Checking the saved indexing status…');
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const statusRes = await ApiService.getNursingReferenceIndexStatus(driveFileId);
+
+      if (statusRes.success && statusRes.data) {
+        const status = statusRes.data.indexStatus;
+
+        if (status === 'INDEXED') {
+          setReferenceChunksCount(statusRes.data.chunksCount || 0);
+          setReferenceStage('ready');
+          setReferenceStatusMessage(
+            `Reference resource is ready. ${statusRes.data.chunksCount || 0} AI chunks indexed successfully.`
+          );
+          success(`Reference resource indexed successfully: ${statusRes.data.chunksCount || 0} AI chunks created.`);
+          onSuccess();
+          return;
+        }
+
+        if (status === 'FAILED') {
+          setReferenceStage('failed');
+          setReferenceStatusMessage(
+            statusRes.data.message ||
+            fallbackMessage ||
+            'The PDF was uploaded successfully, but indexing failed.'
+          );
+          warning(
+            statusRes.data.message ||
+            'The PDF remains safely uploaded in Drive, but indexing could not be completed.'
+          );
+          onSuccess();
+          return;
+        }
+      }
+
+      if (attempt < 2) {
+        await wait(2500);
+      }
+    }
+
+    setReferenceStage('pending');
+    setReferenceStatusMessage(
+      'The PDF is uploaded safely in Drive. Indexing is still pending or may still be finishing on Google Apps Script. Do not upload the PDF again. You can close this window and check the Library later.'
+    );
+    warning('File uploaded successfully. Indexing is still pending; do not upload the same PDF again.');
+    onSuccess();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitRef.current || isSubmitting) return;
@@ -241,7 +317,10 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
         setIsSubmitting(false);
       }
     } else {
-      // Nursing Reference Library
+      // Nursing Reference Library — two-stage workflow:
+      // 1) Upload the PDF and get a Drive File ID.
+      // 2) Index that existing Drive file in a separate request.
+      // A slow indexing request can therefore never cause a duplicate PDF upload.
       if (refMode === 'upload') {
         if (!selectedFile) {
           error('Please select a reference textbook or document file to upload.');
@@ -254,9 +333,14 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
 
         submitRef.current = true;
         setIsSubmitting(true);
+        setReferenceStage('uploading');
+        setReferenceStatusMessage('Uploading PDF securely to the Open RN Drive folder…');
+        setReferenceChunksCount(0);
+        let uploadedDriveFileIdForThisAttempt = '';
+
         try {
           const base64 = await fileToBase64(selectedFile);
-          const res = await ApiService.uploadNursingReferenceResource({
+          const uploadRes = await ApiService.uploadNursingReferenceResource({
             fileName: selectedFile.name,
             base64Data: base64,
             resourceTitle: resourceTitle.trim(),
@@ -265,21 +349,68 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
             version: version.trim() || undefined
           });
 
-          if (res.success) {
-            success(`Reference resource uploaded and indexed: ${res.data?.chunksCount || 0} AI chunks created.`);
+          if (!uploadRes.success || !uploadRes.data?.driveFileId) {
+            setReferenceStage('idle');
+            setReferenceStatusMessage('');
+            error(uploadRes.message || 'Failed to upload reference library resource.');
+            return;
+          }
+
+          const driveFileId = uploadRes.data.driveFileId;
+          uploadedDriveFileIdForThisAttempt = driveFileId;
+          setUploadedReferenceFileId(driveFileId);
+          setReferenceStage('uploaded');
+          setReferenceStatusMessage(
+            uploadRes.data.registryWarning
+              ? `PDF uploaded successfully. ${uploadRes.data.registryWarning}`
+              : 'PDF uploaded successfully. Starting reference indexing…'
+          );
+          success(`PDF uploaded successfully: ${uploadRes.data.fileName || selectedFile.name}`);
+
+          // Stage 2: index the file that already exists in Drive.
+          setReferenceStage('indexing');
+          setReferenceStatusMessage('PDF uploaded ✓  Indexing reference content for AI grounding…');
+
+          const indexRes = await ApiService.indexNursingReferenceResource({
+            driveFileId,
+            resourceTitle: resourceTitle.trim(),
+            authorOrganization: authorOrg.trim() || undefined,
+            license: license.trim() || undefined,
+            version: version.trim() || undefined,
+            reindex: false
+          });
+
+          if (indexRes.success) {
+            const chunks = indexRes.data?.chunksCount || 0;
+            setReferenceChunksCount(chunks);
+            setReferenceStage('ready');
+            setReferenceStatusMessage(
+              `PDF uploaded ✓  Indexing completed ✓  ${chunks} AI chunks are ready.`
+            );
+            success(`Reference resource indexed successfully: ${chunks} AI chunks created.`);
             onSuccess();
-            onClose();
           } else {
-            error(res.message || 'Failed to upload reference library resource.');
+            // A timeout/network failure is outcome-ambiguous: Apps Script may still finish.
+            // Check the persisted status before telling the admin indexing failed.
+            await reconcileReferenceIndexStatus(driveFileId, indexRes.message);
           }
         } catch (err: any) {
-          error(err?.message || 'Error occurred while uploading reference resource.');
+          if (uploadedDriveFileIdForThisAttempt) {
+            await reconcileReferenceIndexStatus(
+              uploadedDriveFileIdForThisAttempt,
+              err?.message || 'Indexing response could not be confirmed.'
+            );
+          } else {
+            setReferenceStage('idle');
+            setReferenceStatusMessage('');
+            error(err?.message || 'Error occurred while uploading reference resource.');
+          }
         } finally {
           submitRef.current = false;
           setIsSubmitting(false);
         }
       } else {
-        // Drive folder indexing
+        // Index a PDF that is already present in the approved Open RN Drive folder.
         if (!selectedDriveFileId) {
           error('Please select an unindexed file from the Open RN Drive folder.');
           return;
@@ -287,6 +418,11 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
 
         submitRef.current = true;
         setIsSubmitting(true);
+        setUploadedReferenceFileId(selectedDriveFileId);
+        setReferenceStage('indexing');
+        setReferenceStatusMessage('Indexing the selected Drive PDF for AI grounding…');
+        setReferenceChunksCount(0);
+
         try {
           const res = await ApiService.indexNursingReferenceResource({
             driveFileId: selectedDriveFileId,
@@ -298,14 +434,20 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
           });
 
           if (res.success) {
-            success(`Drive resource indexed: ${res.data?.chunksCount || 0} chunks added to local index.`);
+            const chunks = res.data?.chunksCount || 0;
+            setReferenceChunksCount(chunks);
+            setReferenceStage('ready');
+            setReferenceStatusMessage(`Indexing completed ✓  ${chunks} AI chunks are ready.`);
+            success(`Drive resource indexed: ${chunks} chunks added to local index.`);
             onSuccess();
-            onClose();
           } else {
-            error(res.message || 'Failed to index reference resource from Drive.');
+            await reconcileReferenceIndexStatus(selectedDriveFileId, res.message);
           }
         } catch (err: any) {
-          error(err?.message || 'Error indexing reference file.');
+          await reconcileReferenceIndexStatus(
+            selectedDriveFileId,
+            err?.message || 'Indexing response could not be confirmed.'
+          );
         } finally {
           submitRef.current = false;
           setIsSubmitting(false);
@@ -497,7 +639,13 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
               <div className="flex items-center gap-2 p-1 bg-slate-100 rounded-xl w-fit">
                 <button
                   type="button"
-                  onClick={() => setRefMode('upload')}
+                  onClick={() => {
+                    setRefMode('upload');
+                    setReferenceStage('idle');
+                    setReferenceStatusMessage('');
+                    setUploadedReferenceFileId('');
+                    setReferenceChunksCount(0);
+                  }}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                     refMode === 'upload'
                       ? 'bg-white text-slate-900 shadow-xs'
@@ -508,7 +656,13 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setRefMode('drive')}
+                  onClick={() => {
+                    setRefMode('drive');
+                    setReferenceStage('idle');
+                    setReferenceStatusMessage('');
+                    setUploadedReferenceFileId('');
+                    setReferenceChunksCount(0);
+                  }}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                     refMode === 'drive'
                       ? 'bg-white text-slate-900 shadow-xs'
@@ -572,7 +726,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                     type="text"
                     value={authorOrg}
                     onChange={(e) => setAuthorOrg(e.target.value)}
-                    placeholder="e.g., Dr. ABC"
+                    placeholder="e.g., Open RN / CVTC"
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
                   />
                 </div>
@@ -586,17 +740,69 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                       type="text"
                       value={license}
                       onChange={(e) => setLicense(e.target.value)}
-                      placeholder="CC"
+                      placeholder="CC BY 4.0"
                       className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
                     />
                     <input
                       type="text"
                       value={version}
                       onChange={(e) => setVersion(e.target.value)}
-                      placeholder=""
+                      placeholder="2nd Edition"
                       className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
                     />
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {resourceType === 'NURSING_REFERENCE_LIB' && referenceStage !== 'idle' && (
+            <div
+              className={`rounded-xl border p-3.5 ${
+                referenceStage === 'ready'
+                  ? 'border-emerald-200 bg-emerald-50'
+                  : referenceStage === 'failed'
+                    ? 'border-rose-200 bg-rose-50'
+                    : referenceStage === 'pending'
+                      ? 'border-amber-200 bg-amber-50'
+                      : 'border-sky-200 bg-sky-50'
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 shrink-0">
+                  {referenceStage === 'ready' ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                  ) : referenceStage === 'failed' ? (
+                    <AlertTriangle className="w-5 h-5 text-rose-600" />
+                  ) : referenceStage === 'pending' ? (
+                    <Clock3 className="w-5 h-5 text-amber-600" />
+                  ) : (
+                    <Loader2 className="w-5 h-5 text-sky-600 animate-spin" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-slate-800">
+                    {referenceStage === 'uploading' && 'Uploading PDF…'}
+                    {referenceStage === 'uploaded' && 'PDF uploaded'}
+                    {referenceStage === 'indexing' && 'Indexing reference content…'}
+                    {referenceStage === 'checking' && 'Confirming indexing status…'}
+                    {referenceStage === 'ready' && 'Reference resource ready'}
+                    {referenceStage === 'pending' && 'PDF uploaded — indexing pending'}
+                    {referenceStage === 'failed' && 'PDF uploaded — indexing failed'}
+                  </p>
+                  <p className="text-[11px] text-slate-600 mt-1 leading-relaxed">
+                    {referenceStatusMessage}
+                  </p>
+                  {referenceStage === 'ready' && (
+                    <p className="text-[11px] font-semibold text-emerald-700 mt-1">
+                      {referenceChunksCount} indexed chunks available for CNE question grounding.
+                    </p>
+                  )}
+                  {(referenceStage === 'pending' || referenceStage === 'failed') && uploadedReferenceFileId && (
+                    <p className="text-[10px] font-semibold text-slate-500 mt-1">
+                      The Drive file is already saved. Do not upload the same PDF again.
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -644,7 +850,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
                         {selectedFile.name}
                       </p>
                       <p className="text-[11px] text-slate-500">
-                        {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready to upload & index
+                        {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready to upload
                       </p>
                     </div>
                     <button
@@ -689,20 +895,53 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
               Cancel
             </button>
             <button
-              type="submit"
+              type={
+                resourceType === 'NURSING_REFERENCE_LIB' &&
+                (referenceStage === 'ready' || referenceStage === 'pending' || referenceStage === 'failed')
+                  ? 'button'
+                  : 'submit'
+              }
+              onClick={
+                resourceType === 'NURSING_REFERENCE_LIB' &&
+                (referenceStage === 'ready' || referenceStage === 'pending' || referenceStage === 'failed')
+                  ? onClose
+                  : undefined
+              }
               disabled={isSubmitting || (resourceType === 'CNE_LEARNING_MATERIAL' && upcomingClasses.length === 0)}
               className="inline-flex items-center gap-2 px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Processing & Indexing...</span>
+                  <span>
+                    {resourceType === 'NURSING_REFERENCE_LIB'
+                      ? referenceStage === 'uploading'
+                        ? 'Uploading PDF...'
+                        : referenceStage === 'checking'
+                          ? 'Checking Status...'
+                          : 'Indexing PDF...'
+                      : 'Processing & Indexing...'}
+                  </span>
+                </>
+              ) : resourceType === 'NURSING_REFERENCE_LIB' &&
+                (referenceStage === 'ready' || referenceStage === 'pending' || referenceStage === 'failed') ? (
+                <>
+                  {referenceStage === 'ready' ? (
+                    <CheckCircle2 className="w-4 h-4" />
+                  ) : (
+                    <Clock3 className="w-4 h-4" />
+                  )}
+                  <span>{referenceStage === 'ready' ? 'Done' : 'Close'}</span>
                 </>
               ) : (
                 <>
                   <Upload className="w-4 h-4" />
                   <span>
-                    {resourceType === 'CNE_LEARNING_MATERIAL' ? 'Upload CNE Material' : 'Register Reference Book'}
+                    {resourceType === 'CNE_LEARNING_MATERIAL'
+                      ? 'Upload CNE Material'
+                      : refMode === 'upload'
+                        ? 'Upload & Index Reference Book'
+                        : 'Index Selected Drive File'}
                   </span>
                 </>
               )}
