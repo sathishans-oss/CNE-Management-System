@@ -598,7 +598,7 @@ runTest('Authentication hot paths use targeted single-row lookups and reuse the 
     'Authentication officer lookup must read only the matching A:L row, not the full roster'
   );
   assert.ok(
-    freshOfficerSection.includes('return findOfficerByIdTargeted_(employeeId);'),
+    freshOfficerSection.includes('return findOfficerByIdTargeted_(employeeId, true);'),
     'Fresh session/mutation officer revalidation must use the targeted lookup'
   );
   assert.ok(

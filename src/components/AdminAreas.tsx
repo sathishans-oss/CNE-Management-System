@@ -71,7 +71,11 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
         success(`Area "${newAreaName.trim()}" added successfully.`, 'Area Added');
         setIsAddOpen(false);
         setNewAreaName('');
-        await loadAreas();
+        if (Array.isArray(res.data)) {
+          setAreas(res.data);
+        } else {
+          await loadAreas();
+        }
       } else {
         error(res.message || 'Failed to add area.');
       }
@@ -101,7 +105,11 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
       const res = await ApiService.updateArea(area.name, area.name, newStatus);
       if (res.success) {
         success(`Area "${area.name}" marked as ${newStatus}.`, 'Status Updated');
-        await loadAreas();
+        if (Array.isArray(res.data)) {
+          setAreas(res.data);
+        } else {
+          await loadAreas();
+        }
       } else {
         error(res.message || 'Failed to update area status.');
       }
@@ -133,7 +141,11 @@ export const AdminAreas: React.FC<AdminAreasProps> = () => {
         success(`Area renamed to "${trimmed}" successfully.`, 'Area Updated');
         setEditingId(null);
         setEditName('');
-        await loadAreas();
+        if (Array.isArray(res.data)) {
+          setAreas(res.data);
+        } else {
+          await loadAreas();
+        }
       } else {
         error(res.message || 'Failed to update area name.');
       }

@@ -657,10 +657,24 @@ function handleRequest(e, method) {
     }
     
     var action = params.action || '';
+    var PUBLIC_NO_SESSION_ACTIONS_ = {
+      login: true,
+      requestPasswordOtp: true,
+      verifyPasswordOtp: true,
+      setPasswordWithOtp: true,
+      getAreas: true,
+      getTeachingModes: true,
+      getNewsEvents: true,
+      getQuickLinks: true,
+      getChairpersonPhoto: true,
+      getCoordinatorDesk: true,
+      requestPostTestOtp: true,
+      verifyPostTestOtp: true
+    };
     
-    // Authenticate session if token is provided
+    // Authenticate session if token is provided and the action uses session identity
     var session = null;
-    if (params.token && params.loggedInEmployeeId) {
+    if (params.token && params.loggedInEmployeeId && !PUBLIC_NO_SESSION_ACTIONS_[action]) {
       session = verifySession(params.token, params.loggedInEmployeeId);
     }
     
@@ -1571,8 +1585,15 @@ function buildOfficerFromRosterRow_(dataRow, displayRow, colMap) {
 function findOfficerByIdTargeted_(employeeId, forceFresh) {
   var normId = normalizeEmpId(employeeId);
   if (!normId) return null;
-  if (!forceFresh && _executionOfficerById[normId] !== undefined) {
-    return _executionOfficerById[normId];
+  if (!forceFresh) {
+    if (_executionOfficerById[normId] !== undefined) {
+      return _executionOfficerById[normId];
+    }
+    if (_executionRosterData && _executionRosterData.byNormId) {
+      var fromRoster = _executionRosterData.byNormId[normId] || null;
+      _executionOfficerById[normId] = fromRoster;
+      return fromRoster;
+    }
   }
   var meta = getOfficerHeaderMeta_();
   var rowIndex = findExactEmployeeRow_(meta.sheet, meta.colMap.empCol + 1, normId, 2);
@@ -1613,6 +1634,7 @@ function getExecutionRosterData() {
 
 function findOfficerById(employeeId) {
   var normId=normalizeEmpId(employeeId); if (!normId) return null;
+  if (!_executionRosterData) return findOfficerByIdTargeted_(normId);
   var roster=getExecutionRosterData(); if (!roster||!roster.byNormId) return null;
   return roster.byNormId[normId]||null;
 }
@@ -1623,8 +1645,14 @@ function findOfficerById(employeeId) {
  */
 function findOfficerByIdFresh_(employeeId) {
   var normId = normalizeEmpId(employeeId);
-  if (normId) delete _executionOfficerById[normId];
-  return findOfficerByIdTargeted_(employeeId);
+
+  if (normId) {
+    delete _executionOfficerById[normId];
+  }
+
+  // Force a real fresh lookup from the Officers sheet.
+  // Do not reuse _executionRosterData or request-level officer cache here.
+  return findOfficerByIdTargeted_(employeeId, true);
 }
 
 /**
@@ -2917,15 +2945,30 @@ function handleAddArea(params, session) {
       }
     }
     
-    sheet.appendRow([areaName, 'ACTIVE', new Date().toISOString()]);
+    var createdAt = new Date().toISOString();
+    sheet.appendRow([areaName, 'ACTIVE', createdAt]);
+    var updatedAreas = [];
+    for (var ar = 1; ar < data.length; ar++) {
+      var exName = String(data[ar][0] || '').trim();
+      if (exName) {
+        updatedAreas.push({
+          id: 'AREA-' + ar,
+          name: exName,
+          status: String(data[ar][1] || 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+          createdAt: data[ar][2] ? String(data[ar][2]) : ''
+        });
+      }
+    }
+    updatedAreas.push({ id: 'AREA-' + data.length, name: areaName, status: 'ACTIVE', createdAt: createdAt });
     try {
       CacheService.getScriptCache().remove('cne_areas_list');
+      CacheService.getScriptCache().put('cne_areas_list', JSON.stringify(updatedAreas), 60);
     } catch (e) {}
     if (params.inchargeEmpId || params.inchargeId || params.employeeId) {
       invalidateUserRoleCache(params.inchargeEmpId || params.inchargeId || params.employeeId);
     }
     logAuditAction('ADD_AREA', session.employeeId, 'Added area: ' + areaName, 'SUCCESS');
-    return { success: true, message: 'Area added successfully.' };
+    return { success: true, message: 'Area added successfully.', data: updatedAreas };
   } finally {
     lock.releaseLock();
   }
@@ -2987,8 +3030,22 @@ function handleUpdateArea(params, session) {
     // If NOT renaming (status update only), perform simple atomic master update
     if (!isRename) {
       sheet.getRange(targetAreaRow, 2).setValue(targetStatus);
+      data[targetAreaRow - 1][1] = targetStatus;
+      var statusUpdatedAreas = [];
+      for (var sr = 1; sr < data.length; sr++) {
+        var sName = String(data[sr][0] || '').trim();
+        if (sName) {
+          statusUpdatedAreas.push({
+            id: 'AREA-' + sr,
+            name: sName,
+            status: String(data[sr][1] || 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+            createdAt: data[sr][2] ? String(data[sr][2]) : ''
+          });
+        }
+      }
       try {
         CacheService.getScriptCache().remove('cne_areas_list');
+        CacheService.getScriptCache().put('cne_areas_list', JSON.stringify(statusUpdatedAreas), 60);
       } catch (e) {}
 
       // Invalidate incharge cached role if incharge column is present in Area sheet
@@ -3005,7 +3062,7 @@ function handleUpdateArea(params, session) {
       }
 
       logAuditAction('UPDATE_AREA', session.employeeId, 'Updated area: ' + oldName + ' status: ' + targetStatus, 'SUCCESS');
-      return { success: true, message: 'Area updated successfully.' };
+      return { success: true, message: 'Area updated successfully.', data: statusUpdatedAreas };
     }
 
     // ---------------------------------------------------------
@@ -3177,8 +3234,23 @@ function handleUpdateArea(params, session) {
     // ---------------------------------------------------------
     // SUCCESS: Invalidate caches & audit log
     // ---------------------------------------------------------
+    data[targetAreaRow - 1][0] = newName;
+    data[targetAreaRow - 1][1] = targetStatus;
+    var renamedAreas = [];
+    for (var rr = 1; rr < data.length; rr++) {
+      var rName = String(data[rr][0] || '').trim();
+      if (rName) {
+        renamedAreas.push({
+          id: 'AREA-' + rr,
+          name: rName,
+          status: String(data[rr][1] || 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+          createdAt: data[rr][2] ? String(data[rr][2]) : ''
+        });
+      }
+    }
     try {
       CacheService.getScriptCache().remove('cne_areas_list');
+      CacheService.getScriptCache().put('cne_areas_list', JSON.stringify(renamedAreas), 60);
     } catch (e) {}
     _inMemoryRoleCache = {};
 
@@ -3197,7 +3269,7 @@ function handleUpdateArea(params, session) {
       'SUCCESS'
     );
 
-    return { success: true, message: 'Area updated successfully.' };
+    return { success: true, message: 'Area updated successfully.', data: renamedAreas };
   } finally {
     lock.releaseLock();
   }
@@ -3346,10 +3418,29 @@ function handleAddTeachingMode(params, session) {
       }
     }
 
-    sheet.appendRow([modeName, 'ACTIVE', new Date().toISOString()]);
-    try { CacheService.getScriptCache().remove('cne_teaching_modes_list'); } catch (cacheErr) {}
+    var addedAt = new Date().toISOString();
+    sheet.appendRow([modeName, 'ACTIVE', addedAt]);
+    var addedModes = [];
+    for (var mr = 1; mr < data.length; mr++) {
+      var mName = String(data[mr][0] || '').trim();
+      if (mName) {
+        addedModes.push({
+          name: mName,
+          status: String(data[mr][1] || 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+          updatedAt: data[mr][2] ? String(data[mr][2]) : ''
+        });
+      }
+    }
+    addedModes.push({ name: modeName, status: 'ACTIVE', updatedAt: addedAt });
+    addedModes.sort(function(a, b) {
+      return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+    });
+    try {
+      CacheService.getScriptCache().remove('cne_teaching_modes_list');
+      CacheService.getScriptCache().put('cne_teaching_modes_list', JSON.stringify(addedModes), 60);
+    } catch (cacheErr) {}
     logAuditAction('ADD_TEACHING_MODE', session.employeeId, 'Added Teaching Mode: ' + modeName, 'SUCCESS');
-    return { success: true, message: 'Teaching Mode added successfully.' };
+    return { success: true, message: 'Teaching Mode added successfully.', data: addedModes };
   } finally {
     lock.releaseLock();
   }
@@ -3405,9 +3496,28 @@ function handleUpdateTeachingMode(params, session) {
 
     if (!isRename) {
       sheet.getRange(targetRow, 2, 1, 2).setValues([[targetStatus, updatedAt]]);
-      try { CacheService.getScriptCache().remove('cne_teaching_modes_list'); } catch (cacheErr) {}
+      data[targetRow - 1][1] = targetStatus;
+      data[targetRow - 1][2] = updatedAt;
+      var updatedModesList = [];
+      for (var umr = 1; umr < data.length; umr++) {
+        var umName = String(data[umr][0] || '').trim();
+        if (umName) {
+          updatedModesList.push({
+            name: umName,
+            status: String(data[umr][1] || 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+            updatedAt: data[umr][2] ? String(data[umr][2]) : ''
+          });
+        }
+      }
+      updatedModesList.sort(function(a, b) {
+        return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+      });
+      try {
+        CacheService.getScriptCache().remove('cne_teaching_modes_list');
+        CacheService.getScriptCache().put('cne_teaching_modes_list', JSON.stringify(updatedModesList), 60);
+      } catch (cacheErr) {}
       logAuditAction('UPDATE_TEACHING_MODE', session.employeeId, 'Updated Teaching Mode: ' + oldName + ' status: ' + targetStatus, 'SUCCESS');
-      return { success: true, message: 'Teaching Mode updated successfully.' };
+      return { success: true, message: 'Teaching Mode updated successfully.', data: updatedModesList };
     }
 
     // Prepare exact-match CNE Schedule references before the first mutation.
@@ -3479,14 +3589,34 @@ function handleUpdateTeachingMode(params, session) {
       };
     }
 
-    try { CacheService.getScriptCache().remove('cne_teaching_modes_list'); } catch (cacheErr) {}
+    data[targetRow - 1][0] = newName;
+    data[targetRow - 1][1] = targetStatus;
+    data[targetRow - 1][2] = updatedAt;
+    var renamedModesList = [];
+    for (var rmr = 1; rmr < data.length; rmr++) {
+      var rmName = String(data[rmr][0] || '').trim();
+      if (rmName) {
+        renamedModesList.push({
+          name: rmName,
+          status: String(data[rmr][1] || 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+          updatedAt: data[rmr][2] ? String(data[rmr][2]) : ''
+        });
+      }
+    }
+    renamedModesList.sort(function(a, b) {
+      return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+    });
+    try {
+      CacheService.getScriptCache().remove('cne_teaching_modes_list');
+      CacheService.getScriptCache().put('cne_teaching_modes_list', JSON.stringify(renamedModesList), 60);
+    } catch (cacheErr) {}
     logAuditAction(
       'TEACHING_MODE_RENAMED',
       session.employeeId,
       'Renamed Teaching Mode: ' + oldName + ' -> ' + newName + ' (CNE cells updated: ' + cneUpdates.length + ')',
       'SUCCESS'
     );
-    return { success: true, message: 'Teaching Mode updated successfully.' };
+    return { success: true, message: 'Teaching Mode updated successfully.', data: renamedModesList };
   } finally {
     lock.releaseLock();
   }
@@ -4385,10 +4515,14 @@ function handleUpdateCNE(params, session) {
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][idCol]).trim().toLowerCase() === cneId.toLowerCase()) {
         var rowNum = r + 1;
+        var updatedRow = data[r].slice();
+        var rowDirty = false;
         var setColVal = function(key, fallbackCol, val) {
           var c = colMap[key] !== undefined ? colMap[key] : fallbackCol;
           if (c !== undefined && c >= 0) {
-            sheet.getRange(rowNum, c + 1).setValue(val);
+            while (updatedRow.length <= c) updatedRow.push('');
+            updatedRow[c] = val;
+            rowDirty = true;
           }
         };
 
@@ -4432,7 +4566,7 @@ function handleUpdateCNE(params, session) {
 
         if (params.date !== undefined || params.fromDate !== undefined) {
           setColVal('fromdate', 3, effDate);
-          if (colMap['date'] !== undefined) sheet.getRange(rowNum, colMap['date'] + 1).setValue(effDate);
+          if (colMap['date'] !== undefined) setColVal('date', colMap['date'], effDate);
         }
         if (params.toDate !== undefined) setColVal('todate', 4, effToDate);
         if (params.duration !== undefined) setColVal('duration', 5, effDuration);
@@ -4500,7 +4634,7 @@ function handleUpdateCNE(params, session) {
 
         if (params.modeOfTeaching !== undefined) {
           setColVal('modeofteaching', 8, sanitizeCellInput(params.modeOfTeaching));
-          if (colMap['mode'] !== undefined) sheet.getRange(rowNum, colMap['mode'] + 1).setValue(sanitizeCellInput(params.modeOfTeaching));
+          if (colMap['mode'] !== undefined) setColVal('mode', colMap['mode'], sanitizeCellInput(params.modeOfTeaching));
         }
         if (params.description !== undefined) setColVal('description', 9, sanitizeCellInput(params.description));
 
@@ -4589,6 +4723,10 @@ function handleUpdateCNE(params, session) {
 
         if (params.remarks !== undefined || params.adminRemarks !== undefined) {
           setColVal('adminremarks', 15, sanitizeCellInput(params.adminRemarks || params.remarks || ''));
+        }
+
+        if (rowDirty) {
+          sheet.getRange(rowNum, 1, 1, updatedRow.length).setValues([updatedRow]);
         }
 
         logAuditAction('UPDATE_CNE', session.employeeId, 'Updated CNE ID: ' + cneId, 'SUCCESS');

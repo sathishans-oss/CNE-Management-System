@@ -138,11 +138,36 @@ const PUBLIC_CACHEABLE_ACTIONS: ReadonlySet<string> = new Set([
  * getProgramImpact) are intentionally excluded.
  */
 const PUBLIC_UNAUTHENTICATED_ACTIONS: ReadonlySet<string> = new Set([
+  'login',
+  'requestPasswordOtp',
+  'verifyPasswordOtp',
+  'setPasswordWithOtp',
+  'requestPostTestOtp',
+  'verifyPostTestOtp',
+  'getAreas',
+  'getTeachingModes',
   'getCoordinatorDesk',
   'getNewsEvents',
   'getQuickLinks',
   'getChairpersonPhoto'
 ]);
+
+const MASTER_MEMORY_TTL_MS = 30000;
+let _cachedAreasMem: { data: Area[]; expiresAt: number } | null = null;
+let _inFlightAreasPromise: Promise<ApiResponse<Area[]>> | null = null;
+let _cachedTeachingModesMem: { data: TeachingMode[]; expiresAt: number } | null = null;
+let _inFlightTeachingModesPromise: Promise<ApiResponse<TeachingMode[]>> | null = null;
+
+function clearMasterMemoryCache(actionOrKey?: string): void {
+  if (!actionOrKey || actionOrKey === 'getAreas') {
+    _cachedAreasMem = null;
+    _inFlightAreasPromise = null;
+  }
+  if (!actionOrKey || actionOrKey === 'getTeachingModes') {
+    _cachedTeachingModesMem = null;
+    _inFlightTeachingModesPromise = null;
+  }
+}
 
 /**
  * Explicit denylist of protected, user-specific, management, participant,
@@ -786,6 +811,7 @@ export class ApiService {
   }
 
   static logout() {
+    clearMasterMemoryCache();
     try {
       const keysToRemove: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -834,6 +860,7 @@ export class ApiService {
    * Invalidate cached datasets stored in localStorage
    */
   static invalidateCache(actionOrKey?: string) {
+    clearMasterMemoryCache(actionOrKey);
     try {
       if (!actionOrKey) {
         const keysToRemove: string[] = [];
@@ -877,13 +904,39 @@ export class ApiService {
   }
 
   static async getAreas(): Promise<ApiResponse<Area[]>> {
-    return this.executeAction<Area[]>('getAreas');
+    const now = Date.now();
+    if (_cachedAreasMem && _cachedAreasMem.expiresAt > now) {
+      return { success: true, data: _cachedAreasMem.data.map((a) => ({ ...a })) };
+    }
+    if (_inFlightAreasPromise) {
+      return _inFlightAreasPromise;
+    }
+    _inFlightAreasPromise = this.executeAction<Area[]>('getAreas')
+      .then((res) => {
+        if (res.success && Array.isArray(res.data)) {
+          _cachedAreasMem = {
+            data: res.data.map((a) => ({ ...a })),
+            expiresAt: Date.now() + MASTER_MEMORY_TTL_MS
+          };
+        }
+        return res;
+      })
+      .finally(() => {
+        _inFlightAreasPromise = null;
+      });
+    return _inFlightAreasPromise;
   }
 
   static async addArea(name: string): Promise<ApiResponse> {
     const res = await this.executeAction('addArea', { name });
     if (res.success) {
       this.invalidateCache('getAreas');
+      if (Array.isArray(res.data)) {
+        _cachedAreasMem = {
+          data: res.data.map((a: Area) => ({ ...a })),
+          expiresAt: Date.now() + MASTER_MEMORY_TTL_MS
+        };
+      }
     }
     return res;
   }
@@ -892,18 +945,50 @@ export class ApiService {
     const res = await this.executeAction('updateArea', { oldName, name, status });
     if (res.success) {
       this.invalidateCache('getAreas');
+      if (Array.isArray(res.data)) {
+        _cachedAreasMem = {
+          data: res.data.map((a: Area) => ({ ...a })),
+          expiresAt: Date.now() + MASTER_MEMORY_TTL_MS
+        };
+      }
     }
     return res;
   }
 
   static async getTeachingModes(): Promise<ApiResponse<TeachingMode[]>> {
-    return this.executeAction<TeachingMode[]>('getTeachingModes');
+    const now = Date.now();
+    if (_cachedTeachingModesMem && _cachedTeachingModesMem.expiresAt > now) {
+      return { success: true, data: _cachedTeachingModesMem.data.map((m) => ({ ...m })) };
+    }
+    if (_inFlightTeachingModesPromise) {
+      return _inFlightTeachingModesPromise;
+    }
+    _inFlightTeachingModesPromise = this.executeAction<TeachingMode[]>('getTeachingModes')
+      .then((res) => {
+        if (res.success && Array.isArray(res.data)) {
+          _cachedTeachingModesMem = {
+            data: res.data.map((m) => ({ ...m })),
+            expiresAt: Date.now() + MASTER_MEMORY_TTL_MS
+          };
+        }
+        return res;
+      })
+      .finally(() => {
+        _inFlightTeachingModesPromise = null;
+      });
+    return _inFlightTeachingModesPromise;
   }
 
   static async addTeachingMode(name: string): Promise<ApiResponse> {
     const res = await this.executeAction('addTeachingMode', { name });
     if (res.success) {
       this.invalidateCache('getTeachingModes');
+      if (Array.isArray(res.data)) {
+        _cachedTeachingModesMem = {
+          data: res.data.map((m: TeachingMode) => ({ ...m })),
+          expiresAt: Date.now() + MASTER_MEMORY_TTL_MS
+        };
+      }
     }
     return res;
   }
@@ -913,6 +998,12 @@ export class ApiService {
     if (res.success) {
       this.invalidateCache('getTeachingModes');
       this.invalidateCache('getCNERecords');
+      if (Array.isArray(res.data)) {
+        _cachedTeachingModesMem = {
+          data: res.data.map((m: TeachingMode) => ({ ...m })),
+          expiresAt: Date.now() + MASTER_MEMORY_TTL_MS
+        };
+      }
     }
     return res;
   }

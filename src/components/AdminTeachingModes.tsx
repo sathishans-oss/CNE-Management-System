@@ -72,7 +72,11 @@ export const AdminTeachingModes: React.FC<AdminTeachingModesProps> = () => {
         success(`Teaching Mode "${name}" added successfully.`, 'Teaching Mode Added');
         setIsAddOpen(false);
         setNewModeName('');
-        await loadModes();
+        if (Array.isArray(res.data)) {
+          setModes([...res.data].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })));
+        } else {
+          await loadModes();
+        }
       } else {
         error(res.message || 'Failed to add Teaching Mode.');
       }
@@ -105,7 +109,11 @@ export const AdminTeachingModes: React.FC<AdminTeachingModesProps> = () => {
         success(`Teaching Mode renamed to "${name}".`, 'Teaching Mode Updated');
         setEditingName(null);
         setEditName('');
-        await loadModes();
+        if (Array.isArray(res.data)) {
+          setModes([...res.data].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })));
+        } else {
+          await loadModes();
+        }
       } else {
         error(res.message || 'Failed to rename Teaching Mode.');
       }
@@ -126,7 +134,11 @@ export const AdminTeachingModes: React.FC<AdminTeachingModesProps> = () => {
       const res = await ApiService.updateTeachingMode(mode.name, mode.name, newStatus);
       if (res.success) {
         success(`Teaching Mode "${mode.name}" marked as ${newStatus}.`, 'Status Updated');
-        await loadModes();
+        if (Array.isArray(res.data)) {
+          setModes([...res.data].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })));
+        } else {
+          await loadModes();
+        }
       } else {
         error(res.message || 'Failed to update Teaching Mode status.');
       }
