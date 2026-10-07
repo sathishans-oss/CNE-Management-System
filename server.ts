@@ -99,7 +99,7 @@ async function startServer() {
   } else {
     // Vite middleware setup for development and preview
     const vite = await createViteServer({
-      server: { middlewareMode: true, host: '0.0.0.0', port: PORT },
+      server: { middlewareMode: true, host: '0.0.0.0', port: PORT, hmr: false },
       appType: 'spa'
     });
     app.use(vite.middlewares);
