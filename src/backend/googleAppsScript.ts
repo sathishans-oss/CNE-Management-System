@@ -9470,15 +9470,25 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
   }
 
   // 9. Audit and Return
-  if (alreadyIndexed) {
-    return {
-      success: true,
+if (alreadyIndexed) {
+  return {
+    success: true,
+
+    // Keep existing top-level fields for backward compatibility
+    alreadyIndexed: true,
+    resourceId: resourceId,
+    chunksCount: alreadyIndexedCount,
+
+    // New frontend response shape
+    data: {
       alreadyIndexed: true,
       resourceId: resourceId,
-      chunksCount: alreadyIndexedCount,
-      message: 'Nursing reference resource is already indexed.'
-    };
-  }
+      chunksCount: alreadyIndexedCount
+    },
+
+    message: 'Nursing reference resource is already indexed.'
+  };
+}
 
   if (isSuccess) {
     logAuditAction(
@@ -9487,12 +9497,23 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
       'Successfully indexed ' + rowsToInsert.length + ' chunks for reference resource "' + resourceTitle + '" (' + cleanDriveFileId + ')',
       'SUCCESS'
     );
-    return {
-      success: true,
-      resourceId: resourceId,
-      chunksCount: rowsToInsert.length,
-      message: 'Reference resource indexed successfully (' + rowsToInsert.length + ' chunks).'
-    };
+return {
+  success: true,
+
+  // Keep existing top-level fields for backward compatibility
+  resourceId: resourceId,
+  chunksCount: rowsToInsert.length,
+  alreadyIndexed: false,
+
+  // New frontend response shape
+  data: {
+    resourceId: resourceId,
+    chunksCount: rowsToInsert.length,
+    alreadyIndexed: false
+  },
+
+  message: 'Reference resource indexed successfully (' + rowsToInsert.length + ' chunks).'
+};
   } else {
     logAuditAction(
       'REFERENCE_LIBRARY_RESOURCE_INDEX_FAILED',
