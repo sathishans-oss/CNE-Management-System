@@ -1354,15 +1354,18 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       toDate={scheduleToDate}
                       toTime={scheduleToTime}
                       minDate={todayStr}
-                      onChange={({ fromDate, fromTime, toDate, toTime, calculatedDuration }) => {
-                        setScheduleFromDate(fromDate);
-                        setScheduleFromTime(fromTime);
-                        setScheduleToDate(toDate);
-                        setScheduleToTime(toTime);
-                        if (calculatedDuration && calculatedDuration !== '00:00:00') {
-                          setNewDuration(calculatedDuration);
-                        }
-                      }}
+                onChange={({  fromDate,  fromTime,  toDate,  toTime,  fullFrom,  fullTo,  calculatedDuration}) => {
+                  setScheduleFromDate(fromDate);
+                  setScheduleFromTime(fromTime);
+                  setScheduleToDate(toDate);
+                  setScheduleToTime(toTime);
+
+                // Keep submission values synchronized with visible date/time fields.
+                setNewDate(fullFrom);
+                setNewToDate(fullTo);
+
+                setNewDuration(calculatedDuration || '00:00:00');
+              }}
                     />
 
                     <div>
