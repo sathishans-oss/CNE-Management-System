@@ -197,8 +197,22 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const sessionClosed = isClosedCne(cne);
   const canModify = isAuthorized && !sessionClosed && !isLocked;
 
+  // Keep AI and Manual question actions disabled until the initial question list
+  // and authoritative AI quota have both finished loading for the currently open CNE.
+  // quotaInfo remains null while the quota request is still pending or if it fails,
+  // so the question tools fail closed rather than becoming clickable prematurely.
+  const isPageReady = !loading && quotaInfo !== null;
+  const canInteractWithQuestionTools = canModify && isPageReady;
+
   const handleGenerateAi = async () => {
-    if (generatingRef.current || isGenerating || !canModify) return;
+    if (
+      generatingRef.current ||
+      isGenerating ||
+      !canModify ||
+      !isPageReady
+    ) {
+      return;
+    }
 
     // One successful AI generation is allowed per CNE. Failed generation does not consume the allowance.
     if (isAiGenerationUsed) {
@@ -326,7 +340,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   };
 
   const handleAddManualQuestion = () => {
-    if (!canModify) return;
+    if (!canInteractWithQuestionTools) return;
     const newQ: CNEQuestion = {
       id: `q_manual_${Date.now()}_${versionSequenceRef.current++}`,
       question: '',
@@ -603,9 +617,20 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <button
                 type="button"
                 onClick={() => handleGenerateAi()}
-                disabled={isGenerating || generatingRef.current || isSaving || !canModify || isAiGenerationUsed || isAiGenerationUnavailable || hasMaterial === false}
+                disabled={
+                  !isPageReady ||
+                  isGenerating ||
+                  generatingRef.current ||
+                  isSaving ||
+                  !canModify ||
+                  isAiGenerationUsed ||
+                  isAiGenerationUnavailable ||
+                  hasMaterial === false
+                }
                 title={
-                  isAiGenerationUsed
+                  !isPageReady
+                    ? 'Please wait while the question page finishes loading'
+                    : isAiGenerationUsed
                     ? 'AI generation already completed for this CNE (Locked)'
                     : isAiGenerationUnavailable
                     ? 'AI generation is currently unavailable for this CNE'
@@ -618,7 +643,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                     ? 'bg-slate-200 text-slate-500 cursor-not-allowed border border-slate-300'
                     : hasMaterial === false
                     ? 'bg-purple-100 text-purple-400 cursor-not-allowed border border-purple-200'
-                    : 'bg-purple-600 hover:bg-purple-700 text-white cursor-pointer disabled:opacity-50'
+                    : 'bg-purple-600 hover:bg-purple-700 text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
                 }`}
               >
                 {isGenerating ? (
@@ -643,9 +668,18 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <button
                 type="button"
                 onClick={handleAddManualQuestion}
-                disabled={isGenerating || isSaving || !canModify}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-lg font-bold text-xs cursor-pointer shadow-xs transition-colors"
-                title="Add a custom question manually (free, never consumes AI quota)"
+                disabled={
+                  !isPageReady ||
+                  isGenerating ||
+                  isSaving ||
+                  !canModify
+                }
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-lg font-bold text-xs cursor-pointer shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title={
+                  !isPageReady
+                    ? 'Please wait while the question page finishes loading'
+                    : 'Add a custom question manually (free, never consumes AI quota)'
+                }
               >
                 <Plus className="w-3.5 h-3.5 text-purple-600" />
                 <span>Manual Question</span>
