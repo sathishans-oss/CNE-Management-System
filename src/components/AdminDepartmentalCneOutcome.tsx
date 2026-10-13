@@ -6,8 +6,7 @@ import {
   AlertCircle,
   Clock,
   CheckCircle2,
-  XCircle,
-  FileSpreadsheet
+  XCircle
 } from 'lucide-react';
 import { SessionUser, DepartmentalCneOutcomeRow } from '../types';
 import { ApiService } from '../services/api';
@@ -29,7 +28,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
   const [toDate, setToDate] = useState('');
 
   // Load report data from backend
-  const fetchReport = useCallback(async (isRefresh = false) => {
+  const fetchReport = useCallback(async () => {
     if (user?.role !== 'ADMIN') return;
     setLoading(true);
     try {
@@ -39,9 +38,6 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
       });
       if (res.success && res.data) {
         setReportRows(res.data);
-        if (isRefresh) {
-          showToast('Departmental CNE Outcome report refreshed', 'success');
-        }
       } else {
         showToast(res.message || 'Failed to load Departmental CNE Outcome report', 'error');
       }
@@ -149,34 +145,6 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
         <p className="text-xs text-slate-600 mt-1 font-medium">
           Period: {printPeriodText}
         </p>
-      </div>
-
-      {/* Screen Header */}
-      <div className="print:hidden flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-        <div>
-          <div className="flex items-center gap-2">
-            <div className="p-2 bg-purple-100 text-purple-700 rounded-xl">
-              <FileSpreadsheet className="w-5 h-5" />
-            </div>
-            <h1 className="text-xl font-bold text-slate-900">Departmental CNE Outcome</h1>
-          </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Authoritative staff-coverage snapshots and final post-test outcome metrics for scheduled Departmental CNEs
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => fetchReport(true)}
-            disabled={loading}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl shadow-xs transition-colors cursor-pointer"
-            title="Refresh Report"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
-          </button>
-        </div>
       </div>
 
       {/* Filter Panel — same compact pattern used by CNE Schedule */}
