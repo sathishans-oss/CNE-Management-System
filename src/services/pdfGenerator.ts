@@ -16,7 +16,9 @@ import {
 
   isUserAssignedResourcePerson,
 
-  parseDurationToSeconds
+  parseDurationToSeconds,
+
+  getCneTypeLabel
 
 } from '../utils';
 
@@ -790,7 +792,7 @@ export function generateCNESessionPdf(
 
       leftValue: doc.splitTextToSize(
 
-        (cne.cneType || 'DEPARTMENTAL') === 'CENTRAL' ? 'Central CNE (Hospital-Wide)' : 'Departmental CNE',
+        cne.cneType === 'CENTRAL' ? 'Central CNE (Hospital-Wide)' : getCneTypeLabel(cne.cneType),
 
         leftColValWidth
 

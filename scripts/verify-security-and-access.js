@@ -231,10 +231,18 @@ function simulateCheckCNEActionAuthorized(session, record) {
       return null;
     }
 
-    // 2. Check if responsible Area Incharge for this Departmental CNE
-    const areaAuth = simulateCheckCNEAuthorized(session, record.area, record.cneType);
-    if (areaAuth === null) {
-      return null;
+    // 2. Check if responsible Area Incharge for internal CNE (CENTRAL or DEPARTMENTAL)
+    const type = String(record.cneType || '').trim().toUpperCase();
+    if (
+      (role === 'AREA_INCHARGE' || role === 'INCHARGE') &&
+      (type === 'CENTRAL' || type === 'DEPARTMENTAL' || type === 'DEPT')
+    ) {
+      const assignedAreas = (session.assignedAreas || (session.assignedArea ? [session.assignedArea] : []))
+        .map(a => String(a).trim().toLowerCase());
+      const targetArea = String(record.area || '').trim().toLowerCase();
+      if (targetArea && assignedAreas.length > 0 && assignedAreas.includes(targetArea)) {
+        return null;
+      }
     }
   }
 
@@ -283,6 +291,200 @@ runTest('Assigned Resource Person authorization is CNE-specific', () => {
   const unrelatedIncharge = { employeeId: 'INC-02', role: 'AREA_INCHARGE', assignedAreas: ['Ward-X'] };
   const resUnrelatedInc = simulateCheckCNEActionAuthorized(unrelatedIncharge, cneSession1);
   assert.ok(resUnrelatedInc !== null && resUnrelatedInc.errorCode === 'FORBIDDEN');
+});
+
+runTest('Area Incharge operational authorization strictly excludes External CNE types', () => {
+  const matchingAreaIncharge = {
+    employeeId: 'INC-WARD-A',
+    role: 'AREA_INCHARGE',
+    assignedAreas: ['ICU-A']
+  };
+
+  const adminSession = {
+    employeeId: 'ADM-001',
+    role: 'ADMIN'
+  };
+
+  const centralCne = {
+    cneId: 'CNE-CENTRAL-01',
+    area: 'ICU-A',
+    cneType: 'CENTRAL',
+    resourcePersonEmpId: 'RP-900'
+  };
+
+  const deptCne = {
+    cneId: 'CNE-DEPT-01',
+    area: 'ICU-A',
+    cneType: 'DEPARTMENTAL',
+    resourcePersonEmpId: 'RP-900'
+  };
+
+  const externalOffsiteCne = {
+    cneId: 'CNE-EXT-OUT-01',
+    area: 'ICU-A',
+    cneType: 'EXTERNAL_OFFSITE',
+    resourcePersonEmpId: 'RP-900'
+  };
+
+  const externalOnsiteCne = {
+    cneId: 'CNE-EXT-IN-01',
+    area: 'ICU-A',
+    cneType: 'EXTERNAL_ONSITE',
+    resourcePersonEmpId: 'RP-900'
+  };
+
+  // 1. AREA_INCHARGE + assigned matching area + CENTRAL -> allowed
+  assert.strictEqual(
+    simulateCheckCNEActionAuthorized(matchingAreaIncharge, centralCne),
+    null,
+    'Area Incharge with matching area must be authorized for CENTRAL CNE operational actions'
+  );
+
+  // 2. AREA_INCHARGE + assigned matching area + DEPARTMENTAL -> allowed
+  assert.strictEqual(
+    simulateCheckCNEActionAuthorized(matchingAreaIncharge, deptCne),
+    null,
+    'Area Incharge with matching area must be authorized for DEPARTMENTAL CNE operational actions'
+  );
+
+  // 3. AREA_INCHARGE + assigned matching area + EXTERNAL_OFFSITE -> DENIED
+  const resExtOffsite = simulateCheckCNEActionAuthorized(matchingAreaIncharge, externalOffsiteCne);
+  assert.ok(
+    resExtOffsite !== null && resExtOffsite.errorCode === 'FORBIDDEN',
+    'Area Incharge must be DENIED operational authority for EXTERNAL_OFFSITE even with matching area'
+  );
+
+  // 4. AREA_INCHARGE + assigned matching area + EXTERNAL_ONSITE -> DENIED
+  const resExtOnsite = simulateCheckCNEActionAuthorized(matchingAreaIncharge, externalOnsiteCne);
+  assert.ok(
+    resExtOnsite !== null && resExtOnsite.errorCode === 'FORBIDDEN',
+    'Area Incharge must be DENIED operational authority for EXTERNAL_ONSITE even with matching area'
+  );
+
+  // 5. ADMIN + EXTERNAL_OFFSITE -> allowed
+  assert.strictEqual(
+    simulateCheckCNEActionAuthorized(adminSession, externalOffsiteCne),
+    null,
+    'Admin must be authorized for EXTERNAL_OFFSITE'
+  );
+
+  // 6. ADMIN + EXTERNAL_ONSITE -> allowed
+  assert.strictEqual(
+    simulateCheckCNEActionAuthorized(adminSession, externalOnsiteCne),
+    null,
+    'Admin must be authorized for EXTERNAL_ONSITE'
+  );
+
+  // 7. Assigned Resource Person on External CNE remains authorized
+  const assignedRpOnExt = { employeeId: 'RP-900', role: 'EMPLOYEE' };
+  assert.strictEqual(
+    simulateCheckCNEActionAuthorized(assignedRpOnExt, externalOffsiteCne),
+    null,
+    'Assigned Resource Person on External CNE must retain operational authority'
+  );
+
+  // Backend Code.gs source verification
+  assert.ok(
+    codeGs.includes("actionCneType === 'CENTRAL' || actionCneType === 'DEPARTMENTAL'"),
+    'Code.gs must restrict Area Incharge branch to CENTRAL or DEPARTMENTAL CNE types'
+  );
+
+  // Frontend CNESchedule.tsx canOperateCne source verification
+  assert.ok(
+    cneSchedule.includes("cne.cneType === 'CENTRAL' ||\n      cne.cneType === 'DEPARTMENTAL'") ||
+    cneSchedule.includes("cne.cneType === 'CENTRAL' || cne.cneType === 'DEPARTMENTAL'"),
+    'CNESchedule.tsx canOperateCne must require internal CNE type before granting Area Incharge operational access'
+  );
+});
+
+runTest('Frontend canOperateCne strictly excludes Area Incharge from External CNE operational access', () => {
+  function simulateCanOperateCne(user, cne) {
+    if (!user || !cne) return false;
+    if (user.role === 'ADMIN') return true;
+    const isConcernedAreaIncharge = (item) => {
+      if (!user || !(user.role === 'AREA_INCHARGE' || user.role === 'INCHARGE')) return false;
+      const targetArea = (item.area || '').trim().toLowerCase();
+      if (!targetArea) return false;
+      const assignedAreas = (user.assignedAreas || (user.assignedArea ? [user.assignedArea] : []))
+        .map(a => String(a).trim().toLowerCase());
+      return assignedAreas.includes(targetArea);
+    };
+    const isInternalOperationalType =
+      cne.cneType === 'CENTRAL' ||
+      cne.cneType === 'DEPARTMENTAL';
+    if (isInternalOperationalType && isConcernedAreaIncharge(cne)) return true;
+    const userEmpId = String(user.employeeId || '').trim().toUpperCase();
+    const rawRp = [cne.resourcePersonEmpId, ...(cne.resourcePersonEmpIds || [])].filter(Boolean).join(',');
+    const rpList = rawRp.split(/[,;\n]+/).map(s => String(s).trim().toUpperCase()).filter(Boolean);
+    return rpList.includes(userEmpId);
+  }
+
+  const matchingAreaIncharge = {
+    employeeId: 'INC-WARD-A',
+    role: 'AREA_INCHARGE',
+    assignedAreas: ['ICU-A']
+  };
+
+  const adminSession = {
+    employeeId: 'ADM-001',
+    role: 'ADMIN'
+  };
+
+  const centralCne = {
+    cneId: 'CNE-CENTRAL-01',
+    area: 'ICU-A',
+    cneType: 'CENTRAL',
+    resourcePersonEmpId: 'RP-900'
+  };
+
+  const deptCne = {
+    cneId: 'CNE-DEPT-01',
+    area: 'ICU-A',
+    cneType: 'DEPARTMENTAL',
+    resourcePersonEmpId: 'RP-900'
+  };
+
+  const extOffsiteCne = {
+    cneId: 'CNE-EXT-01',
+    area: 'ICU-A',
+    cneType: 'EXTERNAL_OFFSITE',
+    resourcePersonEmpId: 'RP-900'
+  };
+
+  const extOnsiteCne = {
+    cneId: 'CNE-EXT-02',
+    area: 'ICU-A',
+    cneType: 'EXTERNAL_ONSITE',
+    resourcePersonEmpId: 'RP-900'
+  };
+
+  // 1. AREA_INCHARGE + assigned matching area + CENTRAL -> allowed
+  assert.strictEqual(simulateCanOperateCne(matchingAreaIncharge, centralCne), true, 'Area Incharge must be allowed for CENTRAL');
+
+  // 2. AREA_INCHARGE + assigned matching area + DEPARTMENTAL -> allowed
+  assert.strictEqual(simulateCanOperateCne(matchingAreaIncharge, deptCne), true, 'Area Incharge must be allowed for DEPARTMENTAL');
+
+  // 3. AREA_INCHARGE + assigned matching area + EXTERNAL_OFFSITE -> DENIED
+  assert.strictEqual(simulateCanOperateCne(matchingAreaIncharge, extOffsiteCne), false, 'Area Incharge must be DENIED for EXTERNAL_OFFSITE');
+
+  // 4. AREA_INCHARGE + assigned matching area + EXTERNAL_ONSITE -> DENIED
+  assert.strictEqual(simulateCanOperateCne(matchingAreaIncharge, extOnsiteCne), false, 'Area Incharge must be DENIED for EXTERNAL_ONSITE');
+
+  // 5. ADMIN + EXTERNAL_OFFSITE -> allowed
+  assert.strictEqual(simulateCanOperateCne(adminSession, extOffsiteCne), true, 'Admin must be allowed for EXTERNAL_OFFSITE');
+
+  // 6. ADMIN + EXTERNAL_ONSITE -> allowed
+  assert.strictEqual(simulateCanOperateCne(adminSession, extOnsiteCne), true, 'Admin must be allowed for EXTERNAL_ONSITE');
+
+  // 7. Assigned Resource Person on External CNE remains authorized
+  const assignedRpOnExt = { employeeId: 'RP-900', role: 'EMPLOYEE' };
+  assert.strictEqual(simulateCanOperateCne(assignedRpOnExt, extOffsiteCne), true, 'Assigned RP must be allowed on External Offsite');
+  assert.strictEqual(simulateCanOperateCne(assignedRpOnExt, extOnsiteCne), true, 'Assigned RP must be allowed on External Onsite');
+
+  // 8. Ordinary employee not assigned -> DENIED
+  const ordinaryEmp = { employeeId: 'EMP-999', role: 'EMPLOYEE' };
+  assert.strictEqual(simulateCanOperateCne(ordinaryEmp, extOffsiteCne), false, 'Ordinary employee must be DENIED on External Offsite');
+  assert.strictEqual(simulateCanOperateCne(ordinaryEmp, extOnsiteCne), false, 'Ordinary employee must be DENIED on External Onsite');
 });
 
 runTest('CNESchedule UI button restricts Post Test management to authorized users', () => {

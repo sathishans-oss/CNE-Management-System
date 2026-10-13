@@ -1,7 +1,7 @@
 import React from 'react';
 import { Lock, MapPin, Calendar, Users } from 'lucide-react';
 import { CNERecord, SessionUser } from '../../types';
-import { isCneAuthorized, formatCneDateTimeDisplay } from '../../utils';
+import { isCneAuthorized, formatCneDateTimeDisplay, getCneTypeLabel, getCneTypeBadgeClass } from '../../utils';
 
 export interface ScheduleMobileCardProps {
   cne?: CNERecord;
@@ -47,13 +47,9 @@ export const ScheduleMobileCard: React.FC<ScheduleMobileCardProps> = React.memo(
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <span
-            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 ${
-              (item.cneType || 'CENTRAL').toUpperCase() === 'CENTRAL'
-                ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                : 'bg-teal-50 text-teal-700 border border-teal-200'
-            }`}
+            className={`px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider inline-flex items-center gap-1 ${getCneTypeBadgeClass(item.cneType)}`}
           >
-            {(item.cneType || 'CENTRAL').toUpperCase()}
+            {getCneTypeLabel(item.cneType)}
           </span>
           {item.cneId && (
             <span className="font-mono text-[10px] text-slate-500 font-semibold">

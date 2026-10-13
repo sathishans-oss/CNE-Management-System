@@ -1085,6 +1085,110 @@ runTest('Edit CNE displays current inactive Teaching Mode while new selections r
   assert.ok(schedule.includes('activeTeachingModeNames.some'), 'Changed Teaching Mode must be checked against active master values');
 });
 
+// -----------------------------------------------------------------------------
+// 7. External CNE Types & Workflow Enforcement
+// -----------------------------------------------------------------------------
+runTest('Authoritative normalizeCNEType recognizes all four types and fails closed on unknown inputs', () => {
+  const normalizeDef = codeGs.substring(
+    codeGs.indexOf('function normalizeCNEType'),
+    codeGs.indexOf('function normalizeCNEStatus')
+  );
+
+  assert.ok(normalizeDef.includes("'CENTRAL'"), 'Must normalize CENTRAL');
+  assert.ok(normalizeDef.includes("'DEPARTMENTAL'"), 'Must normalize DEPARTMENTAL');
+  assert.ok(normalizeDef.includes("'EXTERNAL_OFFSITE'"), 'Must normalize EXTERNAL_OFFSITE');
+  assert.ok(normalizeDef.includes("'EXTERNAL_ONSITE'"), 'Must normalize EXTERNAL_ONSITE');
+  assert.ok(normalizeDef.includes('return null;'), 'Must return null for unknown values');
+});
+
+runTest('handleCreateCNE fails closed on invalid CNE type and enforces unscheduled-only for External types', () => {
+  const handleAddSection = codeGs.substring(
+    codeGs.indexOf('function handleCreateCNE'),
+    codeGs.indexOf('function handleUpdateCNE')
+  );
+
+  // Fail-closed validation
+  assert.ok(
+    handleAddSection.includes("errorCode: 'INVALID_CNE_TYPE'"),
+    'Must return INVALID_CNE_TYPE error code when type is invalid'
+  );
+
+  // Workflow enforcement: External CNEs unscheduled only
+  assert.ok(
+    handleAddSection.includes("errorCode: 'EXTERNAL_CNE_UNSCHEDULED_ONLY'"),
+    'Must return EXTERNAL_CNE_UNSCHEDULED_ONLY error code when External CNE is not unscheduled'
+  );
+  assert.ok(
+    handleAddSection.includes('External CNE categories can only be recorded through the Unscheduled CNE workflow.'),
+    'Must return descriptive message for unscheduled-only enforcement'
+  );
+
+  // Server-side authorization: External CNE requires Admin role
+  assert.ok(
+    handleAddSection.includes("(cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE') && !isAdmin"),
+    'Must enforce that External CNE requires Admin role'
+  );
+});
+
+runTest('AddUnscheduledCneModal provides mandatory CNE Type dropdown and Associated Department label for External types', () => {
+  const unscheduledModal = fs.readFileSync('src/components/cne/AddUnscheduledCneModal.tsx', 'utf8');
+
+  // Mandatory dropdown with 4 options
+  assert.ok(unscheduledModal.includes('id="unscheduled-cne-type"'), 'Must have CNE Type select input');
+  assert.ok(unscheduledModal.includes('value="CENTRAL"'), 'Must have CENTRAL option');
+  assert.ok(unscheduledModal.includes('value="DEPARTMENTAL"'), 'Must have DEPARTMENTAL option');
+  assert.ok(unscheduledModal.includes('value="EXTERNAL_OFFSITE"'), 'Must have EXTERNAL_OFFSITE option');
+  assert.ok(unscheduledModal.includes('value="EXTERNAL_ONSITE"'), 'Must have EXTERNAL_ONSITE option');
+
+  // Dynamic label for Area
+  assert.ok(
+    unscheduledModal.includes('Associated Department / Area *'),
+    'Must display Associated Department / Area for External CNE types'
+  );
+
+  // No forbidden fields
+  assert.ok(!unscheduledModal.includes('Organizing Institution'), 'Must not add Organizing Institution field');
+  assert.ok(!unscheduledModal.includes('id="unscheduled-venue"'), 'Must not add separate Venue field');
+});
+
+runTest('Normal scheduled CNE popups remain strictly Central and Departmental only', () => {
+  const scheduleTs = fs.readFileSync('src/components/CNESchedule.tsx', 'utf8');
+  const deptModalTs = fs.readFileSync('src/components/cne/DepartmentalScheduleModal.tsx', 'utf8');
+
+  // Schedule New Central CNE submits CENTRAL
+  assert.ok(
+    scheduleTs.includes("cneType: 'CENTRAL'"),
+    'Schedule New CNE must submit CENTRAL'
+  );
+  // Departmental Schedule submits DEPARTMENTAL
+  assert.ok(
+    deptModalTs.includes("cneType: 'DEPARTMENTAL'"),
+    'Departmental Schedule must submit DEPARTMENTAL'
+  );
+  // Neither scheduled modal contains External CNE options
+  assert.ok(
+    !deptModalTs.includes('EXTERNAL_OFFSITE'),
+    'Departmental modal must not contain External CNE options'
+  );
+});
+
+runTest('Frontend getCneTypeLabel displays correct human-facing labels for all four CNE types', () => {
+  const utilsTs = fs.readFileSync('src/utils.ts', 'utf8');
+  assert.ok(utilsTs.includes('function getCneTypeLabel'), 'src/utils.ts must export getCneTypeLabel');
+  assert.ok(utilsTs.includes("'Central CNE'"), 'Must return Central CNE');
+  assert.ok(utilsTs.includes("'Departmental CNE'"), 'Must return Departmental CNE');
+  assert.ok(utilsTs.includes("'External CNE – Outside AIIMS'"), 'Must return External CNE – Outside AIIMS');
+  assert.ok(utilsTs.includes("'External CNE – Hosted at AIIMS'"), 'Must return External CNE – Hosted at AIIMS');
+});
+
+runTest('Lifecycle finalize and cancel recognize all four CNE types in Code.gs', () => {
+  assert.ok(
+    codeGs.includes('must be CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE'),
+    'Code.gs finalize/cancel error messages must recognize all four valid CNE types'
+  );
+});
+
+
 console.log('\n========================================================');
 console.log(`Passed: ${passedTests}/${totalTests}`);
 console.log('ALL CNE WORKFLOWS & SCHEMA TESTS PASSED!');

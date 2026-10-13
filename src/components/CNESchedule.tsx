@@ -22,7 +22,7 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
-import { SessionUser, CNERecord, CNEActivityProgress, Employee, TeachingMode } from '../types';
+import { SessionUser, CNERecord, CNEActivityProgress, Employee, TeachingMode, CNEType } from '../types';
 import { ApiService } from '../services/api';
 import { useToast } from './Toast';
 import { ScheduleRow } from './cne/ScheduleRow';
@@ -37,7 +37,8 @@ import {
   calculateCneDuration,
   validateCneDuration,
   toDateTimeLocalString,
-  parseToIsoDateString
+  parseToIsoDateString,
+  getCneTypeLabel
 } from '../utils';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 import { CneDateTimeFields } from './cne/CneDateTimeFields';
@@ -140,7 +141,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
   // Edit CNE Modal State
   const [editingCne, setEditingCne] = useState<CNERecord | null>(null);
-  const [editCneType, setEditCneType] = useState<'CENTRAL' | 'DEPARTMENTAL'>('CENTRAL');
+  const [editCneType, setEditCneType] = useState<CNEType>('CENTRAL');
   const [editTopic, setEditTopic] = useState('');
   const [editArea, setEditArea] = useState('');
   const [editDate, setEditDate] = useState('');
@@ -200,12 +201,16 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     return getUserAssignedAreas(user).some((area) => area.trim().toLowerCase() === targetArea);
   }, [user]);
 
-  // Operational Progress permissions: Admin + concerned Area/Ward Incharge + assigned RP.
-  // Applies to both Central and Departmental CNEs.
+  // Operational Progress permissions: Admin + concerned Area/Ward Incharge (internal CNEs only) + assigned RP.
+  // Applies to both Central and Departmental CNEs. External CNEs (EXTERNAL_OFFSITE, EXTERNAL_ONSITE)
+  // are never operationally managed by Area Incharge.
   const canOperateCne = useCallback((cne: CNERecord) => {
-    if (!user) return false;
+    if (!user || !cne) return false;
     if (user.role === 'ADMIN') return true;
-    if (isConcernedAreaIncharge(cne)) return true;
+    const isInternalOperationalType =
+      cne.cneType === 'CENTRAL' ||
+      cne.cneType === 'DEPARTMENTAL';
+    if (isInternalOperationalType && isConcernedAreaIncharge(cne)) return true;
     return isUserAssignedResourcePerson(user, [cne.resourcePersonEmpId, ...(cne.resourcePersonEmpIds || [])].filter(Boolean).join(','));
   }, [user, isConcernedAreaIncharge]);
 
@@ -237,7 +242,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     const isHistorical = status === 'completed' || status === 'canceled' || status === 'cancelled';
     if (!isHistorical) return true;
     if (user.role === 'ADMIN') return true;
-    if (isConcernedAreaIncharge(cne)) return true;
+    const isInternalType = cne.cneType === 'CENTRAL' || cne.cneType === 'DEPARTMENTAL';
+    if (isInternalType && isConcernedAreaIncharge(cne)) return true;
     return isUserAssignedResourcePerson(user, [cne.resourcePersonEmpId, ...(cne.resourcePersonEmpIds || [])].filter(Boolean).join(','));
   }, [user, isConcernedAreaIncharge]);
 
@@ -662,7 +668,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setEditingCne(cls);
     setEditTopic(cls.topic || '');
     setEditArea(cls.area || '');
-    setEditCneType(((cls.cneType || 'CENTRAL').toUpperCase() as 'CENTRAL' | 'DEPARTMENTAL'));
+    setEditCneType((cls.cneType || 'CENTRAL') as CNEType);
     setEditDate(toDateTimeLocalString(cls.date));
     setEditToDate(toDateTimeLocalString(cls.toDate || cls.date));
     setEditDuration(cls.duration || '01:30:00');
@@ -944,7 +950,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         c.proposedByEmpId,
         c.proposedByName,
         c.adminRemarks,
-        c.remarks
+        c.remarks,
+        c.cneType,
+        getCneTypeLabel(c.cneType)
       ];
       const combined = searchableParts
         .filter(Boolean)
@@ -1664,10 +1672,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       <div className="p-2.5 rounded-xl border border-slate-200 bg-slate-100 flex items-center justify-between">
                         <div>
                           <div className="text-xs font-bold text-slate-800">
-                            {editCneType === 'CENTRAL' ? 'Central CNE' : 'Departmental CNE'}
+                            {getCneTypeLabel(editCneType)}
                           </div>
                           <div className="text-[10px] text-slate-500">
-                            {editCneType === 'CENTRAL' ? 'Hospital-wide clinical seminar' : 'Ward / ICU / Unit-specific'}
+                            {editCneType === 'CENTRAL' ? 'Hospital-wide clinical seminar' : editCneType === 'DEPARTMENTAL' ? 'Ward / ICU / Unit-specific' : 'External CNE Program'}
                           </div>
                         </div>
                         <span className="text-[10px] font-bold text-slate-500 bg-slate-200 px-2 py-0.5 rounded border border-slate-300">

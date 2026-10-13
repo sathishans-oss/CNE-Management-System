@@ -10,12 +10,12 @@ import {
   Loader2,
   BookOpen
 } from 'lucide-react';
-import { Employee, SessionUser } from '../../types';
+import { CNEType, Employee, SessionUser } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { getCachedOfficers, loadOfficersSingleFlight } from '../../services/officerLoader';
 import { CneDateTimeFields } from './CneDateTimeFields';
-import { validateCneDuration } from '../../utils';
+import { getCneTypeLabel, validateCneDuration } from '../../utils';
 
 const getIndiaToday = (): string =>
   new Intl.DateTimeFormat('en-CA', {
@@ -50,7 +50,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form State
-  const [cneType, setCneType] = useState<'CENTRAL' | 'DEPARTMENTAL'>('CENTRAL');
+  const [cneType, setCneType] = useState<CNEType>('CENTRAL');
   const [topic, setTopic] = useState('');
   const [area, setArea] = useState('');
   const [fromDate, setFromDate] = useState(() => getIndiaToday());
@@ -221,6 +221,11 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       return;
     }
 
+    if (!cneType || !['CENTRAL', 'DEPARTMENTAL', 'EXTERNAL_OFFSITE', 'EXTERNAL_ONSITE'].includes(cneType)) {
+      error('Please select a valid CNE type.');
+      return;
+    }
+
     if (!topic.trim()) {
       error('CNE Topic is required.');
       return;
@@ -382,35 +387,23 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                   </h4>
                 </div>
 
-                {/* CNE Type Toggle */}
+                {/* CNE Type Dropdown */}
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">
-                    Program Classification *
+                  <label htmlFor="unscheduled-cne-type" className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
+                    CNE Type *
                   </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setCneType('CENTRAL')}
-                      className={`py-2 px-3 rounded-lg font-bold text-xs border transition-colors cursor-pointer text-center ${
-                        cneType === 'CENTRAL'
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      Central CNE
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCneType('DEPARTMENTAL')}
-                      className={`py-2 px-3 rounded-lg font-bold text-xs border transition-colors cursor-pointer text-center ${
-                        cneType === 'DEPARTMENTAL'
-                          ? 'bg-teal-700 text-white border-teal-700'
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      Departmental CNE
-                    </button>
-                  </div>
+                  <select
+                    required
+                    id="unscheduled-cne-type"
+                    value={cneType}
+                    onChange={(e) => setCneType(e.target.value as CNEType)}
+                    className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  >
+                    <option value="CENTRAL">Central CNE</option>
+                    <option value="DEPARTMENTAL">Departmental CNE</option>
+                    <option value="EXTERNAL_OFFSITE">External CNE – Outside AIIMS</option>
+                    <option value="EXTERNAL_ONSITE">External CNE – Hosted at AIIMS</option>
+                  </select>
                 </div>
 
                 {/* Topic */}
@@ -431,8 +424,10 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
 
                 {/* Clinical Ward / Area */}
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                    Clinical Ward / Area *
+                  <label htmlFor="unscheduled-area" className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
+                    {cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE'
+                      ? 'Associated Department / Area *'
+                      : 'Clinical Ward / Area *'}
                   </label>
                   <select
                     required

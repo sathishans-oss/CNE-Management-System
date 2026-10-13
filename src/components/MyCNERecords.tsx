@@ -17,7 +17,8 @@ import {
   formatResourcePersonsDisplay,
   isUserAssignedResourcePerson,
   parseDurationToSeconds,
-  parseToIsoDateString
+  parseToIsoDateString,
+  getCneTypeLabel
 } from '../utils';
 import { SearchInput } from './SearchInput';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
@@ -600,6 +601,9 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                 <h3 className="text-base font-bold text-slate-900">CNE Record</h3>
                 <div className="flex flex-wrap items-center gap-2 mt-0.5">
                   <span className="text-xs text-slate-500 font-mono">ID: {selectedRecord.cneId || selectedRecord.dataId}</span>
+                  <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-700 border border-slate-200">
+                    {getCneTypeLabel(selectedRecord.cneType)}
+                  </span>
                   <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
                     Completed
                   </span>

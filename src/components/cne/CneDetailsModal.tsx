@@ -13,7 +13,7 @@ import {
   Users
 } from 'lucide-react';
 import { CNERecord, SessionUser, Employee, CNEActivityProgress } from '../../types';
-import { formatCneDateTimeDisplay, formatResourcePersonsDisplay } from '../../utils';
+import { formatCneDateTimeDisplay, formatResourcePersonsDisplay, getCneTypeLabel } from '../../utils';
 import { ProgressPanel } from './ProgressPanel';
 
 export interface CneDetailsModalProps {
@@ -78,8 +78,8 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
           <div className="flex flex-wrap items-center gap-2 text-sm sm:text-base font-bold text-slate-900">
             <span className="font-mono text-slate-800">{cne.cneId}</span>
             <span className="text-slate-400 font-sans">•</span>
-            <span className="text-slate-700 uppercase">
-              {(cne.cneType || 'CENTRAL').toUpperCase() === 'CENTRAL' ? 'CENTRAL CNE' : 'DEPARTMENTAL CNE'}
+            <span className="text-slate-700">
+              {getCneTypeLabel(cne.cneType)}
             </span>
             <span className="text-slate-400 font-sans">•</span>
             <span

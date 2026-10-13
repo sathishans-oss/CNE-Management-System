@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle, Loader2, X } from 'lucide-react';
 import { CNEParticipantsSummary, CNERecord } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
-import { formatCneDateTimeDisplay } from '../../utils';
+import { formatCneDateTimeDisplay, getCneTypeLabel, getCneTypeBadgeClass } from '../../utils';
 
 interface CNEFinalizeModalProps {
   cne: CNERecord;
@@ -199,8 +199,8 @@ export const CNEFinalizeModal: React.FC<CNEFinalizeModalProps> = ({
                       {cne.area || 'Area not specified'}
                     </p>
                   </div>
-                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
-                    {(cne.cneType || 'CENTRAL').toUpperCase()}
+                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wider shrink-0 ${getCneTypeBadgeClass(cne.cneType)}`}>
+                    {getCneTypeLabel(cne.cneType)}
                   </span>
                 </div>
 

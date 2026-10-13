@@ -17,12 +17,38 @@ function normalizeEmpId(id) {
   return String(id).trim().toUpperCase();
 }
 
-// Authoritative Normalization: CNE Type (Strictly CENTRAL or DEPARTMENTAL) - FAIL CLOSED
+// Authoritative Normalization: CNE Type (Strictly CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE) - FAIL CLOSED
 function normalizeCNEType(typeStr) {
   if (typeStr === null || typeStr === undefined) return null;
   var s = String(typeStr).trim().toUpperCase();
+  if (!s) return null;
   if (s === 'CENTRAL' || s === 'CENTRAL CNE') return 'CENTRAL';
   if (s === 'DEPARTMENTAL' || s === 'DEPT' || s === 'DEPARTMENTAL CNE') return 'DEPARTMENTAL';
+  if (
+    s === 'EXTERNAL_OFFSITE' ||
+    s === 'EXTERNAL OFFSITE' ||
+    s === 'EXTERNAL_CNE_OFFSITE' ||
+    s === 'EXTERNAL CNE OFFSITE' ||
+    s === 'EXTERNAL CNE – OUTSIDE AIIMS' ||
+    s === 'EXTERNAL CNE - OUTSIDE AIIMS' ||
+    s === 'EXTERNAL CNE – OUTSIDE' ||
+    s === 'EXTERNAL CNE - OUTSIDE' ||
+    s === 'EXTERNAL_OUTSIDE' ||
+    s === 'OUTSIDE AIIMS'
+  ) return 'EXTERNAL_OFFSITE';
+  if (
+    s === 'EXTERNAL_ONSITE' ||
+    s === 'EXTERNAL ONSITE' ||
+    s === 'EXTERNAL_CNE_ONSITE' ||
+    s === 'EXTERNAL CNE ONSITE' ||
+    s === 'EXTERNAL CNE – HOSTED AT AIIMS' ||
+    s === 'EXTERNAL CNE - HOSTED AT AIIMS' ||
+    s === 'EXTERNAL CNE – HOSTED' ||
+    s === 'EXTERNAL CNE - HOSTED' ||
+    s === 'HOSTED AT AIIMS' ||
+    s === 'EXTERNAL_HOSTED' ||
+    s === 'EXTERNAL_ONSITE_AIIMS'
+  ) return 'EXTERNAL_ONSITE';
   return null;
 }
 
@@ -1248,9 +1274,14 @@ function checkCNEActionAuthorized(session, record) {
     }
 
     // 2. Operational Progress actions are allowed to the concerned Area/Ward Incharge
-    // for BOTH Central and Departmental CNEs. Lifecycle authority is intentionally
-    // stricter and remains enforced separately by checkCNEAuthorized().
-    if (role === 'AREA_INCHARGE' || role === 'INCHARGE') {
+    // ONLY for internal CNEs (Central and Departmental). External CNE types (EXTERNAL_OFFSITE,
+    // EXTERNAL_ONSITE) never grant Area Incharge operational authority. Lifecycle authority is
+    // intentionally stricter and remains enforced separately by checkCNEAuthorized().
+    var actionCneType = normalizeCNEType(record.cneType);
+    if (
+      (role === 'AREA_INCHARGE' || role === 'INCHARGE') &&
+      (actionCneType === 'CENTRAL' || actionCneType === 'DEPARTMENTAL')
+    ) {
       var assignedAreas = [];
       if (session.assignedAreas && Array.isArray(session.assignedAreas)) {
         for (var a = 0; a < session.assignedAreas.length; a++) {
@@ -1273,7 +1304,7 @@ function checkCNEActionAuthorized(session, record) {
       if (targetArea) {
         for (var ai = 0; ai < assignedAreas.length; ai++) {
           if (String(assignedAreas[ai] || '').trim().toLowerCase() === targetArea) {
-            return null; // Concerned Area/Ward Incharge for this CNE, regardless of CNE type
+            return null; // Concerned Area/Ward Incharge for this internal CNE
           }
         }
       }
@@ -4020,8 +4051,24 @@ function handleCreateCNE(params, session) {
     };
   }
 
-  var rawType = params.cneType || 'CENTRAL';
-  var cneType = normalizeCNEType(rawType) || 'CENTRAL';
+  var rawType = params.cneType;
+  var cneType = normalizeCNEType(rawType);
+  if (!cneType) {
+    return {
+      success: false,
+      errorCode: 'INVALID_CNE_TYPE',
+      message: 'Please select a valid CNE type.'
+    };
+  }
+
+  // Authoritative workflow rule: External CNE types are strictly unscheduled / retrospective
+  if ((cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE') && !isUnscheduled) {
+    return {
+      success: false,
+      errorCode: 'EXTERNAL_CNE_UNSCHEDULED_ONLY',
+      message: 'External CNE categories can only be recorded through the Unscheduled CNE workflow.'
+    };
+  }
 
   var isAdmin = session.role === 'ADMIN';
   var isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
@@ -4035,7 +4082,7 @@ function handleCreateCNE(params, session) {
     };
   }
 
-  // Authorization check: Central CNE requires Admin; Departmental requires Admin or Area Incharge
+  // Authorization check: Central CNE requires Admin; Departmental requires Admin or Area Incharge; External requires Admin
   if (cneType === 'CENTRAL' && !isAdmin) {
     return {
       success: false,
@@ -4048,6 +4095,13 @@ function handleCreateCNE(params, session) {
       success: false,
       errorCode: 'FORBIDDEN',
       message: 'Permission denied. Only Administrators or designated Area Incharges can create Departmental CNE programs.'
+    };
+  }
+  if ((cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE') && !isAdmin) {
+    return {
+      success: false,
+      errorCode: 'FORBIDDEN',
+      message: 'Permission denied. Only Administrators can record External CNE programs.'
     };
   }
 
@@ -4231,11 +4285,21 @@ function handleCreateCNE(params, session) {
     if (isUnscheduled && !isAdmin) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can record and finalize an unscheduled CNE.' };
     }
+    if ((cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE') && !isUnscheduled) {
+      return {
+        success: false,
+        errorCode: 'EXTERNAL_CNE_UNSCHEDULED_ONLY',
+        message: 'External CNE categories can only be recorded through the Unscheduled CNE workflow.'
+      };
+    }
     if (cneType === 'CENTRAL' && !isAdmin) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can create Central CNE programs.' };
     }
     if (cneType === 'DEPARTMENTAL' && !isAdmin && !isAreaIncharge) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators or designated Area Incharges can create Departmental CNE programs.' };
+    }
+    if ((cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE') && !isAdmin) {
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can record External CNE programs.' };
     }
     var liveAreaAuthErr = checkCNEAuthorized(session, area, cneType);
     if (liveAreaAuthErr) return liveAreaAuthErr;
@@ -4264,7 +4328,8 @@ function handleCreateCNE(params, session) {
     var curYear = parseInt(getIndiaTodayString().slice(0, 4), 10) || new Date().getFullYear();
     var timestampSuffix = Date.now().toString().slice(-4);
     var randSuffix = ('000' + Math.floor(Math.random() * 1000)).slice(-3);
-    var cneId = 'CLS-' + curYear + '-' + (cneType === 'DEPARTMENTAL' ? 'D-' : '') + (isUnscheduled ? 'U-' : '') + timestampSuffix + randSuffix;
+    var typePrefix = cneType === 'DEPARTMENTAL' ? 'D-' : (cneType === 'EXTERNAL_OFFSITE' ? 'EXT-OUT-' : (cneType === 'EXTERNAL_ONSITE' ? 'EXT-IN-' : ''));
+    var cneId = 'CLS-' + curYear + '-' + typePrefix + (isUnscheduled ? 'U-' : '') + timestampSuffix + randSuffix;
 
     var colMap = getHeaderMap(sheet);
     var maxCol = Math.max(sheet.getLastColumn(), 22);
@@ -14963,7 +15028,7 @@ function handleFinalizeCNE(params, session) {
     return {
       success: false,
       errorCode: 'INVALID_CNE_TYPE',
-      message: 'Cannot finalize CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL or DEPARTMENTAL).'
+      message: 'Cannot finalize CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE).'
     };
   }
 
@@ -15012,7 +15077,7 @@ function handleFinalizeCNE(params, session) {
       return {
         success: false,
         errorCode: 'INVALID_CNE_TYPE',
-        message: 'Cannot finalize CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL or DEPARTMENTAL).'
+        message: 'Cannot finalize CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE).'
       };
     }
     var liveFinalizeAuthErr = checkCNEAuthorized(session, liveRecord.area, liveFinalizeType);
@@ -15135,7 +15200,16 @@ function handleCancelCNE(params, session) {
   var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found.' };
   
-  var authErr = checkCNEAuthorized(session, record.area, record.cneType);
+  var preCancelType = normalizeCNEType(record.cneType);
+  if (!preCancelType) {
+    return {
+      success: false,
+      errorCode: 'INVALID_CNE_TYPE',
+      message: 'Cannot cancel CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE).'
+    };
+  }
+
+  var authErr = checkCNEAuthorized(session, record.area, preCancelType);
   if (authErr) return authErr;
 
   // Keep cancellation idempotent and avoid rewriting remarks/audit entries.
@@ -15169,7 +15243,7 @@ function handleCancelCNE(params, session) {
       return {
         success: false,
         errorCode: 'INVALID_CNE_TYPE',
-        message: 'Cannot cancel CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL or DEPARTMENTAL).'
+        message: 'Cannot cancel CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE).'
       };
     }
     var liveCancelAuthErr = checkCNEAuthorized(session, liveRecord.area, liveCancelType);

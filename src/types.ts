@@ -100,6 +100,12 @@ export interface RoleMapping {
   updatedAt?: string;
 }
 
+export type CNEType =
+  | 'CENTRAL'
+  | 'DEPARTMENTAL'
+  | 'EXTERNAL_OFFSITE'
+  | 'EXTERNAL_ONSITE';
+
 /**
  * Authoritative Unified CNE Record
  * Represents a CNE program/session stored directly in the single authoritative 'CNE Schedule' sheet.
@@ -122,7 +128,7 @@ export interface CNERecord {
   description?: string;
   maxParticipants?: number;
   status: CNEStatus;
-  cneType?: 'CENTRAL' | 'DEPARTMENTAL';
+  cneType?: CNEType;
   proposedByEmpId?: string;
   proposedByName?: string;
   adminRemarks?: string;
@@ -215,7 +221,7 @@ export interface CNELearningResourceMetadata {
   fileSize: number;
   resourcePersonName?: string;
   area?: string;
-  cneType?: 'CENTRAL' | 'DEPARTMENTAL';
+  cneType?: CNEType;
   uploadedAt?: string;
   updatedAt?: string;
   updatedBy?: string;

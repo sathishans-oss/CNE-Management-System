@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { CNERecord } from '../types';
 import { ApiService } from '../services/api';
-import { formatCneDateTimeDisplay, parseToIsoDateString } from '../utils';
+import { formatCneDateTimeDisplay, parseToIsoDateString, getCneTypeLabel } from '../utils';
 
 type CalendarViewMode = 'month' | 'agenda';
 
@@ -411,6 +411,11 @@ export const CNECalendar: React.FC = () => {
                   <span className="font-bold text-slate-900">
                     {formatCneDateTimeDisplay(selectedEvent.date, selectedEvent.toDate)}
                   </span>
+                </div>
+
+                <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between shadow-xs">
+                  <span className="text-slate-500 font-semibold">CNE Type</span>
+                  <span className="font-bold text-slate-900">{getCneTypeLabel(selectedEvent.cneType)}</span>
                 </div>
 
                 <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between shadow-xs">

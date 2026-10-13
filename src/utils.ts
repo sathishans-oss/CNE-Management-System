@@ -1,4 +1,4 @@
-import { Employee, SessionUser } from './types';
+import { CNEType, Employee, SessionUser } from './types';
 
 const MONTH_NAMES = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -602,7 +602,7 @@ export function getUserAssignedAreas(user?: SessionUser | null): string[] {
 export function isCneAuthorized(
   user?: SessionUser | null,
   cneArea?: string,
-  _cneType?: string
+  cneType?: string
 ): boolean {
   if (!user) return false;
   if (user.role === 'ADMIN') return true;
@@ -610,6 +610,14 @@ export function isCneAuthorized(
   const normalizedRole = String(user.role || '').trim().toUpperCase();
   if (normalizedRole !== 'AREA_INCHARGE' && normalizedRole !== 'INCHARGE') return false;
   if (!cneArea) return false;
+
+  // External or non-internal CNE types never grant Area Incharge operational authority
+  if (cneType) {
+    const normType = String(cneType).trim().toUpperCase();
+    if (normType !== 'CENTRAL' && normType !== 'DEPARTMENTAL') {
+      return false;
+    }
+  }
 
   const targetArea = cneArea.trim().toLowerCase();
   if (!targetArea) return false;
@@ -640,7 +648,7 @@ export function isUserAssignedResourcePerson(
  *
  * Allowed for Material, Questions, QR, Post-Test management and Attendance:
  * 1. Admin
- * 2. Concerned Area/Ward Incharge for the CNE area (Central or Departmental)
+ * 2. Concerned Area/Ward Incharge for the CNE area (Central or Departmental only)
  * 3. Resource Person assigned to this specific CNE
  *
  * This helper intentionally does NOT grant Edit/Cancel/Finalize lifecycle authority.
@@ -656,7 +664,11 @@ export function canManageCneActions(
 ): boolean {
   if (!user || !cne) return false;
   if (user.role === 'ADMIN') return true;
-  if (isCneAuthorized(user, cne.area, cne.cneType)) return true;
+
+  const normType = String(cne.cneType || '').trim().toUpperCase();
+  const isInternalOperationalType = normType === 'CENTRAL' || normType === 'DEPARTMENTAL';
+
+  if (isInternalOperationalType && isCneAuthorized(user, cne.area, cne.cneType)) return true;
 
   const assignedRpIds = [
     ...(cne.resourcePersonEmpIds || []),
@@ -681,6 +693,70 @@ export function getSafeExternalUrl(value?: string | null): string | null {
     return null;
   }
 }
+/**
+ * Authoritative human-facing CNE type display label.
+ *
+ * CENTRAL -> "Central CNE"
+ * DEPARTMENTAL -> "Departmental CNE"
+ * EXTERNAL_OFFSITE -> "External CNE – Outside AIIMS"
+ * EXTERNAL_ONSITE -> "External CNE – Hosted at AIIMS"
+ * Fallback -> "CNE"
+ */
+export function getCneTypeLabel(type?: string | null): string {
+  if (!type) return 'CNE';
+  const norm = String(type).trim().toUpperCase();
+  switch (norm) {
+    case 'CENTRAL':
+    case 'CENTRAL CNE':
+      return 'Central CNE';
+    case 'DEPARTMENTAL':
+    case 'DEPARTMENTAL CNE':
+    case 'DEPT':
+      return 'Departmental CNE';
+    case 'EXTERNAL_OFFSITE':
+    case 'EXTERNAL OFFSITE':
+    case 'EXTERNAL_CNE_OFFSITE':
+    case 'EXTERNAL CNE OFFSITE':
+    case 'EXTERNAL CNE – OUTSIDE AIIMS':
+    case 'EXTERNAL CNE - OUTSIDE AIIMS':
+    case 'EXTERNAL CNE – OUTSIDE':
+    case 'EXTERNAL CNE - OUTSIDE':
+    case 'EXTERNAL_OUTSIDE':
+    case 'OUTSIDE AIIMS':
+      return 'External CNE – Outside AIIMS';
+    case 'EXTERNAL_ONSITE':
+    case 'EXTERNAL ONSITE':
+    case 'EXTERNAL_CNE_ONSITE':
+    case 'EXTERNAL CNE ONSITE':
+    case 'EXTERNAL CNE – HOSTED AT AIIMS':
+    case 'EXTERNAL CNE - HOSTED AT AIIMS':
+    case 'EXTERNAL CNE – HOSTED':
+    case 'EXTERNAL CNE - HOSTED':
+    case 'EXTERNAL_HOSTED':
+    case 'HOSTED AT AIIMS':
+    case 'EXTERNAL_ONSITE_AIIMS':
+      return 'External CNE – Hosted at AIIMS';
+    default:
+      return 'CNE';
+  }
+}
 
-
-
+/**
+ * Returns Tailwind badge styling classes based on CNE type.
+ */
+export function getCneTypeBadgeClass(type?: string | null): string {
+  const norm = String(type || '').trim().toUpperCase();
+  if (norm === 'CENTRAL' || norm === 'CENTRAL CNE') {
+    return 'bg-blue-50 text-blue-700 border border-blue-200';
+  }
+  if (norm === 'DEPARTMENTAL' || norm === 'DEPARTMENTAL CNE' || norm === 'DEPT') {
+    return 'bg-teal-50 text-teal-700 border border-teal-200';
+  }
+  if (norm.includes('OFFSITE') || norm.includes('OUTSIDE')) {
+    return 'bg-amber-50 text-amber-800 border border-amber-200';
+  }
+  if (norm.includes('ONSITE') || norm.includes('HOSTED')) {
+    return 'bg-purple-50 text-purple-700 border border-purple-200';
+  }
+  return 'bg-slate-100 text-slate-700 border border-slate-200';
+}
