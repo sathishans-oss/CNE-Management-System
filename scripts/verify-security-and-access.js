@@ -118,7 +118,8 @@ runTest('Admin-only actions remain strictly Admin-only', () => {
     'addQuickLink',
     'updateQuickLink',
     'deleteQuickLink',
-    'adminResetPassword'
+    'adminResetPassword',
+    'getDepartmentalCneOutcomeReport'
   ];
 
   for (const ep of adminEndpoints) {
@@ -131,6 +132,23 @@ runTest('Admin-only actions remain strictly Admin-only', () => {
   assert.ok(!codeGs.includes("function handleDeleteCNE"), "Code.gs must not define obsolete function 'handleDeleteCNE'");
   assert.ok(!codeGs.includes("case 'reviewCNE':"), "Code.gs must not contain obsolete router case 'reviewCNE'");
   assert.ok(!codeGs.includes("function handleReviewCNE"), "Code.gs must not define obsolete function 'handleReviewCNE'");
+});
+
+runTest('Departmental CNE Outcome page is protected on both backend and frontend', () => {
+  assert.ok(
+    codeGs.includes("case 'getDepartmentalCneOutcomeReport':") &&
+      codeGs.includes("handleAdminAction(params, session, handleGetDepartmentalCneOutcomeReport"),
+    'Departmental CNE Outcome backend action must be wrapped by handleAdminAction'
+  );
+  assert.ok(
+    codeGs.includes('function handleGetDepartmentalCneOutcomeReport(params, session)') &&
+      codeGs.substring(codeGs.indexOf('function handleGetDepartmentalCneOutcomeReport'), codeGs.indexOf('function handleGetRoles')).includes('requireAdmin(session)'),
+    'Departmental CNE Outcome handler must independently require Admin'
+  );
+  assert.ok(
+    appTs.includes("activeView === 'admin-departmental-cne-outcome' && user?.role === 'ADMIN'"),
+    'Frontend route must render Departmental CNE Outcome only for Admin'
+  );
 });
 
 // -----------------------------------------------------------------------------

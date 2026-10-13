@@ -14,7 +14,8 @@ const ADMIN_PREFETCH_MAP: Partial<Record<ViewMode, RouteImporter>> = {
   'admin-reports': () => import('../components/AdminReports'),
   'admin-content': () => import('../components/AdminContent'),
   'admin-roles': () => import('../components/AdminRoles'),
-  'admin-areas': () => import('../components/AdminAreas')
+  'admin-areas': () => import('../components/AdminAreas'),
+  'admin-departmental-cne-outcome': () => import('../components/AdminDepartmentalCneOutcome')
 };
 
 const prefetchedRoutes = new Set<string>();

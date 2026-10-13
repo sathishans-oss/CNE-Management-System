@@ -22,7 +22,8 @@ export type ViewMode =
   | 'admin-roles'
   | 'admin-content'
   | 'admin-reports'
-  | 'admin-teaching-modes';
+  | 'admin-teaching-modes'
+  | 'admin-departmental-cne-outcome';
 
 export interface NewsEventItem {
   id: string;
@@ -138,6 +139,12 @@ export interface CNERecord {
   staffNames?: string[]; // Populated when authorized
   externalStaffParticipants?: string[]; // Outside staff participants without employee ID
   staffCount?: number;
+  coverageAreasSnapshot?: string;
+  totalAllottedStaff?: number | null;
+  internalAttendanceCount?: number | null;
+  attendancePercentage?: number | null;
+  postTestOutcomePercentage?: number | null;
+  coverageFinalizedAt?: string;
   finalizedQuestionsCount?: number;
   isLocked?: boolean;
   isUnscheduled?: boolean;
@@ -147,6 +154,20 @@ export interface CNERecord {
   createdBy?: string;
   updatedAt?: string;
   updatedBy?: string;
+}
+
+export interface DepartmentalCneOutcomeRow {
+  area: string;
+  cneId?: string;
+  topic?: string;
+  status?: string;
+  remarks?: string;
+  createdByName?: string;
+  totalAllottedStaff?: number | null;
+  internalAttendanceCount?: number | null;
+  attendancePercentage?: number | null;
+  postTestOutcomePercentage?: number | null;
+  date?: string;
 }
 
 export interface CNEActivityProgress {

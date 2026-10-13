@@ -23,7 +23,8 @@ import {
   CNEParticipantsSummary,
   CNEActivityProgress,
   PostTestSubmissionResult,
-  SheetAuditItem
+  SheetAuditItem,
+  DepartmentalCneOutcomeRow
 } from '../types';
 import {
   INITIAL_AREAS,
@@ -517,6 +518,20 @@ export class ApiService {
 
       case 'getGallery':
         return { success: true, data: [..._inMemoryGallery] as any };
+
+      case 'getDepartmentalCneOutcomeReport': {
+        if (!session || session.role !== 'ADMIN') {
+          return {
+            success: false,
+            errorCode: 'FORBIDDEN',
+            message: 'Permission denied. Only Administrators can view Departmental CNE Outcome.'
+          };
+        }
+        return {
+          success: true,
+          data: generateLocalDepartmentalCneOutcomeReport(_params) as any
+        };
+      }
 
       default:
         return {
@@ -1602,4 +1617,106 @@ export class ApiService {
     return res;
   }
 
+  /**
+   * Admin-Only: Departmental CNE Outcome Report API
+   */
+  static async getDepartmentalCneOutcomeReport(params?: {
+    fromDate?: string;
+    toDate?: string;
+    search?: string;
+  }): Promise<ApiResponse<DepartmentalCneOutcomeRow[]>> {
+    return this.executeAction<DepartmentalCneOutcomeRow[]>(
+      'getDepartmentalCneOutcomeReport',
+      params || {}
+    );
+  }
+}
+
+function generateLocalDepartmentalCneOutcomeReport(
+  params: Record<string, any> = {}
+): DepartmentalCneOutcomeRow[] {
+  const activeAreas = _inMemoryAreas.filter((a) => a.status === 'ACTIVE').map((a) => a.name);
+  const deptCnes = _inMemoryCNERecords.filter((c) => {
+    const isDept = c.cneType === 'DEPARTMENTAL';
+    const isUnscheduled = c.isUnscheduled || (c.cneId && c.cneId.includes('-U-'));
+    if (!isDept || isUnscheduled) return false;
+    const cneDay = (c.fromDate || c.date || '').slice(0, 10);
+    if (params.fromDate && cneDay && cneDay < params.fromDate.slice(0, 10)) return false;
+    if (params.toDate && cneDay && cneDay > params.toDate.slice(0, 10)) return false;
+    return true;
+  });
+
+  const normalizeKey = (s: string) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const cnesByArea: Record<string, typeof deptCnes> = {};
+  for (const c of deptCnes) {
+    const k = normalizeKey(c.area);
+    if (!cnesByArea[k]) cnesByArea[k] = [];
+    cnesByArea[k].push(c);
+  }
+
+  const rows: DepartmentalCneOutcomeRow[] = [];
+  const processedKeys = new Set<string>();
+
+  for (const actName of activeAreas) {
+    const k = normalizeKey(actName);
+    processedKeys.add(k);
+    const list = cnesByArea[k] || [];
+    if (list.length === 0) {
+      rows.push({
+        area: actName,
+        cneId: '',
+        topic: '',
+        status: '',
+        remarks: '',
+        createdByName: '',
+        totalAllottedStaff: null,
+        internalAttendanceCount: null,
+        attendancePercentage: null,
+        postTestOutcomePercentage: null,
+        date: ''
+      });
+    } else {
+      for (const c of list) {
+        const isCancelled = c.status === 'Canceled' || c.status === 'Cancelled';
+        const isCompleted = c.status === 'Completed';
+        rows.push({
+          area: c.area,
+          cneId: c.cneId,
+          topic: c.topic,
+          status: c.status,
+          remarks: isCancelled ? (c.adminRemarks || c.remarks || '') : '',
+          createdByName: c.proposedByName || '',
+          totalAllottedStaff: c.totalAllottedStaff ?? null,
+          internalAttendanceCount: isCompleted ? (c.internalAttendanceCount ?? null) : null,
+          attendancePercentage: isCompleted ? (c.attendancePercentage ?? null) : null,
+          postTestOutcomePercentage: isCompleted ? (c.postTestOutcomePercentage ?? null) : null,
+          date: c.fromDate || c.date || ''
+        });
+      }
+    }
+  }
+
+  for (const [k, list] of Object.entries(cnesByArea)) {
+    if (!processedKeys.has(k)) {
+      for (const c of list) {
+        const isCancelled = c.status === 'Canceled' || c.status === 'Cancelled';
+        const isCompleted = c.status === 'Completed';
+        rows.push({
+          area: c.area,
+          cneId: c.cneId,
+          topic: c.topic,
+          status: c.status,
+          remarks: isCancelled ? (c.adminRemarks || c.remarks || '') : '',
+          createdByName: c.proposedByName || '',
+          totalAllottedStaff: c.totalAllottedStaff ?? null,
+          internalAttendanceCount: isCompleted ? (c.internalAttendanceCount ?? null) : null,
+          attendancePercentage: isCompleted ? (c.attendancePercentage ?? null) : null,
+          postTestOutcomePercentage: isCompleted ? (c.postTestOutcomePercentage ?? null) : null,
+          date: c.fromDate || c.date || ''
+        });
+      }
+    }
+  }
+
+  return rows;
 }

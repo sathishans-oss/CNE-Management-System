@@ -21,6 +21,7 @@ const AdminTeachingModes = lazy(() => import('./components/AdminTeachingModes').
 const AdminRoles = lazy(() => import('./components/AdminRoles').then((m) => ({ default: m.AdminRoles })));
 const AdminReports = lazy(() => import('./components/AdminReports').then((m) => ({ default: m.AdminReports })));
 const AdminContent = lazy(() => import('./components/AdminContent').then((m) => ({ default: m.AdminContent })));
+const AdminDepartmentalCneOutcome = lazy(() => import('./components/AdminDepartmentalCneOutcome').then((m) => ({ default: m.AdminDepartmentalCneOutcome })));
 
 const PageLoadingFallback: React.FC = () => (
   <div className="min-h-[220px] flex items-center justify-center text-sm font-medium text-slate-500">
@@ -84,7 +85,7 @@ const AppContent: React.FC = () => {
   const handleNavigate = (view: ViewMode) => {
     // If not logged in and attempting to access staff/admin protected views, prompt login
     if (!user || !user.employeeId) {
-      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports'].includes(view)) {
+      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports', 'admin-departmental-cne-outcome'].includes(view)) {
         info('Please log in with your Employee ID to access this section.', 'Authentication Required');
         setIsLoginOpen(true);
         return;
@@ -159,6 +160,10 @@ const AppContent: React.FC = () => {
 
           {activeView === 'admin-reports' && user?.role === 'ADMIN' && (
             <AdminReports user={user} />
+          )}
+
+          {activeView === 'admin-departmental-cne-outcome' && user?.role === 'ADMIN' && (
+            <AdminDepartmentalCneOutcome user={user} />
           )}
           </Suspense>
         </main>

@@ -24,6 +24,7 @@ const apiTs = fs.readFileSync('src/services/api.ts', 'utf8');
 const cneScheduleTs = fs.readFileSync('src/components/CNESchedule.tsx', 'utf8');
 const unscheduledModalTs = fs.readFileSync('src/components/cne/AddUnscheduledCneModal.tsx', 'utf8');
 const typesTs = fs.readFileSync('src/types.ts', 'utf8');
+const outcomePageTs = fs.readFileSync('src/components/AdminDepartmentalCneOutcome.tsx', 'utf8');
 
 let totalTests = 0;
 let passedTests = 0;
@@ -318,7 +319,104 @@ runTest('Participant roster, staff counts, and post-test participants are record
 });
 
 // -----------------------------------------------------------------------------
-// 6. CNE Schedule Active Schema & Schema Invariance
+// 6. Departmental CNE Coverage Snapshot & Outcome Metrics
+// -----------------------------------------------------------------------------
+runTest('Departmental CNE coverage schema uses six dedicated columns without repurposing Staff Count', () => {
+  const requiredCoverageHeaders = [
+    'Coverage Areas Snapshot',
+    'Total Allotted Staff',
+    'Internal Attendance Count',
+    'Attendance Percentage',
+    'Post-Test Outcome Percentage',
+    'Coverage Finalized At'
+  ];
+  for (const header of requiredCoverageHeaders) {
+    assert.ok(codeGs.includes(`'${header}'`), `Code.gs must define ${header}`);
+  }
+  assert.ok(codeGs.includes("setCell('staffcount', 17, totalStaffCount);"), 'Existing Staff Count semantics must remain intact');
+  assert.ok(codeGs.includes("setCell('totalallottedstaff', 24"), 'Total Allotted Staff must use its own dedicated column');
+});
+
+runTest('Staff-count master lookup is exact, cached, and treats missing/invalid values as zero', () => {
+  const section = codeGs.substring(
+    codeGs.indexOf('function normalizeAreaMatchingKey_'),
+    codeGs.indexOf('function ensureCneScheduleCoverageHeaders_')
+  );
+  assert.ok(section.includes("getSheetByName('CNE staff count')"), 'Must read CNE staff count tab');
+  assert.ok(section.includes("getProperty('CNE_STAFF_COUNT_SPREADSHEET_ID')"), 'Separate spreadsheet must be configurable through Script Properties');
+  assert.ok(section.includes("replace(/\\s+/g, ' ').toLowerCase()"), 'Area matching must normalize whitespace/case only');
+  assert.ok(section.includes('var num = 0;'), 'Invalid or blank staff total must default to zero');
+  assert.ok(section.includes('return 0;'), 'Missing Area lookup must return zero');
+  assert.ok(section.includes("CacheService.getScriptCache().put(cacheKey, JSON.stringify(map), 60)"), 'Staff-count master must use a short cache');
+});
+
+runTest('Departmental scheduling snapshots Area Incharge active areas and Admin selected area', () => {
+  const helper = codeGs.substring(
+    codeGs.indexOf('function buildDepartmentalCoverageSnapshot_'),
+    codeGs.indexOf('function ensureCneScheduleCoverageHeaders_')
+  );
+  assert.ok(helper.includes("if (role === 'ADMIN')"), 'Coverage helper must have explicit Admin branch');
+  assert.ok(helper.includes('getStaffCountForArea_(selected, resolvedStaffMap)'), 'Admin denominator must use only selected Area');
+  assert.ok(helper.includes("statusMap[statusKey] !== 'ACTIVE'"), 'Area Incharge snapshot must exclude inactive assigned Areas');
+  assert.ok(helper.includes("activeAssigned.join(', ')"), 'Active assigned Areas must be persisted as the coverage snapshot');
+  assert.ok(helper.includes('total += getStaffCountForArea_(areaName, resolvedStaffMap)'), 'Area Incharge denominator must sum active assigned Area totals');
+
+  const createSection = codeGs.substring(codeGs.indexOf('function handleCreateCNE'), codeGs.indexOf('function handleUpdateCNE'));
+  assert.ok(createSection.includes("cneType === 'DEPARTMENTAL' && !isUnscheduled"), 'Coverage snapshot must apply only to normally scheduled Departmental CNEs');
+  assert.ok(createSection.includes("setCell('coverageareassnapshot'"), 'Scheduling must save Coverage Areas Snapshot');
+  assert.ok(createSection.includes("setCell('totalallottedstaff'"), 'Scheduling must save Total Allotted Staff');
+});
+
+runTest('Departmental coverage metrics are calculated only in finalization, not attendance submission paths', () => {
+  const finalize = codeGs.substring(codeGs.indexOf('function handleFinalizeCNE'), codeGs.indexOf('function handleCancelCNE'));
+  assert.ok(finalize.includes("var isDeptFinalize = (liveFinalizeType === 'DEPARTMENTAL');"), 'Finalization must scope coverage calculation to Departmental CNEs');
+  assert.ok(finalize.includes("var isUnscheduledFinalize = (cneId.indexOf('-U-') !== -1);"), 'Unscheduled Departmental CNEs must be excluded');
+  assert.ok(finalize.includes("setValue(attPercentage !== null ? attPercentage : '')"), 'Attendance Percentage must be persisted during finalization');
+  assert.ok(finalize.includes("setValue(postTestOutcome !== null ? postTestOutcome : '')"), 'Post-Test Outcome must be persisted during finalization');
+
+  const manual = codeGs.substring(codeGs.indexOf('function handleAddManualParticipants'), codeGs.indexOf('function handleGetCNEParticipants'));
+  const submit = codeGs.substring(codeGs.indexOf('function handleSubmitPostTest'), codeGs.indexOf('function handleAddManualParticipants'));
+  assert.ok(!manual.includes("colMap['attendancepercentage']"), 'Manual attendance must not calculate attendance percentage');
+  assert.ok(!submit.includes("colMap['attendancepercentage']"), 'Post-Test submission must not calculate attendance percentage');
+});
+
+runTest('Finalization deduplicates internal attendance, excludes external attendees, and handles zero denominator safely', () => {
+  const finalize = codeGs.substring(codeGs.indexOf('function handleFinalizeCNE'), codeGs.indexOf('function handleCancelCNE'));
+  assert.ok(finalize.includes("var key = rawEmp ? ('ID:' + rawEmp) : ('NAME:' + pName.toLowerCase());"), 'Finalization must deduplicate by participant identity');
+  assert.ok(finalize.includes('!isExternalParticipantId(item.empId)'), 'Internal attendance must exclude external participant IDs');
+  assert.ok(finalize.includes('var internalAttendanceCount = internalEmpIds.length;'), 'Internal Attendance Count must use unique internal employee IDs');
+  assert.ok(finalize.includes('savedAllottedStaff !== null && savedAllottedStaff > 0'), 'Attendance percentage must only divide when denominator is positive');
+  assert.ok(finalize.includes('var attPercentage = null;'), 'Zero denominator must preserve null percentage');
+  assert.ok(finalize.includes('postTestScores.length > 0'), 'Outcome must be null when there are no valid Post-Test scores');
+});
+
+runTest('Departmental CNE Outcome report is Area-master driven and uses stored finalized metrics', () => {
+  const report = codeGs.substring(codeGs.indexOf('function handleGetDepartmentalCneOutcomeReport'), codeGs.indexOf('function handleGetRoles'));
+  assert.ok(report.includes('var adminError = requireAdmin(session);'), 'Report backend must be Admin-only');
+  assert.ok(report.includes("if (cneType !== 'DEPARTMENTAL') continue;"), 'Report must include only Departmental CNEs');
+  assert.ok(report.includes("if (cneId.indexOf('-U-') !== -1) continue;"), 'Report must exclude unscheduled/retrospective records');
+  assert.ok(report.includes('for (var a = 0; a < activeAreas.length; a++)'), 'Every active Area must drive report output');
+  assert.ok(report.includes('if (areaCnes.length === 0)'), 'Active Areas with no CNE must receive an empty placeholder row');
+  assert.ok(report.includes("if (cneStatus === 'Canceled' || cneStatus === 'Cancelled')"), 'Remarks must be cancellation-only');
+  assert.ok(report.includes('totalAllottedStaff: totalAllotted'), 'Report must read saved Total Allotted Staff');
+  assert.ok(report.includes('attendancePercentage: attendancePct'), 'Report must read stored Attendance Percentage');
+});
+
+runTest('Departmental CNE Outcome UI has required table, filters, print header, and no Employee ID in Created By', () => {
+  for (const heading of ['S.No', 'Area / Ward', 'CNE Topic', 'Status', 'Remarks', 'Created By', 'Total Allotted Staff', 'Attendance', 'Outcome']) {
+    assert.ok(outcomePageTs.includes(heading), `Outcome page must contain ${heading}`);
+  }
+  assert.ok(outcomePageTs.includes('SearchInput'), 'Outcome page must reuse the CNE Schedule search control');
+  assert.ok(outcomePageTs.includes('ConfirmDatePicker'), 'Outcome page must reuse the CNE Schedule date control');
+  assert.ok(outcomePageTs.includes('ALL INDIA INSTITUTE OF MEDICAL SCIENCES, RISHIKESH'), 'Print header must contain institution name');
+  assert.ok(outcomePageTs.includes('Departmental CNE Coverage & Outcome Report'), 'Print header must contain exact report title');
+  assert.ok(outcomePageTs.includes('Period: {printPeriodText}'), 'Print header must show selected period');
+  assert.ok(outcomePageTs.includes('window.print()'), 'Print action must print current rendered filtered report');
+  assert.ok(!outcomePageTs.includes('row.employeeId'), 'Created By table must not expose Employee ID');
+});
+
+// -----------------------------------------------------------------------------
+// 7. CNE Schedule Active Schema & Schema Invariance
 // -----------------------------------------------------------------------------
 runTest('CNE Schedule sheet schema contains required active headers', () => {
   const match = codeGs.match(/'CNE Schedule':\s*\[([\s\S]*?)\]/);
@@ -346,7 +444,13 @@ runTest('CNE Schedule sheet schema contains required active headers', () => {
     'Admin Remarks',
     'Remarks',
     'CreatedAt',
-    'CreatedBy'
+    'CreatedBy',
+    'Coverage Areas Snapshot',
+    'Total Allotted Staff',
+    'Internal Attendance Count',
+    'Attendance Percentage',
+    'Post-Test Outcome Percentage',
+    'Coverage Finalized At'
   ];
 
   for (const req of requiredHeaders) {

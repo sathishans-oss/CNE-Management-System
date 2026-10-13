@@ -796,6 +796,10 @@ function handleRequest(e, method) {
       case 'updateRole':
         output = handleAdminAction(params, session, handleUpdateRole, 'UPDATE_ROLE');
         break;
+
+      case 'getDepartmentalCneOutcomeReport':
+        output = handleAdminAction(params, session, handleGetDepartmentalCneOutcomeReport, 'GET_DEPARTMENTAL_CNE_OUTCOME_REPORT');
+        break;
         
       case 'createCNE':
       case 'addUnscheduledCNE':
@@ -2942,6 +2946,214 @@ function requireActiveArea_(areaName, forceFresh) {
   return null;
 }
 
+/**
+ * Normalized Area Matching Key for CNE Staff Count lookup
+ * Performs normalized exact matching only: trim, collapse whitespace, lowercase.
+ * Strict exact matching prevents false matches (e.g., 424A vs 424B).
+ */
+function normalizeAreaMatchingKey_(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Accesses CNE Staff Count sheet without hardcoding IDs:
+ * 1. Checks Script Property CNE_STAFF_COUNT_SPREADSHEET_ID if configured.
+ * 2. Checks primary CNE spreadsheet.
+ * 3. Checks Officers / Dropdown spreadsheet.
+ * Returns Sheet or null if not found.
+ */
+function getCneStaffCountSheet_() {
+  var props = PropertiesService.getScriptProperties();
+  var staffCountId = props.getProperty('CNE_STAFF_COUNT_SPREADSHEET_ID');
+  if (staffCountId && staffCountId.trim() !== '') {
+    try {
+      var ss = SpreadsheetApp.openById(staffCountId.trim());
+      var sheet = ss.getSheetByName('CNE staff count');
+      if (sheet) return sheet;
+    } catch (e) {
+      console.warn('Could not open CNE_STAFF_COUNT_SPREADSHEET_ID: ' + e.message);
+    }
+  }
+  try {
+    var cneSs = getCNESpreadsheet();
+    var cneSheet = cneSs.getSheetByName('CNE staff count');
+    if (cneSheet) return cneSheet;
+  } catch (e) {}
+  try {
+    var dropSs = getSpreadsheet('OFFICERS');
+    var dropSheet = dropSs.getSheetByName('CNE staff count');
+    if (dropSheet) return dropSheet;
+  } catch (e) {}
+  return null;
+}
+
+/**
+ * Reads CNE staff count master tab with short-term caching (TTL 60s).
+ * Logical columns: Name of the IPD/OPD / Area/ward | Final Total
+ * Missing area, blank Final Total, or non-numeric Final Total treated as 0 without throwing.
+ */
+function getCneStaffCountMap_(forceFresh) {
+  var cacheKey = 'cne_staff_count_map';
+  if (!forceFresh) {
+    try {
+      var cached = CacheService.getScriptCache().get(cacheKey);
+      if (cached) {
+        var parsed = JSON.parse(cached);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch (e) {}
+  }
+
+  var map = {};
+  try {
+    var sheet = getCneStaffCountSheet_();
+    if (sheet && sheet.getLastRow() > 1) {
+      var data = sheet.getDataRange().getValues();
+      if (data.length > 1) {
+        var headerRow = data[0];
+        var areaCol = -1;
+        var totalCol = -1;
+
+        for (var c = 0; c < headerRow.length; c++) {
+          var normH = String(headerRow[c] || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (areaCol === -1 && (
+            normH.indexOf('nameoftheipdopd') !== -1 ||
+            normH.indexOf('areaward') !== -1 ||
+            normH.indexOf('ipdopd') !== -1 ||
+            normH === 'area' || normH === 'ward' || normH === 'department'
+          )) {
+            areaCol = c;
+          }
+          if (totalCol === -1 && (
+            normH === 'finaltotal' ||
+            normH.indexOf('finaltotal') !== -1 ||
+            normH === 'total' ||
+            normH === 'allottedstaff'
+          )) {
+            totalCol = c;
+          }
+        }
+
+        if (areaCol === -1) areaCol = 0;
+        if (totalCol === -1) totalCol = 1;
+
+        for (var r = 1; r < data.length; r++) {
+          var rawArea = String(data[r][areaCol] || '').trim();
+          if (!rawArea) continue;
+          var normKey = normalizeAreaMatchingKey_(rawArea);
+          var rawTotal = data[r][totalCol];
+          var num = 0;
+          if (rawTotal !== '' && rawTotal !== null && rawTotal !== undefined) {
+            var parsedNum = Number(rawTotal);
+            if (!isNaN(parsedNum) && isFinite(parsedNum) && parsedNum > 0) {
+              num = Math.floor(parsedNum);
+            }
+          }
+          map[normKey] = num;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Error reading CNE staff count: ' + err.message);
+  }
+
+  try {
+    CacheService.getScriptCache().put(cacheKey, JSON.stringify(map), 60);
+  } catch (ce) {}
+
+  return map;
+}
+
+/**
+ * Returns allotted staff count for an Area name using normalized exact matching.
+ * Returns 0 if missing, blank, or invalid. Never throws.
+ */
+function getStaffCountForArea_(areaName, staffMap) {
+  if (!areaName) return 0;
+  var map = staffMap || getCneStaffCountMap_(false);
+  var key = normalizeAreaMatchingKey_(areaName);
+  var val = map[key];
+  if (val !== undefined && val !== null && !isNaN(val)) {
+    return Number(val);
+  }
+  return 0;
+}
+
+/**
+ * Builds the scheduling-time Departmental CNE staffing snapshot.
+ * - ADMIN: only the selected CNE Area/Ward contributes to the denominator.
+ * - AREA_INCHARGE/INCHARGE: every currently ACTIVE assigned Area contributes.
+ * The caller may pass already-fetched staff/area maps so no repeated spreadsheet reads are needed.
+ */
+function buildDepartmentalCoverageSnapshot_(session, selectedArea, staffMap, areaStatusMap) {
+  var role = String((session && session.role) || '').trim().toUpperCase();
+  var resolvedStaffMap = staffMap || getCneStaffCountMap_(false);
+  var selected = sanitizeCellInput(selectedArea || '');
+
+  if (role === 'ADMIN') {
+    return {
+      coverageAreasSnapshot: selected,
+      totalAllottedStaff: getStaffCountForArea_(selected, resolvedStaffMap)
+    };
+  }
+
+  if (role !== 'AREA_INCHARGE' && role !== 'INCHARGE') {
+    return { coverageAreasSnapshot: '', totalAllottedStaff: 0 };
+  }
+
+  var roleInfo = getUserRoleInfo(session.employeeId, true);
+  var assigned = (roleInfo && Array.isArray(roleInfo.assignedAreas) && roleInfo.assignedAreas.length > 0)
+    ? roleInfo.assignedAreas
+    : (roleInfo && roleInfo.assignedArea ? [roleInfo.assignedArea] : []);
+  var statusMap = areaStatusMap || getAreaStatusMap_(true);
+  var activeAssigned = [];
+  var seen = {};
+  var total = 0;
+
+  for (var i = 0; i < assigned.length; i++) {
+    var areaName = sanitizeCellInput(assigned[i]);
+    if (!areaName) continue;
+    var statusKey = String(areaName).trim().toUpperCase();
+    var dedupeKey = normalizeAreaMatchingKey_(areaName);
+    if (statusMap[statusKey] !== 'ACTIVE' || seen[dedupeKey]) continue;
+    seen[dedupeKey] = true;
+    activeAssigned.push(areaName);
+    total += getStaffCountForArea_(areaName, resolvedStaffMap);
+  }
+
+  return {
+    coverageAreasSnapshot: activeAssigned.join(', '),
+    totalAllottedStaff: total
+  };
+}
+
+/**
+ * Idempotently ensures the 6 Departmental CNE Coverage headers exist on CNE Schedule sheet.
+ */
+function ensureCneScheduleCoverageHeaders_(sheet) {
+  if (!sheet) return;
+  var colMap = getHeaderMap(sheet);
+  var targetHeaders = [
+    { key: 'coverageareassnapshot', name: 'Coverage Areas Snapshot' },
+    { key: 'totalallottedstaff', name: 'Total Allotted Staff' },
+    { key: 'internalattendancecount', name: 'Internal Attendance Count' },
+    { key: 'attendancepercentage', name: 'Attendance Percentage' },
+    { key: 'posttestoutcomepercentage', name: 'Post-Test Outcome Percentage' },
+    { key: 'coveragefinalizedat', name: 'Coverage Finalized At' }
+  ];
+  var missing = [];
+  for (var i = 0; i < targetHeaders.length; i++) {
+    if (colMap[targetHeaders[i].key] === undefined) {
+      missing.push(targetHeaders[i].name);
+    }
+  }
+  if (missing.length > 0) {
+    var lastCol = sheet.getLastColumn() || 1;
+    sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
+    sheet.getRange(1, lastCol + 1, 1, missing.length).setFontWeight('bold');
+  }
+}
+
 function handleAddArea(params, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
@@ -4007,6 +4219,12 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
       cneType: cneType,
       proposedByEmpId: canSeeInternalManagementFields ? proposedBy : '',
       proposedByName: proposedByName,
+      coverageAreasSnapshot: colMap['coverageareassnapshot'] !== undefined ? String(row[colMap['coverageareassnapshot']] || '').trim() : '',
+      totalAllottedStaff: (colMap['totalallottedstaff'] !== undefined && row[colMap['totalallottedstaff']] !== '' && row[colMap['totalallottedstaff']] !== null && !isNaN(Number(row[colMap['totalallottedstaff']]))) ? Number(row[colMap['totalallottedstaff']]) : null,
+      internalAttendanceCount: (colMap['internalattendancecount'] !== undefined && row[colMap['internalattendancecount']] !== '' && row[colMap['internalattendancecount']] !== null && !isNaN(Number(row[colMap['internalattendancecount']]))) ? Number(row[colMap['internalattendancecount']]) : null,
+      attendancePercentage: (colMap['attendancepercentage'] !== undefined && row[colMap['attendancepercentage']] !== '' && row[colMap['attendancepercentage']] !== null && !isNaN(Number(row[colMap['attendancepercentage']]))) ? Number(row[colMap['attendancepercentage']]) : null,
+      postTestOutcomePercentage: (colMap['posttestoutcomepercentage'] !== undefined && row[colMap['posttestoutcomepercentage']] !== '' && row[colMap['posttestoutcomepercentage']] !== null && !isNaN(Number(row[colMap['posttestoutcomepercentage']]))) ? Number(row[colMap['posttestoutcomepercentage']]) : null,
+      coverageFinalizedAt: colMap['coveragefinalizedat'] !== undefined ? String(row[colMap['coveragefinalizedat']] || '').trim() : '',
       myPostTestScore: (isMyRecordsOnly && Object.prototype.hasOwnProperty.call(myPostTestScores, String(dataId).trim().toUpperCase()))
         ? myPostTestScores[String(dataId).trim().toUpperCase()]
         : null
@@ -4261,6 +4479,14 @@ function handleCreateCNE(params, session) {
   // branch can only resolve to Scheduled. Keep normalization here for schema compatibility.
   var status = isUnscheduled ? 'Completed' : normalizeCNEStatus(params.status || 'Scheduled');
 
+  // Read the external staff-count master before entering ScriptLock. The resulting map is
+  // the scheduling-time staffing snapshot source; commit-time role/Area authorization is still
+  // revalidated under the lock below.
+  var schedulingStaffMap = null;
+  if (cneType === 'DEPARTMENTAL' && !isUnscheduled) {
+    schedulingStaffMap = getCneStaffCountMap_(true);
+  }
+
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
@@ -4301,6 +4527,9 @@ function handleCreateCNE(params, session) {
 
     var activeAreaErr = requireActiveArea_(area, true);
     if (activeAreaErr) return activeAreaErr;
+    // requireActiveArea_(..., true) refreshes the Area cache, so reuse that authoritative
+    // snapshot without another spreadsheet read when building the staffing coverage snapshot.
+    var liveAreaStatusMap = getAreaStatusMap_(false);
 
     var activeTeachingModeErr = requireActiveTeachingMode_(modeOfTeaching, true);
     if (activeTeachingModeErr) return activeTeachingModeErr;
@@ -4320,6 +4549,7 @@ function handleCreateCNE(params, session) {
     }
 
     var sheet = getOrCreateSheet('CNE Schedule');
+    ensureCneScheduleCoverageHeaders_(sheet);
     var curYear = parseInt(getIndiaTodayString().slice(0, 4), 10) || new Date().getFullYear();
     var timestampSuffix = Date.now().toString().slice(-4);
     var randSuffix = ('000' + Math.floor(Math.random() * 1000)).slice(-3);
@@ -4327,7 +4557,7 @@ function handleCreateCNE(params, session) {
     var cneId = 'CLS-' + curYear + '-' + typePrefix + (isUnscheduled ? 'U-' : '') + timestampSuffix + randSuffix;
 
     var colMap = getHeaderMap(sheet);
-    var maxCol = Math.max(sheet.getLastColumn(), 22);
+    var maxCol = Math.max(sheet.getLastColumn(), 28);
     var rowData = [];
     for (var col = 0; col < maxCol; col++) rowData.push('');
 
@@ -4340,6 +4570,19 @@ function handleCreateCNE(params, session) {
     var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : (colMap['dataid'] !== undefined ? colMap['dataid'] : 0));
     while (rowData.length <= idCol) rowData.push('');
     rowData[idCol] = cneId;
+
+    var coverageAreasSnapshot = '';
+    var totalAllottedStaff = null;
+    if (cneType === 'DEPARTMENTAL' && !isUnscheduled) {
+      var coverageSnapshot = buildDepartmentalCoverageSnapshot_(
+        session,
+        area,
+        schedulingStaffMap || {},
+        liveAreaStatusMap
+      );
+      coverageAreasSnapshot = coverageSnapshot.coverageAreasSnapshot;
+      totalAllottedStaff = coverageSnapshot.totalAllottedStaff;
+    }
 
     setCell('topic', 1, topic);
     setCell('area', 2, area);
@@ -4365,6 +4608,15 @@ function handleCreateCNE(params, session) {
     if (isUnscheduled) {
       setCell('finalizedat', 21, new Date().toISOString());
       setCell('finalizedby', 22, session.employeeId || '');
+    }
+
+    if (cneType === 'DEPARTMENTAL' && !isUnscheduled) {
+      setCell('coverageareassnapshot', 23, coverageAreasSnapshot);
+      setCell('totalallottedstaff', 24, totalAllottedStaff !== null ? totalAllottedStaff : 0);
+      setCell('internalattendancecount', 25, '');
+      setCell('attendancepercentage', 26, '');
+      setCell('posttestoutcomepercentage', 27, '');
+      setCell('coveragefinalizedat', 28, '');
     }
 
     sheet.appendRow(rowData);
@@ -5022,6 +5274,10 @@ function handleAddDepartmentalSchedule(params, session) {
     });
   }
 
+  // Snapshot the staff-count master before entering ScriptLock to avoid holding the
+  // global mutation lock during the external staffing-sheet read.
+  var schedulingStaffMap = getCneStaffCountMap_(true);
+
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
@@ -5070,12 +5326,23 @@ function handleAddDepartmentalSchedule(params, session) {
     }
 
     var sheet = getOrCreateSheet('CNE Schedule');
+    ensureCneScheduleCoverageHeaders_(sheet);
 
     var colMap = getHeaderMap(sheet);
     var curYear = new Date().getFullYear();
     var createdIds = [];
     var allRows = [];
-    var targetCols = Math.max(sheet.getLastColumn(), 16);
+    var targetCols = Math.max(sheet.getLastColumn(), 28);
+
+    var inchargeCoverageSnapshot = null;
+    if (!isAdmin && isAreaIncharge) {
+      inchargeCoverageSnapshot = buildDepartmentalCoverageSnapshot_(
+        session,
+        validatedList.length > 0 ? validatedList[0].area : '',
+        schedulingStaffMap || {},
+        liveAreaStatusMap
+      );
+    }
 
     for (var j = 0; j < validatedList.length; j++) {
       var item = validatedList[j];
@@ -5096,6 +5363,12 @@ function handleAddDepartmentalSchedule(params, session) {
       while (rowData.length <= idCol) rowData.push('');
       rowData[idCol] = cneId;
 
+      var rowCoverage = isAdmin
+        ? buildDepartmentalCoverageSnapshot_(session, item.area, schedulingStaffMap || {}, liveAreaStatusMap)
+        : inchargeCoverageSnapshot;
+      var rowCoverageSnapshot = rowCoverage ? rowCoverage.coverageAreasSnapshot : '';
+      var rowAllottedStaff = rowCoverage ? rowCoverage.totalAllottedStaff : 0;
+
       setCell('topic', 1, item.topic);
       setCell('area', 2, item.area);
       setCell('fromdate', 3, item.date);
@@ -5112,6 +5385,12 @@ function handleAddDepartmentalSchedule(params, session) {
       setCell('externalresourcepersons', 13, item.extRpClean.join(', '));
       setCell('proposedby', 14, session.employeeId || '');
       setCell('adminremarks', 15, item.adminRemarks);
+      setCell('coverageareassnapshot', 23, rowCoverageSnapshot);
+      setCell('totalallottedstaff', 24, rowAllottedStaff !== null ? rowAllottedStaff : 0);
+      setCell('internalattendancecount', 25, '');
+      setCell('attendancepercentage', 26, '');
+      setCell('posttestoutcomepercentage', 27, '');
+      setCell('coveragefinalizedat', 28, '');
 
       allRows.push(rowData);
       createdIds.push(cneId);
@@ -5366,6 +5645,188 @@ function handleDeleteGalleryItem(params, session) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * Admin-Only: Departmental CNE Outcome Report
+ * Batched, single-call report generator:
+ * - Authoritative Area master (ACTIVE areas drive the table; empty placeholder if no CNE)
+ * - CNE Schedule (normally scheduled DEPARTMENTAL CNEs only; excludes Central, External, Unscheduled)
+ * - Inactive Areas appear ONLY if they have historical Departmental CNEs in the selected period
+ * - Officers data (resolves creator names only; never exposes Employee ID)
+ * - Remarks ONLY for Cancelled CNEs (never shows finalization summary)
+ */
+function handleGetDepartmentalCneOutcomeReport(params, session) {
+  var adminError = requireAdmin(session);
+  if (adminError) return adminError;
+
+  params = params || {};
+  var fromDateFilter = params.fromDate ? getCNECanonicalDay(params.fromDate) : '';
+  var toDateFilter = params.toDate ? getCNECanonicalDay(params.toDate) : '';
+
+  // 1. Read Area master to collect all currently ACTIVE areas
+  var areaSheet = getOrCreateSheet('Area');
+  var areaData = areaSheet.getDataRange().getValues();
+  var activeAreas = [];
+  for (var ar = 1; ar < areaData.length; ar++) {
+    var aName = String(areaData[ar][0] || '').trim();
+    var aStatus = String(areaData[ar][1] || 'ACTIVE').trim().toUpperCase();
+    if (aName && aStatus !== 'INACTIVE') {
+      activeAreas.push(aName);
+    }
+  }
+
+  // 2. Read CNE Schedule sheet
+  var cneSheet = getOrCreateSheet('CNE Schedule');
+  var cneData = cneSheet.getDataRange().getValues();
+  var cneColMap = getHeaderMap(cneSheet);
+
+  var idCol = cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : (cneColMap['classid'] !== undefined ? cneColMap['classid'] : 0);
+  var topicCol = cneColMap['topic'] !== undefined ? cneColMap['topic'] : 1;
+  var areaCol = cneColMap['area'] !== undefined ? cneColMap['area'] : (cneColMap['wardnamearea'] !== undefined ? cneColMap['wardnamearea'] : 2);
+  var fromDateCol = cneColMap['fromdate'] !== undefined ? cneColMap['fromdate'] : (cneColMap['date'] !== undefined ? cneColMap['date'] : 3);
+  var statusCol = cneColMap['status'] !== undefined ? cneColMap['status'] : 10;
+  var typeCol = cneColMap['typeofcne'] !== undefined ? cneColMap['typeofcne'] : (cneColMap['cnetype'] !== undefined ? cneColMap['cnetype'] : 11);
+  var adminRemarksCol = cneColMap['adminremarks'] !== undefined ? cneColMap['adminremarks'] : (cneColMap['remarks'] !== undefined ? cneColMap['remarks'] : 17);
+  var proposedByCol = cneColMap['proposedby'] !== undefined ? cneColMap['proposedby'] : (cneColMap['createdby'] !== undefined ? cneColMap['createdby'] : 16);
+  var createdByCol = cneColMap['createdby'] !== undefined ? cneColMap['createdby'] : -1;
+
+  var allottedCol = cneColMap['totalallottedstaff'];
+  var internalAttCol = cneColMap['internalattendancecount'];
+  var attPctCol = cneColMap['attendancepercentage'];
+  var outcomeCol = cneColMap['posttestoutcomepercentage'];
+
+  // 3. Batched Officer lookup for creator names
+  var officerMap = getOfficerNameMap();
+
+  // 4. Filter CNE Schedule records for normally scheduled DEPARTMENTAL CNEs
+  var cnesByAreaKey = {};
+  for (var r = 1; r < cneData.length; r++) {
+    var row = cneData[r];
+    var cneId = String(row[idCol] || '').trim();
+    if (!cneId) continue;
+
+    var rawType = row[typeCol];
+    var cneType = normalizeCNEType(rawType);
+    // Exclude Central, External, and unscheduled CNEs
+    if (cneType !== 'DEPARTMENTAL') continue;
+    if (cneId.indexOf('-U-') !== -1) continue;
+
+    var rawDate = row[fromDateCol];
+    var canonicalDay = getCNECanonicalDay(rawDate);
+    // Apply date range filters if provided
+    if (fromDateFilter && canonicalDay && canonicalDay < fromDateFilter) continue;
+    if (toDateFilter && canonicalDay && canonicalDay > toDateFilter) continue;
+
+    var cneArea = String(row[areaCol] || '').trim();
+    var cneTopic = String(row[topicCol] || '').trim();
+    var cneStatus = normalizeCNEStatus(row[statusCol]);
+
+    // Remarks: ONLY for Cancelled/Canceled CNE (use cancellation reason)
+    var cneRemarks = '';
+    if (cneStatus === 'Canceled' || cneStatus === 'Cancelled') {
+      cneRemarks = String(row[adminRemarksCol] || '').trim();
+    }
+
+    // Created By: Name only (never expose Employee ID)
+    var creatorEmpId = normalizeEmpId(row[proposedByCol] || (createdByCol !== -1 ? row[createdByCol] : ''));
+    var createdByName = creatorEmpId ? (officerMap[creatorEmpId] || '') : '';
+
+    var totalAllotted = null;
+    if (allottedCol !== undefined) {
+      var rawAllotted = row[allottedCol];
+      if (rawAllotted !== '' && rawAllotted !== null && rawAllotted !== undefined && !isNaN(Number(rawAllotted))) {
+        totalAllotted = Number(rawAllotted);
+      }
+    }
+
+    var internalAttCount = null;
+    var attendancePct = null;
+    var outcomePct = null;
+    if (cneStatus === 'Completed') {
+      if (internalAttCol !== undefined) {
+        var rawInt = row[internalAttCol];
+        if (rawInt !== '' && rawInt !== null && rawInt !== undefined && !isNaN(Number(rawInt))) {
+          internalAttCount = Number(rawInt);
+        }
+      }
+      if (attPctCol !== undefined) {
+        var rawPct = row[attPctCol];
+        if (rawPct !== '' && rawPct !== null && rawPct !== undefined && !isNaN(Number(rawPct))) {
+          attendancePct = Number(rawPct);
+        }
+      }
+      if (outcomeCol !== undefined) {
+        var rawOut = row[outcomeCol];
+        if (rawOut !== '' && rawOut !== null && rawOut !== undefined && !isNaN(Number(rawOut))) {
+          outcomePct = Number(rawOut);
+        }
+      }
+    }
+
+    var areaKey = normalizeAreaMatchingKey_(cneArea);
+    if (!cnesByAreaKey[areaKey]) {
+      cnesByAreaKey[areaKey] = [];
+    }
+
+    cnesByAreaKey[areaKey].push({
+      area: cneArea,
+      cneId: cneId,
+      topic: cneTopic,
+      status: cneStatus,
+      remarks: cneRemarks,
+      createdByName: createdByName,
+      totalAllottedStaff: totalAllotted,
+      internalAttendanceCount: internalAttCount,
+      attendancePercentage: attendancePct,
+      postTestOutcomePercentage: outcomePct,
+      date: formatDateValue(rawDate)
+    });
+  }
+
+  // 5. Build report rows:
+  // A. Every currently ACTIVE Area must appear (with CNEs if any, or empty placeholder row)
+  var rows = [];
+  var processedAreaKeys = {};
+
+  for (var a = 0; a < activeAreas.length; a++) {
+    var actName = activeAreas[a];
+    var actKey = normalizeAreaMatchingKey_(actName);
+    processedAreaKeys[actKey] = true;
+
+    var areaCnes = cnesByAreaKey[actKey] || [];
+    if (areaCnes.length === 0) {
+      rows.push({
+        area: actName,
+        cneId: '',
+        topic: '',
+        status: '',
+        remarks: '',
+        createdByName: '',
+        totalAllottedStaff: null,
+        internalAttendanceCount: null,
+        attendancePercentage: null,
+        postTestOutcomePercentage: null,
+        date: ''
+      });
+    } else {
+      for (var ac = 0; ac < areaCnes.length; ac++) {
+        rows.push(areaCnes[ac]);
+      }
+    }
+  }
+
+  // B. INACTIVE Areas that have real historical Departmental CNEs in the period
+  Object.keys(cnesByAreaKey).forEach(function(key) {
+    if (!processedAreaKeys[key]) {
+      var inactCnes = cnesByAreaKey[key];
+      for (var ic = 0; ic < inactCnes.length; ic++) {
+        rows.push(inactCnes[ic]);
+      }
+    }
+  });
+
+  return { success: true, data: rows };
 }
 
 /**
@@ -6712,7 +7173,9 @@ var CNE_SHEET_HEADERS = {
     'CNE ID', 'Topic', 'Ward Name / Area', 'From Date', 'To Date', 'Duration',
     'Resource Person Emp Id', 'Mode of Teaching', 'Description', 'Max Participants', 'Status',
     'Type of CNE', 'External Resource Persons', 'Staff Emp ID', 'Staff Count', 'External Staff Participants',
-    'Proposed By', 'Admin Remarks', 'Remarks', 'CreatedAt', 'CreatedBy'
+    'Proposed By', 'Admin Remarks', 'Remarks', 'CreatedAt', 'CreatedBy',
+    'Coverage Areas Snapshot', 'Total Allotted Staff', 'Internal Attendance Count',
+    'Attendance Percentage', 'Post-Test Outcome Percentage', 'Coverage Finalized At'
   ],
   'Area': ['Area', 'Status', 'CreatedAt'],
   'Teaching Mode': ['Mode Name', 'Status', 'Updated At'],
@@ -6753,6 +7216,12 @@ var CNE_HEADER_ALIASES = {
   'modeofteaching': ['modeofteaching', 'mode'],
   'areadepartment': ['areadepartment', 'departmentarea', 'area', 'department'],
   'departmentarea': ['departmentarea', 'areadepartment', 'area', 'department'],
+  'coverageareassnapshot': ['coverageareassnapshot', 'coverageareas', 'coveragesnapshot'],
+  'totalallottedstaff': ['totalallottedstaff', 'allottedstaff', 'allottedstaffcount'],
+  'internalattendancecount': ['internalattendancecount', 'internalattendance'],
+  'attendancepercentage': ['attendancepercentage', 'attendancepercent'],
+  'posttestoutcomepercentage': ['posttestoutcomepercentage', 'outcomepercentage', 'posttestoutcome'],
+  'coveragefinalizedat': ['coveragefinalizedat', 'coveragefinalized'],
   'questiontext': ['questiontext', 'question'],
   'correctoption': ['correctoption', 'correctanswer'],
   'isfinalized': ['isfinalized', 'selectedfinal'],
@@ -7101,7 +7570,13 @@ function getCNEScheduleRecord(cneId) {
     externalResourcePersons: String((colMap['externalresourcepersons'] !== undefined ? row[colMap['externalresourcepersons']] : row[13]) || '').trim(),
     proposedBy: String((colMap['proposedby'] !== undefined ? row[colMap['proposedby']] : row[14]) || '').trim(),
     adminRemarks: String((colMap['adminremarks'] !== undefined ? row[colMap['adminremarks']] : row[15]) || '').trim(),
-    cneType: normalizeCNEType(rawType)
+    cneType: normalizeCNEType(rawType),
+    coverageAreasSnapshot: String((colMap['coverageareassnapshot'] !== undefined ? row[colMap['coverageareassnapshot']] : '') || '').trim(),
+    totalAllottedStaff: (colMap['totalallottedstaff'] !== undefined && row[colMap['totalallottedstaff']] !== '' && row[colMap['totalallottedstaff']] !== null && !isNaN(Number(row[colMap['totalallottedstaff']]))) ? Number(row[colMap['totalallottedstaff']]) : null,
+    internalAttendanceCount: (colMap['internalattendancecount'] !== undefined && row[colMap['internalattendancecount']] !== '' && row[colMap['internalattendancecount']] !== null && !isNaN(Number(row[colMap['internalattendancecount']]))) ? Number(row[colMap['internalattendancecount']]) : null,
+    attendancePercentage: (colMap['attendancepercentage'] !== undefined && row[colMap['attendancepercentage']] !== '' && row[colMap['attendancepercentage']] !== null && !isNaN(Number(row[colMap['attendancepercentage']]))) ? Number(row[colMap['attendancepercentage']]) : null,
+    postTestOutcomePercentage: (colMap['posttestoutcomepercentage'] !== undefined && row[colMap['posttestoutcomepercentage']] !== '' && row[colMap['posttestoutcomepercentage']] !== null && !isNaN(Number(row[colMap['posttestoutcomepercentage']]))) ? Number(row[colMap['posttestoutcomepercentage']]) : null,
+    coverageFinalizedAt: String((colMap['coveragefinalizedat'] !== undefined ? row[colMap['coveragefinalizedat']] : '') || '').trim()
   };
 }
 
@@ -15165,6 +15640,40 @@ function handleFinalizeCNE(params, session) {
     }
     if (colMap['externalstaffparticipants'] !== undefined) {
       cneSheet.getRange(liveRecord.rowIndex, colMap['externalstaffparticipants'] + 1).setValue(externalParticipants.join(', '));
+    }
+
+    // For eligible normally scheduled Departmental CNEs: calculate and store authoritative final coverage metrics
+    var isDeptFinalize = (liveFinalizeType === 'DEPARTMENTAL');
+    var isUnscheduledFinalize = (cneId.indexOf('-U-') !== -1);
+    if (isDeptFinalize && !isUnscheduledFinalize) {
+      ensureCneScheduleCoverageHeaders_(cneSheet);
+      colMap = getHeaderMap(cneSheet);
+
+      var liveRowVals = cneSheet.getRange(liveRecord.rowIndex, 1, 1, cneSheet.getLastColumn()).getValues()[0];
+      var rawAllotted = colMap['totalallottedstaff'] !== undefined ? liveRowVals[colMap['totalallottedstaff']] : null;
+      var savedAllottedStaff = (rawAllotted !== '' && rawAllotted !== null && rawAllotted !== undefined && !isNaN(Number(rawAllotted))) ? Number(rawAllotted) : null;
+
+      var internalAttendanceCount = internalEmpIds.length;
+      var attPercentage = null;
+      if (savedAllottedStaff !== null && savedAllottedStaff > 0) {
+        attPercentage = Math.round((internalAttendanceCount / savedAllottedStaff) * 1000) / 10;
+      }
+
+      var postTestOutcome = postTestScores.length > 0 ? (Math.round((postTestScores.reduce(function(a, b) { return a + b; }, 0) / postTestScores.length) * 10) / 10) : null;
+      var coverageFinalizedAt = new Date().toISOString();
+
+      if (colMap['internalattendancecount'] !== undefined) {
+        cneSheet.getRange(liveRecord.rowIndex, colMap['internalattendancecount'] + 1).setValue(internalAttendanceCount);
+      }
+      if (colMap['attendancepercentage'] !== undefined) {
+        cneSheet.getRange(liveRecord.rowIndex, colMap['attendancepercentage'] + 1).setValue(attPercentage !== null ? attPercentage : '');
+      }
+      if (colMap['posttestoutcomepercentage'] !== undefined) {
+        cneSheet.getRange(liveRecord.rowIndex, colMap['posttestoutcomepercentage'] + 1).setValue(postTestOutcome !== null ? postTestOutcome : '');
+      }
+      if (colMap['coveragefinalizedat'] !== undefined) {
+        cneSheet.getRange(liveRecord.rowIndex, colMap['coveragefinalizedat'] + 1).setValue(coverageFinalizedAt);
+      }
     }
 
     // 9. Write audit log
