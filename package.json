@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "sync": "node scripts/sync-apps-script.js",
     "sync:gas": "node scripts/sync-apps-script.js",
     "test": "node scripts/verify-all.js",
     "verify:all": "node scripts/verify-all.js",

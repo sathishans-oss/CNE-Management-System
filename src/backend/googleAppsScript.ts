@@ -16541,6 +16541,38 @@ function handleDeleteCNE(params, session) {
       }
     }
 
+    // The ScriptLock serializes application mutations. Capture the expected append
+    // position before writing. Never use CNE ID alone as proof of row ownership.
+    var deletionArchiveExpectedRow = archiveSheet.getLastRow() + 1;
+
+    // Returns REMOVED, ABSENT, or UNCERTAIN. Removes only the exact row written
+    // by THIS deletion attempt, and only while the parent CNE is confirmed active.
+    function cleanupThisDeletionArchiveRow_() {
+      try {
+        var activeRows = findExactRowsInColumn_(
+          cneSheet, cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : cneColMap['classid'], cneId, 2
+        );
+        if (activeRows.length !== 1) return 'UNCERTAIN';
+        var matches = findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2);
+        if (matches.length === 0) return 'ABSENT';
+        // If another row exists, ownership cannot safely be established.
+        if (matches.length !== 1 || matches[0] !== deletionArchiveExpectedRow) return 'UNCERTAIN';
+        var actual = archiveSheet.getRange(deletionArchiveExpectedRow, 1, 1, archiveRow.length).getValues()[0];
+        if (actual.length !== archiveRow.length) return 'UNCERTAIN';
+        for (var ci = 0; ci < archiveRow.length; ci++) {
+          if (!areValuesEquivalent_(actual[ci], archiveRow[ci])) return 'UNCERTAIN';
+        }
+        archiveSheet.deleteRow(deletionArchiveExpectedRow);
+        SpreadsheetApp.flush();
+        // A thrown read/flush means cleanup is not confirmed.
+        if (findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2).length !== 0) return 'UNCERTAIN';
+        return 'REMOVED';
+      } catch (cleanupError) {
+        console.error('Archive attempt-specific cleanup unverified: ' + cleanupError);
+        return 'UNCERTAIN';
+      }
+    }
+
     // 8. Append to archive and reconcile if append or flush throws
     try {
       archiveSheet.appendRow(archiveRow);
@@ -16548,15 +16580,10 @@ function handleDeleteCNE(params, session) {
     } catch (appendErr) {
       var insp1 = inspectStorageStateSafely_(cneSheet, cneColMap, archiveSheet, archIdCol, qrSheet, qrCneCol, qrStatusCol, cneId);
       if (insp1.schedState === 'PRESENT') {
-        if (insp1.archState === 'PRESENT') {
-          for (var ri = insp1.archRows.length - 1; ri >= 0; ri--) {
-            try {
-              archiveSheet.deleteRow(insp1.archRows[ri]);
-              SpreadsheetApp.flush();
-            } catch (delErr) {
-              console.error('Failed to remove incomplete archive row: ' + delErr);
-            }
-          }
+        var appendCleanup = cleanupThisDeletionArchiveRow_();
+        if (appendCleanup === 'UNCERTAIN') {
+          return { success: false, errorCode: 'DELETE_COMPLETION_UNCERTAIN',
+            message: 'Archive append failed; this attempt\\'s archive row could not be safely reconciled. Manual review required.', cneId: cneId };
         }
         safeLogAuditAction_('DELETE_CNE_FAILED', session.employeeId, 'Failed to append to archive: ' + appendErr.message, 'FAILED');
         return {
@@ -16597,6 +16624,11 @@ function handleDeleteCNE(params, session) {
       }
     }
 
+    if (verifiedArchRow >= 2 && verifiedArchRow !== deletionArchiveExpectedRow) {
+      return { success: false, errorCode: 'DELETE_COMPLETION_UNCERTAIN',
+        message: 'Archive record is not at the current deletion attempt\\'s append position. Manual review required.', cneId: cneId };
+    }
+
     if (verifiedArchRow < 2) {
       return {
         success: false,
@@ -16612,7 +16644,11 @@ function handleDeleteCNE(params, session) {
     } catch (readArchErr) {
       var insp2b = inspectStorageStateSafely_(cneSheet, cneColMap, archiveSheet, archIdCol, qrSheet, qrCneCol, qrStatusCol, cneId);
       if (insp2b.schedState === 'PRESENT') {
-        try { archiveSheet.deleteRow(verifiedArchRow); SpreadsheetApp.flush(); } catch (e) {}
+        var readCleanup = cleanupThisDeletionArchiveRow_();
+        if (readCleanup === 'UNCERTAIN') {
+          return { success: false, errorCode: 'DELETE_COMPLETION_UNCERTAIN',
+            message: 'Archive readback failed and attempt-specific cleanup could not be verified.', cneId: cneId };
+        }
         safeLogAuditAction_('DELETE_CNE_FAILED', session.employeeId, 'Could not read back archived row for verification: ' + readArchErr.message, 'FAILED');
         return {
           success: false,
@@ -16682,11 +16718,10 @@ function handleDeleteCNE(params, session) {
     if (verificationFailed) {
       var insp2c = inspectStorageStateSafely_(cneSheet, cneColMap, archiveSheet, archIdCol, qrSheet, qrCneCol, qrStatusCol, cneId);
       if (insp2c.schedState === 'PRESENT') {
-        try {
-          archiveSheet.deleteRow(verifiedArchRow);
-          SpreadsheetApp.flush();
-        } catch (cleanErr) {
-          console.error('Failed to clean up unverified archive row: ' + cleanErr);
+        var mismatchCleanup = cleanupThisDeletionArchiveRow_();
+        if (mismatchCleanup === 'UNCERTAIN') {
+          return { success: false, errorCode: 'DELETE_COMPLETION_UNCERTAIN',
+            message: 'Archive verification failed and attempt-specific cleanup could not be verified.', cneId: cneId };
         }
         safeLogAuditAction_('DELETE_CNE_FAILED', session.employeeId, 'Archive verification failed (' + failDetail + ')', 'FAILED');
         return {
@@ -16706,7 +16741,7 @@ function handleDeleteCNE(params, session) {
 
     // 9. Deactivate QR tokens, verify deactivation, and remove schedule row with state-aware compensation
     try {
-      deactivateQRTokensForCNE(cneId);
+      deactivateQRTokensForCNE(cneId, qrColMap);
 
       // Verify QR deactivation using the same validated column indexes
       if (qrSheet && qrSheet.getLastRow() > 1) {
@@ -16731,15 +16766,12 @@ function handleDeleteCNE(params, session) {
 
       if (recoveryState.schedState === 'PRESENT') {
         // Original CNE row still exists in CNE Schedule: safely compensate
-        if (recoveryState.archState === 'PRESENT' && recoveryState.archRows.length > 0) {
-          try {
-            for (var ar = recoveryState.archRows.length - 1; ar >= 0; ar--) {
-              archiveSheet.deleteRow(recoveryState.archRows[ar]);
-            }
-            SpreadsheetApp.flush();
-          } catch (archCleanErr) {
-            console.error('Failed to cleanup archive row during rollback: ' + archCleanErr);
-          }
+        var mutationCleanup = cleanupThisDeletionArchiveRow_();
+        if (mutationCleanup !== 'REMOVED') {
+          safeLogAuditAction_('DELETE_CNE_UNCERTAIN', session.employeeId,
+            'Archive cleanup unverified for CNE ' + cneId + ' after mutation error: ' + deleteError.message, 'WARNING');
+          return { success: false, errorCode: 'DELETE_COMPLETION_UNCERTAIN',
+            message: 'Schedule remains active, but deletion rollback could not confirm removal of this attempt\\'s archive row. QR tokens were not reactivated automatically. Manual review required.', cneId: cneId };
         }
 
         // Restore QR token statuses ONLY if active schedule row still exists

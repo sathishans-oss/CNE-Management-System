@@ -1341,7 +1341,7 @@ runTest('CNE Deleted Archive preserves all dynamic schedule columns plus deletio
 
 runTest('Delete CNE deactivates all associated QR tokens and prevents CNE ID reuse', () => {
   const fnBody = codeGs.substring(codeGs.indexOf('function handleDeleteCNE'), codeGs.length);
-  assert.ok(fnBody.includes('deactivateQRTokensForCNE(cneId);'), 'handleDeleteCNE must deactivate associated QR tokens');
+  assert.ok(fnBody.includes('deactivateQRTokensForCNE(cneId'), 'handleDeleteCNE must deactivate associated QR tokens');
   assert.ok(codeGs.includes('function isCneIdInUse_'), 'Code.gs must implement isCneIdInUse_ helper');
   
   const inUseFn = codeGs.substring(codeGs.indexOf('function isCneIdInUse_'), codeGs.indexOf('function handleDeleteCNE'));
