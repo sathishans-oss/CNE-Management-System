@@ -1,4 +1,4 @@
-import React, { lazy, useState, useEffect, useCallback, useRef, useMemo, useDeferredValue } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo, useDeferredValue } from 'react';
 import {
   Sparkles,
   Calendar,
@@ -28,7 +28,6 @@ import { useToast } from './Toast';
 import { ScheduleRow } from './cne/ScheduleRow';
 import { ScheduleMobileCard } from './cne/ScheduleMobileCard';
 import { CneDetailsModal } from './cne/CneDetailsModal';
-import { DeleteCneModal } from './cne/DeleteCneModal';
 import {
   formatResourcePersonsDisplay,
   isCneAuthorized,
@@ -54,6 +53,7 @@ const CNEFinalizeModal = lazy(() => import('./cne/CNEFinalizeModal').then((m) =>
 const CNEPostTestModal = lazy(() => import('./cne/CNEPostTestModal').then((m) => ({ default: m.CNEPostTestModal })));
 const DepartmentalScheduleModal = lazy(() => import('./cne/DepartmentalScheduleModal').then((m) => ({ default: m.DepartmentalScheduleModal })));
 const AddUnscheduledCneModal = lazy(() => import('./cne/AddUnscheduledCneModal').then((m) => ({ default: m.AddUnscheduledCneModal })));
+const DeleteCneModal = lazy(() => import('./cne/DeleteCneModal').then((m) => ({ default: m.DeleteCneModal })));
 
 interface CNEScheduleProps {
   user: SessionUser | null;
@@ -2036,6 +2036,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           </div>
         </div>
       )}
+      <Suspense fallback={null}>
       {activeReferenceCne && (
         <CNEReferenceModal
           cne={activeReferenceCne}
@@ -2120,7 +2121,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           onSubmitted={() => handleChildModalUpdated(activePostTest.cneId)}
         />
       )}
-
 
       {cancelTargetCne && (
         <div className="fixed inset-0 z-[70] bg-slate-900/65 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
@@ -2223,6 +2223,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           user={user}
         />
       )}
+      </Suspense>
 
       {/* Schedule CNE Choice Modal (Admin Only) */}
       {isAdmin && isScheduleChoiceOpen && (

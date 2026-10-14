@@ -24,9 +24,22 @@ export default defineConfig(() => {
       },
     ],
     resolve: {
+      dedupe: ['react', 'react-dom'],
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
+    },
+    optimizeDeps: {
+      include: [
+        'react',
+        'react/jsx-runtime',
+        'react-dom',
+        'react-dom/client',
+        'lucide-react',
+        'jspdf',
+        'jspdf-autotable',
+        'qrcode',
+      ],
     },
     build: {
       manifest: true,
