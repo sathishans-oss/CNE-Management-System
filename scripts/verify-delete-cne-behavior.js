@@ -956,6 +956,322 @@ runBehavioralTest('20. Merely registered external participant does not block del
   assert.strictEqual(delRes2.errorCode, 'ATTENDANCE_EXISTS', 'Actual attendance must deny deletion');
 });
 
+// Test 21: QR columns in a rearranged valid order
+runBehavioralTest('21. QR columns in rearranged valid order are resolved dynamically and deactivated correctly', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+  
+  // Rearrange CNE_QR_Tokens columns: Status at col 1, CNE ID at col 2, QR Token at col 3, Created At at col 4, Created By at col 5
+  env.cneSpreadsheet.sheets['CNE_QR_Tokens'] = new MockSheet('CNE_QR_Tokens', env.cneSpreadsheet, [
+    ['Status', 'CNE ID', 'QR Token', 'Created At', 'Created By'],
+    ['ACTIVE', 'CLS-2026-001', 'QR-TOK-REORDERED-001', '2026-10-10T10:00:00Z', 'AIIMS001']
+  ]);
+  const qrSheet = env.cneSpreadsheet.sheets['CNE_QR_Tokens'];
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Valid deletion with rearranged QR headers'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, true, 'Deletion must succeed with rearranged QR headers');
+  // Column 1 (index 0) is Status, which must now be INACTIVE
+  assert.strictEqual(qrSheet.grid[1][0], 'INACTIVE', 'Status in rearranged column 1 must be deactivated');
+  // Original schedule row removed
+  assert.strictEqual(cneSheet.grid.length, 2, 'Active schedule row must be removed');
+  // Archive row created
+  const archSheet = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
+  assert.ok(archSheet && archSheet.grid.length >= 2, 'Archive row must be created');
+});
+
+// Test 22: Missing QR Status header fails closed
+runBehavioralTest('22. Missing QR Status header fails closed with QR_STATE_CHECK_FAILED', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+
+  env.cneSpreadsheet.sheets['CNE_QR_Tokens'] = new MockSheet('CNE_QR_Tokens', env.cneSpreadsheet, [
+    ['QR Token', 'CNE ID', 'Created At', 'Created By'],
+    ['QR-TOK-001', 'CLS-2026-001', '2026-10-10T10:00:00Z', 'AIIMS001']
+  ]);
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Missing status header test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'QR_STATE_CHECK_FAILED', 'Missing Status header must fail closed');
+  assert.strictEqual(cneSheet.grid.length, 3, 'Active schedule row must be preserved');
+});
+
+// Test 23: Missing QR CNE ID header fails closed
+runBehavioralTest('23. Missing QR CNE ID header fails closed with QR_STATE_CHECK_FAILED', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+
+  env.cneSpreadsheet.sheets['CNE_QR_Tokens'] = new MockSheet('CNE_QR_Tokens', env.cneSpreadsheet, [
+    ['QR Token', 'Created At', 'Created By', 'Status'],
+    ['QR-TOK-001', '2026-10-10T10:00:00Z', 'AIIMS001', 'ACTIVE']
+  ]);
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Missing CNE ID header test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'QR_STATE_CHECK_FAILED', 'Missing CNE ID header must fail closed');
+  assert.strictEqual(cneSheet.grid.length, 3, 'Active schedule row must be preserved');
+});
+
+// Test 24: Duplicate normalized QR headers fail closed
+runBehavioralTest('24. Duplicate or ambiguous normalized QR headers fail closed with QR_STATE_CHECK_FAILED', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+
+  env.cneSpreadsheet.sheets['CNE_QR_Tokens'] = new MockSheet('CNE_QR_Tokens', env.cneSpreadsheet, [
+    ['QR Token', 'CNE ID', 'Status', 'Status', 'Created At'],
+    ['QR-TOK-001', 'CLS-2026-001', 'ACTIVE', 'ACTIVE', '2026-10-10T10:00:00Z']
+  ]);
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Duplicate status header test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'QR_STATE_CHECK_FAILED', 'Duplicate status headers must fail closed');
+  assert.strictEqual(cneSheet.grid.length, 3, 'Active schedule row must be preserved');
+});
+
+// Test 25: QR deactivation verification failure triggers safe compensation
+runBehavioralTest('25. QR deactivation verification failure rolls back archive and preserves schedule row', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+  const qrSheet = env.cneSpreadsheet.sheets['CNE_QR_Tokens'];
+
+  // Hook setValue on qrSheet to simulate a write that does not persist or is ignored
+  qrSheet.hooks.onGetRange = (r, c, nr, nc) => {
+    // When reading row 2 col 5 (postStatus check), return ACTIVE to simulate failure to deactivate
+    if (r === 2 && c === 5) {
+      return {
+        getValue: () => 'ACTIVE',
+        setValue: () => {}
+      };
+    }
+    return null;
+  };
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'QR deactivation verification failure test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'DELETE_MUTATION_FAILED', 'Must return DELETE_MUTATION_FAILED');
+  assert.strictEqual(cneSheet.grid.length, 3, 'Active schedule row must be preserved');
+  const archSheet = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
+  if (archSheet) {
+    const archMatches = archSheet.grid.slice(1).filter(r => r[0] === 'CLS-2026-001');
+    assert.strictEqual(archMatches.length, 0, 'Archive row must be rolled back');
+  }
+});
+
+// Test 26: Schedule readback throwing during recovery returns DELETE_COMPLETION_UNCERTAIN
+runBehavioralTest('26. Schedule readback throwing during recovery returns DELETE_COMPLETION_UNCERTAIN', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+
+  let deleteAttempted = false;
+  cneSheet.hooks.onDeleteRow = () => {
+    deleteAttempted = true;
+    throw new Error('Database disconnected during row deletion');
+  };
+
+  // When recovery attempts to inspect cneSheet, throw
+  cneSheet.hooks.onGetRange = (r, c, nr, nc) => {
+    if (deleteAttempted) {
+      throw new Error('Temporary connection loss during schedule readback recovery');
+    }
+    return null;
+  };
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Recovery read error test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'DELETE_COMPLETION_UNCERTAIN', 'Inconclusive state must return DELETE_COMPLETION_UNCERTAIN');
+  const archSheet = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
+  assert.ok(archSheet, 'Archive sheet must exist');
+  // Does NOT delete the archive row when schedule state is UNKNOWN
+  const archMatches = archSheet.grid.slice(1).filter(r => r[0] === 'CLS-2026-001');
+  assert.strictEqual(archMatches.length, 1, 'Must preserve archive record when schedule state is uncertain');
+});
+
+// Test 27: Both sources temporarily unreadable during recovery returns DELETE_COMPLETION_UNCERTAIN
+runBehavioralTest('27. Both schedule and archive unreadable during recovery returns DELETE_COMPLETION_UNCERTAIN', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+
+  let deleteTriggered = false;
+  cneSheet.hooks.onDeleteRow = () => {
+    deleteTriggered = true;
+    throw new Error('Mutation failed mid-operation');
+  };
+
+  cneSheet.hooks.onGetRange = () => {
+    if (deleteTriggered) {
+      throw new Error('Google Sheets API unavailable for CNE Schedule');
+    }
+    return null;
+  };
+
+  env.cneSpreadsheet.hooks.onGetSheetByName = (name) => {
+    if (deleteTriggered) {
+      throw new Error('Google Sheets API unavailable');
+    }
+    return undefined;
+  };
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Complete outage recovery test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'DELETE_COMPLETION_UNCERTAIN');
+});
+
+// Test 28: Secondary audit logging failure during recovery does not interrupt recovery
+runBehavioralTest('28. Secondary audit logging failure during recovery does not interrupt recovery', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+  const auditSheet = env.cneSpreadsheet.sheets['Audit_Log'];
+
+  // Throw on schedule row deletion
+  cneSheet.hooks.onDeleteRow = () => {
+    throw new Error('Simulated row deletion failure');
+  };
+
+  // And also throw on audit log append
+  auditSheet.hooks.onAppendRow = () => {
+    throw new Error('Audit sheet unreachable');
+  };
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Audit log failure during recovery'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'DELETE_MUTATION_FAILED');
+  assert.strictEqual(cneSheet.grid.length, 3, 'Schedule row preserved');
+  const qrSheet = env.cneSpreadsheet.sheets['CNE_QR_Tokens'];
+  assert.strictEqual(qrSheet.grid[1][4], 'ACTIVE', 'QR token restored');
+});
+
+// Test 29: Post-Test submission evidence denies deletion
+runBehavioralTest('29. Post-Test submission evidence denies deletion with ATTENDANCE_EXISTS', () => {
+  const env = createFreshTestEnvironment();
+  const respSheet = env.cneSpreadsheet.sheets['CNE Post Test Responses'];
+
+  // Add post-test response with score and PASSED status
+  respSheet.appendRow([
+    'RESP-001', 'CLS-2026-001', 'AIIMS002', 'Staff Nurse B', 'Nursing Officer', 'ICU',
+    '85', '10', '85%', 'POST_TEST', '2026-10-12T11:00:00Z', '{}', 'PASSED', 'Passed on first attempt'
+  ]);
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Delete with submitted post-test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'ATTENDANCE_EXISTS');
+});
+
+// Test 30: Unknown or malformed participant status/source values fail closed with ATTENDANCE_CHECK_FAILED
+runBehavioralTest('30. Unknown or malformed participant status/source values fail closed with ATTENDANCE_CHECK_FAILED', () => {
+  const env = createFreshTestEnvironment();
+  const respSheet = env.cneSpreadsheet.sheets['CNE Post Test Responses'];
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+
+  // Add a row with unrecognized source and status
+  respSheet.appendRow([
+    'RESP-CORRUPT-001', 'CLS-2026-001', 'EXT-999', 'Unknown Person', 'Unknown', 'Unknown',
+    '', '', '', 'UNRECOGNIZED_LEGACY_SRC', '2026-10-12T11:00:00Z', '', 'AMBIGUOUS_STATE', ''
+  ]);
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Ambiguous status test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'ATTENDANCE_CHECK_FAILED', 'Ambiguous/malformed participant status must fail closed');
+  assert.strictEqual(cneSheet.grid.length, 3, 'Active schedule row must be preserved');
+});
+
+// Test 31: Optional legacy repository (CNE_Participants) missing when mandatory repository is present allows deletion
+runBehavioralTest('31. Optional legacy repository (CNE_Participants) missing when mandatory repository is present allows deletion', () => {
+  const env = createFreshTestEnvironment();
+  // Ensure CNE_Participants does NOT exist
+  delete env.cneSpreadsheet.sheets['CNE_Participants'];
+  assert.strictEqual(env.cneSpreadsheet.getSheetByName('CNE_Participants'), null);
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Valid deletion with absent optional legacy sheet'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, true, 'Absence of optional legacy sheet must not prevent deletion');
+});
+
+// Test 32: Flush succeeds but readback of archived row throws
+runBehavioralTest('32. Flush succeeds but archive readback throws returns ARCHIVE_VERIFICATION_FAILED and preserves active CNE', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+  
+  // Hook archive getRange to throw on readback
+  env.cneSpreadsheet.hooks.onGetSheetByName = (name) => {
+    if (name === 'CNE Deleted Archive') {
+      const arch = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
+      if (arch) {
+        arch.hooks.onGetRange = (r, c, nr, nc) => {
+          // When reading back data row (row >= 2), throw
+          if (r >= 2) {
+            throw new Error('Transient read timeout reading archive row');
+          }
+          return null;
+        };
+      }
+    }
+    return undefined;
+  };
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Readback failure test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'ARCHIVE_VERIFICATION_FAILED');
+  assert.strictEqual(cneSheet.grid.length, 3, 'Active CNE schedule row must be preserved');
+});
+
 console.log('\n========================================================');
 console.log(`Passed: ${passedTests}/${totalTests}`);
 console.log('ALL BEHAVIORAL TESTS PASSED SUCCESSFULLY!');
