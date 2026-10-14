@@ -38,6 +38,11 @@ const suites = [
     name: 'System Integration',
     script: 'scripts/verify-system-integration.js',
     desc: 'Frontend API ↔ GAS consistency, Code.gs sync, canonical routing, schema lifecycle, Gemini & safety'
+  },
+  {
+    name: 'Delete CNE Behavioral Verification',
+    script: 'scripts/verify-delete-cne-behavior.js',
+    desc: 'Admin-only Delete CNE execution, complete archive row verification, recovery reconciliation & concurrency'
   }
 ];
 

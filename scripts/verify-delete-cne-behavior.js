@@ -181,6 +181,10 @@ class MockSheet {
   }
 
   getRangeList(ranges) {
+    if (this.hooks.onGetRangeList) {
+      const hooked = this.hooks.onGetRangeList(ranges);
+      if (hooked) return hooked;
+    }
     return new MockRangeList(this, ranges);
   }
 
@@ -206,7 +210,15 @@ class MockSheet {
     return Math.max(26, this.getLastColumn());
   }
 
+  getMaxRows() {
+    return Math.max(100, this.getLastRow());
+  }
+
   insertColumnsAfter(afterIndex, numColumns) {
+    return this;
+  }
+
+  insertRowsAfter(afterIndex, numRows) {
     return this;
   }
 }
@@ -518,7 +530,7 @@ runBehavioralTest('5. QR deactivation failure triggers state-aware compensation 
   const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
 
   // Hook qrSheet to throw during deactivation
-  qrSheet.hooks.onGetRange = (r, c) => {
+  qrSheet.hooks.onGetRangeList = (ranges) => {
     throw new Error('Simulated QR token lock failure');
   };
 
@@ -811,7 +823,140 @@ runBehavioralTest('16. Non-admin deletion request is rejected and preserves all 
   assert.strictEqual(env.cneSpreadsheet.sheets['CNE Schedule'].grid.length, initialSchedCount);
 });
 
+// Test 17: Pre-mutation QR state inspection failure
+runBehavioralTest('17. Pre-mutation QR state inspection failure denies deletion safely with QR_STATE_CHECK_FAILED', () => {
+  const env = createFreshTestEnvironment();
+  const qrSheet = env.cneSpreadsheet.sheets['CNE_QR_Tokens'];
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+  const initialSchedCount = cneSheet.grid.length;
+
+  // Corrupt / fail getRange on qrSheet during pre-mutation snapshot inspection
+  qrSheet.hooks.onGetRange = () => {
+    throw new Error('Database connection reset during QR snapshot');
+  };
+
+  const res = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Snapshot failure test'
+  }, env.adminSession);
+
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.errorCode, 'QR_STATE_CHECK_FAILED');
+  assert.strictEqual(cneSheet.grid.length, initialSchedCount, 'Active schedule row must not be modified');
+  const archSheet = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
+  if (archSheet) {
+    const archRows = archSheet.grid.slice(1).filter(r => r[0] === 'CLS-2026-001');
+    assert.strictEqual(archRows.length, 0, 'No archive data row should be created');
+  }
+});
+
+// Test 18: Competing concurrent operations under ScriptLock
+runBehavioralTest('18. Competing concurrent operations: simulated lock acquisition order preserves state consistency', () => {
+  // Case A: Worker Attendance commits before Worker Deletion acquires lock
+  const envA = createFreshTestEnvironment();
+  // Simulate Attendance acquiring lock and recording attendance first
+  const attResA = envA.sandbox.handleAddManualParticipants({
+    cneId: 'CLS-2026-001',
+    employeeId: 'STAFF001'
+  }, envA.adminSession);
+  assert.strictEqual(attResA.success, true, 'Attendance commit succeeds');
+
+  // Deletion then acquires lock and checks authoritative state
+  const delResA = envA.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Competing deletion after attendance'
+  }, envA.adminSession);
+  assert.strictEqual(delResA.success, false);
+  assert.strictEqual(delResA.errorCode, 'ATTENDANCE_EXISTS', 'Deletion must be denied because attendance committed');
+
+  // Case B: Worker Deletion commits before Worker Attendance acquires lock
+  const envB = createFreshTestEnvironment();
+  const delResB = envB.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Competing deletion before attendance'
+  }, envB.adminSession);
+  assert.strictEqual(delResB.success, true, 'Deletion commit succeeds');
+
+  // Attendance then acquires lock and re-checks live CNE record
+  const attResB = envB.sandbox.handleAddManualParticipants({
+    cneId: 'CLS-2026-001',
+    employeeId: 'STAFF001'
+  }, envB.adminSession);
+  assert.strictEqual(attResB.success, false);
+  assert.strictEqual(attResB.errorCode, 'CNE_NOT_FOUND', 'Attendance must fail closed because parent CNE was deleted');
+});
+
+// Test 19: Deleted CNE cannot accept Post-Test submission or QR verification
+runBehavioralTest('19. Deleted CNE cannot accept Post-Test submission or QR verification', () => {
+  const env = createFreshTestEnvironment();
+
+  // Delete CLS-2026-001
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Delete before post-test'
+  }, env.adminSession);
+  assert.strictEqual(delRes.success, true);
+
+  // Attempt Post-Test OTP request on deleted CNE (via deactivated token)
+  const otpRes = env.sandbox.handleRequestPostTestOtp({
+    qrToken: 'QR-TOK-001',
+    participantType: 'INTERNAL',
+    employeeId: 'STAFF001'
+  }, null);
+  assert.strictEqual(otpRes.success, false);
+  assert.strictEqual(otpRes.errorCode, 'INVALID_OR_MISSING_QR_TOKEN');
+
+  // Attempt direct post-test submission specifying deleted CNE ID
+  const submitRes = env.sandbox.handleSubmitPostTest({
+    cneId: 'CLS-2026-001',
+    employeeId: 'STAFF001',
+    answers: { 'Q1': 'A' }
+  }, env.staffSession);
+  assert.strictEqual(submitRes.success, false);
+  assert.strictEqual(submitRes.errorCode, 'CNE_NOT_FOUND', 'Submission targeting deleted CNE must return CNE_NOT_FOUND');
+});
+
+// Test 20: Merely registered external participant vs actual recorded attendance
+runBehavioralTest('20. Merely registered external participant does not block deletion, but recorded attendance does', () => {
+  const env = createFreshTestEnvironment();
+  const respSheet = env.cneSpreadsheet.sheets['CNE Post Test Responses'];
+
+  // Add an external participant who only completed email verification / registration (not attended)
+  respSheet.appendRow([
+    'REG-001', 'CLS-2026-001', 'EXT-001', 'External Guest', 'Nurse', 'Apollo Hospital',
+    '', '', '', 'EXTERNAL_REGISTRATION', '2026-10-12T10:00:00Z', '', 'REGISTERED', 'External Email: guest@apollo.com'
+  ]);
+
+  // Deletion must succeed because no actual recorded attendance exists
+  const delRes1 = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Eligible with only registered participant'
+  }, env.adminSession);
+  assert.strictEqual(delRes1.success, true, 'Registered-only external participant must not prevent deletion');
+
+  // Now create new environment where external participant actually attended
+  const env2 = createFreshTestEnvironment();
+  const respSheet2 = env2.cneSpreadsheet.sheets['CNE Post Test Responses'];
+  respSheet2.appendRow([
+    'MAN-001', 'CLS-2026-001', 'EXT-001', 'External Guest', 'Nurse', 'Apollo Hospital',
+    '', '', '', 'MANUAL', '2026-10-12T10:00:00Z', '', 'ATTENDED', 'External Email: guest@apollo.com'
+  ]);
+
+  const delRes2 = env2.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Attempt delete with recorded attendance'
+  }, env2.adminSession);
+  assert.strictEqual(delRes2.success, false);
+  assert.strictEqual(delRes2.errorCode, 'ATTENDANCE_EXISTS', 'Actual attendance must deny deletion');
+});
+
 console.log('\n========================================================');
 console.log(`Passed: ${passedTests}/${totalTests}`);
-console.log('ALL 16 BEHAVIORAL TESTS PASSED SUCCESSFULLY!');
+console.log('ALL BEHAVIORAL TESTS PASSED SUCCESSFULLY!');
 console.log('========================================================\n');

@@ -4695,7 +4695,7 @@ function handleUpdateCNE(params, session) {
   }
 
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
 
   var authErr = checkCNEAuthorized(session, record.area, record.cneType);
   if (authErr) return authErr;
@@ -12072,7 +12072,7 @@ function handleGetAiQuota(params, session) {
   session = freshReadSession.session;
 
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
 
@@ -13893,7 +13893,7 @@ function handleSaveCNEQuestions(params, session) {
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   if (isCNEClosedForParticipantAccess(record)) {
     return { success: false, errorCode: 'CNE_CLOSED', message: 'QR Code and Post-Test are disabled after CNE finalization or cancellation.' };
   }
@@ -14117,7 +14117,7 @@ function handleGetCNEQuestions(params, session) {
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
@@ -14368,7 +14368,7 @@ function handleRequestPostTestOtp(params, session) {
 
   var cneId = resolvedQr.cneId;
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   if (isCNEClosedForParticipantAccess(record)) {
     return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Post-Test verification is closed.' };
   }
@@ -14561,7 +14561,7 @@ function handleVerifyPostTestOtp(params, session) {
 
   var cneId = resolvedQr.cneId;
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   if (isCNEClosedForParticipantAccess(record)) {
     return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Post-Test verification is closed.' };
   }
@@ -14767,7 +14767,7 @@ function handleGetQRToken(params, session) {
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
 
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
 
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
@@ -14784,7 +14784,7 @@ function handleGetQRToken(params, session) {
     if (!freshReadSession.success) return freshReadSession;
     session = freshReadSession.session;
     record = getCNEScheduleRecord(cneId);
-    if (!record) return { success: false, message: 'CNE record not found.' };
+    if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
     var readAuthErr = checkQuestionManagementAuthorized(session, record);
     if (readAuthErr) return readAuthErr;
     if (isCNEClosedForParticipantAccess(record)) {
@@ -14884,7 +14884,7 @@ function handleGetPostTestQuestions(params, session) {
   } else if (params.cneId) {
     var candidateId = sanitizeCellInput(params.cneId);
     var candidateRecord = getCNEScheduleRecord(candidateId);
-    if (!candidateRecord) return { success: false, message: 'CNE record not found.' };
+    if (!candidateRecord) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
     var actionAuthErr = checkCNEActionAuthorized(session, candidateRecord);
     if (actionAuthErr) return actionAuthErr;
     cneId = candidateId;
@@ -14913,7 +14913,7 @@ function handleGetPostTestQuestions(params, session) {
   }
 
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   if (!isPublicQrAccess) {
     var liveActionAuthErr = checkCNEActionAuthorized(session, record);
     if (liveActionAuthErr) return liveActionAuthErr;
@@ -15010,7 +15010,7 @@ function handleSubmitPostTest(params, session) {
   } else if (params.cneId) {
     var candidateId = sanitizeCellInput(params.cneId);
     var candidateRecord = getCNEScheduleRecord(candidateId);
-    if (!candidateRecord) return { success: false, message: 'CNE record not found.' };
+    if (!candidateRecord) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
     var actionAuthErr = checkCNEActionAuthorized(session, candidateRecord);
     if (actionAuthErr) return actionAuthErr;
     cneId = candidateId;
@@ -15025,7 +15025,7 @@ function handleSubmitPostTest(params, session) {
   if (!answers || typeof answers !== 'object') return { success: false, message: 'Answers object is required.' };
 
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   if (isCNEClosedForParticipantAccess(record)) {
     return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Post-test submission is closed.' };
   }
@@ -15088,7 +15088,10 @@ function handleSubmitPostTest(params, session) {
     }
 
     var liveRecord = getCNEScheduleRecord(cneId);
-    if (!liveRecord || isCNEClosedForParticipantAccess(liveRecord)) {
+    if (!liveRecord) {
+      return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
+    }
+    if (isCNEClosedForParticipantAccess(liveRecord)) {
       return { success: false, errorCode: 'CNE_CLOSED', message: 'This CNE has been finalized or canceled. Post-test submission is closed.' };
     }
     if (!isPublicQrSubmission) {
@@ -15191,7 +15194,7 @@ function handleAddManualParticipants(params, session) {
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   
   var authErr = checkCNEActionAuthorized(session, record);
   if (authErr) return authErr;
@@ -15539,7 +15542,7 @@ function handleFinalizeCNE(params, session) {
   
   // 1. Resolve CNE
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   
   // 2. Validate CNE type
   var cneType = normalizeCNEType(record.cneType);
@@ -15585,7 +15588,7 @@ function handleFinalizeCNE(params, session) {
     // 5. Re-read the authoritative row while holding the lock
     var liveRecord = getCNEScheduleRecord(cneId);
     if (!liveRecord) {
-      return { success: false, message: 'CNE record not found upon re-reading CNE Schedule.' };
+      return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found upon re-reading CNE Schedule.' };
     }
 
     // Re-authorize against the live record while holding the lock. The CNE Area or
@@ -15751,7 +15754,7 @@ function handleCancelCNE(params, session) {
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
   
   var record = getCNEScheduleRecord(cneId);
-  if (!record) return { success: false, message: 'CNE record not found.' };
+  if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
   
   var preCancelType = normalizeCNEType(record.cneType);
   if (!preCancelType) {
@@ -15786,7 +15789,7 @@ function handleCancelCNE(params, session) {
     if (!freshCancelSession.success) return freshCancelSession;
     session = freshCancelSession.session;
     var liveRecord = getCNEScheduleRecord(cneId);
-    if (!liveRecord) return { success: false, message: 'CNE record not found.' };
+    if (!liveRecord) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
 
     // Re-authorize against the live record while holding the lock. This closes the
     // same stale-authorization window as Edit/Finalize when Area or CNE Type changes
@@ -15929,31 +15932,101 @@ function isCneIdInUse_(cneId) {
   if (!cneId) return false;
   var target = String(cneId).trim().toUpperCase();
   var ss = getSpreadsheet('CNE');
-  if (!ss) return false;
+  if (!ss) {
+    throw new Error('CNE spreadsheet is unavailable to verify CNE ID uniqueness.');
+  }
 
   // 1. Check active CNE Schedule
   var sched = ss.getSheetByName('CNE Schedule');
-  if (sched && sched.getLastRow() > 1) {
-    var sColMap = getHeaderMap(sched);
+  if (sched && sched.getLastRow() >= 1) {
+    var sColMap;
+    try {
+      sColMap = getHeaderMap(sched);
+    } catch (schedMapErr) {
+      throw new Error('CNE Schedule sheet headers could not be read: ' + schedMapErr.message);
+    }
     var sCol = sColMap['cneid'] !== undefined ? sColMap['cneid'] : (sColMap['classid'] !== undefined ? sColMap['classid'] : -1);
     if (sCol < 0) {
       throw new Error('CNE Schedule sheet is missing mandatory CNE ID header.');
     }
-    if (findExactRowInColumn_(sched, sCol, target, 2) >= 2) return true;
+    if (sched.getLastRow() > 1) {
+      try {
+        if (findExactRowInColumn_(sched, sCol, target, 2) >= 2) return true;
+      } catch (schedReadErr) {
+        throw new Error('Failed to read CNE Schedule data: ' + schedReadErr.message);
+      }
+    }
   }
 
   // 2. Check CNE Deleted Archive
   var arch = ss.getSheetByName('CNE Deleted Archive');
-  if (arch && arch.getLastRow() > 1) {
-    var aColMap = getHeaderMap(arch);
+  if (arch && arch.getLastRow() >= 1) {
+    var aColMap;
+    try {
+      aColMap = getHeaderMap(arch);
+    } catch (archMapErr) {
+      throw new Error('CNE Deleted Archive headers could not be read: ' + archMapErr.message);
+    }
     var aCol = aColMap['cneid'] !== undefined ? aColMap['cneid'] : (aColMap['classid'] !== undefined ? aColMap['classid'] : -1);
     if (aCol < 0) {
       throw new Error('CNE Deleted Archive sheet is missing mandatory CNE ID header.');
     }
-    if (findExactRowInColumn_(arch, aCol, target, 2) >= 2) return true;
+    if (arch.getLastRow() > 1) {
+      try {
+        if (findExactRowInColumn_(arch, aCol, target, 2) >= 2) return true;
+      } catch (archReadErr) {
+        throw new Error('Failed to read CNE Deleted Archive data: ' + archReadErr.message);
+      }
+    }
   }
 
   return false;
+}
+
+/**
+ * Safe audit logger that never throws and cannot interrupt state reconciliation.
+ */
+function safeLogAuditAction_(action, employeeId, details, status) {
+  try {
+    logAuditAction(action, employeeId, details, status);
+  } catch (auditErr) {
+    console.error('Audit logging failed for ' + action + ': ' + (auditErr && auditErr.message ? auditErr.message : auditErr));
+  }
+}
+
+/**
+ * Value equivalency comparator for archive row readback verification.
+ * Accurately compares blanks, numbers, dates, and strings across Google Sheets type conversions.
+ */
+function areValuesEquivalent_(v1, v2) {
+  var isBlank1 = (v1 === null || v1 === undefined || String(v1).trim() === '');
+  var isBlank2 = (v2 === null || v2 === undefined || String(v2).trim() === '');
+  if (isBlank1 && isBlank2) return true;
+  if (isBlank1 || isBlank2) return false;
+  if (v1 === v2) return true;
+
+  // Date comparison
+  var isDate1 = v1 instanceof Date || (typeof v1 === 'string' && /^\\d{4}-\\d{2}-\\d{2}/.test(v1.trim()));
+  var isDate2 = v2 instanceof Date || (typeof v2 === 'string' && /^\\d{4}-\\d{2}-\\d{2}/.test(v2.trim()));
+  if (isDate1 && isDate2) {
+    var t1 = v1 instanceof Date ? v1.getTime() : new Date(v1).getTime();
+    var t2 = v2 instanceof Date ? v2.getTime() : new Date(v2).getTime();
+    if (!isNaN(t1) && !isNaN(t2)) {
+      return t1 === t2;
+    }
+  }
+
+  // Numeric comparison
+  var num1 = Number(v1);
+  var num2 = Number(v2);
+  var isNum1 = typeof v1 === 'number' || (!isNaN(num1) && String(v1).trim() !== '');
+  var isNum2 = typeof v2 === 'number' || (!isNaN(num2) && String(v2).trim() !== '');
+  if (isNum1 && isNum2) {
+    return Math.abs(num1 - num2) < 0.00001;
+  }
+
+  // String comparison
+  return String(v1).trim() === String(v2).trim();
 }
 
 /**
@@ -16033,7 +16106,16 @@ function handleDeleteCNE(params, session) {
     }
 
     // 4. Fail-closed attendance validation across authoritative data sources
-    var cneColMap = getHeaderMap(cneSheet);
+    var cneColMap;
+    try {
+      cneColMap = getHeaderMap(cneSheet);
+    } catch (cneHdrErr) {
+      return {
+        success: false,
+        errorCode: 'ATTENDANCE_CHECK_FAILED',
+        message: 'Failed to read headers from CNE Schedule: ' + cneHdrErr.message
+      };
+    }
     var targetRowVals = cneSheet.getRange(liveRecord.rowIndex, 1, 1, cneSheet.getLastColumn()).getValues()[0];
 
     // 4a. Check CNE Schedule row columns for actual recorded attendance
@@ -16042,12 +16124,14 @@ function handleDeleteCNE(params, session) {
     var staffEmpIdIdx = cneColMap['staffempid'];
     var extStaffIdx = cneColMap['externalstaffparticipants'];
     var internalCountIdx = cneColMap['internalattendancecount'];
+    var externalCountIdx = cneColMap['externalattendancecount'];
 
     var hasScheduleAttendance = false;
     if (staffCountIdx !== undefined && Number(targetRowVals[staffCountIdx] || 0) > 0) hasScheduleAttendance = true;
     if (staffEmpIdIdx !== undefined && String(targetRowVals[staffEmpIdIdx] || '').trim().length > 0) hasScheduleAttendance = true;
     if (extStaffIdx !== undefined && String(targetRowVals[extStaffIdx] || '').trim().length > 0) hasScheduleAttendance = true;
     if (internalCountIdx !== undefined && Number(targetRowVals[internalCountIdx] || 0) > 0) hasScheduleAttendance = true;
+    if (externalCountIdx !== undefined && Number(targetRowVals[externalCountIdx] || 0) > 0) hasScheduleAttendance = true;
 
     if (hasScheduleAttendance) {
       return {
@@ -16061,18 +16145,19 @@ function handleDeleteCNE(params, session) {
     var primaryRespSheet = ss.getSheetByName('CNE Post Test Responses');
     var legacyRespSheet = ss.getSheetByName('CNE_Participants');
 
-    // Fail-closed if neither mandatory nor legacy attendance repository exists
-    if (!primaryRespSheet && !legacyRespSheet) {
+    // Fail-closed if mandatory attendance sheet is missing (do NOT auto-create empty sheet)
+    if (!primaryRespSheet) {
       return {
         success: false,
         errorCode: 'ATTENDANCE_CHECK_FAILED',
-        message: 'Authoritative attendance sheet is missing or unavailable. Cannot safely verify attendance.'
+        message: 'Mandatory attendance sheet "CNE Post Test Responses" is missing or unavailable. Cannot safely verify attendance.'
       };
     }
 
-    var checkSheets = [];
-    if (primaryRespSheet) checkSheets.push(primaryRespSheet);
-    if (legacyRespSheet && legacyRespSheet !== primaryRespSheet) checkSheets.push(legacyRespSheet);
+    var checkSheets = [primaryRespSheet];
+    if (legacyRespSheet && legacyRespSheet !== primaryRespSheet) {
+      checkSheets.push(legacyRespSheet);
+    }
 
     for (var cs = 0; cs < checkSheets.length; cs++) {
       var respSheet = checkSheets[cs];
@@ -16101,11 +16186,27 @@ function handleDeleteCNE(params, session) {
         if (respSheet.getLastRow() > 1) {
           var existingRespRows = findExactRowsInColumn_(respSheet, respCneCol, cneId, 2);
           if (existingRespRows && existingRespRows.length > 0) {
-            return {
-              success: false,
-              errorCode: 'ATTENDANCE_EXISTS',
-              message: 'This CNE cannot be deleted because participant attendance or Post-Test records already exist.'
-            };
+            var sourceIdx = respColMap['source'];
+            var statusIdx = respColMap['status'];
+            var scoreIdx = respColMap['score'];
+
+            for (var er = 0; er < existingRespRows.length; er++) {
+              var rowNum = existingRespRows[er];
+              var rVals = respSheet.getRange(rowNum, 1, 1, respSheet.getLastColumn()).getValues()[0];
+              var src = sourceIdx !== undefined ? String(rVals[sourceIdx] || '').trim().toUpperCase() : '';
+              var st = statusIdx !== undefined ? String(rVals[statusIdx] || '').trim().toUpperCase() : '';
+              var sc = scoreIdx !== undefined ? String(rVals[scoreIdx] || '').trim() : '';
+
+              // Distinguish recorded attendance from merely registered external participants
+              var isOnlyRegistered = (src === 'EXTERNAL_REGISTRATION' && st !== 'ATTENDED' && st !== 'PASSED' && st !== 'FAILED' && sc === '');
+              if (!isOnlyRegistered) {
+                return {
+                  success: false,
+                  errorCode: 'ATTENDANCE_EXISTS',
+                  message: 'This CNE cannot be deleted because participant attendance or Post-Test records already exist.'
+                };
+              }
+            }
           }
         }
       } catch (readErr) {
@@ -16143,7 +16244,7 @@ function handleDeleteCNE(params, session) {
       ? findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2)
       : [];
     if (existingArchRows && existingArchRows.length > 0) {
-      logAuditAction('DELETE_CNE_INCONSISTENCY', session.employeeId, 'CNE ' + cneId + ' already present in CNE Deleted Archive at row ' + existingArchRows[0], 'FAILED');
+      safeLogAuditAction_('DELETE_CNE_INCONSISTENCY', session.employeeId, 'CNE ' + cneId + ' already present in CNE Deleted Archive at row ' + existingArchRows[0], 'FAILED');
       return {
         success: false,
         errorCode: 'ARCHIVE_INCONSISTENCY',
@@ -16151,23 +16252,34 @@ function handleDeleteCNE(params, session) {
       };
     }
 
-    // 6. Snapshot original row values and active QR tokens
+    // 6. Snapshot original row values and active QR tokens with fail-closed safety
     var cneLastCol = cneSheet.getLastColumn();
+    var cneHeaders = cneSheet.getRange(1, 1, 1, cneLastCol).getValues()[0];
     var originalRowValues = cneSheet.getRange(liveRecord.rowIndex, 1, 1, cneLastCol).getValues()[0];
 
     var qrSheet = getQRTokensSheet();
     var activeQrRowsToRestore = [];
     if (qrSheet && qrSheet.getLastRow() > 1) {
       try {
-        var qrRows = findExactRowsInColumn_(qrSheet, 1, cneId, 2);
+        var qrColMap = getHeaderMap(qrSheet);
+        var qrCneCol = qrColMap['cneid'] !== undefined ? qrColMap['cneid'] : 1;
+        var qrStatusCol = qrColMap['status'] !== undefined ? qrColMap['status'] : 4;
+        var qrRows = findExactRowsInColumn_(qrSheet, qrCneCol, cneId, 2);
         for (var qi = 0; qi < qrRows.length; qi++) {
-          var qStatus = String(qrSheet.getRange(qrRows[qi], 5).getValue() || 'ACTIVE').trim().toUpperCase();
+          var qStatus = String(qrSheet.getRange(qrRows[qi], qrStatusCol + 1).getValue() || 'ACTIVE').trim().toUpperCase();
           if (qStatus === 'ACTIVE') {
-            activeQrRowsToRestore.push(qrRows[qi]);
+            activeQrRowsToRestore.push({
+              row: qrRows[qi],
+              col: qrStatusCol + 1
+            });
           }
         }
       } catch (qrSnapErr) {
-        console.warn('Could not snapshot QR token states before deletion: ' + qrSnapErr);
+        return {
+          success: false,
+          errorCode: 'QR_STATE_CHECK_FAILED',
+          message: 'Failed to inspect or validate QR token states before deletion: ' + qrSnapErr.message
+        };
       }
     }
 
@@ -16223,16 +16335,52 @@ function handleDeleteCNE(params, session) {
       };
     }
 
-    // 8. Append to archive and verify complete written row before removing schedule row
+    // Verify all original schedule columns exist in archive headers
+    for (var sc = 0; sc < cneHeaders.length; sc++) {
+      var sHdrName = String(cneHeaders[sc] || '').trim();
+      if (sHdrName) {
+        var sKey = normalizeHeaderKey_(sHdrName);
+        if (!seenArchKeys[sKey]) {
+          return {
+            success: false,
+            errorCode: 'ARCHIVE_SCHEMA_INVALID',
+            message: 'CNE Deleted Archive is missing schedule column: "' + sHdrName + '".'
+          };
+        }
+      }
+    }
+
+    // 8. Append to archive and reconcile if append or flush throws
     try {
       archiveSheet.appendRow(archiveRow);
       SpreadsheetApp.flush();
     } catch (appendErr) {
-      return {
-        success: false,
-        errorCode: 'ARCHIVE_WRITE_FAILED',
-        message: 'Failed to write CNE record to Deleted Archive: ' + appendErr.message
-      };
+      var schedRowStillExists = (findExactRowInColumn_(cneSheet, cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : 0, cneId, 2) >= 2);
+      var possibleAppendedArchRows = findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2);
+      if (schedRowStillExists) {
+        if (possibleAppendedArchRows && possibleAppendedArchRows.length > 0) {
+          for (var ri = possibleAppendedArchRows.length - 1; ri >= 0; ri--) {
+            try {
+              archiveSheet.deleteRow(possibleAppendedArchRows[ri]);
+              SpreadsheetApp.flush();
+            } catch (delErr) {
+              console.error('Failed to remove incomplete archive row: ' + delErr);
+            }
+          }
+        }
+        safeLogAuditAction_('DELETE_CNE_FAILED', session.employeeId, 'Failed to append to archive: ' + appendErr.message, 'FAILED');
+        return {
+          success: false,
+          errorCode: 'ARCHIVE_WRITE_FAILED',
+          message: 'Failed to write CNE record to Deleted Archive: ' + appendErr.message
+        };
+      } else {
+        return {
+          success: false,
+          errorCode: 'DELETE_COMPLETION_UNCERTAIN',
+          message: 'Archive append error occurred but active schedule row is missing. Manual review required: ' + appendErr.message
+        };
+      }
     }
 
     var verifiedArchRow = findExactRowInColumn_(archiveSheet, archIdCol, cneId, 2);
@@ -16244,12 +16392,11 @@ function handleDeleteCNE(params, session) {
       };
     }
 
-    // Validate the complete written archive row against original row values and metadata
+    // Validate EVERY original schedule column against archived value
     var readArchRowValues;
     try {
       readArchRowValues = archiveSheet.getRange(verifiedArchRow, 1, 1, archiveHeaders.length).getValues()[0];
     } catch (readArchErr) {
-      // Clean up unverified row if possible
       try { archiveSheet.deleteRow(verifiedArchRow); SpreadsheetApp.flush(); } catch (e) {}
       return {
         success: false,
@@ -16260,26 +16407,52 @@ function handleDeleteCNE(params, session) {
 
     var verificationFailed = false;
     var failDetail = '';
+
     // Verify CNE ID
     if (String(readArchRowValues[archIdCol] || '').trim().toUpperCase() !== cneId.toUpperCase()) {
       verificationFailed = true;
       failDetail = 'CNE ID mismatch in archive';
     }
+
+    // Verify EVERY original schedule column
+    if (!verificationFailed) {
+      for (var colI = 0; colI < cneHeaders.length; colI++) {
+        var origH = String(cneHeaders[colI] || '').trim();
+        if (!origH) continue;
+        var normH = normalizeHeaderKey_(origH);
+        var targetArchCol = archColMap[normH];
+        if (targetArchCol === undefined) {
+          verificationFailed = true;
+          failDetail = 'Archive column missing for ' + origH;
+          break;
+        }
+        var origVal = originalRowValues[colI];
+        var archVal = readArchRowValues[targetArchCol];
+        if (!areValuesEquivalent_(origVal, archVal)) {
+          verificationFailed = true;
+          failDetail = 'Column value mismatch for "' + origH + '" (expected: ' + origVal + ', got: ' + archVal + ')';
+          break;
+        }
+      }
+    }
+
     // Verify metadata columns
-    var delAtIdx = archColMap['deletedat'];
-    var delByIdx = archColMap['deletedby'];
-    var delRsnIdx = archColMap['deletereason'];
-    if (delAtIdx !== undefined && String(readArchRowValues[delAtIdx] || '').trim() !== deletedAtTimestamp) {
-      verificationFailed = true;
-      failDetail = 'Deleted At timestamp mismatch';
-    }
-    if (delByIdx !== undefined && String(readArchRowValues[delByIdx] || '').trim().toUpperCase() !== session.employeeId.toUpperCase()) {
-      verificationFailed = true;
-      failDetail = 'Deleted By mismatch';
-    }
-    if (delRsnIdx !== undefined && String(readArchRowValues[delRsnIdx] || '').trim() !== reason) {
-      verificationFailed = true;
-      failDetail = 'Delete Reason mismatch';
+    if (!verificationFailed) {
+      var delAtIdx = archColMap['deletedat'];
+      var delByIdx = archColMap['deletedby'];
+      var delRsnIdx = archColMap['deletereason'];
+      if (delAtIdx !== undefined && String(readArchRowValues[delAtIdx] || '').trim() !== deletedAtTimestamp) {
+        verificationFailed = true;
+        failDetail = 'Deleted At timestamp mismatch';
+      }
+      if (delByIdx !== undefined && String(readArchRowValues[delByIdx] || '').trim().toUpperCase() !== session.employeeId.toUpperCase()) {
+        verificationFailed = true;
+        failDetail = 'Deleted By mismatch';
+      }
+      if (delRsnIdx !== undefined && String(readArchRowValues[delRsnIdx] || '').trim() !== reason) {
+        verificationFailed = true;
+        failDetail = 'Delete Reason mismatch';
+      }
     }
 
     if (verificationFailed) {
@@ -16296,17 +16469,29 @@ function handleDeleteCNE(params, session) {
       };
     }
 
-    // 9. Deactivate QR tokens and remove schedule row with state-aware compensation
+    // 9. Deactivate QR tokens, verify deactivation, and remove schedule row with state-aware compensation
     try {
       deactivateQRTokensForCNE(cneId);
+
+      // Verify QR deactivation
+      if (qrSheet && qrSheet.getLastRow() > 1) {
+        var verifyQrRows = findExactRowsInColumn_(qrSheet, 1, cneId, 2);
+        for (var vi = 0; vi < verifyQrRows.length; vi++) {
+          var postStatus = String(qrSheet.getRange(verifyQrRows[vi], 5).getValue() || '').trim().toUpperCase();
+          if (postStatus === 'ACTIVE') {
+            throw new Error('QR token could not be deactivated.');
+          }
+        }
+      }
 
       var freshRowIndex = findExactRowInColumn_(cneSheet, cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : 0, cneId, 2);
       if (freshRowIndex >= 2) {
         cneSheet.deleteRow(freshRowIndex);
         SpreadsheetApp.flush();
+      } else {
+        throw new Error('CNE Schedule row was not found for deletion.');
       }
     } catch (deleteError) {
-      // State-aware rollback: Check whether the schedule row still exists
       var checkSchedRow = findExactRowInColumn_(cneSheet, cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : 0, cneId, 2);
       if (checkSchedRow >= 2) {
         // Original CNE row still exists in CNE Schedule: safely compensate
@@ -16319,18 +16504,20 @@ function handleDeleteCNE(params, session) {
         } catch (archCleanErr) {
           console.error('Failed to cleanup archive row during rollback: ' + archCleanErr);
         }
-        // Restore QR token statuses if they were modified
+
+        // Restore QR token statuses ONLY if active schedule row still exists
         if (qrSheet && activeQrRowsToRestore.length > 0) {
           try {
             for (var r = 0; r < activeQrRowsToRestore.length; r++) {
-              qrSheet.getRange(activeQrRowsToRestore[r], 5).setValue('ACTIVE');
+              qrSheet.getRange(activeQrRowsToRestore[r].row, activeQrRowsToRestore[r].col).setValue('ACTIVE');
             }
+            SpreadsheetApp.flush();
           } catch (qrRestoreErr) {
             console.error('Failed to restore QR token status: ' + qrRestoreErr);
           }
         }
 
-        logAuditAction('DELETE_CNE_FAILED', session.employeeId, 'Failed to delete CNE: ' + cneId + '. Error: ' + deleteError.message, 'FAILED');
+        safeLogAuditAction_('DELETE_CNE_FAILED', session.employeeId, 'Failed to delete CNE: ' + cneId + '. Error: ' + deleteError.message, 'FAILED');
         return {
           success: false,
           errorCode: 'DELETE_MUTATION_FAILED',
@@ -16339,7 +16526,7 @@ function handleDeleteCNE(params, session) {
       } else {
         // Schedule row has already been removed from CNE Schedule!
         // DO NOT delete the archive record! DO NOT restore QR tokens!
-        logAuditAction('DELETE_CNE_PARTIAL', session.employeeId, 'CNE ' + cneId + ' schedule row removed but error occurred during post-deletion steps: ' + deleteError.message, 'WARNING');
+        safeLogAuditAction_('DELETE_CNE_PARTIAL', session.employeeId, 'CNE ' + cneId + ' schedule row removed but error occurred during post-deletion steps: ' + deleteError.message, 'WARNING');
         try {
           var cache = CacheService.getScriptCache();
           if (cache) {
