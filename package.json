@@ -14,6 +14,7 @@
     "sync": "node scripts/sync-apps-script.js",
     "sync:gas": "node scripts/sync-apps-script.js",
     "test": "node scripts/verify-all.js",
+    "verify": "node scripts/verify-all.js",
     "verify:all": "node scripts/verify-all.js",
     "verify:security": "node scripts/verify-security-and-access.js",
     "verify:workflows": "node scripts/verify-cne-workflows.js",

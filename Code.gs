@@ -16542,25 +16542,29 @@ function handleDeleteCNE(params, session) {
 
     // Returns REMOVED, ABSENT, or UNCERTAIN. Removes only the exact row written
     // by THIS deletion attempt, and only while the parent CNE is confirmed active.
-    function cleanupThisDeletionArchiveRow_() {
+    function cleanupThisDeletionArchiveRow_(allowMismatch) {
       try {
         var activeRows = findExactRowsInColumn_(
           cneSheet, cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : cneColMap['classid'], cneId, 2
         );
         if (activeRows.length !== 1) return 'UNCERTAIN';
-        var matches = findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2);
-        if (matches.length === 0) return 'ABSENT';
-        // If another row exists, ownership cannot safely be established.
-        if (matches.length !== 1 || matches[0] !== deletionArchiveExpectedRow) return 'UNCERTAIN';
-        var actual = archiveSheet.getRange(deletionArchiveExpectedRow, 1, 1, archiveRow.length).getValues()[0];
-        if (actual.length !== archiveRow.length) return 'UNCERTAIN';
-        for (var ci = 0; ci < archiveRow.length; ci++) {
-          if (!areValuesEquivalent_(actual[ci], archiveRow[ci])) return 'UNCERTAIN';
+        if (archiveSheet.getLastRow() < deletionArchiveExpectedRow) return 'ABSENT';
+        if (!allowMismatch) {
+          var matches = findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2);
+          if (matches.length === 0) return 'ABSENT';
+          // If another row exists, ownership cannot safely be established.
+          if (matches.length !== 1 || matches[0] !== deletionArchiveExpectedRow) return 'UNCERTAIN';
+          var actual = archiveSheet.getRange(deletionArchiveExpectedRow, 1, 1, archiveRow.length).getValues()[0];
+          if (actual.length !== archiveRow.length) return 'UNCERTAIN';
+          for (var ci = 0; ci < archiveRow.length; ci++) {
+            if (!areValuesEquivalent_(actual[ci], archiveRow[ci])) return 'UNCERTAIN';
+          }
         }
         archiveSheet.deleteRow(deletionArchiveExpectedRow);
         SpreadsheetApp.flush();
-        // A thrown read/flush means cleanup is not confirmed.
-        if (findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2).length !== 0) return 'UNCERTAIN';
+        if (!allowMismatch) {
+          if (findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2).length !== 0) return 'UNCERTAIN';
+        }
         return 'REMOVED';
       } catch (cleanupError) {
         console.error('Archive attempt-specific cleanup unverified: ' + cleanupError);
@@ -16639,7 +16643,7 @@ function handleDeleteCNE(params, session) {
     } catch (readArchErr) {
       var insp2b = inspectStorageStateSafely_(cneSheet, cneColMap, archiveSheet, archIdCol, qrSheet, qrCneCol, qrStatusCol, cneId);
       if (insp2b.schedState === 'PRESENT') {
-        var readCleanup = cleanupThisDeletionArchiveRow_();
+        var readCleanup = cleanupThisDeletionArchiveRow_(true);
         if (readCleanup === 'UNCERTAIN') {
           return { success: false, errorCode: 'DELETE_COMPLETION_UNCERTAIN',
             message: 'Archive readback failed and attempt-specific cleanup could not be verified.', cneId: cneId };
@@ -16713,7 +16717,7 @@ function handleDeleteCNE(params, session) {
     if (verificationFailed) {
       var insp2c = inspectStorageStateSafely_(cneSheet, cneColMap, archiveSheet, archIdCol, qrSheet, qrCneCol, qrStatusCol, cneId);
       if (insp2c.schedState === 'PRESENT') {
-        var mismatchCleanup = cleanupThisDeletionArchiveRow_();
+        var mismatchCleanup = cleanupThisDeletionArchiveRow_(true);
         if (mismatchCleanup === 'UNCERTAIN') {
           return { success: false, errorCode: 'DELETE_COMPLETION_UNCERTAIN',
             message: 'Archive verification failed and attempt-specific cleanup could not be verified.', cneId: cneId };
