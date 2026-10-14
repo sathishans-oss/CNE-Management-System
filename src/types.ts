@@ -413,3 +413,33 @@ export interface HomeDashboardData {
   chairpersonPhotoUrl?: string;
 }
 
+export type CneInterestStatus = 'INTERESTED' | 'WITHDRAWN';
+
+export interface CneInterestRegistration {
+  cneId: string;
+  employeeId: string;
+  employeeName: string;
+  designation: string;
+  department: string;
+  status: CneInterestStatus;
+  interestedAt: string;
+  updatedAt: string;
+}
+
+export interface CneInterestStatusResponse {
+  status: CneInterestStatus | null;
+  isInterested: boolean;
+  registeredAt?: string;
+  updatedAt?: string;
+}
+
+export interface CneInterestedParticipantsResponse {
+  cneId: string;
+  topic: string;
+  date: string;
+  area?: string;
+  totalInterested: number;
+  participants: CneInterestRegistration[];
+}
+
+

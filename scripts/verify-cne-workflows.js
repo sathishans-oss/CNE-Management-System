@@ -1337,11 +1337,15 @@ runTest('CNE Deleted Archive preserves all dynamic schedule columns plus deletio
   assert.ok(fnBody.includes('cneSheet.deleteRow('), 'handleDeleteCNE must remove row from active CNE Schedule');
   assert.ok(fnBody.includes('ARCHIVE_INCONSISTENCY'), 'Existing archive entry for active CNE must be treated as inconsistency');
   assert.ok(fnBody.includes('DELETE_MUTATION_FAILED'), 'Safe rollback must be attempted if schedule deletion fails');
+  assert.ok(!codeGs.includes('allowMismatch'), 'Archive recovery must enforce strict row ownership without allowMismatch');
 });
 
 runTest('Delete CNE deactivates all associated QR tokens and prevents CNE ID reuse', () => {
   const fnBody = codeGs.substring(codeGs.indexOf('function handleDeleteCNE'), codeGs.length);
-  assert.ok(fnBody.includes('deactivateQRTokensForCNE(cneId'), 'handleDeleteCNE must deactivate associated QR tokens');
+  assert.ok(
+    fnBody.includes('deactivateQRTokensForCNE(cneId, qrColMap);'),
+    'Delete CNE must pass the validated QR column map'
+  );
   assert.ok(codeGs.includes('function isCneIdInUse_'), 'Code.gs must implement isCneIdInUse_ helper');
   
   const inUseFn = codeGs.substring(codeGs.indexOf('function isCneIdInUse_'), codeGs.indexOf('function handleDeleteCNE'));

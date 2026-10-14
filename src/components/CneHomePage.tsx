@@ -31,17 +31,11 @@ import { QuickLinksWidget } from './home/QuickLinksWidget';
 import { CnoLeadershipCard } from './home/CnoLeadershipCard';
 
 // Below-the-fold Informational Widgets (Loaded on Demand)
-const SpecialtyModulesWidget = lazy(() =>
-  import('./home/SpecialtyModulesWidget').then((m) => ({ default: m.SpecialtyModulesWidget }))
-);
 const CertificationWorkflowWidget = lazy(() =>
   import('./home/CertificationWorkflowWidget').then((m) => ({ default: m.CertificationWorkflowWidget }))
 );
 const CoordinatorDeskCard = lazy(() =>
   import('./home/CoordinatorDeskCard').then((m) => ({ default: m.CoordinatorDeskCard }))
-);
-const GuidelinesCard = lazy(() =>
-  import('./home/GuidelinesCard').then((m) => ({ default: m.GuidelinesCard }))
 );
 
 interface CneHomePageProps {
@@ -181,7 +175,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
     <div className="space-y-8 pb-16">
       {/* Streamlined 2-Column Nordic Clinical Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column (7 cols: Leadership, Active Classes, Moments, Specialty Modules) */}
+        {/* Left Column (7 cols: Leadership, Active Classes) */}
         <main className="lg:col-span-7 space-y-6">
           <CnoLeadershipCard
             cnoMessage={cnoMessage}
@@ -195,13 +189,9 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             onSelectClass={(c) => setSelectedClass(c)}
             accentColor="teal"
           />
-          {/* Core Clinical Specialty Modules: restricted to main content flow */}
-          <Suspense fallback={<div className="h-44 rounded-3xl bg-slate-50 border border-slate-200/60" />}>
-            <SpecialtyModulesWidget accentColor="teal" />
-          </Suspense>
         </main>
 
-        {/* Right Column (5 cols: Impact, Circulars, Quick Links, Guidelines, Desk, Certification) */}
+        {/* Right Column (5 cols: Impact, Circulars, Quick Links, Desk, Certification) */}
         <aside className="lg:col-span-5 space-y-6">
           <InstitutionalImpactWidget
             totalCompletedClasses={impactStats?.totalCompletedClasses ?? 0}
@@ -222,8 +212,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             onQuickLinkClick={handleQuickLinkClick}
             accentColor="teal"
           />
-          <Suspense fallback={<div className="h-72 rounded-2xl bg-slate-50 border border-slate-200/60" />}>
-            <GuidelinesCard accentColor="teal" />
+          <Suspense fallback={<div className="h-64 rounded-2xl bg-slate-50 border border-slate-200/60" />}>
             <CoordinatorDeskCard coordinatorDesk={coordinatorDesk} accentColor="teal" />
             <CertificationWorkflowWidget accentColor="teal" />
           </Suspense>

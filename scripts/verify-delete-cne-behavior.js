@@ -466,20 +466,25 @@ runBehavioralTest('3. Archive append succeeds but verification fails rolls back 
 
   // Hook into getRange to corrupt read-back row verification
   let archiveAppendOccurred = false;
+  let verificationReadCount = 0;
   env.cneSpreadsheet.hooks.onGetSheetByName = (name) => {
     if (name === 'CNE Deleted Archive' && env.cneSpreadsheet.sheets['CNE Deleted Archive']) {
       const arch = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
       arch.hooks.onAppendRow = () => { archiveAppendOccurred = true; };
       arch.hooks.onGetRange = (startRow, startCol, numRows, numCols) => {
         if (startRow >= 2 && numRows === 1 && numCols > 5) {
-          // Return corrupted row values with mismatched CNE ID
-          const corrupted = new Array(numCols).fill('CORRUPTED');
-          return {
-            getValues: () => [corrupted],
-            setValue: () => {},
-            setValues: () => {}
-          };
+          verificationReadCount++;
+          if (verificationReadCount === 1) {
+            // Return corrupted row values with mismatched CNE ID on initial verification read
+            const corrupted = new Array(numCols).fill('CORRUPTED');
+            return {
+              getValues: () => [corrupted],
+              setValue: () => {},
+              setValues: () => {}
+            };
+          }
         }
+        return null;
       };
     }
   };
@@ -1244,15 +1249,19 @@ runBehavioralTest('32. Flush succeeds but archive readback throws returns ARCHIV
   const env = createFreshTestEnvironment();
   const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
   
-  // Hook archive getRange to throw on readback
+  // Hook archive getRange to throw on initial readback
+  let readAttempts = 0;
   env.cneSpreadsheet.hooks.onGetSheetByName = (name) => {
     if (name === 'CNE Deleted Archive') {
       const arch = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
       if (arch) {
         arch.hooks.onGetRange = (r, c, nr, nc) => {
-          // When reading back data row (row >= 2), throw
+          // When reading back data row (row >= 2), throw on first read
           if (r >= 2) {
-            throw new Error('Transient read timeout reading archive row');
+            readAttempts++;
+            if (readAttempts === 1) {
+              throw new Error('Transient read timeout reading archive row');
+            }
           }
           return null;
         };
@@ -1269,6 +1278,72 @@ runBehavioralTest('32. Flush succeeds but archive readback throws returns ARCHIV
 
   assert.strictEqual(delRes.success, false);
   assert.strictEqual(delRes.errorCode, 'ARCHIVE_VERIFICATION_FAILED');
+  assert.strictEqual(cneSheet.grid.length, 3, 'Active CNE schedule row must be preserved');
+});
+
+// Test 33: Archive verification mismatch where archive row cannot be verified returns DELETE_COMPLETION_UNCERTAIN
+runBehavioralTest('33. Archive verification mismatch where archive row cannot be verified returns DELETE_COMPLETION_UNCERTAIN and retains schedule row', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+  const initialRowCount = cneSheet.grid.length;
+
+  env.cneSpreadsheet.hooks.onGetSheetByName = (name) => {
+    if (name === 'CNE Deleted Archive' && env.cneSpreadsheet.sheets['CNE Deleted Archive']) {
+      const arch = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
+      arch.hooks.onGetRange = (startRow, startCol, numRows, numCols) => {
+        if (startRow >= 2 && numRows === 1 && numCols > 5) {
+          // Persistent corrupted row prevents ownership verification during cleanup
+          const corrupted = new Array(numCols).fill('CORRUPTED');
+          return {
+            getValues: () => [corrupted],
+            setValue: () => {},
+            setValues: () => {}
+          };
+        }
+        return null;
+      };
+    }
+  };
+
+  const res = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Test Deletion'
+  }, env.adminSession);
+
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.errorCode, 'DELETE_COMPLETION_UNCERTAIN');
+  assert.strictEqual(cneSheet.grid.length, initialRowCount, 'Active CNE schedule row must be preserved');
+  const qrSheet = env.cneSpreadsheet.sheets['CNE_QR_Tokens'];
+  assert.strictEqual(qrSheet.grid[1][4], 'ACTIVE', 'QR token must remain ACTIVE');
+});
+
+// Test 34: Archive readback throws and cleanup read also throws returns DELETE_COMPLETION_UNCERTAIN
+runBehavioralTest('34. Archive readback throws and cleanup read also throws returns DELETE_COMPLETION_UNCERTAIN and retains schedule row', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+
+  env.cneSpreadsheet.hooks.onGetSheetByName = (name) => {
+    if (name === 'CNE Deleted Archive' && env.cneSpreadsheet.sheets['CNE Deleted Archive']) {
+      const arch = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
+      arch.hooks.onGetRange = (r, c, nr, nc) => {
+        if (r >= 2 && nc > 5) {
+          throw new Error('Persistent Google Sheets API failure');
+        }
+        return null;
+      };
+    }
+    return undefined;
+  };
+
+  const delRes = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001',
+    confirmationCneId: 'CLS-2026-001',
+    reason: 'Persistent failure test'
+  }, env.adminSession);
+
+  assert.strictEqual(delRes.success, false);
+  assert.strictEqual(delRes.errorCode, 'DELETE_COMPLETION_UNCERTAIN');
   assert.strictEqual(cneSheet.grid.length, 3, 'Active CNE schedule row must be preserved');
 });
 

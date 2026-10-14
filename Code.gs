@@ -1008,6 +1008,34 @@ function handleRequest(e, method) {
       case 'deleteCNE':
         output = handleAdminAction(params, session, handleDeleteCNE, 'DELETE_CNE');
         break;
+
+      case 'registerCneInterest':
+        if (!session) {
+          output = { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
+        } else {
+          output = handleRegisterCneInterest(params, session);
+        }
+        break;
+
+      case 'withdrawCneInterest':
+        if (!session) {
+          output = { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
+        } else {
+          output = handleWithdrawCneInterest(params, session);
+        }
+        break;
+
+      case 'getMyCneInterestStatus':
+        output = handleGetMyCneInterestStatus(params, session);
+        break;
+
+      case 'getCneInterestedParticipants':
+        if (!session) {
+          output = { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
+        } else {
+          output = handleGetCneInterestedParticipants(params, session);
+        }
+        break;
         
       default:
         output = { success: false, message: 'Unknown action requested: ' + action };
@@ -7244,6 +7272,10 @@ var CNE_SHEET_HEADERS = {
     'Coverage Areas Snapshot', 'Total Allotted Staff', 'Internal Attendance Count',
     'Attendance Percentage', 'Post-Test Outcome Percentage', 'Coverage Finalized At',
     'Deleted At', 'Deleted By', 'Delete Reason'
+  ],
+  'CNE Interest Registrations': [
+    'CNE ID', 'Employee ID', 'Employee Name', 'Designation', 'Department / Area',
+    'Interest Status', 'Interested At', 'Updated At'
   ]
 };
 
@@ -7256,6 +7288,9 @@ var CNE_HEADER_ALIASES = {
   'typeofcne': ['typeofcne', 'cnetype', 'type'],
   'fromdate': ['fromdate', 'date'],
   'todate': ['todate'],
+  'intereststatus': ['intereststatus', 'status'],
+  'interestedat': ['interestedat', 'registeredat'],
+  'updatedat': ['updatedat'],
   'modeofteaching': ['modeofteaching', 'mode'],
   'areadepartment': ['areadepartment', 'departmentarea', 'area', 'department'],
   'departmentarea': ['departmentarea', 'areadepartment', 'area', 'department'],
@@ -16542,29 +16577,28 @@ function handleDeleteCNE(params, session) {
 
     // Returns REMOVED, ABSENT, or UNCERTAIN. Removes only the exact row written
     // by THIS deletion attempt, and only while the parent CNE is confirmed active.
-    function cleanupThisDeletionArchiveRow_(allowMismatch) {
+    function cleanupThisDeletionArchiveRow_() {
       try {
         var activeRows = findExactRowsInColumn_(
           cneSheet, cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : cneColMap['classid'], cneId, 2
         );
         if (activeRows.length !== 1) return 'UNCERTAIN';
+        // No physical row at the expected append position means our append did
+        // not persist. An occupied position requires strict ownership checks.
         if (archiveSheet.getLastRow() < deletionArchiveExpectedRow) return 'ABSENT';
-        if (!allowMismatch) {
-          var matches = findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2);
-          if (matches.length === 0) return 'ABSENT';
-          // If another row exists, ownership cannot safely be established.
-          if (matches.length !== 1 || matches[0] !== deletionArchiveExpectedRow) return 'UNCERTAIN';
-          var actual = archiveSheet.getRange(deletionArchiveExpectedRow, 1, 1, archiveRow.length).getValues()[0];
-          if (actual.length !== archiveRow.length) return 'UNCERTAIN';
-          for (var ci = 0; ci < archiveRow.length; ci++) {
-            if (!areValuesEquivalent_(actual[ci], archiveRow[ci])) return 'UNCERTAIN';
-          }
+        var matches = findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2);
+        // Never delete a row solely because it occupies our expected position.
+        // A missing, duplicate, shifted or mismatched ID is uncertain.
+        if (matches.length !== 1 || matches[0] !== deletionArchiveExpectedRow) return 'UNCERTAIN';
+        var actual = archiveSheet.getRange(deletionArchiveExpectedRow, 1, 1, archiveRow.length).getValues()[0];
+        if (actual.length !== archiveRow.length) return 'UNCERTAIN';
+        for (var ci = 0; ci < archiveRow.length; ci++) {
+          if (!areValuesEquivalent_(actual[ci], archiveRow[ci])) return 'UNCERTAIN';
         }
         archiveSheet.deleteRow(deletionArchiveExpectedRow);
         SpreadsheetApp.flush();
-        if (!allowMismatch) {
-          if (findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2).length !== 0) return 'UNCERTAIN';
-        }
+        // A thrown read/flush means cleanup is not confirmed.
+        if (findExactRowsInColumn_(archiveSheet, archIdCol, cneId, 2).length !== 0) return 'UNCERTAIN';
         return 'REMOVED';
       } catch (cleanupError) {
         console.error('Archive attempt-specific cleanup unverified: ' + cleanupError);
@@ -16643,7 +16677,7 @@ function handleDeleteCNE(params, session) {
     } catch (readArchErr) {
       var insp2b = inspectStorageStateSafely_(cneSheet, cneColMap, archiveSheet, archIdCol, qrSheet, qrCneCol, qrStatusCol, cneId);
       if (insp2b.schedState === 'PRESENT') {
-        var readCleanup = cleanupThisDeletionArchiveRow_(true);
+        var readCleanup = cleanupThisDeletionArchiveRow_();
         if (readCleanup === 'UNCERTAIN') {
           return { success: false, errorCode: 'DELETE_COMPLETION_UNCERTAIN',
             message: 'Archive readback failed and attempt-specific cleanup could not be verified.', cneId: cneId };
@@ -16717,7 +16751,7 @@ function handleDeleteCNE(params, session) {
     if (verificationFailed) {
       var insp2c = inspectStorageStateSafely_(cneSheet, cneColMap, archiveSheet, archIdCol, qrSheet, qrCneCol, qrStatusCol, cneId);
       if (insp2c.schedState === 'PRESENT') {
-        var mismatchCleanup = cleanupThisDeletionArchiveRow_(true);
+        var mismatchCleanup = cleanupThisDeletionArchiveRow_();
         if (mismatchCleanup === 'UNCERTAIN') {
           return { success: false, errorCode: 'DELETE_COMPLETION_UNCERTAIN',
             message: 'Archive verification failed and attempt-specific cleanup could not be verified.', cneId: cneId };
@@ -16859,5 +16893,476 @@ function handleDeleteCNE(params, session) {
     lock.releaseLock();
   }
 }
+
+/**
+ * ============================================================================
+ * CNE EXPRESSION OF INTEREST — PHASE 1 BACKEND IMPLEMENTATION
+ * ============================================================================
+ */
+
+/**
+ * Authoritative sheet accessor for CNE Interest Registrations.
+ * Automatically creates and initializes the tab if not present.
+ */
+function getInterestRegistrationsSheet() {
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('CNE Interest Registrations');
+  var headers = [
+    'CNE ID',
+    'Employee ID',
+    'Employee Name',
+    'Designation',
+    'Department / Area',
+    'Interest Status',
+    'Interested At',
+    'Updated At'
+  ];
+  if (!sheet) {
+    sheet = ss.insertSheet('CNE Interest Registrations');
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+    try {
+      sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#f1f5f9');
+    } catch (e) {}
+  } else if (sheet.getLastRow() < 1) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+/**
+ * Parse CNE start date/time into UTC epoch milliseconds considering Asia/Kolkata (+05:30).
+ */
+function parseCneStartTimestamp_(dateVal) {
+  if (!dateVal) return NaN;
+  if (dateVal instanceof Date) {
+    return dateVal.getTime();
+  }
+  var s = String(dateVal).trim();
+  var isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (isoMatch) {
+    var year = parseInt(isoMatch[1], 10);
+    var month = parseInt(isoMatch[2], 10) - 1;
+    var day = parseInt(isoMatch[3], 10);
+    var hour = isoMatch[4] !== undefined ? parseInt(isoMatch[4], 10) : 0;
+    var min = isoMatch[5] !== undefined ? parseInt(isoMatch[5], 10) : 0;
+    var sec = isoMatch[6] !== undefined ? parseInt(isoMatch[6], 10) : 0;
+    var kolkataOffsetMs = (5 * 60 + 30) * 60 * 1000;
+    return Date.UTC(year, month, day, hour, min, sec) - kolkataOffsetMs;
+  }
+  var dmmmMatch = s.match(/^(\d{1,2})[-\s/]([A-Za-z]{3})[-\s/](\d{4})(?:[T\s](\d{1,2}):(\d{2}))?/);
+  if (dmmmMatch) {
+    var monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+    var m = monthMap[dmmmMatch[2].toLowerCase()];
+    if (m !== undefined) {
+      var d = parseInt(dmmmMatch[1], 10);
+      var y = parseInt(dmmmMatch[3], 10);
+      var hr = dmmmMatch[4] !== undefined ? parseInt(dmmmMatch[4], 10) : 0;
+      var mn = dmmmMatch[5] !== undefined ? parseInt(dmmmMatch[5], 10) : 0;
+      var kolkataOffsetMs2 = (5 * 60 + 30) * 60 * 1000;
+      return Date.UTC(y, m, d, hr, mn, 0) - kolkataOffsetMs2;
+    }
+  }
+  var d = new Date(s);
+  return d.getTime();
+}
+
+/**
+ * Checks if a CNE has already started or concluded in Asia/Kolkata timezone.
+ */
+function hasCneStarted_(cneRecord) {
+  if (!cneRecord) return false;
+  var status = String(cneRecord.status || '').trim().toLowerCase();
+  if (status === 'completed' || status === 'canceled' || status === 'cancelled' || status === 'finalized' || status === 'finalised') {
+    return true;
+  }
+  var dateStr = String(cneRecord.date || cneRecord.fromDate || '').trim();
+  if (!dateStr) return false;
+  var cneStartMs = parseCneStartTimestamp_(dateStr);
+  if (isNaN(cneStartMs)) return false;
+  return Date.now() >= cneStartMs;
+}
+
+/**
+ * Register employee interest in an upcoming Scheduled CNE.
+ * Identity is derived strictly from the authenticated session.
+ */
+function handleRegisterCneInterest(params, session) {
+  var cneId = sanitizeCellInput(params.cneId);
+  if (!cneId) {
+    return { success: false, errorCode: 'INVALID_REQUEST', message: 'CNE ID is required.' };
+  }
+
+  if (!session || !session.employeeId) {
+    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
+  }
+
+  var empId = normalizeEmpId(session.employeeId);
+  if (!empId) {
+    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Valid employee identity could not be verified from session.' };
+  }
+
+  var record = getCNEScheduleRecord(cneId);
+  if (!record) {
+    return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found or has been deleted.' };
+  }
+
+  var cneStatus = String(record.status || '').trim().toLowerCase();
+  if (cneStatus !== 'scheduled') {
+    return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest registration is closed because this CNE is ' + record.status + '.' };
+  }
+
+  if (hasCneStarted_(record)) {
+    return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest registration is closed because this CNE has already started.' };
+  }
+
+  // Authoritatively derive employee details from Roster
+  var officer = null;
+  try {
+    officer = findOfficerByIdTargeted_(empId);
+  } catch (oe) {}
+
+  var empName = (officer && officer.name) ? officer.name : (session.name || '');
+  var designation = (officer && officer.designation) ? officer.designation : (session.designation || 'Nursing Officer');
+  var department = '';
+  if (session.assignedArea) {
+    department = session.assignedArea;
+  } else if (session.assignedAreas && session.assignedAreas.length > 0) {
+    department = session.assignedAreas.join(', ');
+  } else if (officer && officer.employmentType) {
+    department = officer.employmentType;
+  } else {
+    try {
+      var roleInfo = getUserRoleInfo(empId);
+      department = roleInfo.assignedArea || (roleInfo.assignedAreas && roleInfo.assignedAreas.join(', ')) || '';
+    } catch (re) {}
+  }
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (le) {
+    return { success: false, errorCode: 'CONCURRENT_UPDATE_ERROR', message: 'Server is busy processing another request. Please try again.' };
+  }
+
+  try {
+    var sheet = getInterestRegistrationsSheet();
+    var lastRow = sheet.getLastRow();
+    var colMap = getHeaderMap(sheet);
+    var cneCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+    var empCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 1;
+    var nameCol = colMap['employeename'] !== undefined ? colMap['employeename'] : 2;
+    var desigCol = colMap['designation'] !== undefined ? colMap['designation'] : 3;
+    var deptCol = colMap['departmentarea'] !== undefined ? colMap['departmentarea'] : 4;
+    var statusCol = colMap['intereststatus'] !== undefined ? colMap['intereststatus'] : (colMap['status'] !== undefined ? colMap['status'] : 5);
+    var intAtCol = colMap['interestedat'] !== undefined ? colMap['interestedat'] : 6;
+    var updAtCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 7;
+
+    var nowTimestamp = (typeof Utilities !== 'undefined' && Utilities.formatDate)
+      ? Utilities.formatDate(new Date(), 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ssXXX")
+      : new Date().toISOString();
+
+    var existingRowIndex = -1;
+    var currentStatus = '';
+
+    if (lastRow > 1) {
+      var width = Math.max(8, sheet.getLastColumn());
+      var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
+      for (var r = 0; r < data.length; r++) {
+        var rowCneId = String(data[r][cneCol] || '').trim().toUpperCase();
+        var rowEmpId = normalizeEmpId(data[r][empCol]);
+        if (rowCneId === cneId.toUpperCase() && rowEmpId === empId) {
+          existingRowIndex = r + 2;
+          currentStatus = String(data[r][statusCol] || '').trim().toUpperCase();
+          break;
+        }
+      }
+    }
+
+    if (existingRowIndex > 1) {
+      if (currentStatus === 'INTERESTED') {
+        return {
+          success: true,
+          message: 'Your interest in this CNE has been recorded successfully.',
+          data: {
+            cneId: cneId,
+            employeeId: empId,
+            status: 'INTERESTED',
+            alreadyRegistered: true
+          }
+        };
+      }
+      // Re-registering after withdrawal: update existing row
+      sheet.getRange(existingRowIndex, statusCol + 1).setValue('INTERESTED');
+      sheet.getRange(existingRowIndex, updAtCol + 1).setValue(nowTimestamp);
+      if (empName) sheet.getRange(existingRowIndex, nameCol + 1).setValue(empName);
+      if (designation) sheet.getRange(existingRowIndex, desigCol + 1).setValue(designation);
+      if (department) sheet.getRange(existingRowIndex, deptCol + 1).setValue(department);
+      SpreadsheetApp.flush();
+    } else {
+      // New registration
+      var newRow = [];
+      var maxCols = Math.max(8, sheet.getLastColumn());
+      for (var c = 0; c < maxCols; c++) newRow.push('');
+      newRow[cneCol] = cneId;
+      newRow[empCol] = empId;
+      newRow[nameCol] = empName;
+      newRow[desigCol] = designation;
+      newRow[deptCol] = department;
+      newRow[statusCol] = 'INTERESTED';
+      newRow[intAtCol] = nowTimestamp;
+      newRow[updAtCol] = nowTimestamp;
+      sheet.appendRow(newRow);
+      SpreadsheetApp.flush();
+    }
+
+    return {
+      success: true,
+      message: 'Your interest in this CNE has been recorded successfully.',
+      data: {
+        cneId: cneId,
+        employeeId: empId,
+        status: 'INTERESTED'
+      }
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Withdraw employee interest from an upcoming Scheduled CNE.
+ * Withdrawal is permitted only before the CNE starts.
+ */
+function handleWithdrawCneInterest(params, session) {
+  var cneId = sanitizeCellInput(params.cneId);
+  if (!cneId) {
+    return { success: false, errorCode: 'INVALID_REQUEST', message: 'CNE ID is required.' };
+  }
+
+  if (!session || !session.employeeId) {
+    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
+  }
+
+  var empId = normalizeEmpId(session.employeeId);
+  if (!empId) {
+    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Valid employee identity could not be verified from session.' };
+  }
+
+  var record = getCNEScheduleRecord(cneId);
+  if (!record) {
+    return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found or has been deleted.' };
+  }
+
+  var cneStatus = String(record.status || '').trim().toLowerCase();
+  if (cneStatus !== 'scheduled') {
+    return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest cannot be withdrawn because this CNE is ' + record.status + '.' };
+  }
+
+  if (hasCneStarted_(record)) {
+    return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest cannot be withdrawn after the CNE has started.' };
+  }
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (le) {
+    return { success: false, errorCode: 'CONCURRENT_UPDATE_ERROR', message: 'Server is busy processing another request. Please try again.' };
+  }
+
+  try {
+    var sheet = getInterestRegistrationsSheet();
+    var lastRow = sheet.getLastRow();
+    if (lastRow <= 1) {
+      return {
+        success: true,
+        message: 'You have withdrawn your interest in this CNE.',
+        data: { cneId: cneId, employeeId: empId, status: 'WITHDRAWN' }
+      };
+    }
+
+    var colMap = getHeaderMap(sheet);
+    var cneCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+    var empCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 1;
+    var statusCol = colMap['intereststatus'] !== undefined ? colMap['intereststatus'] : (colMap['status'] !== undefined ? colMap['status'] : 5);
+    var updAtCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 7;
+
+    var nowTimestamp = (typeof Utilities !== 'undefined' && Utilities.formatDate)
+      ? Utilities.formatDate(new Date(), 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ssXXX")
+      : new Date().toISOString();
+
+    var width = Math.max(8, sheet.getLastColumn());
+    var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
+    for (var r = 0; r < data.length; r++) {
+      var rowCneId = String(data[r][cneCol] || '').trim().toUpperCase();
+      var rowEmpId = normalizeEmpId(data[r][empCol]);
+      if (rowCneId === cneId.toUpperCase() && rowEmpId === empId) {
+        var sheetRow = r + 2;
+        sheet.getRange(sheetRow, statusCol + 1).setValue('WITHDRAWN');
+        sheet.getRange(sheetRow, updAtCol + 1).setValue(nowTimestamp);
+        SpreadsheetApp.flush();
+        break;
+      }
+    }
+
+    return {
+      success: true,
+      message: 'You have withdrawn your interest in this CNE.',
+      data: { cneId: cneId, employeeId: empId, status: 'WITHDRAWN' }
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Get current authenticated employee's interest status for a specific CNE.
+ */
+function handleGetMyCneInterestStatus(params, session) {
+  var cneId = sanitizeCellInput(params.cneId);
+  if (!cneId) {
+    return { success: false, message: 'CNE ID is required.' };
+  }
+
+  if (!session || !session.employeeId) {
+    return { success: true, data: { status: null, isInterested: false } };
+  }
+
+  var empId = normalizeEmpId(session.employeeId);
+  if (!empId) {
+    return { success: true, data: { status: null, isInterested: false } };
+  }
+
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('CNE Interest Registrations');
+  if (!sheet || sheet.getLastRow() <= 1) {
+    return { success: true, data: { status: null, isInterested: false } };
+  }
+
+  var colMap = getHeaderMap(sheet);
+  var cneCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+  var empCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 1;
+  var statusCol = colMap['intereststatus'] !== undefined ? colMap['intereststatus'] : (colMap['status'] !== undefined ? colMap['status'] : 5);
+  var intAtCol = colMap['interestedat'] !== undefined ? colMap['interestedat'] : 6;
+  var updAtCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 7;
+
+  var lastRow = sheet.getLastRow();
+  var width = Math.max(8, sheet.getLastColumn());
+  var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
+
+  for (var r = 0; r < data.length; r++) {
+    var rowCneId = String(data[r][cneCol] || '').trim().toUpperCase();
+    var rowEmpId = normalizeEmpId(data[r][empCol]);
+    if (rowCneId === cneId.toUpperCase() && rowEmpId === empId) {
+      var st = String(data[r][statusCol] || '').trim().toUpperCase();
+      return {
+        success: true,
+        data: {
+          status: st || 'INTERESTED',
+          isInterested: st === 'INTERESTED',
+          registeredAt: formatDateValue(data[r][intAtCol]),
+          updatedAt: formatDateValue(data[r][updAtCol])
+        }
+      };
+    }
+  }
+
+  return { success: true, data: { status: null, isInterested: false } };
+}
+
+/**
+ * Retrieve interested participants list for authorized organizers:
+ * ADMIN: All CNEs
+ * AREA_INCHARGE: Only CNEs within their authorized area/scope
+ * Assigned Resource Person: Only assigned CNEs
+ * Ordinary Employee: Access denied (FORBIDDEN)
+ */
+function handleGetCneInterestedParticipants(params, session) {
+  var cneId = sanitizeCellInput(params.cneId);
+  if (!cneId) {
+    return { success: false, message: 'CNE ID is required.' };
+  }
+
+  var record = getCNEScheduleRecord(cneId);
+  if (!record) {
+    return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found.' };
+  }
+
+  var authErr = checkCNEActionAuthorized(session, record);
+  if (authErr) {
+    return {
+      success: false,
+      errorCode: 'FORBIDDEN',
+      message: 'Access denied. Only Admins, concerned Area Incharges, and assigned Resource Persons can view interested staff.'
+    };
+  }
+
+  var ss = getSpreadsheet('CNE');
+  var sheet = ss.getSheetByName('CNE Interest Registrations');
+  if (!sheet || sheet.getLastRow() <= 1) {
+    return {
+      success: true,
+      data: {
+        cneId: cneId,
+        topic: record.topic,
+        date: record.date,
+        area: record.area,
+        totalInterested: 0,
+        participants: []
+      }
+    };
+  }
+
+  var colMap = getHeaderMap(sheet);
+  var cneCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+  var empCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 1;
+  var nameCol = colMap['employeename'] !== undefined ? colMap['employeename'] : 2;
+  var desigCol = colMap['designation'] !== undefined ? colMap['designation'] : 3;
+  var deptCol = colMap['departmentarea'] !== undefined ? colMap['departmentarea'] : 4;
+  var statusCol = colMap['intereststatus'] !== undefined ? colMap['intereststatus'] : (colMap['status'] !== undefined ? colMap['status'] : 5);
+  var intAtCol = colMap['interestedat'] !== undefined ? colMap['interestedat'] : 6;
+  var updAtCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 7;
+
+  var lastRow = sheet.getLastRow();
+  var width = Math.max(8, sheet.getLastColumn());
+  var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
+  var participants = [];
+  var totalInterested = 0;
+
+  for (var r = 0; r < data.length; r++) {
+    var rowCneId = String(data[r][cneCol] || '').trim().toUpperCase();
+    if (rowCneId !== cneId.toUpperCase()) continue;
+
+    var st = String(data[r][statusCol] || 'INTERESTED').trim().toUpperCase();
+    if (st === 'INTERESTED') {
+      totalInterested++;
+    }
+
+    participants.push({
+      cneId: cneId,
+      employeeId: String(data[r][empCol] || '').trim(),
+      employeeName: String(data[r][nameCol] || '').trim(),
+      designation: String(data[r][desigCol] || 'Nursing Officer').trim(),
+      department: String(data[r][deptCol] || '').trim(),
+      status: st,
+      interestedAt: formatDateValue(data[r][intAtCol]),
+      updatedAt: formatDateValue(data[r][updAtCol])
+    });
+  }
+
+  return {
+    success: true,
+    data: {
+      cneId: cneId,
+      topic: record.topic,
+      date: record.date,
+      area: record.area,
+      totalInterested: totalInterested,
+      participants: participants
+    }
+  };
+}
+
 
 

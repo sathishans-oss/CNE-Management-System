@@ -24,7 +24,10 @@ import {
   CNEActivityProgress,
   PostTestSubmissionResult,
   SheetAuditItem,
-  DepartmentalCneOutcomeRow
+  DepartmentalCneOutcomeRow,
+  CneInterestRegistration,
+  CneInterestStatusResponse,
+  CneInterestedParticipantsResponse
 } from '../types';
 import {
   INITIAL_AREAS,
@@ -43,6 +46,7 @@ let _inMemoryCoordinatorDesk: CoordinatorDeskInfo = { ...INITIAL_COORDINATOR_DES
 let _inMemoryNews: NewsEventItem[] = [...INITIAL_NEWS_EVENTS];
 let _inMemoryQuickLinks: QuickLinkItem[] = [...INITIAL_QUICK_LINKS];
 let _inMemoryGallery: GalleryItem[] = [...INITIAL_GALLERY];
+const _cneInterestStatusCache = new Map<string, CneInterestStatusResponse>();
 
 const STORAGE_KEYS = {
   SESSION: 'cne_session_user'
@@ -835,6 +839,7 @@ export class ApiService {
 
   static logout() {
     clearMasterMemoryCache();
+    _cneInterestStatusCache.clear();
     try {
       const keysToRemove: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -1650,6 +1655,71 @@ export class ApiService {
     return this.executeAction<DepartmentalCneOutcomeRow[]>(
       'getDepartmentalCneOutcomeReport',
       params || {}
+    );
+  }
+
+  /**
+   * CNE Expression of Interest: Register employee interest for upcoming Scheduled CNE
+   */
+  static async registerCneInterest(
+    cneId: string
+  ): Promise<ApiResponse<{ cneId: string; employeeId: string; status: 'INTERESTED'; alreadyRegistered?: boolean }>> {
+    const res = await this.executeAction<{ cneId: string; employeeId: string; status: 'INTERESTED'; alreadyRegistered?: boolean }>(
+      'registerCneInterest',
+      { cneId }
+    );
+    if (res.success) {
+      _cneInterestStatusCache.delete(cneId);
+    }
+    return res;
+  }
+
+  /**
+   * CNE Expression of Interest: Withdraw employee interest before CNE starts
+   */
+  static async withdrawCneInterest(
+    cneId: string
+  ): Promise<ApiResponse<{ cneId: string; employeeId: string; status: 'WITHDRAWN' }>> {
+    const res = await this.executeAction<{ cneId: string; employeeId: string; status: 'WITHDRAWN' }>(
+      'withdrawCneInterest',
+      { cneId }
+    );
+    if (res.success) {
+      _cneInterestStatusCache.delete(cneId);
+    }
+    return res;
+  }
+
+  /**
+   * CNE Expression of Interest: Check current authenticated employee's interest status
+   */
+  static async getMyCneInterestStatus(
+    cneId: string,
+    forceFresh = false
+  ): Promise<ApiResponse<CneInterestStatusResponse>> {
+    if (!forceFresh && _cneInterestStatusCache.has(cneId)) {
+      return { success: true, data: _cneInterestStatusCache.get(cneId)! };
+    }
+    const res = await this.executeAction<CneInterestStatusResponse>(
+      'getMyCneInterestStatus',
+      { cneId }
+    );
+    if (res.success && res.data) {
+      _cneInterestStatusCache.set(cneId, res.data);
+    }
+    return res;
+  }
+
+  /**
+   * CNE Expression of Interest: Organizer view of interested staff
+   * Authorized for ADMIN, Area Incharge for concerned area, and assigned Resource Person
+   */
+  static async getCneInterestedParticipants(
+    cneId: string
+  ): Promise<ApiResponse<CneInterestedParticipantsResponse>> {
+    return this.executeAction<CneInterestedParticipantsResponse>(
+      'getCneInterestedParticipants',
+      { cneId }
     );
   }
 }
