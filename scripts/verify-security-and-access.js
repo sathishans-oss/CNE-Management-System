@@ -27,6 +27,8 @@ const cneSchedule = fs.readFileSync('src/components/CNESchedule.tsx', 'utf8');
 const appTs = fs.readFileSync('src/App.tsx', 'utf8');
 const changePasswordModalTs = fs.readFileSync('src/components/ChangePasswordModal.tsx', 'utf8');
 const adminRolesTs = fs.readFileSync('src/components/AdminRoles.tsx', 'utf8');
+const cneDetailsTs = fs.readFileSync('src/components/cne/CneDetailsModal.tsx', 'utf8');
+const apiTs = fs.readFileSync('src/services/api.ts', 'utf8');
 
 let totalTests = 0;
 let passedTests = 0;
@@ -119,7 +121,8 @@ runTest('Admin-only actions remain strictly Admin-only', () => {
     'updateQuickLink',
     'deleteQuickLink',
     'adminResetPassword',
-    'getDepartmentalCneOutcomeReport'
+    'getDepartmentalCneOutcomeReport',
+    'deleteCNE'
   ];
 
   for (const ep of adminEndpoints) {
@@ -127,11 +130,42 @@ runTest('Admin-only actions remain strictly Admin-only', () => {
     assert.ok(casePattern.test(codeGs), `Endpoint '${ep}' must be protected by handleAdminAction`);
   }
 
-  // Obsolete deleteCNE and reviewCNE endpoints must remain completely absent
-  assert.ok(!codeGs.includes("case 'deleteCNE':"), "Code.gs must not contain obsolete router case 'deleteCNE'");
-  assert.ok(!codeGs.includes("function handleDeleteCNE"), "Code.gs must not define obsolete function 'handleDeleteCNE'");
+  // Obsolete reviewCNE endpoint must remain completely absent
   assert.ok(!codeGs.includes("case 'reviewCNE':"), "Code.gs must not contain obsolete router case 'reviewCNE'");
   assert.ok(!codeGs.includes("function handleReviewCNE"), "Code.gs must not define obsolete function 'handleReviewCNE'");
+});
+
+runTest('Secure ADMIN-Only Delete CNE authorization and backend protection', () => {
+  // deleteCNE router action exists and is wrapped by handleAdminAction
+  assert.ok(
+    codeGs.includes("case 'deleteCNE':") &&
+      codeGs.includes("handleAdminAction(params, session, handleDeleteCNE, 'DELETE_CNE')"),
+    "deleteCNE router action must be wrapped by handleAdminAction"
+  );
+  // handleDeleteCNE exists
+  assert.ok(codeGs.includes('function handleDeleteCNE'), "Code.gs must define handleDeleteCNE");
+
+  const deleteSection = codeGs.substring(
+    codeGs.indexOf('function handleDeleteCNE'),
+    codeGs.length
+  );
+
+  // Fresh ADMIN check under ScriptLock
+  assert.ok(deleteSection.includes('lock.waitLock(15000)'), 'handleDeleteCNE must acquire ScriptLock');
+  assert.ok(deleteSection.includes('refreshMutationSession(session)'), 'handleDeleteCNE must refresh mutation session under lock');
+  assert.ok(deleteSection.includes('var adminErr = requireAdmin(session);'), 'handleDeleteCNE must re-verify Admin role under lock');
+
+  // AREA_INCHARGE, EMPLOYEE cannot delete (enforced by requireAdmin)
+  assert.ok(codeGs.includes("function requireAdmin(session)"), "requireAdmin must guard administrative actions");
+
+  // Frontend Delete button is ADMIN-only and does not reuse canManageLifecycle
+  assert.ok(cneSchedule.includes("const canDeleteCne = user?.role === 'ADMIN';"), 'Frontend delete permission must be strictly user?.role === ADMIN');
+  assert.ok(cneSchedule.includes("canDeleteCne={canDeleteCne}"), 'canDeleteCne must be passed to CneDetailsModal');
+  assert.ok(!cneDetailsTs.includes("canLifecycle && !isCompleted && onDelete"), 'CneDetailsModal must not use canLifecycle for deletion');
+
+  // API fails closed without secure backend
+  assert.ok(apiTs.includes("case 'deleteCNE':"), 'ApiService must include deleteCNE in fail-closed switch');
+  assert.ok(apiTs.includes('static async deleteCNE'), 'ApiService must expose deleteCNE method');
 });
 
 runTest('Departmental CNE Outcome page is protected on both backend and frontend', () => {

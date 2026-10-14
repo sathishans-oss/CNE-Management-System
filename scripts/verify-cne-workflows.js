@@ -25,6 +25,8 @@ const cneScheduleTs = fs.readFileSync('src/components/CNESchedule.tsx', 'utf8');
 const unscheduledModalTs = fs.readFileSync('src/components/cne/AddUnscheduledCneModal.tsx', 'utf8');
 const typesTs = fs.readFileSync('src/types.ts', 'utf8');
 const outcomePageTs = fs.readFileSync('src/components/AdminDepartmentalCneOutcome.tsx', 'utf8');
+const deleteModalTs = fs.readFileSync('src/components/cne/DeleteCneModal.tsx', 'utf8');
+const cneDetailsModalTs = fs.readFileSync('src/components/cne/CneDetailsModal.tsx', 'utf8');
 
 let totalTests = 0;
 let passedTests = 0;
@@ -1292,6 +1294,71 @@ runTest('Lifecycle finalize and cancel recognize all four CNE types in Code.gs',
   );
 });
 
+// -----------------------------------------------------------------------------
+// 8. Secure ADMIN-Only Delete CNE with Audit Archive Workflows
+// -----------------------------------------------------------------------------
+runTest('Delete CNE enforces strict Admin authorization both frontend and backend', () => {
+  // Backend router is handleAdminAction
+  assert.ok(codeGs.includes("handleAdminAction(params, session, handleDeleteCNE, 'DELETE_CNE')"), 'Backend deleteCNE must be guarded by handleAdminAction');
+  // Re-verify under lock
+  const fnBody = codeGs.substring(codeGs.indexOf('function handleDeleteCNE'), codeGs.length);
+  assert.ok(fnBody.includes('var adminErr = requireAdmin(session);'), 'handleDeleteCNE must re-verify requireAdmin under lock');
+  // Non-admins (AREA_INCHARGE, EMPLOYEE) rejected by requireAdmin
+  assert.ok(codeGs.includes("String(session.role || '').toUpperCase() !== 'ADMIN'"), 'requireAdmin must reject any non-ADMIN role');
+  // Frontend permission strictly checks user?.role === 'ADMIN'
+  assert.ok(cneScheduleTs.includes("const canDeleteCne = user?.role === 'ADMIN';"), 'Frontend delete permission must strictly check user?.role === ADMIN');
+  assert.ok(!cneDetailsModalTs.includes("canLifecycle && !isCompleted && onDelete"), 'CneDetailsModal must not use canLifecycle for delete');
+});
+
+runTest('Delete CNE permits Scheduled/Canceled without attendance, denies Completed or recorded attendance', () => {
+  const fnBody = codeGs.substring(codeGs.indexOf('function handleDeleteCNE'), codeGs.length);
+  // Completed rejected
+  assert.ok(fnBody.includes("if (liveStatus === 'Completed')"), 'Completed CNE deletion must be denied');
+  assert.ok(fnBody.includes("CANNOT_DELETE_LIFECYCLE"), 'Lifecycle error code must be CANNOT_DELETE_LIFECYCLE');
+  // Allowed statuses: Scheduled and Canceled
+  assert.ok(fnBody.includes("if (liveStatus !== 'Scheduled' && liveStatus !== 'Canceled')"), 'Only Scheduled or Canceled CNEs are eligible for deletion');
+  // Attendance rejection
+  assert.ok(fnBody.includes('ATTENDANCE_EXISTS'), 'Attendance error code must be ATTENDANCE_EXISTS');
+  assert.ok(fnBody.includes('staffcount'), 'Must check staffcount');
+  assert.ok(fnBody.includes('CNE Post Test Responses'), 'Must check CNE Post Test Responses sheet');
+  assert.ok(fnBody.includes('CNE_Participants'), 'Must check CNE_Participants sheet');
+  // Explicit error message
+  assert.ok(fnBody.includes('This CNE cannot be deleted because participant attendance or Post-Test records already exist.'), 'Must return authoritative attendance denial message');
+});
+
+runTest('CNE Deleted Archive preserves all dynamic schedule columns plus deletion metadata', () => {
+  assert.ok(codeGs.includes("'CNE Deleted Archive':"), 'CNE_SHEET_HEADERS must define CNE Deleted Archive');
+  assert.ok(codeGs.includes("'Deleted At', 'Deleted By', 'Delete Reason'"), 'CNE Deleted Archive must include deletion metadata headers');
+  assert.ok(codeGs.includes('function getOrCreateDeletedArchiveSheet_'), 'getOrCreateDeletedArchiveSheet_ must dynamically sync headers');
+  
+  const fnBody = codeGs.substring(codeGs.indexOf('function handleDeleteCNE'), codeGs.length);
+  assert.ok(fnBody.includes('archiveSheet.appendRow(archiveRow);'), 'handleDeleteCNE must append original row to archive');
+  assert.ok(fnBody.includes('findExactRowInColumn_(archiveSheet'), 'handleDeleteCNE must verify archive write before removing schedule row');
+  assert.ok(fnBody.includes('cneSheet.deleteRow('), 'handleDeleteCNE must remove row from active CNE Schedule');
+  assert.ok(fnBody.includes('ARCHIVE_INCONSISTENCY'), 'Existing archive entry for active CNE must be treated as inconsistency');
+  assert.ok(fnBody.includes('DELETE_MUTATION_FAILED'), 'Safe rollback must be attempted if schedule deletion fails');
+});
+
+runTest('Delete CNE deactivates all associated QR tokens and prevents CNE ID reuse', () => {
+  const fnBody = codeGs.substring(codeGs.indexOf('function handleDeleteCNE'), codeGs.length);
+  assert.ok(fnBody.includes('deactivateQRTokensForCNE(cneId);'), 'handleDeleteCNE must deactivate associated QR tokens');
+  assert.ok(codeGs.includes('function isCneIdInUse_'), 'Code.gs must implement isCneIdInUse_ helper');
+  
+  const inUseFn = codeGs.substring(codeGs.indexOf('function isCneIdInUse_'), codeGs.indexOf('function handleDeleteCNE'));
+  assert.ok(inUseFn.includes("ss.getSheetByName('CNE Schedule')"), 'isCneIdInUse_ must check active schedule');
+  assert.ok(inUseFn.includes("ss.getSheetByName('CNE Deleted Archive')"), 'isCneIdInUse_ must check deleted archive');
+  assert.ok(codeGs.includes('while (isCneIdInUse_(cneId))'), 'CNE ID generation must loop to guarantee no ID reuse');
+  assert.ok(fnBody.includes("logAuditAction('DELETE_CNE'"), 'handleDeleteCNE must log DELETE_CNE audit event');
+});
+
+runTest('DeleteCneModal requires exact CNE ID confirmation, mandatory reason, and disables for non-admin', () => {
+  assert.ok(deleteModalTs.includes("confirmId === targetId"), 'Delete modal must require exact CNE ID match');
+  assert.ok(deleteModalTs.includes("reason.trim()"), 'Delete modal must require nonempty reason');
+  assert.ok(deleteModalTs.includes("user?.role === 'ADMIN'"), 'Delete modal must verify admin role');
+  assert.ok(deleteModalTs.includes("This CNE will be removed from the active CNE Schedule and preserved in the Deleted CNE Archive for audit."), 'Delete modal must display exact warning text');
+  assert.ok(deleteModalTs.includes("Deleting CNE..."), 'Delete modal must display in-flight progress text');
+  assert.ok(cneScheduleTs.includes("CNE deleted from active schedule and archived successfully."), 'Schedule component must display exact success message');
+});
 
 console.log('\n========================================================');
 console.log(`Passed: ${passedTests}/${totalTests}`);

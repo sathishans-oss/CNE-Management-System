@@ -10,7 +10,8 @@ import {
   MapPin,
   FileText,
   User,
-  Users
+  Users,
+  Trash2
 } from 'lucide-react';
 import { CNERecord, SessionUser, Employee, CNEActivityProgress } from '../../types';
 import { formatCneDateTimeDisplay, formatResourcePersonsDisplay, getCneTypeLabel } from '../../utils';
@@ -27,11 +28,13 @@ export interface CneDetailsModalProps {
   canOperate: boolean;
   canLifecycle: boolean;
   canManagePostTest: boolean;
+  canDeleteCne?: boolean;
   disabled?: boolean;
   onClose: () => void;
   onDownloadSessionReport: (cne: CNERecord) => void;
   onEdit: (cne: CNERecord) => void;
   onCancel: (cne: CNERecord) => void;
+  onDelete?: (cne: CNERecord) => void;
   onRetryProgress: () => void;
   onOpenMaterial: (cne: CNERecord) => void;
   onOpenQuestions: (cne: CNERecord) => void;
@@ -52,11 +55,13 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   canOperate,
   canLifecycle,
   canManagePostTest,
+  canDeleteCne,
   disabled,
   onClose,
   onDownloadSessionReport,
   onEdit,
   onCancel,
+  onDelete,
   onRetryProgress,
   onOpenMaterial,
   onOpenQuestions,
@@ -69,6 +74,7 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   const isCompleted = statusStr === 'completed';
   const isCanceled = statusStr === 'canceled' || statusStr === 'cancelled';
   const canEditOrCancel = canLifecycle && !isCompleted && !isCanceled;
+  const showDeleteButton = Boolean(canDeleteCne && !isCompleted);
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
@@ -140,6 +146,18 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
                   <span>Cancel</span>
                 </button>
               </>
+            )}
+
+            {showDeleteButton && onDelete && (
+              <button
+                type="button"
+                onClick={() => onDelete(cne)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 hover:text-red-800 border border-red-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs"
+                title="Delete CNE and archive record (Admin only)"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                <span>Delete CNE</span>
+              </button>
             )}
 
             <button

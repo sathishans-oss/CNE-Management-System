@@ -28,6 +28,7 @@ import { useToast } from './Toast';
 import { ScheduleRow } from './cne/ScheduleRow';
 import { ScheduleMobileCard } from './cne/ScheduleMobileCard';
 import { CneDetailsModal } from './cne/CneDetailsModal';
+import { DeleteCneModal } from './cne/DeleteCneModal';
 import {
   formatResourcePersonsDisplay,
   isCneAuthorized,
@@ -117,6 +118,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [cancelTargetCne, setCancelTargetCne] = useState<CNERecord | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [isCancellingCne, setIsCancellingCne] = useState(false);
+  const [deleteTargetCne, setDeleteTargetCne] = useState<CNERecord | null>(null);
+  const [deleteReason, setDeleteReason] = useState('Schedule created by mistake');
+  const [deleteConfirmId, setDeleteConfirmId] = useState('');
+  const [isDeletingCne, setIsDeletingCne] = useState(false);
   const [isDownloadingReport, setIsDownloadingReport] = useState(false);
   const [activePostTest, setActivePostTest] = useState<{ cneId?: string; qrToken?: string } | null>(null);
 
@@ -902,6 +907,44 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
   };
 
+  const canDeleteCne = user?.role === 'ADMIN';
+
+  const handleDeleteCne = async () => {
+    if (!canDeleteCne) {
+      error('Only administrators are authorized to delete CNEs.');
+      return;
+    }
+    if (!deleteTargetCne || isDeletingCne) return;
+    const targetId = deleteTargetCne.cneId || deleteTargetCne.classId || '';
+    if (deleteConfirmId !== targetId) {
+      error('Confirmation CNE ID does not match.');
+      return;
+    }
+    if (!deleteReason.trim()) {
+      error('Please provide a deletion reason.');
+      return;
+    }
+
+    setIsDeletingCne(true);
+    try {
+      const res = await ApiService.deleteCNE(targetId, deleteReason.trim(), deleteConfirmId);
+      if (!res.success) {
+        error(res.message || 'Failed to delete CNE.');
+        return;
+      }
+      success('CNE deleted from active schedule and archived successfully.');
+      setDeleteTargetCne(null);
+      setDeleteReason('Schedule created by mistake');
+      setDeleteConfirmId('');
+      setSelectedDetailCne(null);
+      await loadData();
+    } catch (e: any) {
+      error(e?.message || 'Failed to delete CNE.');
+    } finally {
+      setIsDeletingCne(false);
+    }
+  };
+
   const handleDownloadSessionReport = async (cne: CNERecord) => {
     if (isDownloadingReport || !isCneCompleted(cne) || !canOperateCne(cne)) return;
     setIsDownloadingReport(true);
@@ -1598,6 +1641,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           canOperate={canOperateCne(selectedDetailCne)}
           canLifecycle={canManageLifecycle(selectedDetailCne)}
           canManagePostTest={canManageCneActions(user, selectedDetailCne)}
+          canDeleteCne={canDeleteCne}
           disabled={!canManageCneActions(user, selectedDetailCne)}
           onClose={() => setSelectedDetailCne(null)}
           onDownloadSessionReport={handleDownloadSessionReport}
@@ -1605,6 +1649,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           onCancel={(cne) => {
             setCancelTargetCne(cne);
             setCancelReason('');
+          }}
+          onDelete={(cne) => {
+            setDeleteTargetCne(cne);
+            setDeleteReason('Schedule created by mistake');
+            setDeleteConfirmId('');
           }}
           onRetryProgress={() => {
             if (selectedDetailCne?.cneId) {
@@ -2126,6 +2175,27 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {deleteTargetCne && (
+        <DeleteCneModal
+          cne={deleteTargetCne}
+          user={user}
+          isOpen={Boolean(deleteTargetCne)}
+          isDeleting={isDeletingCne}
+          reason={deleteReason}
+          onReasonChange={setDeleteReason}
+          confirmId={deleteConfirmId}
+          onConfirmIdChange={setDeleteConfirmId}
+          onClose={() => {
+            if (!isDeletingCne) {
+              setDeleteTargetCne(null);
+              setDeleteReason('Schedule created by mistake');
+              setDeleteConfirmId('');
+            }
+          }}
+          onConfirmDelete={handleDeleteCne}
+        />
       )}
 
       {isDeptScheduleOpen && (

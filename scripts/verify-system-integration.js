@@ -1038,10 +1038,10 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
   assert.ok(!codeGs.includes("case 'reviewCNE':"), "Code.gs must not contain router case 'reviewCNE'");
   assert.ok(!codeGs.includes('function handleReviewCNE'), "Code.gs must not define 'handleReviewCNE'");
 
-  // 2. Obsolete deleteCNE endpoint removed
-  assert.ok(!apiTs.includes('static async deleteCNE'), 'ApiService.deleteCNE must be permanently absent');
-  assert.ok(!codeGs.includes("case 'deleteCNE':"), "Code.gs must not contain router case 'deleteCNE'");
-  assert.ok(!codeGs.includes('function handleDeleteCNE'), "Code.gs must not define 'handleDeleteCNE'");
+  // 2. deleteCNE endpoint is Admin-only protected and verified
+  assert.ok(apiTs.includes('static async deleteCNE'), 'ApiService.deleteCNE must be present');
+  assert.ok(codeGs.includes("case 'deleteCNE':"), "Code.gs must contain router case 'deleteCNE'");
+  assert.ok(codeGs.includes('function handleDeleteCNE'), "Code.gs must define 'handleDeleteCNE'");
 
   // 3. Obsolete public resolveQRToken endpoint removed
   assert.ok(!apiTs.includes('static async resolveQRToken'), 'ApiService.resolveQRToken must be permanently absent');

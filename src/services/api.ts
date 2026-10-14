@@ -425,6 +425,7 @@ export class ApiService {
       case 'updateCNE':
       case 'finalizeCNE':
       case 'cancelCNE':
+      case 'deleteCNE':
       case 'setupAndVerifyCNESheets':
       case 'addManualParticipants':
       case 'getCNEParticipants':
@@ -1613,6 +1614,27 @@ export class ApiService {
     if (res.success) {
       this.invalidateCache('getCNERecords');
       this.invalidateCache('getProgramImpact');
+    }
+    return res;
+  }
+
+  /**
+   * Admin-Only: Delete CNE from active schedule with audit archive
+   */
+  static async deleteCNE(
+    cneId: string,
+    reason: string,
+    confirmationCneId: string
+  ): Promise<ApiResponse<{ cneId?: string }>> {
+    const res = await this.executeAction<{ cneId?: string }>('deleteCNE', {
+      cneId,
+      reason,
+      confirmationCneId
+    });
+    if (res.success) {
+      this.invalidateCache('getCNERecords');
+      this.invalidateCache('getProgramImpact');
+      this.invalidateCache('getDepartmentalCneOutcomeReport');
     }
     return res;
   }
