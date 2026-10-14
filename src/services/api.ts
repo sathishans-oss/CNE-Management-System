@@ -203,7 +203,11 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'listLearningResources',
   'downloadLearningResource',
   'listNursingReferenceResources',
-  'downloadNursingReferenceResource'
+  'downloadNursingReferenceResource',
+  'registerCneInterest',
+  'withdrawCneInterest',
+  'getMyCneInterestStatus',
+  'getCneInterestedParticipants'
 ]);
 
 export function isPublicCacheableAction(action: string): boolean {
@@ -459,6 +463,10 @@ export class ApiService {
       case 'addQuickLink':
       case 'updateQuickLink':
       case 'deleteQuickLink':
+      case 'registerCneInterest':
+      case 'withdrawCneInterest':
+      case 'getMyCneInterestStatus':
+      case 'getCneInterestedParticipants':
         return {
           success: false,
           errorCode: 'BACKEND_NOT_CONFIGURED',
@@ -880,6 +888,7 @@ export class ApiService {
     const nextEmpId = user.employeeId.trim().toUpperCase();
     if (!prevEmpId || prevEmpId !== nextEmpId) {
       purgeNonPublicCaches();
+      _cneInterestStatusCache.clear();
     }
     localStorage.setItem(STORAGE_KEYS.SESSION, JSON.stringify(user));
   }
@@ -1664,12 +1673,17 @@ export class ApiService {
   static async registerCneInterest(
     cneId: string
   ): Promise<ApiResponse<{ cneId: string; employeeId: string; status: 'INTERESTED'; alreadyRegistered?: boolean }>> {
+    const cleanCneId = String(cneId || '').trim().toUpperCase();
     const res = await this.executeAction<{ cneId: string; employeeId: string; status: 'INTERESTED'; alreadyRegistered?: boolean }>(
       'registerCneInterest',
-      { cneId }
+      { cneId: cleanCneId }
     );
     if (res.success) {
-      _cneInterestStatusCache.delete(cneId);
+      const session = this.getSessionUser();
+      const empId = session?.employeeId ? session.employeeId.trim().toUpperCase() : '';
+      if (empId) {
+        _cneInterestStatusCache.delete(`${empId}:${cleanCneId}`);
+      }
     }
     return res;
   }
@@ -1680,32 +1694,46 @@ export class ApiService {
   static async withdrawCneInterest(
     cneId: string
   ): Promise<ApiResponse<{ cneId: string; employeeId: string; status: 'WITHDRAWN' }>> {
+    const cleanCneId = String(cneId || '').trim().toUpperCase();
     const res = await this.executeAction<{ cneId: string; employeeId: string; status: 'WITHDRAWN' }>(
       'withdrawCneInterest',
-      { cneId }
+      { cneId: cleanCneId }
     );
     if (res.success) {
-      _cneInterestStatusCache.delete(cneId);
+      const session = this.getSessionUser();
+      const empId = session?.employeeId ? session.employeeId.trim().toUpperCase() : '';
+      if (empId) {
+        _cneInterestStatusCache.delete(`${empId}:${cleanCneId}`);
+      }
     }
     return res;
   }
 
   /**
-   * CNE Expression of Interest: Check current authenticated employee's interest status
+   * CNE Expression of Interest: Check current authenticated employee's interest status.
+   * Scoped securely to current authenticated employee to prevent cross-account cache leakage.
    */
   static async getMyCneInterestStatus(
     cneId: string,
     forceFresh = false
   ): Promise<ApiResponse<CneInterestStatusResponse>> {
-    if (!forceFresh && _cneInterestStatusCache.has(cneId)) {
-      return { success: true, data: _cneInterestStatusCache.get(cneId)! };
+    const session = this.getSessionUser();
+    const empId = session?.employeeId ? session.employeeId.trim().toUpperCase() : '';
+    if (!empId) {
+      return { success: true, data: { status: null, isInterested: false } };
+    }
+    const cleanCneId = String(cneId || '').trim().toUpperCase();
+    const cacheKey = `${empId}:${cleanCneId}`;
+
+    if (!forceFresh && _cneInterestStatusCache.has(cacheKey)) {
+      return { success: true, data: _cneInterestStatusCache.get(cacheKey)! };
     }
     const res = await this.executeAction<CneInterestStatusResponse>(
       'getMyCneInterestStatus',
-      { cneId }
+      { cneId: cleanCneId }
     );
     if (res.success && res.data) {
-      _cneInterestStatusCache.set(cneId, res.data);
+      _cneInterestStatusCache.set(cacheKey, res.data);
     }
     return res;
   }

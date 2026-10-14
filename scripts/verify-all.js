@@ -43,6 +43,11 @@ const suites = [
     name: 'Delete CNE Behavioral Verification',
     script: 'scripts/verify-delete-cne-behavior.js',
     desc: 'Admin-only Delete CNE execution, complete archive row verification, recovery reconciliation & concurrency'
+  },
+  {
+    name: 'CNE Expression of Interest',
+    script: 'scripts/verify-cne-interest.js',
+    desc: 'Employee interest registration, withdrawal, re-registration, organizer views, concurrency & lifecycle locks'
   }
 ];
 

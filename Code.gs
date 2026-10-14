@@ -16903,6 +16903,7 @@ function handleDeleteCNE(params, session) {
 /**
  * Authoritative sheet accessor for CNE Interest Registrations.
  * Automatically creates and initializes the tab if not present.
+ * Does NOT overwrite or reinitialize a populated sheet with malformed schema.
  */
 function getInterestRegistrationsSheet() {
   var ss = getSpreadsheet('CNE');
@@ -16932,64 +16933,451 @@ function getInterestRegistrationsSheet() {
 }
 
 /**
- * Parse CNE start date/time into UTC epoch milliseconds considering Asia/Kolkata (+05:30).
+ * Validates mandatory headers for CNE Interest Registrations tab.
+ * Rejects missing, blank, duplicate or conflicting normalized headers.
+ * Resolves exact dynamic column positions to support rearranged columns.
  */
-function parseCneStartTimestamp_(dateVal) {
-  if (!dateVal) return NaN;
-  if (dateVal instanceof Date) {
-    return dateVal.getTime();
+function validateInterestSheetSchema_(sheet) {
+  if (!sheet) {
+    return {
+      isValid: false,
+      errorCode: 'INTEREST_SHEET_INVALID',
+      message: 'CNE Interest Registrations sheet is missing or unavailable.'
+    };
   }
-  var s = String(dateVal).trim();
-  var isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-  if (isoMatch) {
-    var year = parseInt(isoMatch[1], 10);
-    var month = parseInt(isoMatch[2], 10) - 1;
-    var day = parseInt(isoMatch[3], 10);
-    var hour = isoMatch[4] !== undefined ? parseInt(isoMatch[4], 10) : 0;
-    var min = isoMatch[5] !== undefined ? parseInt(isoMatch[5], 10) : 0;
-    var sec = isoMatch[6] !== undefined ? parseInt(isoMatch[6], 10) : 0;
-    var kolkataOffsetMs = (5 * 60 + 30) * 60 * 1000;
-    return Date.UTC(year, month, day, hour, min, sec) - kolkataOffsetMs;
+
+  var lastCol = sheet.getLastColumn();
+  var lastRow = sheet.getLastRow();
+  if (lastCol < 1 || lastRow < 1) {
+    return {
+      isValid: false,
+      errorCode: 'INTEREST_SHEET_INVALID',
+      message: 'CNE Interest Registrations sheet has no header row.'
+    };
   }
-  var dmmmMatch = s.match(/^(\d{1,2})[-\s/]([A-Za-z]{3})[-\s/](\d{4})(?:[T\s](\d{1,2}):(\d{2}))?/);
-  if (dmmmMatch) {
-    var monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-    var m = monthMap[dmmmMatch[2].toLowerCase()];
-    if (m !== undefined) {
-      var d = parseInt(dmmmMatch[1], 10);
-      var y = parseInt(dmmmMatch[3], 10);
-      var hr = dmmmMatch[4] !== undefined ? parseInt(dmmmMatch[4], 10) : 0;
-      var mn = dmmmMatch[5] !== undefined ? parseInt(dmmmMatch[5], 10) : 0;
-      var kolkataOffsetMs2 = (5 * 60 + 30) * 60 * 1000;
-      return Date.UTC(y, m, d, hr, mn, 0) - kolkataOffsetMs2;
+
+  var rawHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var colMap = {};
+  var seenKeys = {};
+
+  for (var c = 0; c < rawHeaders.length; c++) {
+    var raw = String(rawHeaders[c] || '').trim();
+    if (!raw) {
+      return {
+        isValid: false,
+        errorCode: 'INTEREST_SHEET_INVALID',
+        message: 'CNE Interest Registrations sheet contains a blank column header at position ' + (c + 1) + '.'
+      };
+    }
+    var normKey = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (seenKeys[normKey] !== undefined) {
+      return {
+        isValid: false,
+        errorCode: 'INTEREST_SHEET_INVALID',
+        message: 'CNE Interest Registrations sheet contains duplicate header "' + raw + '" at column ' + (c + 1) + '.'
+      };
+    }
+    seenKeys[normKey] = c;
+    colMap[normKey] = c;
+  }
+
+  var required = [
+    { key: 'cneid', name: 'CNE ID' },
+    { key: 'employeeid', name: 'Employee ID' },
+    { key: 'employeename', name: 'Employee Name' },
+    { key: 'designation', name: 'Designation' },
+    { key: 'departmentarea', name: 'Department / Area' },
+    { key: 'intereststatus', name: 'Interest Status' },
+    { key: 'interestedat', name: 'Interested At' },
+    { key: 'updatedat', name: 'Updated At' }
+  ];
+
+  var missing = [];
+  var resolvedCols = {};
+  for (var i = 0; i < required.length; i++) {
+    var req = required[i];
+    var colIdx = colMap[req.key];
+    if (colIdx === undefined) {
+      missing.push(req.name);
+    } else {
+      resolvedCols[req.key] = colIdx;
     }
   }
-  var d = new Date(s);
-  return d.getTime();
+
+  if (missing.length > 0) {
+    return {
+      isValid: false,
+      errorCode: 'INTEREST_SHEET_INVALID',
+      message: 'CNE Interest Registrations sheet is missing mandatory header(s): ' + missing.join(', ') + '.'
+    };
+  }
+
+  return {
+    isValid: true,
+    colMap: resolvedCols,
+    totalCols: lastCol
+  };
+}
+
+/**
+ * Strict calendar date validator.
+ * Validates 4-digit year, 1-indexed month (1-12), and day (1-31) accounting for
+ * the exact number of days in each month and leap years.
+ * Rejects roll-overs, day 00, month 00, month 13, April 31, Feb 29 (non-leap), etc.
+ */
+function isValidCalendarDate_(year, month, day) {
+  if (isNaN(year) || isNaN(month) || isNaN(day)) return false;
+  if (year < 1970 || year > 2100) return false;
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > 31) return false;
+
+  var daysInMonth;
+  if (month === 2) {
+    var isLeap = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+    daysInMonth = isLeap ? 29 : 28;
+  } else if (month === 4 || month === 6 || month === 9 || month === 11) {
+    daysInMonth = 30;
+  } else {
+    daysInMonth = 31;
+  }
+
+  if (day > daysInMonth) return false;
+
+  // Strict JS Date comparison to ensure no normalization / rollover occurred
+  var utcCheck = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  if (
+    utcCheck.getUTCFullYear() !== year ||
+    utcCheck.getUTCMonth() !== month - 1 ||
+    utcCheck.getUTCDate() !== day
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Strict time validator.
+ * Validates 24-hour ("14:00", "09:30:15", "08:30:00Z", "14:00:00+05:30", "03:30:00-05:00", "08:30:00.500Z")
+ * and 12-hour AM/PM ("02:30 PM", "9:00 am") formats.
+ * Rejects malformed strings ("bogus", "abc"), hour overflows ("24:00", "25:00", "99:99"),
+ * minute overflows ("10:60", "14:60:00Z"), invalid AM/PM combinations ("13:00 PM", "0:00 AM"),
+ * and invalid timezone offsets ("+25:00", "-25:00", "+05:60").
+ * Returns { hour, min, sec, millis, hasExplicitOffset, offsetMinutesTotal } or null if invalid.
+ */
+function parseStrictTime_(timeVal) {
+  if (timeVal === null || timeVal === undefined) return null;
+
+  if (timeVal instanceof Date) {
+    if (isNaN(timeVal.getTime())) return null;
+    if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
+      try {
+        var formattedTime = Utilities.formatDate(timeVal, 'Asia/Kolkata', 'HH:mm:ss');
+        return parseStrictTime_(formattedTime);
+      } catch (e) {}
+    }
+    var th = timeVal.getHours();
+    var tm = timeVal.getMinutes();
+    var ts = timeVal.getSeconds();
+    var tms = timeVal.getMilliseconds();
+    if (th >= 0 && th <= 23 && tm >= 0 && tm <= 59 && ts >= 0 && ts <= 59) {
+      return { hour: th, min: tm, sec: ts, millis: tms, hasExplicitOffset: false, offsetMinutesTotal: 0 };
+    }
+    return null;
+  }
+
+  var s = String(timeVal).trim();
+  if (!s) return null;
+
+  // 12-hour AM/PM format: e.g. "02:30 PM", "2:30pm", "12:00 AM", "09:15:30 am"
+  var ampmMatch = s.match(/^(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\s*([ap]m)$/i);
+  if (ampmMatch) {
+    var h12 = parseInt(ampmMatch[1], 10);
+    var mn12 = parseInt(ampmMatch[2], 10);
+    var sc12 = ampmMatch[3] !== undefined ? parseInt(ampmMatch[3], 10) : 0;
+    var ap = ampmMatch[4].toLowerCase();
+    if (h12 < 1 || h12 > 12) return null;
+    var h24 = h12;
+    if (ap === 'pm') {
+      h24 = (h12 === 12) ? 12 : h12 + 12;
+    } else {
+      h24 = (h12 === 12) ? 0 : h12;
+    }
+    return { hour: h24, min: mn12, sec: sc12, millis: 0, hasExplicitOffset: false, offsetMinutesTotal: 0 };
+  }
+
+  // 24-hour format with optional seconds, fractional seconds, and ISO 8601 timezone offset (Z, +HH:MM, -HH:MM):
+  // e.g. "14:00", "09:30", "14:00:00", "08:30:00Z", "14:00:00+05:30", "03:30:00-05:00", "08:30:00.500Z", "14:00:00.123+05:30"
+  // Rejects 24:00, 25:00, 99:99, 10:60, +25:00, -25:00, +05:60, +14:60, 14:60:00Z, bogus strings
+  var h24Match = s.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.(\d+))?)?(?:\s*(?:([Zz])|([+-])(\d{1,2}):?(\d{2})))?$/);
+  if (h24Match) {
+    var h = parseInt(h24Match[1], 10);
+    var m = parseInt(h24Match[2], 10);
+    var sec = h24Match[3] !== undefined ? parseInt(h24Match[3], 10) : 0;
+    if (h < 0 || h > 23) return null;
+    if (m < 0 || m > 59) return null;
+    if (sec < 0 || sec > 59) return null;
+
+    var millis = 0;
+    if (h24Match[4] !== undefined) {
+      var fractionStr = h24Match[4];
+      if (!/^\d+$/.test(fractionStr)) return null;
+      millis = Math.floor(parseFloat('0.' + fractionStr) * 1000);
+      if (isNaN(millis) || millis < 0 || millis > 999) return null;
+    }
+
+    var hasExplicitOffset = false;
+    var offsetMinutesTotal = 0;
+
+    if (h24Match[5]) {
+      // 'Z' or 'z' (UTC)
+      hasExplicitOffset = true;
+      offsetMinutesTotal = 0;
+    } else if (h24Match[6]) {
+      // [+-]HH:MM or [+-]HHMM
+      var sign = h24Match[6] === '-' ? -1 : 1;
+      var offH = parseInt(h24Match[7], 10);
+      var offM = parseInt(h24Match[8], 10);
+      // Validate timezone offset hours and minutes against supported ISO 8601 range (00-23 hours, 00-59 minutes)
+      // Rejects +25:00, -25:00, +05:60, +14:60, etc.
+      if (isNaN(offH) || isNaN(offM) || offH < 0 || offH > 23 || offM < 0 || offM > 59) {
+        return null;
+      }
+      hasExplicitOffset = true;
+      offsetMinutesTotal = sign * (offH * 60 + offM);
+    }
+
+    return {
+      hour: h,
+      min: m,
+      sec: sec,
+      millis: millis,
+      hasExplicitOffset: hasExplicitOffset,
+      offsetMinutesTotal: offsetMinutesTotal
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Parse CNE start date and time into UTC epoch milliseconds.
+ * Strictly validates calendar dates (leap years, month days, no silent rollover)
+ * and time components (00-23 hours, 00-59 minutes, rejects bogus time strings).
+ * Fully supports ISO 8601 explicit timezone offsets (Z, +HH:MM, -HH:MM, fractional seconds).
+ * For timestamps without an explicit timezone offset, authoritatively uses Asia/Kolkata (+05:30).
+ * Supports combined date/time strings, separate date + time fields, and Date objects.
+ * Rejects unparseable, malformed, or contradictory dates/times by returning NaN.
+ */
+function parseCneStartTimestamp_(dateVal, timeVal) {
+  if (!dateVal) return NaN;
+
+  if (typeof dateVal === 'object' && !(dateVal instanceof Date)) {
+    var rec = dateVal;
+    dateVal = rec.fromDate || rec.date;
+    timeVal = (timeVal !== undefined && timeVal !== null && String(timeVal).trim() !== '')
+      ? timeVal
+      : (rec.fromTime || rec.startTime || rec.time);
+    if (!dateVal) return NaN;
+  }
+
+  if (dateVal instanceof Date) {
+    if (isNaN(dateVal.getTime())) return NaN;
+    if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
+      try {
+        var formatted = Utilities.formatDate(dateVal, 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ss");
+        return parseCneStartTimestamp_(formatted, timeVal);
+      } catch (e) {}
+    }
+    try {
+      var dtf = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      var parts = dtf.formatToParts(dateVal);
+      var p = {};
+      for (var i = 0; i < parts.length; i++) {
+        p[parts[i].type] = parts[i].value;
+      }
+      var iso = p.year + '-' + p.month + '-' + p.day + 'T' + p.hour + ':' + p.minute + ':' + p.second;
+      return parseCneStartTimestamp_(iso, timeVal);
+    } catch (e2) {
+      var y = dateVal.getFullYear();
+      var m = String(dateVal.getMonth() + 1);
+      var d = String(dateVal.getDate());
+      var hr = String(dateVal.getHours());
+      var mn = String(dateVal.getMinutes());
+      var sc = String(dateVal.getSeconds());
+      var iso2 = y + '-' + (m.length === 1 ? '0' + m : m) + '-' + (d.length === 1 ? '0' + d : d) + 'T' +
+                 (hr.length === 1 ? '0' + hr : hr) + ':' + (mn.length === 1 ? '0' + mn : mn) + ':' + (sc.length === 1 ? '0' + sc : sc);
+      return parseCneStartTimestamp_(iso2, timeVal);
+    }
+  }
+
+  var s = String(dateVal).trim();
+  if (!s) return NaN;
+
+  var year = NaN, month = NaN, day = NaN;
+  var embeddedTimeStr = null;
+
+  // 1. ISO format: YYYY-MM-DD or YYYY/MM/DD with optional time
+  var isoMatch = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[T\s](.+))?$/);
+  if (isoMatch) {
+    year = parseInt(isoMatch[1], 10);
+    month = parseInt(isoMatch[2], 10);
+    day = parseInt(isoMatch[3], 10);
+    embeddedTimeStr = isoMatch[4] || null;
+  } else {
+    // 2. DD-MMM-YYYY format: e.g. 15-Oct-2026, 15 Oct 2026, 15/Oct/2026 with optional time
+    var dmmmMatch = s.match(/^(\d{1,2})[-\s\/]([A-Za-z]{3})[-\s\/](\d{4})(?:[T\s](.+))?$/);
+    if (dmmmMatch) {
+      var monthMap = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+      var mKey = dmmmMatch[2].toLowerCase();
+      if (!monthMap[mKey]) return NaN;
+      day = parseInt(dmmmMatch[1], 10);
+      month = monthMap[mKey];
+      year = parseInt(dmmmMatch[3], 10);
+      embeddedTimeStr = dmmmMatch[4] || null;
+    } else {
+      // 3. DD-MM-YYYY format: e.g. 15-10-2026, 15/10/2026, 15.10.2026 with optional time
+      var dmyMatch = s.match(/^(\d{1,2})[-\/\.]([0-9]{1,2})[-\/\.](\d{4})(?:[T\s](.+))?$/);
+      if (dmyMatch) {
+        day = parseInt(dmyMatch[1], 10);
+        month = parseInt(dmyMatch[2], 10);
+        year = parseInt(dmyMatch[3], 10);
+        embeddedTimeStr = dmyMatch[4] || null;
+      } else {
+        return NaN;
+      }
+    }
+  }
+
+  // Strict calendar date validation (leap year, days per month, range)
+  if (!isValidCalendarDate_(year, month, day)) {
+    return NaN;
+  }
+
+  // Parse time components
+  var hour = 0, min = 0, sec = 0, millis = 0;
+  var hasExplicitOffset = false;
+  var offsetMinutesTotal = 0;
+
+  var parsedEmbedded = null;
+  if (embeddedTimeStr !== null) {
+    parsedEmbedded = parseStrictTime_(embeddedTimeStr);
+    if (!parsedEmbedded) return NaN;
+  }
+
+  var parsedExplicit = null;
+  if (timeVal !== undefined && timeVal !== null && String(timeVal).trim() !== '') {
+    parsedExplicit = parseStrictTime_(timeVal);
+    if (!parsedExplicit) return NaN;
+  }
+
+  if (parsedEmbedded && parsedExplicit) {
+    if (parsedEmbedded.hasExplicitOffset) {
+      // If a combined ISO date/time includes an explicit timezone, its embedded time
+      // and offset must define the instant. Do not silently override it with a separate time field.
+      // If contradictory date/time fields are supplied, reject the input with NaN.
+      if (
+        parsedExplicit.hour !== parsedEmbedded.hour ||
+        parsedExplicit.min !== parsedEmbedded.min ||
+        (parsedExplicit.sec !== undefined && parsedEmbedded.sec !== undefined && parsedExplicit.sec !== parsedEmbedded.sec)
+      ) {
+        return NaN;
+      }
+      hour = parsedEmbedded.hour;
+      min = parsedEmbedded.min;
+      sec = parsedEmbedded.sec;
+      millis = parsedEmbedded.millis;
+      hasExplicitOffset = true;
+      offsetMinutesTotal = parsedEmbedded.offsetMinutesTotal;
+    } else {
+      // Embedded time had no explicit offset; explicit separate timeVal takes precedence
+      hour = parsedExplicit.hour;
+      min = parsedExplicit.min;
+      sec = parsedExplicit.sec;
+      millis = parsedExplicit.millis;
+      hasExplicitOffset = parsedExplicit.hasExplicitOffset;
+      offsetMinutesTotal = parsedExplicit.offsetMinutesTotal;
+    }
+  } else if (parsedEmbedded) {
+    hour = parsedEmbedded.hour;
+    min = parsedEmbedded.min;
+    sec = parsedEmbedded.sec;
+    millis = parsedEmbedded.millis;
+    hasExplicitOffset = parsedEmbedded.hasExplicitOffset;
+    offsetMinutesTotal = parsedEmbedded.offsetMinutesTotal;
+  } else if (parsedExplicit) {
+    hour = parsedExplicit.hour;
+    min = parsedExplicit.min;
+    sec = parsedExplicit.sec;
+    millis = parsedExplicit.millis;
+    hasExplicitOffset = parsedExplicit.hasExplicitOffset;
+    offsetMinutesTotal = parsedExplicit.offsetMinutesTotal;
+  }
+
+  // If no explicit timezone offset was supplied in the timestamp, authoritatively use Asia/Kolkata (+05:30)
+  if (!hasExplicitOffset) {
+    offsetMinutesTotal = 5 * 60 + 30; // 330 minutes
+  }
+
+  // Strict time range check & prevent Date roll-over
+  var utcCheck = new Date(Date.UTC(year, month - 1, day, hour, min, sec, millis));
+  if (
+    utcCheck.getUTCFullYear() !== year ||
+    utcCheck.getUTCMonth() !== month - 1 ||
+    utcCheck.getUTCDate() !== day ||
+    utcCheck.getUTCHours() !== hour ||
+    utcCheck.getUTCMinutes() !== min ||
+    utcCheck.getUTCSeconds() !== sec ||
+    utcCheck.getUTCMilliseconds() !== millis
+  ) {
+    return NaN;
+  }
+
+  // Calculate the absolute epoch milliseconds: UTC = local instant - timezone offset
+  return utcCheck.getTime() - (offsetMinutesTotal * 60 * 1000);
+}
+
+/**
+ * Resolves combined start timestamp for a CNE Schedule record.
+ */
+function getCneStartTimestamp_(cneRecord) {
+  if (!cneRecord) return NaN;
+  var dateStr = cneRecord.fromDate || cneRecord.date || '';
+  var timeStr = cneRecord.fromTime || cneRecord.startTime || cneRecord.time || '';
+  return parseCneStartTimestamp_(dateStr, timeStr);
 }
 
 /**
  * Checks if a CNE has already started or concluded in Asia/Kolkata timezone.
+ * Treats missing or unparseable start dates as started/closed for safety.
  */
 function hasCneStarted_(cneRecord) {
-  if (!cneRecord) return false;
+  if (!cneRecord) return true;
   var status = String(cneRecord.status || '').trim().toLowerCase();
   if (status === 'completed' || status === 'canceled' || status === 'cancelled' || status === 'finalized' || status === 'finalised') {
     return true;
   }
-  var dateStr = String(cneRecord.date || cneRecord.fromDate || '').trim();
-  if (!dateStr) return false;
-  var cneStartMs = parseCneStartTimestamp_(dateStr);
-  if (isNaN(cneStartMs)) return false;
-  return Date.now() >= cneStartMs;
+  var startMs = getCneStartTimestamp_(cneRecord);
+  if (isNaN(startMs)) return true;
+  return Date.now() >= startMs;
 }
 
 /**
  * Register employee interest in an upcoming Scheduled CNE.
- * Identity is derived strictly from the authenticated session.
+ * Protected by ScriptLock and authoritative session revalidation.
+ * Identity is derived strictly from the authenticated session and roster.
  */
 function handleRegisterCneInterest(params, session) {
-  var cneId = sanitizeCellInput(params.cneId);
+  var cneId = sanitizeCellInput(params ? params.cneId : '');
   if (!cneId) {
     return { success: false, errorCode: 'INVALID_REQUEST', message: 'CNE ID is required.' };
   }
@@ -16998,66 +17386,100 @@ function handleRegisterCneInterest(params, session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
   }
 
-  var empId = normalizeEmpId(session.employeeId);
-  if (!empId) {
-    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Valid employee identity could not be verified from session.' };
-  }
-
-  var record = getCNEScheduleRecord(cneId);
-  if (!record) {
-    return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found or has been deleted.' };
-  }
-
-  var cneStatus = String(record.status || '').trim().toLowerCase();
-  if (cneStatus !== 'scheduled') {
-    return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest registration is closed because this CNE is ' + record.status + '.' };
-  }
-
-  if (hasCneStarted_(record)) {
-    return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest registration is closed because this CNE has already started.' };
-  }
-
-  // Authoritatively derive employee details from Roster
-  var officer = null;
-  try {
-    officer = findOfficerByIdTargeted_(empId);
-  } catch (oe) {}
-
-  var empName = (officer && officer.name) ? officer.name : (session.name || '');
-  var designation = (officer && officer.designation) ? officer.designation : (session.designation || 'Nursing Officer');
-  var department = '';
-  if (session.assignedArea) {
-    department = session.assignedArea;
-  } else if (session.assignedAreas && session.assignedAreas.length > 0) {
-    department = session.assignedAreas.join(', ');
-  } else if (officer && officer.employmentType) {
-    department = officer.employmentType;
-  } else {
-    try {
-      var roleInfo = getUserRoleInfo(empId);
-      department = roleInfo.assignedArea || (roleInfo.assignedAreas && roleInfo.assignedAreas.join(', ')) || '';
-    } catch (re) {}
-  }
-
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
-  } catch (le) {
-    return { success: false, errorCode: 'CONCURRENT_UPDATE_ERROR', message: 'Server is busy processing another request. Please try again.' };
+  } catch (lockErr) {
+    return {
+      success: false,
+      errorCode: 'SERVER_BUSY',
+      message: 'Server is busy processing another request. Please retry in a moment.'
+    };
   }
 
   try {
+    // 1. Authoritative session & eligibility revalidation inside lock
+    var sessionRefresh = refreshMutationSession(session);
+    if (!sessionRefresh.success) {
+      return sessionRefresh;
+    }
+    var activeSession = sessionRefresh.session;
+    var empId = normalizeEmpId(activeSession.employeeId);
+    if (!empId) {
+      return { success: false, errorCode: 'UNAUTHORIZED', message: 'Valid employee identity could not be verified from session.' };
+    }
+
+    // 2. Re-read authoritative CNE Schedule record fresh from sheet
+    var record = getCNEScheduleRecord(cneId);
+    if (!record) {
+      return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found or has been deleted.' };
+    }
+
+    // 3. Verify status is Scheduled
+    var cneStatus = String(record.status || '').trim().toLowerCase();
+    if (cneStatus !== 'scheduled') {
+      return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest registration is closed because this CNE is ' + record.status + '.' };
+    }
+
+    // 4. Verify start date/time is valid and strictly in future
+    var startMs = getCneStartTimestamp_(record);
+    if (isNaN(startMs)) {
+      return {
+        success: false,
+        errorCode: 'REGISTRATION_CLOSED',
+        message: 'Interest registration cannot be completed because the CNE schedule date is missing or invalid.'
+      };
+    }
+    if (Date.now() >= startMs) {
+      return {
+        success: false,
+        errorCode: 'REGISTRATION_CLOSED',
+        message: 'Interest registration is closed because this CNE has already started.'
+      };
+    }
+
+    // 5. Authoritatively derive employee details (server-derived ONLY)
+    var officer = null;
+    try {
+      officer = findOfficerByIdFresh_(empId);
+    } catch (oe) {}
+
+    var empName = (officer && officer.name) ? officer.name : (activeSession.name || '');
+    var designation = (officer && officer.designation) ? officer.designation : (activeSession.designation || 'Nursing Officer');
+
+    // Section 5: Authoritative department / area assignment. NEVER fall back to officer.employmentType!
+    var department = '';
+    if (activeSession.assignedArea) {
+      department = activeSession.assignedArea;
+    } else if (activeSession.assignedAreas && activeSession.assignedAreas.length > 0) {
+      department = activeSession.assignedAreas.join(', ');
+    } else {
+      try {
+        var roleInfo = getUserRoleInfo(empId, true);
+        department = roleInfo.assignedArea || (roleInfo.assignedAreas && roleInfo.assignedAreas.join(', ')) || '';
+      } catch (re) {}
+    }
+
+    // 6. Access and strictly validate interest sheet headers
     var sheet = getInterestRegistrationsSheet();
-    var lastRow = sheet.getLastRow();
-    var colMap = getHeaderMap(sheet);
-    var cneCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
-    var empCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 1;
-    var nameCol = colMap['employeename'] !== undefined ? colMap['employeename'] : 2;
-    var desigCol = colMap['designation'] !== undefined ? colMap['designation'] : 3;
-    var deptCol = colMap['departmentarea'] !== undefined ? colMap['departmentarea'] : 4;
-    var statusCol = colMap['intereststatus'] !== undefined ? colMap['intereststatus'] : (colMap['status'] !== undefined ? colMap['status'] : 5);
-    var intAtCol = colMap['interestedat'] !== undefined ? colMap['interestedat'] : 6;
-    var updAtCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 7;
+    var schema = validateInterestSheetSchema_(sheet);
+    if (!schema.isValid) {
+      return {
+        success: false,
+        errorCode: schema.errorCode,
+        message: schema.message
+      };
+    }
+
+    var colMap = schema.colMap;
+    var cneCol = colMap['cneid'];
+    var empCol = colMap['employeeid'];
+    var nameCol = colMap['employeename'];
+    var desigCol = colMap['designation'];
+    var deptCol = colMap['departmentarea'];
+    var statusCol = colMap['intereststatus'];
+    var intAtCol = colMap['interestedat'];
+    var updAtCol = colMap['updatedat'];
 
     var nowTimestamp = (typeof Utilities !== 'undefined' && Utilities.formatDate)
       ? Utilities.formatDate(new Date(), 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ssXXX")
@@ -17066,8 +17488,9 @@ function handleRegisterCneInterest(params, session) {
     var existingRowIndex = -1;
     var currentStatus = '';
 
+    var lastRow = sheet.getLastRow();
     if (lastRow > 1) {
-      var width = Math.max(8, sheet.getLastColumn());
+      var width = Math.max(schema.totalCols, 8);
       var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
       for (var r = 0; r < data.length; r++) {
         var rowCneId = String(data[r][cneCol] || '').trim().toUpperCase();
@@ -17098,12 +17521,12 @@ function handleRegisterCneInterest(params, session) {
       sheet.getRange(existingRowIndex, updAtCol + 1).setValue(nowTimestamp);
       if (empName) sheet.getRange(existingRowIndex, nameCol + 1).setValue(empName);
       if (designation) sheet.getRange(existingRowIndex, desigCol + 1).setValue(designation);
-      if (department) sheet.getRange(existingRowIndex, deptCol + 1).setValue(department);
+      sheet.getRange(existingRowIndex, deptCol + 1).setValue(department);
       SpreadsheetApp.flush();
     } else {
-      // New registration
+      // New registration: respect dynamic column mapping (support rearranged columns)
+      var maxCols = Math.max(schema.totalCols, 8);
       var newRow = [];
-      var maxCols = Math.max(8, sheet.getLastColumn());
       for (var c = 0; c < maxCols; c++) newRow.push('');
       newRow[cneCol] = cneId;
       newRow[empCol] = empId;
@@ -17133,10 +17556,10 @@ function handleRegisterCneInterest(params, session) {
 
 /**
  * Withdraw employee interest from an upcoming Scheduled CNE.
- * Withdrawal is permitted only before the CNE starts.
+ * Withdrawal is permitted only before the CNE starts and while Scheduled.
  */
 function handleWithdrawCneInterest(params, session) {
-  var cneId = sanitizeCellInput(params.cneId);
+  var cneId = sanitizeCellInput(params ? params.cneId : '');
   if (!cneId) {
     return { success: false, errorCode: 'INVALID_REQUEST', message: 'CNE ID is required.' };
   }
@@ -17145,34 +17568,61 @@ function handleWithdrawCneInterest(params, session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
   }
 
-  var empId = normalizeEmpId(session.employeeId);
-  if (!empId) {
-    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Valid employee identity could not be verified from session.' };
-  }
-
-  var record = getCNEScheduleRecord(cneId);
-  if (!record) {
-    return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found or has been deleted.' };
-  }
-
-  var cneStatus = String(record.status || '').trim().toLowerCase();
-  if (cneStatus !== 'scheduled') {
-    return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest cannot be withdrawn because this CNE is ' + record.status + '.' };
-  }
-
-  if (hasCneStarted_(record)) {
-    return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest cannot be withdrawn after the CNE has started.' };
-  }
-
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
-  } catch (le) {
-    return { success: false, errorCode: 'CONCURRENT_UPDATE_ERROR', message: 'Server is busy processing another request. Please try again.' };
+  } catch (lockErr) {
+    return {
+      success: false,
+      errorCode: 'SERVER_BUSY',
+      message: 'Server is busy processing another request. Please retry in a moment.'
+    };
   }
 
   try {
+    // 1. Authoritative session revalidation
+    var sessionRefresh = refreshMutationSession(session);
+    if (!sessionRefresh.success) {
+      return sessionRefresh;
+    }
+    var activeSession = sessionRefresh.session;
+    var empId = normalizeEmpId(activeSession.employeeId);
+    if (!empId) {
+      return { success: false, errorCode: 'UNAUTHORIZED', message: 'Valid employee identity could not be verified from session.' };
+    }
+
+    // 2. Re-read authoritative CNE record fresh from sheet
+    var record = getCNEScheduleRecord(cneId);
+    if (!record) {
+      return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found or has been deleted.' };
+    }
+
+    var cneStatus = String(record.status || '').trim().toLowerCase();
+    if (cneStatus !== 'scheduled') {
+      return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest cannot be withdrawn because this CNE is ' + record.status + '.' };
+    }
+
+    var startMs = getCneStartTimestamp_(record);
+    if (isNaN(startMs) || Date.now() >= startMs) {
+      return { success: false, errorCode: 'REGISTRATION_CLOSED', message: 'Interest cannot be withdrawn after the CNE has started or if the schedule date is invalid.' };
+    }
+
     var sheet = getInterestRegistrationsSheet();
+    var schema = validateInterestSheetSchema_(sheet);
+    if (!schema.isValid) {
+      return {
+        success: false,
+        errorCode: schema.errorCode,
+        message: schema.message
+      };
+    }
+
+    var colMap = schema.colMap;
+    var cneCol = colMap['cneid'];
+    var empCol = colMap['employeeid'];
+    var statusCol = colMap['intereststatus'];
+    var updAtCol = colMap['updatedat'];
+
     var lastRow = sheet.getLastRow();
     if (lastRow <= 1) {
       return {
@@ -17182,17 +17632,11 @@ function handleWithdrawCneInterest(params, session) {
       };
     }
 
-    var colMap = getHeaderMap(sheet);
-    var cneCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
-    var empCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 1;
-    var statusCol = colMap['intereststatus'] !== undefined ? colMap['intereststatus'] : (colMap['status'] !== undefined ? colMap['status'] : 5);
-    var updAtCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 7;
-
     var nowTimestamp = (typeof Utilities !== 'undefined' && Utilities.formatDate)
       ? Utilities.formatDate(new Date(), 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ssXXX")
       : new Date().toISOString();
 
-    var width = Math.max(8, sheet.getLastColumn());
+    var width = Math.max(schema.totalCols, 8);
     var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
     for (var r = 0; r < data.length; r++) {
       var rowCneId = String(data[r][cneCol] || '').trim().toUpperCase();
@@ -17220,7 +17664,7 @@ function handleWithdrawCneInterest(params, session) {
  * Get current authenticated employee's interest status for a specific CNE.
  */
 function handleGetMyCneInterestStatus(params, session) {
-  var cneId = sanitizeCellInput(params.cneId);
+  var cneId = sanitizeCellInput(params ? params.cneId : '');
   if (!cneId) {
     return { success: false, message: 'CNE ID is required.' };
   }
@@ -17240,15 +17684,20 @@ function handleGetMyCneInterestStatus(params, session) {
     return { success: true, data: { status: null, isInterested: false } };
   }
 
-  var colMap = getHeaderMap(sheet);
-  var cneCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
-  var empCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 1;
-  var statusCol = colMap['intereststatus'] !== undefined ? colMap['intereststatus'] : (colMap['status'] !== undefined ? colMap['status'] : 5);
-  var intAtCol = colMap['interestedat'] !== undefined ? colMap['interestedat'] : 6;
-  var updAtCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 7;
+  var schema = validateInterestSheetSchema_(sheet);
+  if (!schema.isValid) {
+    return { success: false, errorCode: schema.errorCode, message: schema.message };
+  }
+
+  var colMap = schema.colMap;
+  var cneCol = colMap['cneid'];
+  var empCol = colMap['employeeid'];
+  var statusCol = colMap['intereststatus'];
+  var intAtCol = colMap['interestedat'];
+  var updAtCol = colMap['updatedat'];
 
   var lastRow = sheet.getLastRow();
-  var width = Math.max(8, sheet.getLastColumn());
+  var width = Math.max(schema.totalCols, 8);
   var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
 
   for (var r = 0; r < data.length; r++) {
@@ -17279,7 +17728,7 @@ function handleGetMyCneInterestStatus(params, session) {
  * Ordinary Employee: Access denied (FORBIDDEN)
  */
 function handleGetCneInterestedParticipants(params, session) {
-  var cneId = sanitizeCellInput(params.cneId);
+  var cneId = sanitizeCellInput(params ? params.cneId : '');
   if (!cneId) {
     return { success: false, message: 'CNE ID is required.' };
   }
@@ -17314,18 +17763,23 @@ function handleGetCneInterestedParticipants(params, session) {
     };
   }
 
-  var colMap = getHeaderMap(sheet);
-  var cneCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
-  var empCol = colMap['employeeid'] !== undefined ? colMap['employeeid'] : 1;
-  var nameCol = colMap['employeename'] !== undefined ? colMap['employeename'] : 2;
-  var desigCol = colMap['designation'] !== undefined ? colMap['designation'] : 3;
-  var deptCol = colMap['departmentarea'] !== undefined ? colMap['departmentarea'] : 4;
-  var statusCol = colMap['intereststatus'] !== undefined ? colMap['intereststatus'] : (colMap['status'] !== undefined ? colMap['status'] : 5);
-  var intAtCol = colMap['interestedat'] !== undefined ? colMap['interestedat'] : 6;
-  var updAtCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 7;
+  var schema = validateInterestSheetSchema_(sheet);
+  if (!schema.isValid) {
+    return { success: false, errorCode: schema.errorCode, message: schema.message };
+  }
+
+  var colMap = schema.colMap;
+  var cneCol = colMap['cneid'];
+  var empCol = colMap['employeeid'];
+  var nameCol = colMap['employeename'];
+  var desigCol = colMap['designation'];
+  var deptCol = colMap['departmentarea'];
+  var statusCol = colMap['intereststatus'];
+  var intAtCol = colMap['interestedat'];
+  var updAtCol = colMap['updatedat'];
 
   var lastRow = sheet.getLastRow();
-  var width = Math.max(8, sheet.getLastColumn());
+  var width = Math.max(schema.totalCols, 8);
   var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
   var participants = [];
   var totalInterested = 0;

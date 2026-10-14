@@ -90,6 +90,322 @@ export function formatCneDateRangeDisplay(fromDate?: string | null, toDate?: str
 }
 
 /**
+ * Strict calendar date validator.
+ * Validates 4-digit year, 1-indexed month (1-12), and day (1-31) accounting for
+ * the exact number of days in each month and leap years.
+ * Rejects roll-overs, day 00, month 00, month 13, April 31, Feb 29 (non-leap), etc.
+ */
+export function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (isNaN(year) || isNaN(month) || isNaN(day)) return false;
+  if (year < 1970 || year > 2100) return false;
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > 31) return false;
+
+  let daysInMonth: number;
+  if (month === 2) {
+    const isLeap = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+    daysInMonth = isLeap ? 29 : 28;
+  } else if (month === 4 || month === 6 || month === 9 || month === 11) {
+    daysInMonth = 30;
+  } else {
+    daysInMonth = 31;
+  }
+
+  if (day > daysInMonth) return false;
+
+  // Strict JS Date comparison to ensure no normalization / rollover occurred
+  const utcCheck = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  if (
+    utcCheck.getUTCFullYear() !== year ||
+    utcCheck.getUTCMonth() !== month - 1 ||
+    utcCheck.getUTCDate() !== day
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export interface StrictTimeComponents {
+  hour: number;
+  min: number;
+  sec: number;
+  millis: number;
+  hasExplicitOffset: boolean;
+  offsetMinutesTotal: number;
+}
+
+/**
+ * Strict time validator.
+ * Validates 24-hour ("14:00", "09:30:15", "08:30:00Z", "14:00:00+05:30", "03:30:00-05:00", "08:30:00.500Z")
+ * and 12-hour AM/PM ("02:30 PM", "9:00 am") formats.
+ * Rejects malformed strings ("bogus", "abc"), hour overflows ("24:00", "25:00", "99:99"),
+ * minute overflows ("10:60", "14:60:00Z"), invalid AM/PM combinations ("13:00 PM", "0:00 AM"),
+ * and invalid timezone offsets ("+25:00", "-25:00", "+05:60").
+ * Returns { hour, min, sec, millis, hasExplicitOffset, offsetMinutesTotal } or null if invalid.
+ */
+export function parseStrictTime(timeVal?: string | Date | null): StrictTimeComponents | null {
+  if (timeVal === null || timeVal === undefined) return null;
+
+  if (timeVal instanceof Date) {
+    if (isNaN(timeVal.getTime())) return null;
+    const th = timeVal.getHours();
+    const tm = timeVal.getMinutes();
+    const ts = timeVal.getSeconds();
+    const tms = timeVal.getMilliseconds();
+    if (th >= 0 && th <= 23 && tm >= 0 && tm <= 59 && ts >= 0 && ts <= 59) {
+      return { hour: th, min: tm, sec: ts, millis: tms, hasExplicitOffset: false, offsetMinutesTotal: 0 };
+    }
+    return null;
+  }
+
+  const s = String(timeVal).trim();
+  if (!s) return null;
+
+  // 12-hour AM/PM format: e.g. "02:30 PM", "2:30pm", "12:00 AM", "09:15:30 am"
+  const ampmMatch = s.match(/^(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\s*([ap]m)$/i);
+  if (ampmMatch) {
+    const h12 = parseInt(ampmMatch[1], 10);
+    const mn12 = parseInt(ampmMatch[2], 10);
+    const sc12 = ampmMatch[3] !== undefined ? parseInt(ampmMatch[3], 10) : 0;
+    const ap = ampmMatch[4].toLowerCase();
+    if (h12 < 1 || h12 > 12) return null;
+    let h24 = h12;
+    if (ap === 'pm') {
+      h24 = (h12 === 12) ? 12 : h12 + 12;
+    } else {
+      h24 = (h12 === 12) ? 0 : h12;
+    }
+    return { hour: h24, min: mn12, sec: sc12, millis: 0, hasExplicitOffset: false, offsetMinutesTotal: 0 };
+  }
+
+  // 24-hour format with optional seconds, fractional seconds, and ISO 8601 timezone offset (Z, +HH:MM, -HH:MM):
+  // e.g. "14:00", "09:30", "14:00:00", "08:30:00Z", "14:00:00+05:30", "03:30:00-05:00", "08:30:00.500Z", "14:00:00.123+05:30"
+  // Rejects 24:00, 25:00, 99:99, 10:60, +25:00, -25:00, +05:60, +14:60, 14:60:00Z, bogus strings
+  const h24Match = s.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.(\d+))?)?(?:\s*(?:([Zz])|([+-])(\d{1,2}):?(\d{2})))?$/);
+  if (h24Match) {
+    const h = parseInt(h24Match[1], 10);
+    const m = parseInt(h24Match[2], 10);
+    const sec = h24Match[3] !== undefined ? parseInt(h24Match[3], 10) : 0;
+    if (h < 0 || h > 23) return null;
+    if (m < 0 || m > 59) return null;
+    if (sec < 0 || sec > 59) return null;
+
+    let millis = 0;
+    if (h24Match[4] !== undefined) {
+      const fractionStr = h24Match[4];
+      if (!/^\d+$/.test(fractionStr)) return null;
+      millis = Math.floor(parseFloat('0.' + fractionStr) * 1000);
+      if (isNaN(millis) || millis < 0 || millis > 999) return null;
+    }
+
+    let hasExplicitOffset = false;
+    let offsetMinutesTotal = 0;
+
+    if (h24Match[5]) {
+      // 'Z' or 'z' (UTC)
+      hasExplicitOffset = true;
+      offsetMinutesTotal = 0;
+    } else if (h24Match[6]) {
+      // [+-]HH:MM or [+-]HHMM
+      const sign = h24Match[6] === '-' ? -1 : 1;
+      const offH = parseInt(h24Match[7], 10);
+      const offM = parseInt(h24Match[8], 10);
+      // Validate timezone offset hours and minutes against supported ISO 8601 range (00-23 hours, 00-59 minutes)
+      // Rejects +25:00, -25:00, +05:60, +14:60, etc.
+      if (isNaN(offH) || isNaN(offM) || offH < 0 || offH > 23 || offM < 0 || offM > 59) {
+        return null;
+      }
+      hasExplicitOffset = true;
+      offsetMinutesTotal = sign * (offH * 60 + offM);
+    }
+
+    return {
+      hour: h,
+      min: m,
+      sec: sec,
+      millis,
+      hasExplicitOffset,
+      offsetMinutesTotal
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Authoritatively parses CNE start date and time into UTC epoch milliseconds.
+ * Strictly validates calendar dates (leap years, month days, no silent rollover)
+ * and time components (00-23 hours, 00-59 minutes, rejects bogus time strings).
+ * Fully supports ISO 8601 explicit timezone offsets (Z, +HH:MM, -HH:MM, fractional seconds).
+ * For timestamps without an explicit timezone offset, authoritatively uses Asia/Kolkata (+05:30).
+ * Supports combined date/time strings, separate date + time fields, and Date objects.
+ * Rejects unparseable, malformed, or contradictory dates/times by returning NaN.
+ */
+export function parseCneStartTimestamp(dateVal?: string | Date | null, timeVal?: string | null): number {
+  if (!dateVal) return NaN;
+
+  if (dateVal instanceof Date) {
+    if (isNaN(dateVal.getTime())) return NaN;
+    try {
+      const dtf = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      const parts = dtf.formatToParts(dateVal);
+      const p: Record<string, string> = {};
+      for (let i = 0; i < parts.length; i++) {
+        p[parts[i].type] = parts[i].value;
+      }
+      const iso = `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}`;
+      return parseCneStartTimestamp(iso, timeVal);
+    } catch {
+      const y = dateVal.getFullYear();
+      const m = String(dateVal.getMonth() + 1).padStart(2, '0');
+      const d = String(dateVal.getDate()).padStart(2, '0');
+      const hr = String(dateVal.getHours()).padStart(2, '0');
+      const mn = String(dateVal.getMinutes()).padStart(2, '0');
+      const sc = String(dateVal.getSeconds()).padStart(2, '0');
+      return parseCneStartTimestamp(`${y}-${m}-${d}T${hr}:${mn}:${sc}`, timeVal);
+    }
+  }
+
+  const s = String(dateVal).trim();
+  if (!s) return NaN;
+
+  let year = NaN, month = NaN, day = NaN;
+  let embeddedTimeStr: string | null = null;
+
+  // 1. ISO format: YYYY-MM-DD or YYYY/MM/DD with optional time
+  const isoMatch = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[T\s](.+))?$/);
+  if (isoMatch) {
+    year = parseInt(isoMatch[1], 10);
+    month = parseInt(isoMatch[2], 10);
+    day = parseInt(isoMatch[3], 10);
+    embeddedTimeStr = isoMatch[4] || null;
+  } else {
+    // 2. DD-MMM-YYYY format: e.g. 15-Oct-2026, 15 Oct 2026, 15/Oct/2026 with optional time
+    const dmmmMatch = s.match(/^(\d{1,2})[-\s\/]([A-Za-z]{3})[-\s\/](\d{4})(?:[T\s](.+))?$/);
+    if (dmmmMatch) {
+      const monthMap: Record<string, number> = {
+        jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+        jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12
+      };
+      const mKey = dmmmMatch[2].toLowerCase();
+      if (!monthMap[mKey]) return NaN;
+      day = parseInt(dmmmMatch[1], 10);
+      month = monthMap[mKey];
+      year = parseInt(dmmmMatch[3], 10);
+      embeddedTimeStr = dmmmMatch[4] || null;
+    } else {
+      // 3. DD-MM-YYYY format: e.g. 15-10-2026, 15/10/2026, 15.10.2026 with optional time
+      const dmyMatch = s.match(/^(\d{1,2})[-\/\.]([0-9]{1,2})[-\/\.](\d{4})(?:[T\s](.+))?$/);
+      if (dmyMatch) {
+        day = parseInt(dmyMatch[1], 10);
+        month = parseInt(dmyMatch[2], 10);
+        year = parseInt(dmyMatch[3], 10);
+        embeddedTimeStr = dmyMatch[4] || null;
+      } else {
+        return NaN;
+      }
+    }
+  }
+
+  // Strict calendar date validation (leap year, days per month, range)
+  if (!isValidCalendarDate(year, month, day)) {
+    return NaN;
+  }
+
+  // Parse time components
+  let hour = 0, min = 0, sec = 0, millis = 0;
+  let hasExplicitOffset = false;
+  let offsetMinutesTotal = 0;
+
+  let parsedEmbedded: StrictTimeComponents | null = null;
+  if (embeddedTimeStr !== null) {
+    parsedEmbedded = parseStrictTime(embeddedTimeStr);
+    if (!parsedEmbedded) return NaN;
+  }
+
+  let parsedExplicit: StrictTimeComponents | null = null;
+  if (timeVal !== undefined && timeVal !== null && String(timeVal).trim() !== '') {
+    parsedExplicit = parseStrictTime(timeVal);
+    if (!parsedExplicit) return NaN;
+  }
+
+  if (parsedEmbedded && parsedExplicit) {
+    if (parsedEmbedded.hasExplicitOffset) {
+      // If a combined ISO date/time includes an explicit timezone, its embedded time
+      // and offset must define the instant. Do not silently override it with a separate time field.
+      // If contradictory date/time fields are supplied, reject the input with NaN.
+      if (
+        parsedExplicit.hour !== parsedEmbedded.hour ||
+        parsedExplicit.min !== parsedEmbedded.min ||
+        (parsedExplicit.sec !== undefined && parsedEmbedded.sec !== undefined && parsedExplicit.sec !== parsedEmbedded.sec)
+      ) {
+        return NaN;
+      }
+      hour = parsedEmbedded.hour;
+      min = parsedEmbedded.min;
+      sec = parsedEmbedded.sec;
+      millis = parsedEmbedded.millis;
+      hasExplicitOffset = true;
+      offsetMinutesTotal = parsedEmbedded.offsetMinutesTotal;
+    } else {
+      // Embedded time had no explicit offset; explicit separate timeVal takes precedence
+      hour = parsedExplicit.hour;
+      min = parsedExplicit.min;
+      sec = parsedExplicit.sec;
+      millis = parsedExplicit.millis;
+      hasExplicitOffset = parsedExplicit.hasExplicitOffset;
+      offsetMinutesTotal = parsedExplicit.offsetMinutesTotal;
+    }
+  } else if (parsedEmbedded) {
+    hour = parsedEmbedded.hour;
+    min = parsedEmbedded.min;
+    sec = parsedEmbedded.sec;
+    millis = parsedEmbedded.millis;
+    hasExplicitOffset = parsedEmbedded.hasExplicitOffset;
+    offsetMinutesTotal = parsedEmbedded.offsetMinutesTotal;
+  } else if (parsedExplicit) {
+    hour = parsedExplicit.hour;
+    min = parsedExplicit.min;
+    sec = parsedExplicit.sec;
+    millis = parsedExplicit.millis;
+    hasExplicitOffset = parsedExplicit.hasExplicitOffset;
+    offsetMinutesTotal = parsedExplicit.offsetMinutesTotal;
+  }
+
+  // If no explicit timezone offset was supplied in the timestamp, authoritatively use Asia/Kolkata (+05:30)
+  if (!hasExplicitOffset) {
+    offsetMinutesTotal = 5 * 60 + 30; // 330 minutes
+  }
+
+  // Strict time range check & prevent Date roll-over
+  const utcCheck = new Date(Date.UTC(year, month - 1, day, hour, min, sec, millis));
+  if (
+    utcCheck.getUTCFullYear() !== year ||
+    utcCheck.getUTCMonth() !== month - 1 ||
+    utcCheck.getUTCDate() !== day ||
+    utcCheck.getUTCHours() !== hour ||
+    utcCheck.getUTCMinutes() !== min ||
+    utcCheck.getUTCSeconds() !== sec ||
+    utcCheck.getUTCMilliseconds() !== millis
+  ) {
+    return NaN;
+  }
+
+  // Calculate the absolute epoch milliseconds: UTC = local instant - timezone offset
+  return utcCheck.getTime() - (offsetMinutesTotal * 60 * 1000);
+}
+
+/**
  * Safely parses any supported CNE date representation (ISO, YYYY-MM-DD, DD-MMM-YYYY, DD/MM/YYYY, Date)
  * into a canonical "YYYY-MM-DD" string for reliable chronological comparison and range filtering.
  * Returns null if the date is missing, empty, or unparseable.
@@ -99,9 +415,10 @@ export function parseToIsoDateString(val?: string | Date | null): string | null 
   if (val instanceof Date) {
     if (isNaN(val.getTime())) return null;
     const y = val.getFullYear();
-    const m = String(val.getMonth() + 1).padStart(2, '0');
-    const d = String(val.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+    const m = val.getMonth() + 1;
+    const d = val.getDate();
+    if (!isValidCalendarDate(y, m, d)) return null;
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
   }
   const s = String(val).trim();
   if (!s) return null;
@@ -109,43 +426,37 @@ export function parseToIsoDateString(val?: string | Date | null): string | null 
   // 1. Direct YYYY-MM-DD or YYYY/MM/DD prefix (e.g. 2026-09-10 or 2026-09-10T08:00:00)
   const ymdMatch = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
   if (ymdMatch) {
-    const y = ymdMatch[1];
-    const m = ymdMatch[2].padStart(2, '0');
-    const d = ymdMatch[3].padStart(2, '0');
-    return `${y}-${m}-${d}`;
+    const y = parseInt(ymdMatch[1], 10);
+    const m = parseInt(ymdMatch[2], 10);
+    const d = parseInt(ymdMatch[3], 10);
+    if (!isValidCalendarDate(y, m, d)) return null;
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
   }
 
   // 2. DD-MMM-YYYY (e.g. 10-Sep-2026)
   const dmmmMatch = s.match(/^(\d{1,2})[-\s/]([A-Za-z]{3})[-\s/](\d{4})/);
   if (dmmmMatch) {
-    const monthMap: Record<string, string> = {
-      jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
-      jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+    const monthMap: Record<string, number> = {
+      jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+      jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12
     };
-    const mStr = monthMap[dmmmMatch[2].toLowerCase()];
-    if (mStr) {
-      const d = dmmmMatch[1].padStart(2, '0');
-      const y = dmmmMatch[3];
-      return `${y}-${mStr}-${d}`;
+    const mNum = monthMap[dmmmMatch[2].toLowerCase()];
+    if (mNum) {
+      const d = parseInt(dmmmMatch[1], 10);
+      const y = parseInt(dmmmMatch[3], 10);
+      if (!isValidCalendarDate(y, mNum, d)) return null;
+      return `${y}-${String(mNum).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     }
   }
 
   // 3. DD-MM-YYYY or DD/MM/YYYY (e.g. 10/09/2026)
   const dmyMatch = s.match(/^(\d{1,2})[-\s/](\d{1,2})[-\s/](\d{4})/);
   if (dmyMatch) {
-    const d = dmyMatch[1].padStart(2, '0');
-    const m = dmyMatch[2].padStart(2, '0');
-    const y = dmyMatch[3];
-    return `${y}-${m}-${d}`;
-  }
-
-  // 4. Date constructor fallback
-  const d = new Date(s);
-  if (!isNaN(d.getTime())) {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    const d = parseInt(dmyMatch[1], 10);
+    const m = parseInt(dmyMatch[2], 10);
+    const y = parseInt(dmyMatch[3], 10);
+    if (!isValidCalendarDate(y, m, d)) return null;
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
   }
 
   return null;

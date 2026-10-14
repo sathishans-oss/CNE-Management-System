@@ -23,6 +23,19 @@ export interface InterestedParticipantsModalProps {
   onClose: () => void;
 }
 
+export function sanitizeCsvCell(value: unknown): string {
+  if (value === null || value === undefined) return '""';
+  let str = String(value);
+
+  const trimmed = str.replace(/^[ \f\v\u0000-\u0008\u000b\u000e-\u001f]+/, '');
+  if (/^[=+@\-\t\r]/.test(str) || /^[=+@\-]/.test(trimmed)) {
+    str = `'${str}`;
+  }
+
+  const escaped = str.replace(/"/g, '""');
+  return `"${escaped}"`;
+}
+
 export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalProps> = ({
   cne,
   onClose
@@ -131,21 +144,15 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
       'Updated At'
     ];
 
-    const escapeCsv = (str: string | undefined | null) => {
-      if (str === null || str === undefined) return '""';
-      const s = String(str).replace(/"/g, '""');
-      return `"${s}"`;
-    };
-
     const rows = filteredParticipants.map((p) => [
-      escapeCsv(p.cneId),
-      escapeCsv(p.employeeId),
-      escapeCsv(p.employeeName),
-      escapeCsv(p.designation),
-      escapeCsv(p.department),
-      escapeCsv(p.status),
-      escapeCsv(p.interestedAt),
-      escapeCsv(p.updatedAt)
+      sanitizeCsvCell(p.cneId),
+      sanitizeCsvCell(p.employeeId),
+      sanitizeCsvCell(p.employeeName),
+      sanitizeCsvCell(p.designation),
+      sanitizeCsvCell(p.department),
+      sanitizeCsvCell(p.status),
+      sanitizeCsvCell(p.interestedAt),
+      sanitizeCsvCell(p.updatedAt)
     ]);
 
     const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');

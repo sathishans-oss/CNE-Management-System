@@ -18,11 +18,14 @@ import {
   Info
 } from 'lucide-react';
 import { CNERecord, SessionUser, Employee, CNEActivityProgress, CneInterestStatus } from '../../types';
-import { formatCneDateTimeDisplay, formatResourcePersonsDisplay, getCneTypeLabel } from '../../utils';
+import { formatCneDateTimeDisplay, formatResourcePersonsDisplay, getCneTypeLabel, parseCneStartTimestamp } from '../../utils';
 import { ProgressPanel } from './ProgressPanel';
-import { InterestedParticipantsModal } from './InterestedParticipantsModal';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
+
+const InterestedParticipantsModal = React.lazy(() =>
+  import('./InterestedParticipantsModal').then((m) => ({ default: m.InterestedParticipantsModal }))
+);
 
 export interface CneDetailsModalProps {
   cne: CNERecord;
@@ -95,22 +98,11 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   const hasCneStarted = useMemo(() => {
     if (isCompleted || isCanceled) return true;
     const dateVal = cne.date || cne.fromDate;
-    if (!dateVal) return false;
-    const s = String(dateVal).trim();
-    const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s](\d{1,2}):(\d{2}))?/);
-    if (isoMatch) {
-      const year = parseInt(isoMatch[1], 10);
-      const month = parseInt(isoMatch[2], 10) - 1;
-      const day = parseInt(isoMatch[3], 10);
-      const hour = isoMatch[4] !== undefined ? parseInt(isoMatch[4], 10) : 0;
-      const min = isoMatch[5] !== undefined ? parseInt(isoMatch[5], 10) : 0;
-      const kolkataOffsetMs = (5 * 60 + 30) * 60 * 1000;
-      const startMs = Date.UTC(year, month, day, hour, min, 0) - kolkataOffsetMs;
-      return Date.now() >= startMs;
-    }
-    const d = new Date(s);
-    return !isNaN(d.getTime()) && Date.now() >= d.getTime();
-  }, [cne.date, cne.fromDate, isCompleted, isCanceled]);
+    const timeVal = (cne as any).fromTime || (cne as any).startTime || (cne as any).time;
+    const startMs = parseCneStartTimestamp(dateVal, timeVal);
+    if (isNaN(startMs)) return true; // Missing or unparseable date treated as started/closed
+    return Date.now() >= startMs;
+  }, [cne.date, cne.fromDate, (cne as any).fromTime, (cne as any).startTime, (cne as any).time, isCompleted, isCanceled]);
 
   // Interest allowed only for upcoming Scheduled CNEs before start time
   const isInterestOpen = isScheduled && !hasCneStarted;
@@ -523,10 +515,12 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
 
       {/* Organizer Modal: Interested Staff */}
       {showInterestedStaffModal && (
-        <InterestedParticipantsModal
-          cne={cne}
-          onClose={() => setShowInterestedStaffModal(false)}
-        />
+        <React.Suspense fallback={null}>
+          <InterestedParticipantsModal
+            cne={cne}
+            onClose={() => setShowInterestedStaffModal(false)}
+          />
+        </React.Suspense>
       )}
     </>
   );

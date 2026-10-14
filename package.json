@@ -20,7 +20,8 @@
     "verify:workflows": "node scripts/verify-cne-workflows.js",
     "verify:pdf": "node scripts/verify-pdf-resources-and-indexing.js",
     "verify:integration": "node scripts/verify-system-integration.js",
-    "verify:delete": "node scripts/verify-delete-cne-behavior.js"
+    "verify:delete": "node scripts/verify-delete-cne-behavior.js",
+    "verify:interest": "node scripts/verify-cne-interest.js"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
