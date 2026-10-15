@@ -289,8 +289,8 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
   });
 
   return (
-    <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-white rounded-2xl w-[92vw] max-w-[1440px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
+    <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-2 sm:p-5">
+      <div className="bg-white rounded-2xl w-full sm:w-[92vw] max-w-[1440px] h-[calc(100dvh-1rem)] sm:h-[85dvh] max-h-[900px] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
         {/* Header - simplified without Ward/Area and Class ID/CNE ID */}
         <div className="px-6 py-3.5 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/70">
           <div className="flex items-center gap-3">
@@ -318,7 +318,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
         </div>
 
         {/* Stats Summary Bar */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 px-6 py-3 bg-slate-50 border-b border-slate-200 text-xs shrink-0">
+        <div className={`${isAddingManual ? 'hidden sm:grid' : 'grid'} grid-cols-2 sm:grid-cols-4 gap-3.5 px-6 py-3 bg-slate-50 border-b border-slate-200 text-xs shrink-0`}>
           <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
             <span className="text-[11px] text-slate-500 font-medium">Total Attendees</span>
             <p className="text-lg font-bold text-slate-900 mt-0.5">
@@ -347,7 +347,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
 
         {/* Action & Filter Bar */}
         <div className="px-6 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0 bg-white">
-          <div className="relative flex-1 min-w-[240px] max-w-md">
+          {!isAddingManual && <div className="relative flex-1 min-w-[240px] max-w-md">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
             <input
               type="text"
@@ -356,13 +356,14 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-8.5 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:bg-white focus:ring-1 focus:ring-teal-500"
             />
-          </div>
+          </div>}
 
           {canModifyAttendance && (
             <button
               type="button"
               onClick={() => setIsAddingManual(!isAddingManual)}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer transition-colors"
+              disabled={isSubmitting}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isAddingManual ? (
                 <>
@@ -389,8 +390,9 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
         {/* Form: Add Participants (Multi-Select Staff & External) */}
         {isAddingManual && canModifyAttendance && (
           <form
+            id="cne-manual-attendance-form"
             onSubmit={handleSaveParticipants}
-            className="px-6 py-4 bg-teal-50/60 border-b border-teal-100 text-xs space-y-3.5 shrink-0 max-h-[380px] overflow-y-auto"
+            className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 sm:px-6 py-4 bg-teal-50/60 border-b border-teal-100 text-xs space-y-3.5"
           >
             <div className="flex items-center justify-between">
               <div className="font-bold text-teal-950 flex items-center gap-1.5">
@@ -571,38 +573,12 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-teal-100">
-              <button
-                type="button"
-                onClick={() => setIsAddingManual(false)}
-                disabled={isSubmitting}
-                className="px-3 py-1.5 text-slate-600 hover:bg-slate-200 rounded-lg text-xs font-semibold cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={isSubmitting || (selectedStaffIds.length === 0 && externalStaffList.length === 0)}
-                className="flex items-center gap-1.5 px-4 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg font-bold text-xs shadow-xs disabled:opacity-50 cursor-pointer transition-colors"
-              >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Saving Participants...</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Save Participants</span>
-                  </>
-                )}
-              </button>
-            </div>
           </form>
         )}
 
-        {/* Table Content */}
-        <div className="p-6 overflow-y-auto flex-1 bg-slate-50/40">
+        {/* Attendance roster is available in view mode; the manual form gets the full
+            scrollable area while editing so its footer actions remain visible. */}
+        {!(isAddingManual && canModifyAttendance) && <div className="p-4 sm:p-6 overflow-y-auto flex-1 min-h-0 bg-slate-50/40">
           {loading ? (
             <div className="py-20 flex flex-col items-center justify-center gap-2 text-slate-500 text-xs">
               <Loader2 className="w-6 h-6 animate-spin text-teal-600" />
@@ -694,22 +670,58 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
               </table>
             </div>
           )}
-        </div>
+        </div>}
 
-        {/* Footer */}
-        <div className="px-6 py-3.5 border-t border-slate-200 bg-white flex items-center justify-between shrink-0">
-          <span className="text-xs text-slate-500">
-            Showing {filteredParticipants.length} attendee records
-          </span>
-          <div className="flex items-center gap-2.5">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-colors"
-            >
-              Done
-            </button>
-          </div>
+        {/* Fixed-in-modal action footer: never inside the scrollable manual form. */}
+        <div className="relative z-10 px-4 sm:px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-between gap-3 shrink-0">
+          {isAddingManual && canModifyAttendance ? (
+            <>
+              <span className="text-[11px] sm:text-xs font-medium text-slate-600">
+                {selectedStaffIds.length + externalStaffList.length} selected
+              </span>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAddingManual(false)}
+                  disabled={isSubmitting}
+                  className="px-3 py-2 text-slate-700 hover:bg-slate-100 rounded-lg text-xs font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  form="cne-manual-attendance-form"
+                  disabled={isSubmitting || (selectedStaffIds.length === 0 && externalStaffList.length === 0)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-lg font-bold text-xs shadow-xs disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Save Participants</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span className="text-xs text-slate-500">
+                Showing {filteredParticipants.length} attendee records
+              </span>
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-colors"
+              >
+                Done
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
