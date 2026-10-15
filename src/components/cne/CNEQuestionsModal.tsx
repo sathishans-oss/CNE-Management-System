@@ -994,7 +994,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         </div>
 
         {/* Footer: one action only — Save & Next opens QR after 5 valid finalized questions */}
-        <div className="px-6 py-3.5 border-t border-slate-200 bg-white flex items-center justify-between shrink-0">
+        <div className="px-3 sm:px-6 py-3 border-t border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="text-xs text-slate-500">
             {sessionClosed ? (
               <span className="text-slate-500 font-semibold">
@@ -1016,7 +1016,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             )}
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
             {canModify && (
               <button
                 type="button"

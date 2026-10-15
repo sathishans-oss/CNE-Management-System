@@ -1110,9 +1110,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         </button>
       )}
       {/* Compact CNE Schedule toolbar: Search | From Date | To Date | Clear | Schedule CNE */}
-      <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs overflow-x-auto">
-        <div className="flex items-center gap-3 min-w-max">
-          <div className="w-[300px] min-w-[220px]">
+      <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
+          <div className="w-full sm:w-[300px] sm:min-w-[220px] min-w-0">
             <SearchInput
               id="filter-search"
               placeholder="Search..."
@@ -1121,7 +1121,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             />
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
             <label htmlFor="filter-from-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
               From Date
             </label>
@@ -1134,7 +1134,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             />
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
             <label htmlFor="filter-to-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
               To Date
             </label>
@@ -1170,7 +1170,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                   setIsDeptScheduleOpen(true);
                 }
               }}
-              className="ml-auto flex items-center gap-1.5 px-3.5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs whitespace-nowrap shrink-0"
+              className="sm:ml-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs whitespace-nowrap shrink-0"
             >
               <PlusCircle className="w-4 h-4 text-teal-200" />
               <span>Schedule CNE</span>
@@ -2168,9 +2168,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       )}
 
       {cancelTargetCne && (
-        <div className="fixed inset-0 z-[70] bg-slate-900/65 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="w-full max-w-xl bg-white rounded-2xl border border-rose-200 shadow-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 bg-rose-50/70 flex items-center justify-between gap-3">
+        <div className="fixed inset-0 z-[70] overflow-y-auto bg-slate-900/65 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="w-full max-w-xl max-h-[calc(100dvh-1rem)] sm:max-h-[90dvh] min-h-0 flex flex-col bg-white rounded-2xl border border-rose-200 shadow-2xl overflow-hidden">
+            <div className="px-4 sm:px-5 py-3 sm:py-4 shrink-0 border-b border-slate-200 bg-rose-50/70 flex items-center justify-between gap-3">
               <div>
                 <div className="text-[10px] font-bold uppercase tracking-wider text-rose-700">Cancel CNE</div>
                 <div className="text-sm font-bold text-slate-900 mt-0.5">{cancelTargetCne.topic}</div>
@@ -2184,7 +2184,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-5 space-y-4">
+            <div className="p-4 sm:p-5 space-y-4 overflow-y-auto min-h-0 flex-1 overscroll-contain">
               <p className="text-xs text-slate-600 leading-relaxed">
                 This will mark the programme as <strong>Canceled</strong>. The record will remain available only to authorized users for audit and reporting.
               </p>
@@ -2198,7 +2198,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                   className="w-full p-3 border border-slate-300 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400"
                 />
               </div>
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+            </div>
+            <div className="shrink-0 px-4 sm:px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-white flex flex-wrap items-center justify-end gap-2 border-t border-slate-200">
                 <button
                   type="button"
                   onClick={() => { setCancelTargetCne(null); setCancelReason(''); }}
@@ -2217,7 +2218,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                   <span>{isCancellingCne ? 'Cancelling...' : 'Confirm Cancellation'}</span>
                 </button>
               </div>
-            </div>
           </div>
         </div>
       )}

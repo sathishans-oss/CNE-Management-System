@@ -207,9 +207,9 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
       </div>
 
       {/* Filter Panel — same compact pattern used by CNE Schedule */}
-      <div className="print:hidden bg-white p-3 rounded-2xl border border-slate-200 shadow-xs overflow-x-auto mb-6">
-        <div className="flex items-center gap-3 min-w-max">
-          <div className="w-[300px] min-w-[220px]">
+      <div className="print:hidden bg-white p-3 rounded-2xl border border-slate-200 shadow-xs mb-6">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
+          <div className="w-full sm:w-[300px] sm:min-w-[220px] min-w-0">
             <SearchInput
               id="departmental-outcome-search"
               placeholder="Search..."
@@ -218,7 +218,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
             />
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
             <label htmlFor="departmental-outcome-from-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
               From Date
             </label>
@@ -231,7 +231,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
             />
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
             <label htmlFor="departmental-outcome-to-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
               To Date
             </label>

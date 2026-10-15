@@ -44,10 +44,10 @@ export const DeleteCneModal: React.FC<DeleteCneModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[70] bg-slate-900/65 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="w-full max-w-lg bg-white rounded-2xl border border-red-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-[70] overflow-y-auto bg-slate-900/65 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+      <div className="w-full max-w-lg max-h-[calc(100dvh-1rem)] sm:max-h-[90dvh] min-h-0 flex flex-col bg-white rounded-2xl border border-red-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className="px-5 py-4 border-b border-red-100 bg-red-50/80 flex items-center justify-between gap-3">
+        <div className="px-4 sm:px-5 py-3 sm:py-4 shrink-0 border-b border-red-100 bg-red-50/80 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <div className="p-2 bg-red-100 text-red-700 rounded-xl">
               <ShieldAlert className="w-5 h-5 text-red-600" />
@@ -69,7 +69,8 @@ export const DeleteCneModal: React.FC<DeleteCneModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
+        <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1 text-xs">
+          <div className="p-4 sm:p-5 space-y-4 flex-1 min-h-0 overflow-y-auto overscroll-contain">
           {/* Warning Banner */}
           <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-amber-900">
             <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -143,8 +144,9 @@ export const DeleteCneModal: React.FC<DeleteCneModalProps> = ({
             )}
           </div>
 
-          {/* Action Buttons */}
-          <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-slate-100">
+          </div>
+          {/* Accessible confirmation buttons outside the scrollable fields */}
+          <div className="shrink-0 px-4 sm:px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-white flex flex-wrap items-center justify-end gap-2.5 border-t border-slate-200">
             <button
               type="button"
               onClick={onClose}

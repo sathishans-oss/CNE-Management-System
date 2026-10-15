@@ -156,7 +156,7 @@ export const CNEFinalizeModal: React.FC<CNEFinalizeModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-white rounded-2xl w-[90vw] max-w-[1050px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative text-xs overflow-hidden">
+      <div className="bg-white rounded-2xl w-[90vw] max-w-[1050px] max-h-[calc(100dvh-1.5rem)] sm:max-h-[85dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative text-xs overflow-hidden">
         <div className="px-6 py-3.5 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/80">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
@@ -187,7 +187,7 @@ export const CNEFinalizeModal: React.FC<CNEFinalizeModalProps> = ({
             <span>Loading attendance &amp; completion details...</span>
           </div>
         ) : (
-          <div className="p-6 overflow-y-auto flex-1 grid grid-cols-1 md:grid-cols-12 gap-6 bg-slate-50/40">
+          <div className="p-3 sm:p-6 overflow-y-auto min-h-0 flex-1 grid grid-cols-1 md:grid-cols-12 gap-6 bg-slate-50/40">
             <div className="md:col-span-6 space-y-4">
               <div className="p-4 bg-white rounded-xl border border-slate-200 space-y-2">
                 <div className="flex items-start justify-between gap-3">
@@ -290,8 +290,12 @@ export const CNEFinalizeModal: React.FC<CNEFinalizeModalProps> = ({
                   />
                 </div>
               </div>
-
-              <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-slate-200">
+            </div>
+          </div>
+        )}
+        {!loading && (
+          <div className="shrink-0 border-t border-slate-200 bg-white px-3 sm:px-6 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+              <div className="flex flex-wrap items-center justify-end gap-2.5">
                 <button
                   type="button"
                   onClick={onClose}
@@ -330,7 +334,6 @@ export const CNEFinalizeModal: React.FC<CNEFinalizeModalProps> = ({
                   )}
                 </button>
               </div>
-            </div>
           </div>
         )}
       </div>

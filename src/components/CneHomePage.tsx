@@ -227,7 +227,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
       {/* 1. News / Circular Modal */}
       {selectedNews && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-none sm:backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-2rem)] min-h-0 flex flex-col p-3 sm:p-6 shadow-2xl border border-slate-200 space-y-3 animate-in fade-in zoom-in-95">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <span className="text-[10px] font-bold text-slate-800 uppercase bg-slate-100 px-2 py-0.5 rounded">
@@ -245,7 +245,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
               </button>
             </div>
 
-            <div className="text-xs text-slate-700 leading-relaxed space-y-2 border-t border-slate-100 pt-3">
+            <div className="text-xs text-slate-700 leading-relaxed space-y-2 border-t border-slate-100 pt-3 overflow-y-auto min-h-0 flex-1 overscroll-contain">
               <p>{selectedNews.content || selectedNews.summary}</p>
               {selectedNews.venue && (
                 <p className="text-[11px] text-slate-500">
@@ -275,7 +275,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
       {/* 2. Quick Link Modal */}
       {selectedQuickLink && selectedQuickLink.modalContent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-none sm:backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 max-h-[85vh] overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-2rem)] min-h-0 flex flex-col p-3 sm:p-6 shadow-2xl border border-slate-200 space-y-3 animate-in fade-in zoom-in-95">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <span className="text-[10px] font-bold text-slate-800 uppercase bg-slate-100 px-2 py-0.5 rounded">
@@ -294,7 +294,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
               </button>
             </div>
 
-            <div className="text-xs text-slate-700 leading-relaxed space-y-2.5 border-t border-slate-100 pt-3">
+            <div className="text-xs text-slate-700 leading-relaxed space-y-2.5 border-t border-slate-100 pt-3 overflow-y-auto min-h-0 flex-1 overscroll-contain">
               {selectedQuickLink.modalContent.body.map((para, i) => (
                 <p key={i} className="leading-relaxed">
                   {para}
@@ -302,7 +302,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
               ))}
             </div>
 
-            <div className="pt-2 flex justify-end">
+            <div className="pt-2 flex justify-end shrink-0 border-t border-slate-100">
               <button
                 type="button"
                 onClick={() => setSelectedQuickLink(null)}
@@ -318,7 +318,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
       {/* 3. Class Details & Apply Modal */}
       {selectedClass && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-none sm:backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-2rem)] min-h-0 flex flex-col p-3 sm:p-6 shadow-2xl border border-slate-200 space-y-3 animate-in fade-in zoom-in-95">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2 mb-1">
@@ -338,7 +338,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
               </button>
             </div>
 
-            <div className="bg-slate-50 p-4 rounded-xl space-y-2 text-xs text-slate-700 border border-slate-200">
+            <div className="bg-slate-50 p-3 sm:p-4 rounded-xl space-y-2 text-xs text-slate-700 border border-slate-200 overflow-y-auto min-h-0 flex-1 overscroll-contain">
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Date &amp; Schedule:</span>
                 <span className="font-bold text-slate-900">{formatCneDateTimeDisplay(selectedClass.date, selectedClass.toDate)}</span>
@@ -359,13 +359,12 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
                   </span>
                 </div>
               )}
+              {selectedClass.description && (
+                <p className="text-xs text-slate-600 leading-relaxed break-words border-t border-slate-200 pt-2">{selectedClass.description}</p>
+              )}
             </div>
 
-            {selectedClass.description && (
-              <p className="text-xs text-slate-600 leading-relaxed">{selectedClass.description}</p>
-            )}
-
-            <div className="pt-3 flex items-center justify-end">
+            <div className="pt-3 flex items-center justify-end shrink-0 border-t border-slate-100">
               <button
                 type="button"
                 onClick={() => setSelectedClass(null)}

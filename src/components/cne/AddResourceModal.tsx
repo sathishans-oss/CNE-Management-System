@@ -460,9 +460,9 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-150">
+      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[calc(100dvh-1.5rem)] sm:max-h-[90dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+        <div className="px-4 sm:px-6 py-4 bg-slate-900 text-white flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center font-bold">
               <Upload className="w-4 h-4" />
@@ -486,7 +486,8 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1">
+          <div className="p-4 sm:p-6 space-y-5 flex-1 min-h-0 overflow-y-auto overscroll-contain">
           {/* Resource Type Selection Tabs */}
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-2">
@@ -884,8 +885,9 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({
             </div>
           )}
 
-          {/* Action Buttons */}
-          <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+          </div>
+          {/* Action Buttons: remain available while fields scroll */}
+          <div className="shrink-0 bg-white flex flex-wrap items-center justify-end gap-2.5 px-4 sm:px-6 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t border-slate-200">
             <button
               type="button"
               onClick={onClose}

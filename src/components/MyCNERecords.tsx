@@ -290,9 +290,9 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   return (
     <div className="space-y-6 pb-12">
       {/* Compact Filter / Action Toolbar */}
-      <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-xs overflow-x-auto">
-        <div className="flex flex-nowrap items-center gap-3 min-w-max">
-          <div className="w-[280px] lg:w-[360px]">
+      <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
+          <div className="w-full sm:w-[280px] lg:w-[360px]">
             <SearchInput
               id="input-my-cne-search"
               value={searchTerm}
@@ -301,7 +301,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             />
           </div>
 
-          <div className="w-[160px]">
+          <div className="w-full sm:w-[160px]">
             <ConfirmDatePicker
               id="my-cne-from-date"
               value={startDate}
@@ -311,7 +311,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             />
           </div>
 
-          <div className="w-[160px]">
+          <div className="w-full sm:w-[160px]">
             <ConfirmDatePicker
               id="my-cne-to-date"
               value={endDate}

@@ -246,8 +246,8 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-md w-full shadow-xl border border-slate-200 relative overflow-hidden">
-        <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/70">
+      <div className="bg-white rounded-2xl max-w-md w-full max-h-[calc(100dvh-2rem)] min-h-0 flex flex-col shadow-xl border border-slate-200 relative overflow-hidden">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 shrink-0 border-b border-slate-100 bg-slate-50/70">
           <button
             id="btn-close-forgot-pass"
             type="button"
@@ -264,7 +264,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
               <KeyRound className="w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-lg font-bold text-slate-900">Create / Reset Password</h2>
                 <span className="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5 whitespace-nowrap">
                   {stepLabel}
@@ -275,7 +275,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
           </div>
         </div>
 
-        <div className="p-6">
+        <div className="p-4 sm:p-6 overflow-y-auto min-h-0 flex-1 overscroll-contain">
           {step === 'SUCCESS' ? (
             <div className="text-center py-3 space-y-4">
               <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-700 mx-auto flex items-center justify-center">

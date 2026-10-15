@@ -189,9 +189,9 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   return (
     <>
       <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-        <div className="bg-white rounded-2xl w-[92vw] max-w-[1280px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+        <div className="bg-white rounded-2xl w-[92vw] max-w-[1280px] max-h-[calc(100dvh-1.5rem)] sm:max-h-[85dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden animate-in fade-in zoom-in-95 duration-150">
           {/* Compact Header: CNE ID • CNE TYPE • STATUS */}
-          <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50/80">
+          <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0 bg-slate-50/80">
             <div className="flex flex-wrap items-center gap-2 text-sm sm:text-base font-bold text-slate-900">
               <span className="font-mono text-slate-800">{cne.cneId}</span>
               <span className="text-slate-400 font-sans">•</span>
@@ -217,7 +217,7 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
               )}
             </div>
 
-            <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="w-full sm:w-auto max-h-[26dvh] sm:max-h-none overflow-y-auto sm:overflow-visible flex flex-wrap items-center gap-2 justify-start sm:justify-end">
               {onBackToCalendar && (
                 <button type="button" onClick={onBackToCalendar}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-3 py-1.5 text-xs font-bold text-teal-800 hover:bg-teal-50">
@@ -303,7 +303,7 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
           </div>
 
           {/* Scrollable Content Body (Wide Horizontal Landscape Layout) */}
-          <div className="p-6 overflow-y-auto flex-1 space-y-5 text-xs">
+          <div className="p-3 sm:p-6 overflow-y-auto min-h-0 flex-1 space-y-5 text-xs">
             {/* Schedule Date & Time Display */}
             <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex flex-wrap items-center gap-4 text-xs">
               <div className="flex items-center gap-2 text-slate-700 font-bold">

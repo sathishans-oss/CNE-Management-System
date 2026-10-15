@@ -466,7 +466,7 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between shrink-0">
+        <div className="px-3 sm:px-6 py-3 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="text-[11px] text-slate-500">
             Total registrations: {rawParticipants.length} • Active: {activeCount} • Withdrawn: {withdrawnCount}
           </div>

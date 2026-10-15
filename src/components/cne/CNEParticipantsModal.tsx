@@ -673,13 +673,13 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
         </div>}
 
         {/* Fixed-in-modal action footer: never inside the scrollable manual form. */}
-        <div className="relative z-10 px-4 sm:px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-between gap-3 shrink-0">
+        <div className="relative z-10 px-3 sm:px-6 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t border-slate-200 bg-white flex flex-wrap items-center justify-between gap-2 shrink-0">
           {isAddingManual && canModifyAttendance ? (
             <>
               <span className="text-[11px] sm:text-xs font-medium text-slate-600">
                 {selectedStaffIds.length + externalStaffList.length} selected
               </span>
-              <div className="flex items-center justify-end gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsAddingManual(false)}

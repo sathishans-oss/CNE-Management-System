@@ -272,7 +272,7 @@ export const Gallery: React.FC<GalleryProps> = ({ user }) => {
       {/* Admin Upload Modal */}
       {isUploadOpen && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 relative">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[calc(100dvh-2rem)] min-h-0 flex flex-col p-3 sm:p-6 shadow-xl border border-slate-200 relative">
             <button
               onClick={() => setIsUploadOpen(false)}
               disabled={isSubmitting}
@@ -291,7 +291,8 @@ export const Gallery: React.FC<GalleryProps> = ({ user }) => {
               </div>
             </div>
 
-            <form onSubmit={handleUploadSubmit} className="space-y-4 text-xs">
+            <form onSubmit={handleUploadSubmit} className="flex flex-col min-h-0 flex-1 text-xs">
+              <div className="space-y-4 flex-1 min-h-0 overflow-y-auto overscroll-contain pb-3">
               {/* File Input */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
@@ -356,7 +357,8 @@ export const Gallery: React.FC<GalleryProps> = ({ user }) => {
                 />
               </div>
 
-              <div className="flex items-center justify-end pt-2">
+              </div>
+              <div className="shrink-0 bg-white flex flex-wrap items-center justify-end gap-2 pt-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] border-t border-slate-200">
                 <button
                   type="submit"
                   disabled={isSubmitting || !previewImage}
