@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useMemo } from 'react';
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -6,13 +6,28 @@ import {
   MapPin,
   X,
   Loader2,
-  RefreshCw
+  RefreshCw,
+  ExternalLink
 } from 'lucide-react';
-import { CNERecord } from '../types';
+import { CNERecord, SessionUser } from '../types';
 import { ApiService } from '../services/api';
 import { formatCneDateTimeDisplay, parseToIsoDateString, getCneTypeLabel } from '../utils';
 
 type CalendarViewMode = 'month' | 'agenda';
+export interface CalendarViewState {
+  year: number;
+  month: number; // 0-based month (same as JavaScript Date)
+  viewMode: CalendarViewMode;
+}
+
+interface CNECalendarProps {
+  user: SessionUser;
+  initialViewState?: CalendarViewState | null;
+  onViewFullCneDetails: (cneId: string, viewState: CalendarViewState) => void;
+}
+
+const CalendarInterestControls = lazy(() => import('./cne/CalendarInterestControls')
+  .then((m) => ({ default: m.CalendarInterestControls })));
 
 type CalendarEventType = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
 
@@ -41,10 +56,10 @@ const getCalendarEventType = (status?: string | null): CalendarEventType => {
   return 'UPCOMING';
 };
 
-export const CNECalendar: React.FC = () => {
+export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState, onViewFullCneDetails }) => {
   const indiaToday = getIndiaCalendarDate();
-  const [currentDate, setCurrentDate] = useState<Date>(() => new Date(indiaToday.year, indiaToday.month - 1, 1));
-  const [viewMode, setViewMode] = useState<CalendarViewMode>('month');
+  const [currentDate, setCurrentDate] = useState<Date>(() => new Date(initialViewState?.year ?? indiaToday.year, initialViewState?.month ?? (indiaToday.month - 1), 1));
+  const [viewMode, setViewMode] = useState<CalendarViewMode>(() => initialViewState?.viewMode ?? 'month');
   const [cneRecords, setCneRecords] = useState<CNERecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
@@ -82,6 +97,13 @@ export const CNECalendar: React.FC = () => {
       raw: r
     }));
   }, [cneRecords]);
+
+  const handleViewFullDetails = () => {
+    const cneId = String(selectedEvent?.raw?.cneId || selectedEvent?.raw?.classId || '').trim();
+    if (!cneId) return;
+    setSelectedEvent(null);
+    onViewFullCneDetails(cneId, { year, month, viewMode });
+  };
 
   // Calendar math for Monthly View
   const year = currentDate.getFullYear();
@@ -438,9 +460,23 @@ export const CNECalendar: React.FC = () => {
                   <span className="font-bold text-slate-900">{selectedEvent.duration || '—'}</span>
                 </div>
               </div>
+              {selectedEvent.raw && (
+                <Suspense fallback={<div className="pt-4 text-xs text-slate-500">Loading interest options…</div>}>
+                  <CalendarInterestControls key={`${user.employeeId}:${selectedEvent.raw.cneId || selectedEvent.raw.classId}`}
+                    cne={selectedEvent.raw} user={user} />
+                </Suspense>
+              )}
             </div>
 
-            <div className="px-6 py-3 border-t border-slate-200 bg-white flex justify-end shrink-0">
+            <div className="px-6 py-3 border-t border-slate-200 bg-white flex flex-wrap justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleViewFullDetails}
+                disabled={!selectedEvent.raw?.cneId && !selectedEvent.raw?.classId}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-teal-600 text-white rounded-xl text-xs font-semibold hover:bg-teal-700 disabled:opacity-50"
+              >
+                <ExternalLink className="w-4 h-4" /> View Full CNE Details
+              </button>
               <button
                 onClick={() => setSelectedEvent(null)}
                 className="px-5 py-2 bg-slate-900 text-white rounded-xl text-xs font-semibold hover:bg-slate-800 transition-colors shadow-xs"

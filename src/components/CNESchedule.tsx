@@ -20,7 +20,8 @@ import {
   Building2,
   GraduationCap,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  ArrowLeft
 } from 'lucide-react';
 import { SessionUser, CNERecord, CNEActivityProgress, Employee, TeachingMode, CNEType } from '../types';
 import { ApiService } from '../services/api';
@@ -58,6 +59,8 @@ const DeleteCneModal = lazy(() => import('./cne/DeleteCneModal').then((m) => ({ 
 
 interface CNEScheduleProps {
   user: SessionUser | null;
+  initialCneId?: string | null;
+  onBackToCalendar?: () => void;
 }
 
 const getCneStatus = (cne?: CNERecord | null) =>
@@ -73,7 +76,9 @@ const isCneCanceled = (cne?: CNERecord | null) => {
 const isCneClosed = (cne?: CNERecord | null) => isCneCompleted(cne) || isCneCanceled(cne);
 
 export const CNESchedule: React.FC<CNEScheduleProps> = ({
-  user
+  user,
+  initialCneId,
+  onBackToCalendar
 }) => {
   const [classes, setClasses] = useState<CNERecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -111,6 +116,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
   // Part 2 Active Modals
   const [selectedDetailCne, setSelectedDetailCne] = useState<CNERecord | null>(null);
+  const calendarRequestHandledRef = useRef<string | null>(null);
   const [activeReferenceCne, setActiveReferenceCne] = useState<CNERecord | null>(null);
   const [activeQuestionsCne, setActiveQuestionsCne] = useState<CNERecord | null>(null);
   const [activeQRCne, setActiveQRCne] = useState<CNERecord | null>(null);
@@ -254,6 +260,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   }, [user, isConcernedAreaIncharge]);
 
   useEffect(() => {
+    calendarRequestHandledRef.current = null;
     setClasses([]);
     setAreasList([]);
     setTeachingModes([]);
@@ -307,6 +314,22 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         if (isCurrent()) setIsActivityLoading(false);
       });
   }, []);
+
+  // Calendar -> Schedule: open the exact CNE regardless of search/date filters or pagination.
+  // Historical CNE access is checked using the existing Schedule permission rules.
+  useEffect(() => {
+    const wantedId = String(initialCneId || '').trim();
+    if (!wantedId || loading || calendarRequestHandledRef.current === wantedId) return;
+    calendarRequestHandledRef.current = wantedId;
+    const match = classes.find((cne) => String(cne.cneId || cne.classId || '').trim() === wantedId);
+    if (!match) {
+      error('This CNE is no longer available in the active schedule.');
+    } else if (!canViewScheduleRecord(match)) {
+      error('You do not have permission to view the full details of this CNE.');
+    } else {
+      setSelectedDetailCne(match);
+    }
+  }, [initialCneId, loading, classes, canViewScheduleRecord, error]);
 
   // Fetch real-time CNE Activity Progress whenever a CNE details modal is opened
   useEffect(() => {
@@ -1066,6 +1089,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
   return (
     <div className="space-y-4 pb-12">
+      {onBackToCalendar && (
+        <button type="button" onClick={onBackToCalendar}
+          className="inline-flex items-center gap-2 rounded-lg border border-teal-200 bg-white px-3 py-2 text-xs font-bold text-teal-800 hover:bg-teal-50">
+          <ArrowLeft className="w-4 h-4" /> Back to Calendar
+        </button>
+      )}
       {/* Compact CNE Schedule toolbar: Search | From Date | To Date | Clear | Schedule CNE */}
       <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs overflow-x-auto">
         <div className="flex items-center gap-3 min-w-max">
@@ -1645,6 +1674,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           canDeleteCne={canDeleteCne}
           disabled={!canManageCneActions(user, selectedDetailCne)}
           onClose={() => setSelectedDetailCne(null)}
+          onBackToCalendar={onBackToCalendar}
           onDownloadSessionReport={handleDownloadSessionReport}
           onEdit={handleOpenEditModal}
           onCancel={(cne) => {

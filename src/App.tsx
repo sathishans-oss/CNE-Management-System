@@ -6,6 +6,7 @@ import { Navbar } from './components/Navbar';
 import { TopToolbar } from './components/TopToolbar';
 import { CneHomePage } from './components/CneHomePage';
 import { scheduleIdlePrefetch } from './services/routePrefetch';
+import type { CalendarViewState } from './components/CNECalendar';
 
 const LoginModal = lazy(() => import('./components/LoginModal').then((m) => ({ default: m.LoginModal })));
 const ChangePasswordModal = lazy(() => import('./components/ChangePasswordModal').then((m) => ({ default: m.ChangePasswordModal })));
@@ -32,6 +33,8 @@ const PageLoadingFallback: React.FC = () => (
 const AppContent: React.FC = () => {
   const [user, setUser] = useState<SessionUser | null>(() => ApiService.getSessionUser());
   const [activeView, setActiveView] = useState<ViewMode>('dashboard');
+  const [calendarReturnState, setCalendarReturnState] = useState<CalendarViewState | null>(null);
+  const [requestedFullCneId, setRequestedFullCneId] = useState<string | null>(null);
 
   // Root-level QR Post-Test Deep-Link State
   const [rootQrToken, setRootQrToken] = useState<string | null>(() => {
@@ -79,6 +82,8 @@ const AppContent: React.FC = () => {
     setUser(null);
     setIsLoginOpen(false);
     setActiveView('dashboard');
+    setRequestedFullCneId(null);
+    setCalendarReturnState(null);
     info('You have been signed out.', 'Session Ended');
   };
 
@@ -91,7 +96,23 @@ const AppContent: React.FC = () => {
         return;
       }
     }
+    setRequestedFullCneId(null);
+    setCalendarReturnState(null);
     setActiveView(view);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const openFullCneDetailsFromCalendar = (cneId: string, context: CalendarViewState) => {
+    if (!user?.employeeId) return;
+    setCalendarReturnState(context);
+    setRequestedFullCneId(cneId);
+    setActiveView('cne-schedule');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const backToCalendar = () => {
+    setRequestedFullCneId(null);
+    setActiveView('calendar');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -129,10 +150,14 @@ const AppContent: React.FC = () => {
             <MyCNERecords user={user} />
           )}
 
-          {user && user.employeeId && activeView === 'calendar' && <CNECalendar />}
+          {user && user.employeeId && activeView === 'calendar' && (
+            <CNECalendar user={user} initialViewState={calendarReturnState}
+              onViewFullCneDetails={openFullCneDetailsFromCalendar} />
+          )}
 
           {user && user.employeeId && activeView === 'cne-schedule' && (
-            <CNESchedule user={user} />
+            <CNESchedule user={user} initialCneId={requestedFullCneId}
+              onBackToCalendar={calendarReturnState ? backToCalendar : undefined} />
           )}
 
           {user && user.employeeId && activeView === 'learning-resources' && (

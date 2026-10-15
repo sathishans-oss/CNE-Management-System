@@ -15,7 +15,8 @@ import {
   Check,
   UserCheck,
   Sparkles,
-  Info
+  Info,
+  ArrowLeft
 } from 'lucide-react';
 import { CNERecord, SessionUser, Employee, CNEActivityProgress, CneInterestStatus } from '../../types';
 import { formatCneDateTimeDisplay, formatResourcePersonsDisplay, getCneTypeLabel, parseCneStartTimestamp } from '../../utils';
@@ -41,6 +42,7 @@ export interface CneDetailsModalProps {
   canDeleteCne?: boolean;
   disabled?: boolean;
   onClose: () => void;
+  onBackToCalendar?: () => void;
   onDownloadSessionReport: (cne: CNERecord) => void;
   onEdit: (cne: CNERecord) => void;
   onCancel: (cne: CNERecord) => void;
@@ -68,6 +70,7 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   canDeleteCne,
   disabled,
   onClose,
+  onBackToCalendar,
   onDownloadSessionReport,
   onEdit,
   onCancel,
@@ -215,6 +218,12 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
             </div>
 
             <div className="flex items-center gap-2 flex-wrap justify-end">
+              {onBackToCalendar && (
+                <button type="button" onClick={onBackToCalendar}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-3 py-1.5 text-xs font-bold text-teal-800 hover:bg-teal-50">
+                  <ArrowLeft className="w-3.5 h-3.5" /> Back to Calendar
+                </button>
+              )}
               {/* Organizer View: Interested Staff */}
               {canOperate && (
                 <button
