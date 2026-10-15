@@ -6,6 +6,9 @@
  * 2. verify-cne-workflows.js
  * 3. verify-pdf-resources-and-indexing.js
  * 4. verify-system-integration.js
+ * 5. verify-delete-cne-behavior.js
+ * 6. verify-cne-interest.js
+ * 7. verify-cne-read-performance.cjs
  *
  * Exit code 0 if all tests across all suites pass.
  * Exit code 1 if any suite encounters a failure.
@@ -48,6 +51,11 @@ const suites = [
     name: 'CNE Expression of Interest',
     script: 'scripts/verify-cne-interest.js',
     desc: 'Employee interest registration, withdrawal, re-registration, organizer views, concurrency & lifecycle locks'
+  },
+  {
+    name: 'CNE Read Performance Regression',
+    script: 'scripts/verify-cne-read-performance.cjs',
+    desc: 'Bounded CNE response reads, participant aggregation, progress status, access checks and progressive Schedule loading'
   }
 ];
 

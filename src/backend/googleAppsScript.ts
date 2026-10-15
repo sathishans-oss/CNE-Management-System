@@ -525,6 +525,58 @@ function findExactRowsInColumn_(sheet, zeroBasedColumnIndex, value, startRow) {
   return rowIndices;
 }
 
+/**
+ * Read rows for one CNE without downloading an entire participant/question sheet.
+ * Search only the CNE ID column, then read bounded blocks of matched rows.
+ * Nearby matches are fetched together; widely separated records are not joined
+ * into one enormous data range. Read-only: no ScriptLock is necessary.
+ *
+ * Returns row arrays starting at firstColumn (1-based), in physical row order.
+ * Callers must still perform their normal authorization and business filtering.
+ */
+function readMatchedCneRows_(sheet, cneIdColumn, cneId, firstColumn, columnCount) {
+  var matches = findExactRowsInColumn_(sheet, cneIdColumn, cneId, 2);
+  if (!matches.length) return [];
+  matches.sort(function(a, b) { return a - b; });
+  var target = String(cneId || '').trim().toUpperCase();
+  var result = [];
+  var start = matches[0];
+  var end = start;
+  var matched = {};
+  var normalizedColumn = Number(cneIdColumn) + 1;
+  var columnOffset = normalizedColumn - firstColumn;
+  if (columnOffset < 0 || columnOffset >= columnCount) {
+    throw new Error('CNE ID column must be included in bounded row read.');
+  }
+
+  function flushWindow_() {
+    var block = sheet.getRange(start, firstColumn, end - start + 1, columnCount).getValues();
+    for (var offset = 0; offset < block.length; offset++) {
+      if (!matched[start + offset]) continue;
+      var row = block[offset];
+      if (String(row[columnOffset] || '').trim().toUpperCase() === target) result.push(row);
+    }
+  }
+
+  matched[start] = true;
+  for (var i = 1; i < matches.length; i++) {
+    var index = matches[i];
+    if (index === end) continue;
+    // Avoid a large sparse rectangular read or very many individual cell reads.
+    if (index - end > 16 || index - start >= 250) {
+      flushWindow_();
+      start = index;
+      end = index;
+      matched = {};
+    } else {
+      end = index;
+    }
+    matched[index] = true;
+  }
+  flushWindow_();
+  return result;
+}
+
 function columnNumberToA1Letter_(columnNumber) {
   var n = Number(columnNumber) || 0;
   var out = '';
@@ -11958,6 +12010,7 @@ function handleGetCNEActivityProgress(params, session) {
   var progressAuthErr = checkCNEActionAuthorized(session, record);
   if (progressAuthErr) return progressAuthErr;
 
+  var progressReadStartedAt = Date.now();
   var cleanId = cneId.toUpperCase();
   var progressCacheKey = 'cne_activity_' + normalizeCneId(cleanId);
   var forceFresh = Boolean(params && params.forceFresh);
@@ -11996,19 +12049,13 @@ function handleGetCNEActivityProgress(params, session) {
   try {
     var qSheet = getQuestionsSheet();
     var qCols = getQuestionColIndexes(qSheet);
-    var qRows = findExactRowsInColumn_(qSheet, qCols.cneId, cleanId, 2);
-    if (qRows.length > 0) {
-      var qMin = Math.min.apply(null, qRows);
-      var qMax = Math.max.apply(null, qRows);
-      var qBlock = qSheet.getRange(qMin, 1, qMax - qMin + 1, qSheet.getLastColumn()).getValues();
-      for (var qi = 0; qi < qBlock.length; qi++) {
-        var qRow = qBlock[qi];
-        if (String(qRow[qCols.cneId] || '').trim().toUpperCase() !== cleanId) continue;
-        var isFin = String(qRow[qCols.isFinalized] || 'NO').toUpperCase() === 'YES';
-        var qStatus = String(qRow[qCols.status] || 'ACTIVE').trim().toUpperCase();
-        if (isFin && qStatus !== 'INACTIVE' && qStatus !== 'REPLACED' && qStatus !== 'INCOMPLETE') {
-          finalizedCount++;
-        }
+    var qBlock = readMatchedCneRows_(qSheet, qCols.cneId, cleanId, 1, qSheet.getLastColumn());
+    for (var qi = 0; qi < qBlock.length; qi++) {
+      var qRow = qBlock[qi];
+      var isFin = String(qRow[qCols.isFinalized] || 'NO').toUpperCase() === 'YES';
+      var qStatus = String(qRow[qCols.status] || 'ACTIVE').trim().toUpperCase();
+      if (isFin && qStatus !== 'INACTIVE' && qStatus !== 'REPLACED' && qStatus !== 'INCOMPLETE') {
+        finalizedCount++;
       }
     }
     if (finalizedCount >= 5) questionsStatus = 'Generated';
@@ -12028,20 +12075,14 @@ function handleGetCNEActivityProgress(params, session) {
   var participantsCount = 0;
   try {
     var respSheet = getResponsesSheet();
-    var respRows = findExactRowsInColumn_(respSheet, 1, cleanId, 2);
+    var respBlock = readMatchedCneRows_(respSheet, 1, cleanId, 2, 3); // B:D only (CNE ID, Employee ID, Name)
     var participantKeys = {};
-    if (respRows.length > 0) {
-      var pMin = Math.min.apply(null, respRows);
-      var pMax = Math.max.apply(null, respRows);
-      var respBlock = respSheet.getRange(pMin, 2, pMax - pMin + 1, 3).getValues(); // CNE ID, Employee/Participant ID, Name
-      for (var pi = 0; pi < respBlock.length; pi++) {
-        var pRow = respBlock[pi];
-        if (String(pRow[0] || '').trim().toUpperCase() !== cleanId) continue;
-        var progressEmpId = String(pRow[1] || '').trim().toUpperCase();
-        var progressName = String(pRow[2] || '').trim().toLowerCase();
-        var progressKey = progressEmpId ? ('ID:' + progressEmpId) : (progressName ? ('NAME:' + progressName) : '');
-        if (progressKey) participantKeys[progressKey] = true;
-      }
+    for (var pi = 0; pi < respBlock.length; pi++) {
+      var pRow = respBlock[pi];
+      var progressEmpId = String(pRow[1] || '').trim().toUpperCase();
+      var progressName = String(pRow[2] || '').trim().toLowerCase();
+      var progressKey = progressEmpId ? ('ID:' + progressEmpId) : (progressName ? ('NAME:' + progressName) : '');
+      if (progressKey) participantKeys[progressKey] = true;
     }
     participantsCount = Object.keys(participantKeys).length;
   } catch (e) {
@@ -12072,6 +12113,7 @@ function handleGetCNEActivityProgress(params, session) {
   // Advisory UI cache only. Child mutation flows explicitly request forceFresh,
   // so progress updates immediately after changes while repeated modal reads are cheap.
   putToScriptCache(progressCacheKey, progressData, 10);
+  logPerf('handleGetCNEActivityProgress [read-only]', progressReadStartedAt);
   return { success: true, data: progressData };
 }
 
@@ -15517,12 +15559,14 @@ function handleGetCNEParticipants(params, session) {
   var authErr = checkCNEActionAuthorized(session, record);
   if (authErr) return authErr;
 
+  var participantsReadStartedAt = Date.now();
   var partSheet = getResponsesSheet();
-  var data = partSheet.getDataRange().getValues();
+  // Read only rows for the selected CNE, not the full history and large Answers JSON column for every CNE.
+  // The B column is the authoritative CNE ID in the existing response schema.
+  var data = readMatchedCneRows_(partSheet, 1, cneId, 1, 14);
   var byParticipant = {};
 
-  for (var r = 1; r < data.length; r++) {
-    if (String(data[r][1] || '').trim().toUpperCase() !== cneId.toUpperCase()) continue;
+  for (var r = 0; r < data.length; r++) {
     var pType = String(data[r][9] || 'POST_TEST').trim().toUpperCase();
     var empId = String(data[r][2] || '').trim().toUpperCase();
     var name = String(data[r][3] || '').trim();
@@ -15585,6 +15629,7 @@ function handleGetCNEParticipants(params, session) {
     }
   }
   var avgScore = scoredPostTests > 0 ? Math.round((totalScorePercent / scoredPostTests) * 10) / 10 : null;
+  logPerf('handleGetCNEParticipants [read-only]', participantsReadStartedAt, 'matched rows: ' + data.length);
   return {
     success: true,
     data: {

@@ -350,32 +350,46 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     const requestSession = sessionKey;
     const isCurrent = () => requestId === dataRequestRef.current && requestSession === sessionKeyRef.current;
     setLoading(true);
+
+    // Staff viewing the Schedule do not need CNE creation masters.
+    // Administrators and Area Incharges fetch them independently so the records
+    // render as soon as the primary Schedule request returns.
+    if (canScheduleCne) {
+      // Independent reads start concurrently, but slow master lists must not hold
+      // the schedule behind a Promise.all() barrier. Only the record request gates
+      // schedule rendering; masters populate their controls when ready.
+      void ApiService.getAreas()
+        .then((res) => {
+          if (!isCurrent()) return;
+          if (res.success && Array.isArray(res.data)) {
+            const uniqueAreas = Array.from(new Set(
+              res.data.filter((a) => a.status === 'ACTIVE').map((a) => a.name).filter(Boolean)
+            ));
+            setAreasList(uniqueAreas);
+          }
+        })
+        .catch((err) => { if (isCurrent()) console.warn('CNE Areas unavailable:', err); });
+
+      void ApiService.getTeachingModes()
+        .then((res) => {
+          if (!isCurrent()) return;
+          if (res.success && Array.isArray(res.data)) {
+            setTeachingModes(
+              [...res.data].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+            );
+          }
+        })
+        .catch((err) => { if (isCurrent()) console.warn('CNE Teaching Modes unavailable:', err); });
+
+    }
+
     try {
-      const [clsRes, areasRes, teachingModesRes] = await Promise.all([
-        ApiService.getCNERecords(),
-        ApiService.getAreas(),
-        ApiService.getTeachingModes()
-      ]);
-
+      const clsRes = await ApiService.getCNERecords();
       if (!isCurrent()) return;
-      if (!clsRes.success) throw new Error(clsRes.message || 'Failed to load CNE schedule.');
-      if (clsRes.success && clsRes.data) {
-        setClasses(clsRes.data);
+      if (!clsRes.success || !Array.isArray(clsRes.data)) {
+        throw new Error(clsRes.message || 'Failed to load CNE schedule.');
       }
-      if (areasRes.success && areasRes.data) {
-        const uniqueAreas = Array.from(
-          new Set(areasRes.data.filter((a) => a.status === 'ACTIVE').map((a) => a.name).filter(Boolean))
-        );
-        setAreasList(uniqueAreas);
-      }
-      if (teachingModesRes.success && Array.isArray(teachingModesRes.data)) {
-        setTeachingModes(
-          [...teachingModesRes.data].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
-        );
-      } else {
-        throw new Error(teachingModesRes.message || 'Failed to load Teaching Modes.');
-      }
-
+      setClasses(clsRes.data);
       return clsRes.data;
     } catch (e: any) {
       if (isCurrent()) error(e?.message || 'Failed to load CNE schedule.');
