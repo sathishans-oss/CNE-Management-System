@@ -16,12 +16,14 @@
     "test": "node scripts/verify-all.js",
     "verify": "node scripts/verify-all.js",
     "verify:all": "node scripts/verify-all.js",
-    "verify:security": "node scripts/verify-security-and-access.js",
-    "verify:workflows": "node scripts/verify-cne-workflows.js",
-    "verify:pdf": "node scripts/verify-pdf-resources-and-indexing.js",
-    "verify:integration": "node scripts/verify-system-integration.js",
-    "verify:delete": "node scripts/verify-delete-cne-behavior.js",
-    "verify:interest": "node scripts/verify-cne-interest.js"
+    "verify:security": "node scripts/verify-all.js --suite security",
+    "verify:workflows": "node scripts/verify-all.js --suite workflows",
+    "verify:pdf": "node scripts/verify-all.js --suite pdf",
+    "verify:integration": "node scripts/verify-all.js --suite integration",
+    "verify:delete": "node scripts/verify-all.js --suite delete",
+    "verify:interest": "node scripts/verify-all.js --suite interest",
+    "verify:performance": "node scripts/verify-all.js --suite performance",
+    "verify:timezone": "node scripts/verify-timezone-cross-module.cjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

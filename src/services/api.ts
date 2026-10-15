@@ -1660,6 +1660,7 @@ export class ApiService {
     fromDate?: string;
     toDate?: string;
     search?: string;
+    allDates?: boolean;
   }): Promise<ApiResponse<DepartmentalCneOutcomeRow[]>> {
     return this.executeAction<DepartmentalCneOutcomeRow[]>(
       'getDepartmentalCneOutcomeReport',
@@ -1755,14 +1756,21 @@ export class ApiService {
 function generateLocalDepartmentalCneOutcomeReport(
   params: Record<string, any> = {}
 ): DepartmentalCneOutcomeRow[] {
+  // Match the production endpoint: default to the current month in India.
+  const indiaToday = new Date(Date.now() + 330 * 60 * 1000);
+  const monthStart = `${indiaToday.getUTCFullYear()}-${String(indiaToday.getUTCMonth() + 1).padStart(2, '0')}-01`;
+  const monthEnd = `${indiaToday.getUTCFullYear()}-${String(indiaToday.getUTCMonth() + 1).padStart(2, '0')}-${String(new Date(Date.UTC(indiaToday.getUTCFullYear(), indiaToday.getUTCMonth() + 1, 0)).getUTCDate()).padStart(2, '0')}`;
+  const fromFilter = params.allDates === true ? '' : (params.fromDate || (!params.toDate ? monthStart : ''));
+  const toFilter = params.allDates === true ? '' : (params.toDate || (!params.fromDate ? monthEnd : ''));
   const activeAreas = _inMemoryAreas.filter((a) => a.status === 'ACTIVE').map((a) => a.name);
   const deptCnes = _inMemoryCNERecords.filter((c) => {
     const isDept = c.cneType === 'DEPARTMENTAL';
     const isUnscheduled = c.isUnscheduled || (c.cneId && c.cneId.includes('-U-'));
     if (!isDept || isUnscheduled) return false;
     const cneDay = (c.fromDate || c.date || '').slice(0, 10);
-    if (params.fromDate && cneDay && cneDay < params.fromDate.slice(0, 10)) return false;
-    if (params.toDate && cneDay && cneDay > params.toDate.slice(0, 10)) return false;
+    if ((fromFilter || toFilter) && !cneDay) return false;
+    if (fromFilter && cneDay < fromFilter) return false;
+    if (toFilter && cneDay > toFilter) return false;
     return true;
   });
 

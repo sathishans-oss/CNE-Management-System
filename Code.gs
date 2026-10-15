@@ -5776,13 +5776,82 @@ function handleDeleteGalleryItem(params, session) {
  * - Officers data (resolves creator names only; never exposes Employee ID)
  * - Remarks ONLY for Cancelled CNEs (never shows finalization summary)
  */
+/**
+ * Read only date-column values first. Then read full fields for just the matching
+ * schedule rows, coalescing adjacent rows into a single Sheets API read.
+ * For dense/scattered matches an ordinary bulk read is cheaper than many small
+ * calls; fall back only in that case. Never changes the CNE Schedule sheet.
+ * A date-scoped report excludes undated/unparseable CNEs (fail closed).
+ */
+function readDepartmentalOutcomeScheduleRows_(sheet, dateCol, fromDay, toDay) {
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
+  var count = lastRow - 1;
+  if (!fromDay && !toDay) {
+    return sheet.getRange(2, 1, count, lastCol).getValues();
+  }
+
+  var dateCells = sheet.getRange(2, dateCol + 1, count, 1).getValues();
+  var matched = [];
+  for (var i = 0; i < dateCells.length; i++) {
+    var day = getCNECanonicalDay(dateCells[i][0]);
+    if (!day || (fromDay && day < fromDay) || (toDay && day > toDay)) continue;
+    matched.push(i);
+  }
+  if (!matched.length) return [];
+
+  var ranges = [];
+  var start = matched[0], end = start;
+  for (var j = 1; j < matched.length; j++) {
+    if (matched[j] === end + 1) {
+      end = matched[j];
+    } else {
+      ranges.push([start, end]);
+      start = end = matched[j];
+    }
+  }
+  ranges.push([start, end]);
+
+  // Avoid dozens of Sheet API calls when records are scattered across history.
+  if (ranges.length > 20 || matched.length > count * 0.65) {
+    var all = sheet.getRange(2, 1, count, lastCol).getValues();
+    return matched.map(function(index) { return all[index]; });
+  }
+
+  var selected = [];
+  for (var k = 0; k < ranges.length; k++) {
+    var block = ranges[k];
+    var records = sheet.getRange(block[0] + 2, 1, block[1] - block[0] + 1, lastCol).getValues();
+    for (var r = 0; r < records.length; r++) selected.push(records[r]);
+  }
+  return selected;
+}
+
 function handleGetDepartmentalCneOutcomeReport(params, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
 
   params = params || {};
+  var useAllDates = params.allDates === true;
+  if (useAllDates && (params.fromDate || params.toDate)) {
+    return { success: false, message: 'All Dates cannot be combined with a date range.' };
+  }
   var fromDateFilter = params.fromDate ? getCNECanonicalDay(params.fromDate) : '';
   var toDateFilter = params.toDate ? getCNECanonicalDay(params.toDate) : '';
+  if ((params.fromDate && !fromDateFilter) || (params.toDate && !toDateFilter)) {
+    return { success: false, message: 'Invalid report date range.' };
+  }
+  if (!useAllDates && !fromDateFilter && !toDateFilter) {
+    var today = getIndiaTodayString();
+    var yearMonth = today.substring(0, 7);
+    fromDateFilter = yearMonth + '-01';
+    var year = Number(today.substring(0, 4)), month = Number(today.substring(5, 7));
+    toDateFilter = yearMonth + '-' + padTwo(new Date(Date.UTC(year, month, 0)).getUTCDate());
+  }
+  if (fromDateFilter && toDateFilter && fromDateFilter > toDateFilter) {
+    return { success: false, message: 'From Date cannot be later than To Date.' };
+  }
 
   // 1. Read Area master to collect all currently ACTIVE areas
   var areaSheet = getOrCreateSheet('Area');
@@ -5798,13 +5867,13 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
 
   // 2. Read CNE Schedule sheet
   var cneSheet = getOrCreateSheet('CNE Schedule');
-  var cneData = cneSheet.getDataRange().getValues();
   var cneColMap = getHeaderMap(cneSheet);
 
   var idCol = cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : (cneColMap['classid'] !== undefined ? cneColMap['classid'] : 0);
   var topicCol = cneColMap['topic'] !== undefined ? cneColMap['topic'] : 1;
   var areaCol = cneColMap['area'] !== undefined ? cneColMap['area'] : (cneColMap['wardnamearea'] !== undefined ? cneColMap['wardnamearea'] : 2);
   var fromDateCol = cneColMap['fromdate'] !== undefined ? cneColMap['fromdate'] : (cneColMap['date'] !== undefined ? cneColMap['date'] : 3);
+  var cneData = readDepartmentalOutcomeScheduleRows_(cneSheet, fromDateCol, fromDateFilter, toDateFilter);
   var statusCol = cneColMap['status'] !== undefined ? cneColMap['status'] : 10;
   var typeCol = cneColMap['typeofcne'] !== undefined ? cneColMap['typeofcne'] : (cneColMap['cnetype'] !== undefined ? cneColMap['cnetype'] : 11);
   var adminRemarksCol = cneColMap['adminremarks'] !== undefined ? cneColMap['adminremarks'] : (cneColMap['remarks'] !== undefined ? cneColMap['remarks'] : 17);
@@ -5816,12 +5885,12 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
   var attPctCol = cneColMap['attendancepercentage'];
   var outcomeCol = cneColMap['posttestoutcomepercentage'];
 
-  // 3. Batched Officer lookup for creator names
-  var officerMap = getOfficerNameMap();
+  // Resolve officer names only when at least one matching departmental CNE needs it.
+  var officerMap = null;
 
   // 4. Filter CNE Schedule records for normally scheduled DEPARTMENTAL CNEs
   var cnesByAreaKey = {};
-  for (var r = 1; r < cneData.length; r++) {
+  for (var r = 0; r < cneData.length; r++) {
     var row = cneData[r];
     var cneId = String(row[idCol] || '').trim();
     if (!cneId) continue;
@@ -5835,8 +5904,9 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
     var rawDate = row[fromDateCol];
     var canonicalDay = getCNECanonicalDay(rawDate);
     // Apply date range filters if provided
-    if (fromDateFilter && canonicalDay && canonicalDay < fromDateFilter) continue;
-    if (toDateFilter && canonicalDay && canonicalDay > toDateFilter) continue;
+    if ((fromDateFilter || toDateFilter) && !canonicalDay) continue;
+    if (fromDateFilter && canonicalDay < fromDateFilter) continue;
+    if (toDateFilter && canonicalDay > toDateFilter) continue;
 
     var cneArea = String(row[areaCol] || '').trim();
     var cneTopic = String(row[topicCol] || '').trim();
@@ -5850,6 +5920,7 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
 
     // Created By: Name only (never expose Employee ID)
     var creatorEmpId = normalizeEmpId(row[proposedByCol] || (createdByCol !== -1 ? row[createdByCol] : ''));
+    if (creatorEmpId && officerMap === null) officerMap = getOfficerNameMap();
     var createdByName = creatorEmpId ? (officerMap[creatorEmpId] || '') : '';
 
     var totalAllotted = null;
