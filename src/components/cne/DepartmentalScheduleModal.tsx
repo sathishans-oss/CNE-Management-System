@@ -4,7 +4,9 @@ import { DepartmentalScheduleRow, Employee, SessionUser } from '../../types';
 import { ApiService } from '../../services/api';
 import { getCachedOfficers, loadOfficersSingleFlight, isOfficersInFlight } from '../../services/officerLoader';
 import { useToast } from '../Toast';
-import { getUserAssignedAreas, validateCneDuration } from '../../utils';
+import { getUserAssignedAreas, validateCneDuration,
+  parseCneStartTimestamp
+} from '../../utils';
 import { CneDateTimeFields } from './CneDateTimeFields';
 
 function parseDateTimeParts(dateTimeStr?: string, defaultTime: string = '09:00') {
@@ -278,9 +280,9 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         return;
       }
 
-      const dFrom = new Date(r.date);
-      const dTo = new Date(r.toDate);
-      if (isNaN(dFrom.getTime()) || isNaN(dTo.getTime())) {
+      const dFrom = parseCneStartTimestamp(r.date);
+      const dTo = parseCneStartTimestamp(r.toDate);
+      if (!Number.isFinite(dFrom) || !Number.isFinite(dTo)) {
         error(`Row #${rowNum}: Please enter valid From Date & Time and To Date & Time.`);
         return;
       }

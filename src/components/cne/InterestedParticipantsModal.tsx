@@ -1,3 +1,4 @@
+import { getIndiaTodayIsoDate } from '../../utils';
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   X,
@@ -160,7 +161,7 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     const safeTopic = (cne.topic || 'CNE').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30);
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = getIndiaTodayIsoDate();
     link.href = url;
     link.setAttribute('download', `${cne.cneId}_Interested_Staff_${safeTopic}_${dateStr}.csv`);
     document.body.appendChild(link);

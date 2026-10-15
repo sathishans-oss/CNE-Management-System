@@ -5,6 +5,24 @@ const MONTH_NAMES = [
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
 ] as const;
 
+/** Current India calendar date (YYYY-MM-DD), independent of browser timezone. */
+export function getIndiaTodayIsoDate(): string {
+  const now = new Date(Date.now() + 330 * 60 * 1000);
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Convert an epoch instant into India calendar components without browser-local getters. */
+function indiaDateParts(epoch: number) {
+  const d = new Date(epoch + 330 * 60 * 1000);
+  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(),
+    hour: d.getUTCHours(), minute: d.getUTCMinutes(), second: d.getUTCSeconds() };
+}
+
+function indiaIsoDay(epoch: number): string {
+  const p = indiaDateParts(epoch);
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+}
+
 /**
  * Formats a date string into the strict DD-MMM-YYYY format (e.g., 01-Jan-2026).
  * Zero-pads single-digit days (01-31), uses 3-letter English month abbreviations (Jan-Dec),
@@ -13,15 +31,11 @@ const MONTH_NAMES = [
 export function formatCneDateDisplay(dateVal?: string | Date | null): string {
   if (!dateVal) return '—';
 
-  // If Date object
-  if (dateVal instanceof Date) {
-    if (isNaN(dateVal.getTime())) return '—';
-    const day = String(dateVal.getDate()).padStart(2, '0');
-    const month = MONTH_NAMES[dateVal.getMonth()];
-    const year = dateVal.getFullYear();
-    return `${day}-${month}-${year}`;
+  const isoDay = parseToIsoDateString(dateVal);
+  if (isoDay) {
+    const [year, month, day] = isoDay.split('-').map(Number);
+    return `${String(day).padStart(2, '0')}-${MONTH_NAMES[month - 1]}-${year}`;
   }
-
   const str = String(dateVal).trim();
   if (!str) return '—';
 
@@ -413,15 +427,15 @@ export function parseCneStartTimestamp(dateVal?: string | Date | null, timeVal?:
 export function parseToIsoDateString(val?: string | Date | null): string | null {
   if (!val) return null;
   if (val instanceof Date) {
-    if (isNaN(val.getTime())) return null;
-    const y = val.getFullYear();
-    const m = val.getMonth() + 1;
-    const d = val.getDate();
-    if (!isValidCalendarDate(y, m, d)) return null;
-    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    return Number.isFinite(val.getTime()) ? indiaIsoDay(val.getTime()) : null;
   }
   const s = String(val).trim();
   if (!s) return null;
+  // Timestamp with explicit Z/offset: group under its actual India calendar day.
+  if (/[T\s]\d{1,2}:\d{2}.*(?:Z|[+-]\d{1,2}:?\d{2})$/i.test(s)) {
+    const epoch = parseCneStartTimestamp(s);
+    return Number.isFinite(epoch) ? indiaIsoDay(epoch) : null;
+  }
 
   // 1. Direct YYYY-MM-DD or YYYY/MM/DD prefix (e.g. 2026-09-10 or 2026-09-10T08:00:00)
   const ymdMatch = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
@@ -474,65 +488,19 @@ export function formatCneDateTimeDisplay(
   toDate?: string | null
 ): string {
   if (!fromDate) return '—';
-
-  // If toDate was passed, defer to range display
   if (toDate !== undefined) {
     const fromStr = fromDate instanceof Date ? fromDate.toISOString() : fromDate;
     return formatCneDateTimeRangeDisplay(fromStr, toDate);
   }
-
-  const dtVal = fromDate;
-
-  // Handle Date instance
-  if (dtVal instanceof Date) {
-    if (isNaN(dtVal.getTime())) return '—';
-    const day = String(dtVal.getDate()).padStart(2, '0');
-    const month = MONTH_NAMES_SHORT[dtVal.getMonth()] || 'Jan';
-    const year = dtVal.getFullYear();
-    const h = dtVal.getHours();
-    const min = String(dtVal.getMinutes()).padStart(2, '0');
-    const h12 = h % 12 || 12;
-    const h12Str = String(h12).padStart(2, '0');
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    return `${day}-${month}-${year} ${h12Str}:${min} ${ampm}`;
+  const original = String(fromDate).trim();
+  if (typeof fromDate === 'string' && !/[T\s]\d{1,2}:\d{2}/.test(original)) {
+    return formatCneDateDisplay(fromDate);
   }
-
-  const str = String(dtVal).trim();
-  if (!str) return '—';
-
-  // Match ISO YYYY-MM-DDTHH:mm(:ss)? or YYYY-MM-DD HH:mm(:ss)?
-  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  if (isoMatch) {
-    const year = isoMatch[1];
-    const monthIdx = parseInt(isoMatch[2], 10) - 1;
-    const month = MONTH_NAMES_SHORT[monthIdx] || 'Jan';
-    const day = isoMatch[3].padStart(2, '0');
-    const h = parseInt(isoMatch[4], 10);
-    const min = isoMatch[5].padStart(2, '0');
-    const h12 = h % 12 || 12;
-    const h12Str = String(h12).padStart(2, '0');
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    return `${day}-${month}-${year} ${h12Str}:${min} ${ampm}`;
-  }
-
-  // Match DD-MMM-YYYY hh:mm AM/PM
-  const dmmmAmPmMatch = str.match(/^(\d{1,2})[-\s/]([A-Za-z]{3})[-\s/](\d{4})\s+(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?/i);
-  if (dmmmAmPmMatch) {
-    const day = dmmmAmPmMatch[1].padStart(2, '0');
-    const rawMon = dmmmAmPmMatch[2].toLowerCase();
-    const mIdx = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(rawMon);
-    const month = mIdx >= 0 ? MONTH_NAMES_SHORT[mIdx] : dmmmAmPmMatch[2];
-    const year = dmmmAmPmMatch[3];
-    let h = parseInt(dmmmAmPmMatch[4], 10);
-    const min = dmmmAmPmMatch[5].padStart(2, '0');
-    const ampm = (dmmmAmPmMatch[6] || (h >= 12 ? 'PM' : 'AM')).toUpperCase();
-    const h12 = h % 12 || 12;
-    const h12Str = String(h12).padStart(2, '0');
-    return `${day}-${month}-${year} ${h12Str}:${min} ${ampm}`;
-  }
-
-  // If date only, use standard formatCneDateDisplay
-  return formatCneDateDisplay(str);
+  const epoch = parseCneStartTimestamp(fromDate);
+  if (!Number.isFinite(epoch)) return '—';
+  const p = indiaDateParts(epoch);
+  const h12 = p.hour % 12 || 12;
+  return `${String(p.day).padStart(2, '0')}-${MONTH_NAMES[p.month - 1]}-${p.year} ${String(h12).padStart(2, '0')}:${String(p.minute).padStart(2, '0')} ${p.hour >= 12 ? 'PM' : 'AM'}`;
 }
 
 /**
@@ -573,66 +541,18 @@ export function formatCneDateTimeRangeDisplay(
  */
 export function toDateTimeLocalString(val?: string | Date | null, defaultTime = '09:00'): string {
   if (!val) return '';
-  if (val instanceof Date) {
-    if (isNaN(val.getTime())) return '';
-    const y = val.getFullYear();
-    const m = String(val.getMonth() + 1).padStart(2, '0');
-    const d = String(val.getDate()).padStart(2, '0');
-    const h = String(val.getHours()).padStart(2, '0');
-    const min = String(val.getMinutes()).padStart(2, '0');
-    return `${y}-${m}-${d}T${h}:${min}`;
+  const text = typeof val === 'string' ? val.trim() : '';
+  const isDateOnly = typeof val === 'string' && !/[T\s]\d{1,2}:\d{2}/.test(text);
+  const epoch = parseCneStartTimestamp(val);
+  if (!Number.isFinite(epoch)) return '';
+  const p = indiaDateParts(epoch);
+  const day = `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+  // Do not silently reinterpret a date-time with a Z or timezone offset as raw local time.
+  if (isDateOnly) {
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(defaultTime)) return '';
+    return `${day}T${defaultTime}`;
   }
-
-  const str = String(val).trim();
-  if (!str) return '';
-
-  // Match YYYY-MM-DDTHH:mm(:ss)?
-  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
-  if (isoMatch) {
-    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}T${isoMatch[4]}:${isoMatch[5]}`;
-  }
-
-  // Match YYYY-MM-DD HH:mm(:ss)?
-  const spaceMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
-  if (spaceMatch) {
-    return `${spaceMatch[1]}-${spaceMatch[2]}-${spaceMatch[3]}T${spaceMatch[4]}:${spaceMatch[5]}`;
-  }
-
-  // Match DD-MMM-YYYY hh:mm AM/PM
-  const dmmmAmPmMatch = str.match(/^(\d{1,2})[-\s/]([A-Za-z]{3})[-\s/](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?)?/i);
-  if (dmmmAmPmMatch) {
-    const day = dmmmAmPmMatch[1].padStart(2, '0');
-    const rawMon = dmmmAmPmMatch[2].toLowerCase();
-    const mIdx = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(rawMon);
-    const month = mIdx >= 0 ? String(mIdx + 1).padStart(2, '0') : '01';
-    const year = dmmmAmPmMatch[3];
-    let h = parseInt(dmmmAmPmMatch[4] || '9', 10);
-    const min = (dmmmAmPmMatch[5] || '00').padStart(2, '0');
-    const ampm = (dmmmAmPmMatch[6] || '').toUpperCase();
-    if (ampm === 'PM' && h < 12) h += 12;
-    if (ampm === 'AM' && h === 12) h = 0;
-    const hStr = String(h).padStart(2, '0');
-    return `${year}-${month}-${day}T${hStr}:${min}`;
-  }
-
-  // Match date only YYYY-MM-DD
-  const ymdMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (ymdMatch) {
-    return `${ymdMatch[1]}-${ymdMatch[2]}-${ymdMatch[3]}T${defaultTime}`;
-  }
-
-  // General Date parse fallback
-  const parsed = new Date(str);
-  if (!isNaN(parsed.getTime())) {
-    const y = parsed.getFullYear();
-    const m = String(parsed.getMonth() + 1).padStart(2, '0');
-    const d = String(parsed.getDate()).padStart(2, '0');
-    const h = String(parsed.getHours()).padStart(2, '0');
-    const min = String(parsed.getMinutes()).padStart(2, '0');
-    return `${y}-${m}-${d}T${h}:${min}`;
-  }
-
-  return '';
+  return `${day}T${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`;
 }
 
 /**
@@ -673,15 +593,11 @@ export function formatSecondsToDuration(totalSeconds: number): string {
  * Calculates how many distinct calendar days are touched between fromDt and toDt inclusive.
  */
 export function getCalendarDaysTouched(fromDtStr: string, toDtStr: string): number {
-  if (!fromDtStr || !toDtStr) return 1;
-  const d1 = new Date(fromDtStr);
-  const d2 = new Date(toDtStr);
-  if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return 1;
-
-  const utc1 = Date.UTC(d1.getFullYear(), d1.getMonth(), d1.getDate());
-  const utc2 = Date.UTC(d2.getFullYear(), d2.getMonth(), d2.getDate());
-  const diffDays = Math.round((utc2 - utc1) / (1000 * 60 * 60 * 24));
-  return Math.max(1, diffDays + 1);
+  const from = parseCneStartTimestamp(fromDtStr);
+  const to = parseCneStartTimestamp(toDtStr);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return 0;
+  const offset = 330 * 60 * 1000;
+  return Math.floor((to + offset) / 86400000) - Math.floor((from + offset) / 86400000) + 1;
 }
 
 /**
@@ -692,40 +608,20 @@ export function getCalendarDaysTouched(fromDtStr: string, toDtStr: string): numb
  *   - intermediate full calendar days contribute a maximum of 8 hours each
  */
 export function calculateCneDuration(fromDtStr: string, toDtStr: string): string {
-  // Never invent training time. Missing/invalid ranges must contribute zero duration;
-  // callers can then require the user to correct the dates instead of silently saving 1 hour.
-  if (!fromDtStr || !toDtStr) return '00:00:00';
-  const d1 = new Date(fromDtStr);
-  const d2 = new Date(toDtStr);
-  if (isNaN(d1.getTime()) || isNaN(d2.getTime()) || d2 < d1) {
-    return '00:00:00';
-  }
-
+  const start = parseCneStartTimestamp(fromDtStr);
+  const end = parseCneStartTimestamp(toDtStr);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '00:00:00';
   const daysTouched = getCalendarDaysTouched(fromDtStr, toDtStr);
-
-  // Same calendar day
-  if (daysTouched === 1) {
-    const elapsedHours = (d2.getTime() - d1.getTime()) / (1000 * 60 * 60);
-    const cappedHours = Math.min(8, Math.max(0, elapsedHours));
-    return formatSecondsToDuration(cappedHours * 3600);
-  }
-
-  // Multi-day:
-  // Day 1: respects actual time interval, capped at 8 hours.
-  // Daytime training runs from From Time up to 17:00 (or up to 24:00 if scheduled past 17:00).
-  const fromHourDecimal = d1.getHours() + d1.getMinutes() / 60 + d1.getSeconds() / 3600;
-  const day1Hours = fromHourDecimal < 17 ? (17 - fromHourDecimal) : (24 - fromHourDecimal);
-  const day1Contribution = Math.min(8, Math.max(0, day1Hours));
-
-  // Intermediate full calendar days: 8 hours maximum each
-  const intermediateContribution = daysTouched > 2 ? (daysTouched - 2) * 8 : 0;
-
-  // Last day: respects actual time interval from start of day to To Time, capped at 8 hours
-  const toHourDecimal = d2.getHours() + d2.getMinutes() / 60 + d2.getSeconds() / 3600;
-  const lastDayContribution = Math.min(8, Math.max(0, toHourDecimal));
-
-  const totalHours = day1Contribution + intermediateContribution + lastDayContribution;
-  return formatSecondsToDuration(totalHours * 3600);
+  if (daysTouched === 1) return formatSecondsToDuration(Math.min(8 * 3600, Math.max(0, (end - start) / 1000)));
+  const begin = indiaDateParts(start);
+  const finish = indiaDateParts(end);
+  const fromHour = begin.hour + begin.minute / 60 + begin.second / 3600;
+  const toHour = finish.hour + finish.minute / 60 + finish.second / 3600;
+  // Preserve the existing eight-hours-per-day convention in India civil time.
+  const firstHours = Math.min(8, Math.max(0, fromHour < 17 ? 17 - fromHour : 24 - fromHour));
+  const middleHours = Math.max(0, daysTouched - 2) * 8;
+  const lastHours = Math.min(8, Math.max(0, toHour));
+  return formatSecondsToDuration((firstHours + middleHours + lastHours) * 3600);
 }
 
 /**
@@ -738,9 +634,9 @@ export function validateCneDuration(
   fromDtStr: string,
   toDtStr: string
 ): { isValid: boolean; error?: string; message: string; maxDurationStr: string } {
-  const from = fromDtStr ? new Date(fromDtStr) : null;
-  const to = toDtStr ? new Date(toDtStr) : null;
-  if (!from || !to || isNaN(from.getTime()) || isNaN(to.getTime()) || to < from) {
+  const from = parseCneStartTimestamp(fromDtStr);
+  const to = parseCneStartTimestamp(toDtStr);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) {
     const err = 'Please enter a valid From Date & Time and To Date & Time before setting duration.';
     return {
       isValid: false,

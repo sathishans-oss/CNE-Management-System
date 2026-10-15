@@ -1,3 +1,4 @@
+import { getIndiaTodayIsoDate } from '../utils';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Images,
@@ -25,7 +26,7 @@ export const Gallery: React.FC<GalleryProps> = ({ user }) => {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
-  const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0]);
+  const [newDate, setNewDate] = useState(getIndiaTodayIsoDate());
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);

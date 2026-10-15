@@ -73,9 +73,10 @@ runTest('Central CNE enforces full From/To Date & Time and Duration computation'
 
   // Date parsing with time support
   assert.ok(
-    handleAddSection.includes('var dFrom = new Date(fromDate);') &&
-    handleAddSection.includes('var dTo = new Date(toDate);'),
-    'handleCreateCNE must parse fromDate and toDate with Date objects'
+    handleAddSection.includes('var dFrom = parseCneStartTimestamp_(fromDate);') &&
+    handleAddSection.includes('var dTo = parseCneStartTimestamp_(toDate);') &&
+    handleAddSection.includes('!isFinite(dFrom) || !isFinite(dTo)'),
+    'handleCreateCNE must strictly validate fromDate and toDate with India-time-aware parsing'
   );
   assert.ok(
     handleAddSection.includes('Invalid Date & Time format.'),

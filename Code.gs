@@ -1436,11 +1436,16 @@ function getIndiaTodayString() {
  * Extract a canonical YYYY-MM-DD day from CNE date/date-time input.
  */
 function getCNECanonicalDay(value) {
-  if (value === null || value === undefined) return '';
+  if (value === null || value === undefined || value === '') return '';
+  // An instant with an explicit timezone belongs to its Asia/Kolkata calendar day,
+  // not necessarily to the calendar day written in the source offset.
   var text = String(value).trim();
-  if (!text) return '';
-  var isoPrefix = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (isoPrefix) return isoPrefix[1] + '-' + isoPrefix[2] + '-' + isoPrefix[3];
+  if (value instanceof Date || /[T\s]\d{1,2}:\d{2}.*(?:Z|[+-]\d{1,2}:?\d{2})$/i.test(text)) {
+    var ms = parseCneStartTimestamp_(value);
+    if (!isFinite(ms)) return '';
+    var india = new Date(ms + 330 * 60000);
+    return india.getUTCFullYear() + '-' + padTwo(india.getUTCMonth() + 1) + '-' + padTwo(india.getUTCDate());
+  }
   return normalizeDateForComparison(value);
 }
 
@@ -1462,8 +1467,7 @@ function normalizeDateForComparison(val) {
     if (isNaN(val.getTime())) return '';
     try {
       if (typeof Utilities !== 'undefined' && Utilities.formatDate && typeof Session !== 'undefined' && Session.getScriptTimeZone) {
-        var tz = Session.getScriptTimeZone() || 'Asia/Kolkata';
-        return Utilities.formatDate(val, tz, 'yyyy-MM-dd');
+        return Utilities.formatDate(val, 'Asia/Kolkata', 'yyyy-MM-dd');
       }
     } catch (e) {}
     var y = val.getFullYear();
@@ -4400,9 +4404,9 @@ function handleCreateCNE(params, session) {
     return preTeachingModeErr;
   }
 
-  var dFrom = new Date(fromDate);
-  var dTo = new Date(toDate);
-  if (isNaN(dFrom.getTime()) || isNaN(dTo.getTime())) {
+  var dFrom = parseCneStartTimestamp_(fromDate);
+  var dTo = parseCneStartTimestamp_(toDate);
+  if (!isFinite(dFrom) || !isFinite(dTo)) {
     return { success: false, message: 'Invalid Date & Time format.' };
   }
   if (dTo < dFrom) {
@@ -4908,9 +4912,9 @@ function handleUpdateCNE(params, session) {
           if (!effToDate) {
             return { success: false, message: 'To Date & Time is required and cannot be blank.' };
           }
-          var dFrom = new Date(effDate);
-          var dTo = new Date(effToDate);
-          if (isNaN(dFrom.getTime()) || isNaN(dTo.getTime())) {
+          var dFrom = parseCneStartTimestamp_(effDate);
+          var dTo = parseCneStartTimestamp_(effToDate);
+          if (!isFinite(dFrom) || !isFinite(dTo)) {
             return { success: false, message: 'Invalid Date & Time format.' };
           }
           if (dTo < dFrom) {
@@ -5159,14 +5163,13 @@ function formatDurationAsHoursPlus(totalSeconds) {
  * Helper: Calculate distinct calendar days touched between fromDt and toDt inclusive.
  */
 function getCalendarDaysTouched(fromDtStr, toDtStr) {
-  if (!fromDtStr || !toDtStr) return 1;
-  var d1 = new Date(fromDtStr);
-  var d2 = new Date(toDtStr);
-  if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return 1;
-  var utc1 = Date.UTC(d1.getFullYear(), d1.getMonth(), d1.getDate());
-  var utc2 = Date.UTC(d2.getFullYear(), d2.getMonth(), d2.getDate());
-  var diffDays = Math.round((utc2 - utc1) / (1000 * 60 * 60 * 24));
-  return Math.max(1, diffDays + 1);
+  var fromMs = parseCneStartTimestamp_(fromDtStr);
+  var toMs = parseCneStartTimestamp_(toDtStr);
+  if (!isFinite(fromMs) || !isFinite(toMs) || toMs < fromMs) return 0;
+  // Compare Indian civil days, independent of the Apps Script runtime timezone.
+  var oneDay = 86400000;
+  return Math.floor((toMs + 330 * 60000) / oneDay) -
+    Math.floor((fromMs + 330 * 60000) / oneDay) + 1;
 }
 
 /**
@@ -5175,6 +5178,9 @@ function getCalendarDaysTouched(fromDtStr, toDtStr) {
  */
 function validateCneDuration(durationStr, fromDtStr, toDtStr) {
   var daysTouched = getCalendarDaysTouched(fromDtStr, toDtStr);
+  if (daysTouched < 1) {
+    return { isValid: false, message: 'Please enter a valid From Date & Time and To Date & Time.', maxDurationStr: '00:00:00' };
+  }
   var maxSeconds = daysTouched * 8 * 3600;
   var maxDurationStr = formatSecondsToDuration(maxSeconds);
   var minSeconds = 300; // 5 minutes (00:05:00)
@@ -5236,12 +5242,12 @@ function handleAddDepartmentalSchedule(params, session) {
       return { success: false, message: 'Row ' + (i + 1) + ': To Date & Time is required and cannot be blank.' };
     }
 
-    var dFrom = new Date(date);
-    var dTo = new Date(toDate);
-    if (isNaN(dFrom.getTime())) {
+    var dFrom = parseCneStartTimestamp_(date);
+    var dTo = parseCneStartTimestamp_(toDate);
+    if (!isFinite(dFrom)) {
       return { success: false, message: 'Row ' + (i + 1) + ': Invalid From Date & Time format.' };
     }
-    if (isNaN(dTo.getTime())) {
+    if (!isFinite(dTo)) {
       return { success: false, message: 'Row ' + (i + 1) + ': Invalid To Date & Time format.' };
     }
     if (dTo < dFrom) {
@@ -5543,7 +5549,7 @@ function handleUploadImage(params, session) {
   var base64Data = params.base64Image;
   var title = sanitizeCellInput(params.title || 'CNE Activity');
   var description = sanitizeCellInput(params.description || '');
-  var date = params.date || new Date().toISOString().split('T')[0];
+  var date = params.date || getIndiaTodayString();
   
   if (!base64Data) return { success: false, message: 'Image data is required.' };
   
@@ -6275,10 +6281,10 @@ function handleGetNewsEvents(params) {
         id: 'NEWS-INIT-01',
         title: 'Mandatory Continuing Nursing Education (CNE) Guidelines 2026',
         category: 'Circular',
-        date: new Date().toISOString().split('T')[0],
+        date: getIndiaTodayString(),
         summary: 'All Nursing Officers are directed to complete minimum 30 verified CNE training hours for annual APAR compliance.',
         content: 'As per the directives of the Nursing Services Committee and AIIMS Rishikesh Academic Cell, all registered Nursing Officers must participate in accredited CNE programs.',
-        createdAt: new Date().toISOString().split('T')[0]
+        createdAt: getIndiaTodayString()
       }
     ];
   }
@@ -6295,7 +6301,7 @@ function handleAddNewsEvent(params, session) {
   var summary = sanitizeCellInput(params.summary);
   var content = sanitizeCellInput(params.content || params.summary);
   var category = sanitizeCellInput(params.category || 'Circular');
-  var date = (params.date || new Date().toISOString().split('T')[0]).trim();
+  var date = (params.date || getIndiaTodayString()).trim();
   
   if (!title || !summary) {
     return { success: false, message: 'Title and Summary are required.' };
@@ -7198,13 +7204,18 @@ function handleGetHomeDashboard(params, session) {
 function formatDateValue(val) {
   if (!val) return '';
   if (val instanceof Date) {
-    var hours = val.getHours();
-    var minutes = val.getMinutes();
-    var seconds = val.getSeconds();
-    if (hours !== 0 || minutes !== 0 || seconds !== 0) {
-      return Utilities.formatDate(val, Session.getScriptTimeZone() || 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm");
+    if (isNaN(val.getTime())) return '';
+    // Evaluate midnight using the same India timezone as the displayed value.
+    // getHours() would depend on the Apps Script project's timezone.
+    try {
+      var indiaDate = Utilities.formatDate(val, 'Asia/Kolkata', 'yyyy-MM-dd');
+      var indiaTime = Utilities.formatDate(val, 'Asia/Kolkata', 'HH:mm:ss');
+      return indiaTime === '00:00:00'
+        ? indiaDate
+        : Utilities.formatDate(val, 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ssXXX");
+    } catch (e) {
+      return val.toISOString(); // Explicit UTC offset, never ambiguous local time.
     }
-    return Utilities.formatDate(val, Session.getScriptTimeZone() || 'Asia/Kolkata', 'yyyy-MM-dd');
   }
   return String(val).trim();
 }

@@ -1,3 +1,4 @@
+import { getIndiaTodayIsoDate } from '../utils';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Bell,
@@ -59,7 +60,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     isImportant: boolean;
   }>({
     title: '',
-    date: new Date().toISOString().split('T')[0],
+    date: getIndiaTodayIsoDate(),
     category: 'Circular',
     summary: '',
     content: '',
@@ -128,7 +129,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
   }>({
     title: '',
     description: '',
-    date: new Date().toISOString().split('T')[0]
+    date: getIndiaTodayIsoDate()
   });
 
   const { success, error } = useToast();
@@ -209,7 +210,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
   const openAddNews = () => {
     setNewsForm({
       title: '',
-      date: new Date().toISOString().split('T')[0],
+      date: getIndiaTodayIsoDate(),
       category: 'Circular',
       summary: '',
       content: '',
@@ -225,7 +226,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     setEditingNews(news);
     setNewsForm({
       title: news.title || '',
-      date: news.date || new Date().toISOString().split('T')[0],
+      date: news.date || getIndiaTodayIsoDate(),
       category: (news.category as any) || 'Circular',
       summary: news.summary || '',
       content: news.content || '',
@@ -431,7 +432,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     setPhotoForm({
       title: '',
       description: '',
-      date: new Date().toISOString().split('T')[0]
+      date: getIndiaTodayIsoDate()
     });
     setPreviewImage(null);
     setEditingPhoto(null);
@@ -443,7 +444,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     setPhotoForm({
       title: photo.title || '',
       description: photo.description || '',
-      date: photo.date || new Date().toISOString().split('T')[0]
+      date: photo.date || getIndiaTodayIsoDate()
     });
     setPreviewImage(photo.imageUrl || null);
     setIsUploadOpen(true);

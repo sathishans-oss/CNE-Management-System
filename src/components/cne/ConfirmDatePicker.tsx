@@ -1,3 +1,4 @@
+import { getIndiaTodayIsoDate } from '../../utils';
 import React, { useState, useEffect, useRef } from 'react';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
 
@@ -47,7 +48,8 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
   const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
 
   // Calendar view month & year
-  const today = new Date();
+  const todayStr = getIndiaTodayIsoDate();
+  const [todayYear, todayMonth, todayDay] = todayStr.split('-').map(Number);
   const [viewYear, setViewYear] = useState(() => {
     if (value) {
       const p = value.split('-');
@@ -57,7 +59,7 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
       const p = minDate.split('-');
       if (p.length === 3 && !isNaN(parseInt(p[0], 10))) return parseInt(p[0], 10);
     }
-    return today.getFullYear();
+    return todayYear;
   });
 
   const [viewMonth, setViewMonth] = useState(() => {
@@ -69,7 +71,7 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
       const p = minDate.split('-');
       if (p.length === 3 && !isNaN(parseInt(p[1], 10))) return parseInt(p[1], 10) - 1;
     }
-    return today.getMonth();
+    return (todayMonth - 1);
   });
 
   // Automatically calculate popup position so it is fully visible in viewport without scrolling
@@ -402,7 +404,6 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
                 const isDisabled = Boolean(minDate && dateStr < minDate);
                 const isStaged = stagedDate === dateStr;
                 const isConfirmed = value === dateStr;
-                const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
                 const isToday = todayStr === dateStr;
 
                 const dayLabel = `${d} ${MONTH_NAMES[viewMonth]} ${viewYear}${isConfirmed ? ', currently selected' : ''}${isStaged ? ', staged' : ''}${isToday ? ', today' : ''}`;

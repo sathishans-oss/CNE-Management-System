@@ -15,7 +15,9 @@ import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { getCachedOfficers, loadOfficersSingleFlight } from '../../services/officerLoader';
 import { CneDateTimeFields } from './CneDateTimeFields';
-import { getCneTypeLabel, validateCneDuration } from '../../utils';
+import { getCneTypeLabel, validateCneDuration,
+  parseCneStartTimestamp
+} from '../../utils';
 
 const getIndiaToday = (): string =>
   new Intl.DateTimeFormat('en-CA', {
@@ -251,9 +253,9 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       return;
     }
 
-    const dFrom = new Date(fullFromDate);
-    const dTo = new Date(fullToDate);
-    if (Number.isNaN(dFrom.getTime()) || Number.isNaN(dTo.getTime())) {
+    const dFrom = parseCneStartTimestamp(fullFromDate);
+    const dTo = parseCneStartTimestamp(fullToDate);
+    if (!Number.isFinite(dFrom) || !Number.isFinite(dTo)) {
       error('Please enter valid Conducted From and Conducted To date/time values.');
       return;
     }

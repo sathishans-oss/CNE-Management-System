@@ -38,7 +38,8 @@ import {
   validateCneDuration,
   toDateTimeLocalString,
   parseToIsoDateString,
-  getCneTypeLabel
+  getCneTypeLabel,
+  parseCneStartTimestamp
 } from '../utils';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 import { CneDateTimeFields } from './cne/CneDateTimeFields';
@@ -446,9 +447,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setNewDate(fullFrom);
     setNewToDate(fullTo);
     if (fullFrom && fullTo) {
-      const dFrom = new Date(fullFrom);
-      const dTo = new Date(fullTo);
-      if (!isNaN(dFrom.getTime()) && !isNaN(dTo.getTime()) && dTo >= dFrom) {
+      const dFrom = parseCneStartTimestamp(fullFrom);
+      const dTo = parseCneStartTimestamp(fullTo);
+      if (Number.isFinite(dFrom) && Number.isFinite(dTo) && dTo >= dFrom) {
         const autoDur = calculateCneDuration(fullFrom, fullTo);
         if (autoDur) setNewDuration(autoDur);
       }
@@ -549,9 +550,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       return;
     }
 
-    const dFrom = new Date(newDate);
-    const dTo = new Date(newToDate);
-    if (isNaN(dFrom.getTime()) || isNaN(dTo.getTime())) {
+    const dFrom = parseCneStartTimestamp(newDate);
+    const dTo = parseCneStartTimestamp(newToDate);
+    if (!Number.isFinite(dFrom) || !Number.isFinite(dTo)) {
       error('Please enter valid From Date & Time and To Date & Time.');
       return;
     }
@@ -647,9 +648,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const handleEditFromDateChange = (val: string) => {
     setEditDate(val);
     if (val && editToDate) {
-      const dFrom = new Date(val);
-      const dTo = new Date(editToDate);
-      if (!isNaN(dFrom.getTime()) && !isNaN(dTo.getTime()) && dTo >= dFrom) {
+      const dFrom = parseCneStartTimestamp(val);
+      const dTo = parseCneStartTimestamp(editToDate);
+      if (Number.isFinite(dFrom) && Number.isFinite(dTo) && dTo >= dFrom) {
         const autoDur = calculateCneDuration(val, editToDate);
         if (autoDur) setEditDuration(autoDur);
       }
@@ -659,9 +660,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const handleEditToDateChange = (val: string) => {
     setEditToDate(val);
     if (editDate && val) {
-      const dFrom = new Date(editDate);
-      const dTo = new Date(val);
-      if (!isNaN(dFrom.getTime()) && !isNaN(dTo.getTime()) && dTo >= dFrom) {
+      const dFrom = parseCneStartTimestamp(editDate);
+      const dTo = parseCneStartTimestamp(val);
+      if (Number.isFinite(dFrom) && Number.isFinite(dTo) && dTo >= dFrom) {
         const autoDur = calculateCneDuration(editDate, val);
         if (autoDur) setEditDuration(autoDur);
       }
@@ -741,9 +742,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       return;
     }
 
-    const dFrom = new Date(editDate);
-    const dTo = new Date(editToDate);
-    if (isNaN(dFrom.getTime()) || isNaN(dTo.getTime())) {
+    const dFrom = parseCneStartTimestamp(editDate);
+    const dTo = parseCneStartTimestamp(editToDate);
+    if (!Number.isFinite(dFrom) || !Number.isFinite(dTo)) {
       error('Please enter valid From Date & Time and To Date & Time.');
       return;
     }
