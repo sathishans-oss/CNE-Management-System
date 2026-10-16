@@ -26,6 +26,9 @@ interface CNECalendarProps {
   onViewFullCneDetails: (cneId: string, viewState: CalendarViewState) => void;
 }
 
+const CalendarFullCneDetails = lazy(() => import('./cne/CalendarFullCneDetails')
+  .then((m) => ({ default: m.CalendarFullCneDetails })));
+
 const CalendarInterestControls = lazy(() => import('./cne/CalendarInterestControls')
   .then((m) => ({ default: m.CalendarInterestControls })));
 
@@ -37,7 +40,8 @@ type CalendarEventType = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
  * protected CNE data is written to localStorage or shared across logins.
  * Every Calendar visit still requests fresh server-authoritative records.
  */
-const calendarRecordsForSession = new WeakMap<SessionUser, CNERecord[]>();
+const calendarRecordsForSession = new WeakMap<SessionUser, Map<string, CNERecord[]>>();
+const calendarMonthKey = (year: number, monthIndex: number) => `${year}-${monthIndex + 1}`;
 
 const getIndiaCalendarDate = () => {
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -68,14 +72,18 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
   const indiaToday = getIndiaCalendarDate();
   const [currentDate, setCurrentDate] = useState<Date>(() => new Date(initialViewState?.year ?? indiaToday.year, initialViewState?.month ?? (indiaToday.month - 1), 1));
   const [viewMode, setViewMode] = useState<CalendarViewMode>(() => initialViewState?.viewMode ?? 'month');
-  // A successful empty list is still "loaded". A failed response must never
-  // be presented as an empty month with no scheduled CNEs.
-  const [cneRecords, setCneRecords] = useState<CNERecord[]>(() => calendarRecordsForSession.get(user) ?? []);
-  const [loadedForUser, setLoadedForUser] = useState<SessionUser | null>(() => calendarRecordsForSession.has(user) ? user : null);
-  const hasLoaded = loadedForUser === user;
-  const [loading, setLoading] = useState(() => !calendarRecordsForSession.has(user));
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const monthKey = calendarMonthKey(year, month);
+  const cachedMonth = calendarRecordsForSession.get(user)?.get(monthKey);
+  // Each month has its own independent load state. A successful empty list is loaded.
+  const [cneRecords, setCneRecords] = useState<CNERecord[]>(cachedMonth ?? []);
+  const [loadedMonthKey, setLoadedMonthKey] = useState<string | null>(cachedMonth !== undefined ? monthKey : null);
+  const hasLoaded = loadedMonthKey === monthKey;
+  const [loading, setLoading] = useState(cachedMonth === undefined);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
+  const [fullDetailsCne, setFullDetailsCne] = useState<CNERecord | null>(null);
   const requestGeneration = useRef(0);
 
   const loadEvents = useCallback(async () => {
@@ -83,34 +91,34 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
     setLoading(true);
     setLoadError(null);
     try {
-      const recordsRes = await ApiService.getCNERecords();
+      const recordsRes = await ApiService.getCNECalendarMonth(year, month + 1);
       if (generation !== requestGeneration.current) return;
       if (!recordsRes.success || !Array.isArray(recordsRes.data)) {
-        console.warn('[CNE Calendar] Unable to retrieve CNE records:', recordsRes.errorCode || recordsRes.message);
-        setLoadError('Unable to load CNE programmes. Please check your connection and try again.');
+        setLoadError('Unable to load CNE programmes for this month. Please try again.');
         return;
       }
-      calendarRecordsForSession.set(user, recordsRes.data);
+      let months = calendarRecordsForSession.get(user);
+      if (!months) { months = new Map(); calendarRecordsForSession.set(user, months); }
+      months.set(monthKey, recordsRes.data);
       setCneRecords(recordsRes.data);
-      setLoadedForUser(user);
+      setLoadedMonthKey(monthKey);
     } catch (error) {
       if (generation !== requestGeneration.current) return;
-      console.error('[CNE Calendar] Failed to load CNE records:', error);
-      setLoadError('Unable to load CNE programmes. Please check your connection and try again.');
+      console.error('[CNE Calendar] Monthly load failed:', error);
+      setLoadError('Unable to load CNE programmes for this month. Please try again.');
     } finally {
       if (generation === requestGeneration.current) setLoading(false);
     }
-  }, [user]);
+  }, [user, year, month, monthKey]);
 
   useEffect(() => {
-    // React also handles remounts (e.g., Back to Calendar) here. A successful
-    // session-specific snapshot is displayed immediately, then refreshed.
-    const cached = calendarRecordsForSession.get(user);
+    const cached = calendarRecordsForSession.get(user)?.get(monthKey);
     setCneRecords(cached ?? []);
-    setLoadedForUser(cached !== undefined ? user : null);
+    setLoadedMonthKey(cached !== undefined ? monthKey : null);
+    setSelectedEvent(null);
     void loadEvents();
     return () => { requestGeneration.current += 1; };
-  }, [user, loadEvents]);
+  }, [user, monthKey, loadEvents]);
 
   // Unified calendar events from single authoritative CNE Schedule
   const allEvents = useMemo(() => {
@@ -131,16 +139,12 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
   }, [cneRecords]);
 
   const handleViewFullDetails = () => {
-    const cneId = String(selectedEvent?.raw?.cneId || selectedEvent?.raw?.classId || '').trim();
-    if (!cneId) return;
+    if (!selectedEvent?.raw?.cneId) return;
+    setFullDetailsCne(selectedEvent.raw as CNERecord);
     setSelectedEvent(null);
-    onViewFullCneDetails(cneId, { year, month, viewMode });
   };
 
-  // Calendar math for Monthly View
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
-
+  // Month is loaded independently. Navigating to a different month never pulls full history.
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const firstDayIndex = new Date(year, month, 1).getDay(); // 0 is Sunday
 
@@ -161,16 +165,19 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
   const eventsByDay = useMemo(() => {
     const map: { [day: number]: any[] } = {};
     allEvents.forEach((ev) => {
-      const isoDate = parseToIsoDateString(ev.date);
-      if (!isoDate) return;
-      const [eventYear, eventMonth, eventDay] = isoDate.split('-').map(Number);
-      if (eventYear === year && eventMonth === month + 1) {
-        if (!map[eventDay]) map[eventDay] = [];
-        map[eventDay].push(ev);
+      const start = parseToIsoDateString(ev.date);
+      if (!start) return;
+      const end = parseToIsoDateString(ev.toDate) || start;
+      const first = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+      const last = `${year}-${String(month + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+      if (start > last || end < first) return;
+      for (let day = 1; day <= daysInMonth; day++) {
+        const iso = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        if (iso >= start && iso <= end) (map[day] ||= []).push(ev);
       }
     });
     return map;
-  }, [allEvents, year, month]);
+  }, [allEvents, year, month, daysInMonth]);
 
   // Do not show empty calendar cells until the authoritative CNE fetch has
   // succeeded. This also provides a real retry action when the API fails.
@@ -569,6 +576,18 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
             </div>
           </div>
         </div>
+      )}
+      {fullDetailsCne && (
+        <Suspense fallback={<div role="status" className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center text-white">Loading CNE details…</div>}>
+          <CalendarFullCneDetails
+            initialCne={fullDetailsCne}
+            user={user}
+            onClose={() => setFullDetailsCne(null)}
+            onManageInSchedule={() => {
+              onViewFullCneDetails(fullDetailsCne.cneId, { year, month, viewMode });
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );

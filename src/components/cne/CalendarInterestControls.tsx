@@ -97,7 +97,7 @@ export const CalendarInterestControls: React.FC<CalendarInterestControlsProps> =
       ) : status === 'INTERESTED' ? (
         <div className="flex flex-wrap items-center gap-3">
           <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-800">
-            <Check className="w-4 h-4" /> Interested ✓
+            <Check className="w-4 h-4" /> Interested
           </span>
           <button type="button" disabled={submitting} onClick={() => changeInterest(true)}
             className="text-xs font-bold text-rose-700 hover:text-rose-900 underline disabled:opacity-50">

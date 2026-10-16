@@ -82,43 +82,23 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
   }, [user?.role, user?.employeeId, appliedPeriod, currentPeriodKey, retryCount]);
 
   const handleApplyFilters = () => {
-    // Two blank dates should mean Current Month, never an ambiguous unbounded report.
-    const nextPeriod = !draftPeriod.allDates && !draftPeriod.fromDate && !draftPeriod.toDate
-      ? getIndiaCurrentMonth()
-      : draftPeriod;
-    if (!nextPeriod.allDates && nextPeriod.fromDate && nextPeriod.toDate && nextPeriod.fromDate > nextPeriod.toDate) {
+    const nextPeriod: OutcomePeriod = !draftPeriod.fromDate && !draftPeriod.toDate
+      ? { fromDate: '', toDate: '', allDates: true }
+      : { ...draftPeriod, allDates: false };
+    if (nextPeriod.fromDate && nextPeriod.toDate && nextPeriod.fromDate > nextPeriod.toDate) {
       showToast('From Date cannot be later than To Date.', 'error');
       return;
     }
-    // Explicit Apply: don't issue an API call on each intermediate date-picker change.
     setDraftPeriod(nextPeriod);
-    if (periodKey(nextPeriod) === currentPeriodKey) {
-      setRetryCount((n) => n + 1);
-      return;
-    }
-    setAppliedPeriod({ ...nextPeriod });
+    if (periodKey(nextPeriod) === currentPeriodKey) setRetryCount((n) => n + 1);
+    else setAppliedPeriod(nextPeriod);
   };
 
-  const handleCurrentMonth = () => {
-    const month = getIndiaCurrentMonth();
-    setDraftPeriod(month);
-    setSearch('');
-    if (periodKey(month) === currentPeriodKey) {
-      setRetryCount((n) => n + 1);
-    } else {
-      setAppliedPeriod(month);
-    }
-  };
-
-  const handleAllDates = () => {
-    // Deliberate action. Never fetch all historical records on initial page load.
+  const handleClearDates = () => {
     const all: OutcomePeriod = { fromDate: '', toDate: '', allDates: true };
     setDraftPeriod(all);
-    if (periodKey(all) === currentPeriodKey) {
-      setRetryCount((n) => n + 1);
-    } else {
-      setAppliedPeriod(all);
-    }
+    if (periodKey(all) === currentPeriodKey) setRetryCount((n) => n + 1);
+    else setAppliedPeriod(all);
   };
 
   // Client-side filtering across report fields while preserving empty active area rows
@@ -219,28 +199,24 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
           </div>
 
           <div className="flex flex-wrap items-center gap-2 min-w-0">
-            <label htmlFor="departmental-outcome-from-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
-              From Date
-            </label>
             <ConfirmDatePicker
               id="departmental-outcome-from-date"
               value={draftPeriod.fromDate}
               onChange={(fromDate) => setDraftPeriod((prev) => ({ ...prev, fromDate, allDates: false }))}
               placeholder="From Date..."
+              inlineLabel="From:"
               compact
             />
           </div>
 
           <div className="flex flex-wrap items-center gap-2 min-w-0">
-            <label htmlFor="departmental-outcome-to-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
-              To Date
-            </label>
             <ConfirmDatePicker
               id="departmental-outcome-to-date"
               value={draftPeriod.toDate}
               onChange={(toDate) => setDraftPeriod((prev) => ({ ...prev, toDate, allDates: false }))}
               minDate={draftPeriod.fromDate}
               placeholder="To Date..."
+              inlineLabel="To:"
               compact
             />
           </div>
@@ -252,25 +228,13 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-indigo-700 hover:bg-indigo-800 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
           >
             <Filter className="w-3.5 h-3.5" />
-            <span>Apply Filter</span>
+            <span>Show Results</span>
           </button>
 
-          <button
-            type="button"
-            onClick={handleCurrentMonth}
-            className="px-3 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <RotateCcw className="w-3.5 h-3.5 inline-block mr-1.5" />
-            Current Month
-          </button>
-
-          <button
-            type="button"
-            onClick={handleAllDates}
-            title="Load all historical records (may be slower)"
-            className="px-3 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer whitespace-nowrap shrink-0"
-          >
-            All Dates
+          <button type="button" onClick={handleClearDates} disabled={loading}
+            title="Clear dates and load all historical records (may take longer)"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl disabled:opacity-50">
+            <XCircle className="w-3.5 h-3.5" /> Clear Dates
           </button>
 
           <button
@@ -287,7 +251,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
 
       <div className="print:hidden text-xs text-slate-600 mb-3" aria-live="polite">
         {loading ? 'Loading selected reporting period…' : `Report period: ${printPeriodText}`}
-        {isFilterChanged && !loading && <span className="ml-2 font-semibold text-amber-700">Date changes not applied — click Apply Filter.</span>}
+        {isFilterChanged && !loading && <span className="ml-2 font-semibold text-amber-700">Date changes not applied — click Show Results.</span>}
       </div>
 
       {/* Report Table */}

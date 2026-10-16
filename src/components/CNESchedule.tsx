@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo, useDeferredValue } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Sparkles,
   Calendar,
@@ -82,6 +82,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 }) => {
   const [classes, setClasses] = useState<CNERecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<'Scheduled' | 'Completed' | 'Canceled' | 'ALL'>('Scheduled');
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [fromDateFilter, setFromDateFilter] = useState('');
   const [toDateFilter, setToDateFilter] = useState('');
@@ -172,6 +178,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
   const { success, error } = useToast();
   const dataRequestRef = useRef(0);
+  const historyPageRef = useRef(1);
+  const historyMoreRequestRef = useRef(false);
   const activityRequestRef = useRef(0);
   const selectedCneIdRef = useRef('');
   selectedCneIdRef.current = selectedDetailCne?.cneId || selectedDetailCne?.classId || '';
@@ -262,6 +270,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   useEffect(() => {
     calendarRequestHandledRef.current = null;
     setClasses([]);
+    setStatusFilter('Scheduled');
+    setHistoryTotal(0);
+    setHistoryHasMore(false);
     setAreasList([]);
     setTeachingModes([]);
     setOfficersList(getCachedOfficers() || []);
@@ -278,8 +289,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setIsDeptScheduleOpen(false);
     setIsUnscheduledOpen(false);
     setIsScheduleChoiceOpen(false);
-    if (user?.employeeId) loadData();
-    else setLoading(false);
+    if (!user?.employeeId) setLoading(false);
     return () => {
       dataRequestRef.current += 1;
       activityRequestRef.current += 1;
@@ -315,21 +325,26 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       });
   }, []);
 
-  // Calendar -> Schedule: open the exact CNE regardless of search/date filters or pagination.
-  // Historical CNE access is checked using the existing Schedule permission rules.
+  // Calendar deep links must work even when the target CNE is Completed/Canceled
+  // or outside the selected history page. The backend checks authorization.
   useEffect(() => {
     const wantedId = String(initialCneId || '').trim();
-    if (!wantedId || loading || calendarRequestHandledRef.current === wantedId) return;
+    if (!wantedId || !user?.employeeId || calendarRequestHandledRef.current === wantedId) return;
     calendarRequestHandledRef.current = wantedId;
-    const match = classes.find((cne) => String(cne.cneId || cne.classId || '').trim() === wantedId);
-    if (!match) {
-      error('This CNE is no longer available in the active schedule.');
-    } else if (!canViewScheduleRecord(match)) {
-      error('You do not have permission to view the full details of this CNE.');
-    } else {
-      setSelectedDetailCne(match);
-    }
-  }, [initialCneId, loading, classes, canViewScheduleRecord, error]);
+    const requestSession = sessionKey;
+    let active = true;
+    void ApiService.getCNEScheduleById(wantedId).then((result) => {
+      if (!active || requestSession !== sessionKeyRef.current) return;
+      if (!result.success || !result.data || !canViewScheduleRecord(result.data)) {
+        error(result.message || 'This CNE is unavailable or you do not have permission to view it.');
+      } else {
+        setSelectedDetailCne(result.data);
+      }
+    }).catch(() => {
+      if (active && requestSession === sessionKeyRef.current) error('Unable to open this CNE. Please try again.');
+    });
+    return () => { active = false; };
+  }, [initialCneId, sessionKey, user?.employeeId, canViewScheduleRecord, error]);
 
   // Fetch real-time CNE Activity Progress whenever a CNE details modal is opened
   useEffect(() => {
@@ -350,53 +365,105 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     const requestSession = sessionKey;
     const isCurrent = () => requestId === dataRequestRef.current && requestSession === sessionKeyRef.current;
     setLoading(true);
+    setLoadingMore(false);
+    historyMoreRequestRef.current = false;
+    historyPageRef.current = 1;
+    setLoadError('');
 
-    // Staff viewing the Schedule do not need CNE creation masters.
-    // Administrators and Area Incharges fetch them independently so the records
-    // render as soon as the primary Schedule request returns.
+    // Staff viewing the Schedule do not require CNE-creation master lists.
     if (canScheduleCne) {
-      // Independent reads start concurrently, but slow master lists must not hold
-      // the schedule behind a Promise.all() barrier. Only the record request gates
-      // schedule rendering; masters populate their controls when ready.
-      void ApiService.getAreas()
-        .then((res) => {
-          if (!isCurrent()) return;
-          if (res.success && Array.isArray(res.data)) {
-            const uniqueAreas = Array.from(new Set(
-              res.data.filter((a) => a.status === 'ACTIVE').map((a) => a.name).filter(Boolean)
-            ));
-            setAreasList(uniqueAreas);
-          }
-        })
-        .catch((err) => { if (isCurrent()) console.warn('CNE Areas unavailable:', err); });
-
-      void ApiService.getTeachingModes()
-        .then((res) => {
-          if (!isCurrent()) return;
-          if (res.success && Array.isArray(res.data)) {
-            setTeachingModes(
-              [...res.data].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
-            );
-          }
-        })
-        .catch((err) => { if (isCurrent()) console.warn('CNE Teaching Modes unavailable:', err); });
-
+      void ApiService.getAreas().then((res) => {
+        if (!isCurrent()) return;
+        if (res.success && Array.isArray(res.data)) {
+          setAreasList(Array.from(new Set(res.data.filter((a) => a.status === 'ACTIVE').map((a) => a.name).filter(Boolean))));
+        }
+      }).catch((err) => { if (isCurrent()) console.warn('CNE Areas unavailable:', err); });
+      void ApiService.getTeachingModes().then((res) => {
+        if (!isCurrent()) return;
+        if (res.success && Array.isArray(res.data)) {
+          setTeachingModes([...res.data].sort((a,b) => a.name.localeCompare(b.name,undefined,{sensitivity:'base'})));
+        }
+      }).catch((err) => { if (isCurrent()) console.warn('CNE Teaching Modes unavailable:', err); });
     }
 
     try {
-      const clsRes = await ApiService.getCNERecords();
+      const result = await ApiService.getCNESchedulePage({
+        status: statusFilter,
+        page: 1,
+        pageSize: 50,
+        search: debouncedSearch,
+        fromDate: fromDateFilter,
+        toDate: toDateFilter
+      });
       if (!isCurrent()) return;
-      if (!clsRes.success || !Array.isArray(clsRes.data)) {
-        throw new Error(clsRes.message || 'Failed to load CNE schedule.');
+      if (!result.success || !result.data || !Array.isArray(result.data.records)) {
+        throw new Error(result.message || 'Failed to load CNE schedule.');
       }
-      setClasses(clsRes.data);
-      return clsRes.data;
+      setClasses(result.data.records);
+      setHistoryTotal(result.data.total);
+      setHistoryHasMore(Boolean(result.data.hasMore));
+      return result.data.records;
     } catch (e: any) {
-      if (isCurrent()) error(e?.message || 'Failed to load CNE schedule.');
+      if (isCurrent()) {
+        setClasses([]);
+        setHistoryTotal(0);
+        setHistoryHasMore(false);
+        setLoadError(e?.message || 'Failed to load CNE schedule.');
+        error(e?.message || 'Failed to load CNE schedule.');
+      }
     } finally {
       if (isCurrent()) setLoading(false);
     }
   };
+
+  // Requests only the next authorized historical page. No eager background
+  // downloads of Completed/Canceled history are performed.
+  const loadNextHistoryPage = async () => {
+    if (loading || loadingMore || historyMoreRequestRef.current || !historyHasMore || statusFilter === 'Scheduled') return;
+    const requestId = dataRequestRef.current;
+    const requestSession = sessionKey;
+    const nextPage = historyPageRef.current + 1;
+    historyMoreRequestRef.current = true;
+    setLoadingMore(true);
+    try {
+      const result = await ApiService.getCNESchedulePage({
+        status: statusFilter,
+        page: nextPage,
+        pageSize: 50,
+        search: debouncedSearch,
+        fromDate: fromDateFilter,
+        toDate: toDateFilter
+      });
+      if (requestId !== dataRequestRef.current || requestSession !== sessionKeyRef.current) return;
+      if (!result.success || !result.data || !Array.isArray(result.data.records)) throw new Error(result.message || 'Unable to load more CNEs.');
+      historyPageRef.current = nextPage;
+      setClasses((current) => {
+        const ids = new Set(current.map((c) => c.cneId || c.classId));
+        return [...current, ...result.data.records.filter((c) => !ids.has(c.cneId || c.classId))];
+      });
+      setHistoryTotal(result.data.total);
+      setHistoryHasMore(Boolean(result.data.hasMore));
+    } catch(e: any) {
+      if (requestId === dataRequestRef.current && requestSession === sessionKeyRef.current) error(e?.message || 'Unable to load more CNEs.');
+    } finally {
+      if (requestId === dataRequestRef.current) { historyMoreRequestRef.current = false; setLoadingMore(false); }
+    }
+  };
+
+  // Debounce server-side searching to avoid one Apps Script request per keystroke.
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearch(searchTerm.trim()), 350);
+    return () => window.clearTimeout(id);
+  }, [searchTerm]);
+
+  // A change of status/search/dates requests fresh data from the server.
+  useEffect(() => {
+    if (!user?.employeeId) return;
+    setClasses([]);
+    setCurrentPage(1);
+    void loadData();
+    return () => { dataRequestRef.current += 1; };
+  }, [sessionKey, statusFilter, debouncedSearch, fromDateFilter, toDateFilter]);
 
   useEffect(() => {
     if (!activeTeachingModeNames.length) {
@@ -438,8 +505,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
     try {
       const freshClasses = await loadData();
-      if (cneId && freshClasses) {
-        const fresh = freshClasses.find((c) => (c.cneId || c.classId) === cneId);
+      if (cneId) {
+        const fresh = freshClasses?.find((c) => (c.cneId || c.classId) === cneId) ||
+          (await ApiService.getCNEScheduleById(cneId)).data;
         if (fresh) {
           setSelectedDetailCne((current) => current && (current.cneId || current.classId) === cneId ? fresh : current);
         }
@@ -1003,86 +1071,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
   };
 
-  // React deferred rendering for smooth typing in large datasets
-  const deferredSearchTerm = useDeferredValue(searchTerm);
-
-  const filteredClasses = useMemo(() => classes.filter((c) => {
-    if (!canViewScheduleRecord(c)) return false;
-    // 1. Search filter: case-insensitive partial-text search using deferredSearchTerm
-    if (deferredSearchTerm.trim()) {
-      const q = deferredSearchTerm.trim().toLowerCase();
-      const rpDisplay = getResourcePersonsDisplay(c);
-      const searchableParts: (string | undefined | null)[] = [
-        c.cneId,
-        c.classId,
-        c.dataId,
-        c.topic,
-        c.area,
-        c.resourcePersonEmpId,
-        ...(c.resourcePersonEmpIds || []),
-        c.resourcePersonName,
-        ...(c.externalResourcePersons || []),
-        rpDisplay,
-        c.modeOfTeaching,
-        c.description,
-        c.staffEmpId,
-        ...(c.staffEmpIds || []),
-        ...(c.staffNames || []),
-        c.proposedByEmpId,
-        c.proposedByName,
-        c.adminRemarks,
-        c.remarks,
-        c.cneType,
-        getCneTypeLabel(c.cneType)
-      ];
-      const combined = searchableParts
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      if (!combined.includes(q)) {
-        return false;
-      }
-    }
-
-    // 2. Date Range filter: From Date & To Date
-    if (fromDateFilter || toDateFilter) {
-      const cneStart = parseToIsoDateString(c.fromDate || c.date);
-      const cneEnd = parseToIsoDateString(c.toDate) || cneStart;
-
-      // Safely handle missing/invalid dates
-      if (!cneStart && !cneEnd) {
-        return false;
-      }
-
-      const start = cneStart || cneEnd!;
-      const end = cneEnd || cneStart!;
-
-      if (fromDateFilter && toDateFilter) {
-        // Both selected: interval overlap
-        if (!(start <= toDateFilter && end >= fromDateFilter)) {
-          return false;
-        }
-      } else if (fromDateFilter) {
-        // Only From Date selected: occurring on or after selected date
-        if (end < fromDateFilter) {
-          return false;
-        }
-      } else if (toDateFilter) {
-        // Only To Date selected: occurring on or before selected date
-        if (start > toDateFilter) {
-          return false;
-        }
-      }
-    }
-
-    return true;
-  }), [classes, canViewScheduleRecord, deferredSearchTerm, fromDateFilter, toDateFilter, getResourcePersonsDisplay]);
-
-  const availableClasses = useMemo(() => [...filteredClasses].sort((a, b) => {
-    const aFromDate = parseToIsoDateString(a.fromDate || a.date) || '';
-    const bFromDate = parseToIsoDateString(b.fromDate || b.date) || '';
-    return bFromDate.localeCompare(aFromDate);
-  }), [filteredClasses]);
+  // All status/search/date filtering is enforced on the server BEFORE paging.
+  // Do not re-filter partial history in the browser, which can create false
+  // 'no records' messages for records not yet downloaded.
+  const availableClasses = useMemo(() => classes.filter(canViewScheduleRecord), [classes, canViewScheduleRecord]);
 
   // Schedule Table Pagination: default 25 records per page, configurable
   const [pageSize, setPageSize] = useState<number>(25);
@@ -1091,7 +1083,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   // Reset to page 1 whenever search or date filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [deferredSearchTerm, fromDateFilter, toDateFilter]);
+  }, [statusFilter, debouncedSearch, fromDateFilter, toDateFilter]);
 
   const totalPages = Math.max(1, Math.ceil(availableClasses.length / pageSize));
   const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
@@ -1109,8 +1101,33 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           <ArrowLeft className="w-4 h-4" /> Back to Calendar
         </button>
       )}
+      {/* Scheduled is the only default request; historical data loads on demand. */}
       {/* Compact CNE Schedule toolbar: Search | From Date | To Date | Clear | Schedule CNE */}
       <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs">
+        {/* Status and search/date filters share one responsive panel. */}
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 mb-3">
+        <div className="hidden sm:flex flex-wrap gap-1" role="group" aria-label="CNE schedule status">
+          {(['Scheduled','Completed','Canceled','ALL'] as const).map((status) => (
+            <button type="button" key={status} onClick={() => setStatusFilter(status)}
+              aria-pressed={statusFilter === status}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors ${statusFilter === status ? 'bg-teal-700 text-white' : 'text-slate-700 hover:bg-slate-100'}`}>
+              {status === 'ALL' ? 'All' : status}
+            </button>
+          ))}
+        </div>
+        <div className="sm:hidden">
+          <label htmlFor="schedule-status-select" className="block mb-1 text-xs font-bold text-slate-600">CNE Status</label>
+          <select id="schedule-status-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm font-semibold">
+            <option value="Scheduled">Scheduled</option><option value="Completed">Completed</option>
+            <option value="Canceled">Canceled</option><option value="ALL">All</option>
+          </select>
+        </div>
+        <p className="px-2 pt-2 text-xs text-slate-500">
+          {statusFilter === 'Scheduled' ? 'All Scheduled CNEs are loaded together. Historical records are not fetched.' :
+            `${historyTotal} authorized ${statusFilter === 'ALL' ? 'CNEs' : statusFilter.toLowerCase() + ' CNEs'} match; ${classes.length} loaded. Older records load on request.`}
+        </p>
+      </div>
         <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
           <div className="w-full sm:w-[300px] sm:min-w-[220px] min-w-0">
             <SearchInput
@@ -1122,28 +1139,24 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 min-w-0">
-            <label htmlFor="filter-from-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
-              From Date
-            </label>
             <ConfirmDatePicker
               id="filter-from-date"
               value={fromDateFilter}
               onChange={setFromDateFilter}
               placeholder="From Date..."
+              inlineLabel="From:"
               compact
             />
           </div>
 
           <div className="flex flex-wrap items-center gap-2 min-w-0">
-            <label htmlFor="filter-to-date" className="text-xs font-semibold text-slate-600 whitespace-nowrap">
-              To Date
-            </label>
             <ConfirmDatePicker
               id="filter-to-date"
               value={toDateFilter}
               onChange={setToDateFilter}
               minDate={fromDateFilter}
               placeholder="To Date..."
+              inlineLabel="To:"
               compact
             />
           </div>
@@ -1184,18 +1197,23 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         {loading ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
             <Loader2 className="w-8 h-8 animate-spin text-teal-600" />
-            <span className="text-xs font-medium">Loading data</span>
+            <span className="text-xs font-medium">Loading {statusFilter === 'ALL' ? 'CNE history' : statusFilter + ' CNEs'}...</span>
+          </div>
+        ) : loadError ? (
+          <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center space-y-3">
+            <p className="text-sm font-bold text-red-700">{loadError}</p>
+            <button type="button" onClick={() => void loadData()} className="rounded-lg bg-red-700 px-4 py-2 text-white text-xs font-bold">Try Again</button>
           </div>
         ) : availableClasses.length === 0 ? (
           <div className="py-16 text-center bg-white rounded-2xl border border-slate-200 p-8 space-y-2">
             <Sparkles className="w-8 h-8 text-amber-500 mx-auto" />
             <h3 className="text-sm font-bold text-slate-800">
-              {hasActiveFilters ? 'No CNE records match the selected filters.' : 'No CNE classes scheduled'}
+              {hasActiveFilters ? 'No CNE records match the selected filters.' : `No ${statusFilter === 'ALL' ? '' : statusFilter.toLowerCase() + ' '}CNEs available`}
             </h3>
             <p className="text-xs text-slate-500">
               {hasActiveFilters
                 ? 'Try adjusting or clearing your search term or date range.'
-                : 'Check back soon for the upcoming CNE training schedule.'}
+                : statusFilter === 'Scheduled' ? 'Check back soon for the upcoming CNE training schedule.' : 'Select another status to see other CNE records.'}
             </p>
             {hasActiveFilters && (
               <button
@@ -1328,6 +1346,14 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                     <ChevronRight className="w-4 h-4" />
                   </button>
                 </div>
+              </div>
+            )}
+            {historyHasMore && statusFilter !== 'Scheduled' && (
+              <div className="border-t border-slate-200 bg-white px-4 py-3 text-center">
+                <button type="button" onClick={() => void loadNextHistoryPage()} disabled={loadingMore}
+                  className="rounded-xl bg-teal-700 px-5 py-2.5 text-xs font-bold text-white disabled:opacity-50">
+                  {loadingMore ? 'Loading next 50...' : `Load next 50 (${Math.max(0, historyTotal - classes.length)} remaining)`}
+                </button>
               </div>
             )}
           </div>
@@ -1567,7 +1593,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         ) : filteredRpOfficers.length === 0 ? (
                           <div className="p-2 text-center text-xs text-slate-400">No officers found</div>
                         ) : (
-                          filteredRpOfficers.slice(0, 50).map((officer, idx) => {
+                          filteredRpOfficers.slice(0, 10).map((officer, idx) => {
                             const isSelected = selectedRpEmpIds.includes(officer.employeeId);
                             return (
                               <div
@@ -1578,17 +1604,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                                 }`}
                               >
                                 <div className="flex items-center gap-2 truncate">
-                                  <input
-                                    type="checkbox"
-                                    checked={isSelected}
-                                    onChange={() => {}}
-                                    className="rounded text-emerald-600 pointer-events-none"
-                                  />
+                                  
                                   <span className="truncate">
-                                    {officer.employeeId} - {officer.name}
+                                    {officer.name} ({officer.employeeId})
                                   </span>
                                 </div>
-                                {isSelected && <span className="text-[10px] text-emerald-600 font-bold shrink-0">Selected</span>}
+                                <span className="text-sm font-bold text-teal-700 shrink-0" aria-hidden="true">{isSelected ? "✓" : "+"}</span>
                               </div>
                             );
                           })

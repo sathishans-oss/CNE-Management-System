@@ -10,6 +10,7 @@ interface ConfirmDatePickerProps {
   placeholder?: string;
   id?: string;
   compact?: boolean;
+  inlineLabel?: string; // Compact persistent From:/To: indicator inside the picker
 }
 
 const MONTH_NAMES = [
@@ -38,7 +39,8 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
   disabled = false,
   placeholder = 'Select date...',
   id,
-  compact = false
+  compact = false,
+  inlineLabel
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [stagedDate, setStagedDate] = useState(value);
@@ -320,7 +322,7 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
         onClick={handleOpen}
         aria-haspopup="dialog"
         aria-expanded={isOpen}
-        aria-label={value ? `Selected date: ${formatDisplayDate(value)}` : placeholder}
+        aria-label={`${inlineLabel || placeholder}: ${value ? formatDisplayDate(value) : "Not selected"}`}
         className={`w-full ${compact ? 'px-2 py-1.5' : 'p-2.5'} bg-white border border-slate-300 rounded-lg text-xs flex items-center justify-between focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all ${
           disabled
             ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200'
@@ -329,8 +331,9 @@ export const ConfirmDatePicker: React.FC<ConfirmDatePickerProps> = ({
       >
         <span className="flex items-center gap-2 truncate">
           <CalendarIcon className={`w-3.5 h-3.5 shrink-0 ${disabled ? 'text-slate-400' : 'text-indigo-600'}`} />
+          {inlineLabel && <span className="shrink-0 font-semibold text-slate-600">{inlineLabel}</span>}
           <span className={value ? 'font-medium text-slate-900' : 'text-slate-400'}>
-            {formatDisplayDate(value) || placeholder}
+            {formatDisplayDate(value) || (inlineLabel ? "Select date" : placeholder)}
           </span>
         </span>
         <span className="text-[10px] text-slate-400">▼</span>

@@ -122,11 +122,14 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
       </div>
 
       {isActivityLoading ? (
-        <div className="flex-1 flex flex-col items-center justify-center py-12 text-center space-y-3">
-          <Loader2 className="w-7 h-7 animate-spin text-teal-600" />
-          <div className="text-xs font-medium text-slate-500">
-            Loading CNE progress...
-          </div>
+        <div className="grid grid-cols-3 gap-2" role="status" aria-label="Loading five CNE progress cards">
+          {['Material', 'Questions', 'QR Code', 'Post-Test', 'Attendance'].map((name) => (
+            <div key={name} className="min-h-24 p-3 rounded-xl border border-slate-200 bg-white flex flex-col items-center justify-center gap-2">
+              <span className="text-[11px] font-semibold text-slate-700 text-center">{name}</span>
+              <Loader2 className="w-4 h-4 animate-spin text-teal-600" aria-hidden="true" />
+              <span className="text-[10px] text-slate-500">Loading…</span>
+            </div>
+          ))}
         </div>
       ) : activityProgress ? (
         <div className="flex-1 flex flex-col justify-between space-y-3">

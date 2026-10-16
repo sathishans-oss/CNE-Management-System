@@ -307,6 +307,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
               value={startDate}
               onChange={setStartDate}
               placeholder="From Date"
+              inlineLabel="From:"
               compact
             />
           </div>
@@ -318,6 +319,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
               onChange={setEndDate}
               minDate={startDate}
               placeholder="To Date"
+              inlineLabel="To:"
               compact
             />
           </div>

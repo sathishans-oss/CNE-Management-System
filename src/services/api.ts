@@ -196,6 +196,9 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getLearningResource',
   'getReferenceMaterial',
   'getCNERecords',
+  'getCNESchedulePage',
+  'getCNECalendarMonth',
+  'getCNEScheduleById',
   'getProgramImpact',
   'getAreas',
   'getTeachingModes',
@@ -1115,6 +1118,27 @@ export class ApiService {
    */
   static async getCNERecords(params?: { status?: string; cneType?: string; area?: string; myRecordsOnly?: boolean; scope?: string }): Promise<ApiResponse<CNERecord[]>> {
     return this.executeAction<CNERecord[]>('getCNERecords', params);
+  }
+
+  // Schedule-specific server-side status/date/search and historical pagination.
+  // These identity-scoped responses are never stored in localStorage.
+  static async getCNESchedulePage(params: {
+    status: 'Scheduled' | 'Completed' | 'Canceled' | 'ALL';
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    fromDate?: string;
+    toDate?: string;
+  }): Promise<ApiResponse<{ records: CNERecord[]; total: number; page: number; pageSize: number; hasMore: boolean }>> {
+    return this.executeAction('getCNESchedulePage', params);
+  }
+
+  static async getCNECalendarMonth(year: number, month: number): Promise<ApiResponse<CNERecord[]>> {
+    return this.executeAction<CNERecord[]>('getCNECalendarMonth', { year, month });
+  }
+
+  static async getCNEScheduleById(cneId: string): Promise<ApiResponse<CNERecord>> {
+    return this.executeAction('getCNEScheduleById', { cneId });
   }
 
   static async createCNE(cneData: Partial<CNERecord>): Promise<ApiResponse<{ cneId: string }>> {

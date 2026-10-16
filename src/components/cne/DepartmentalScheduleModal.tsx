@@ -692,7 +692,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                           ) : filteredOfficers.length === 0 ? (
                             <div className="p-2.5 text-center text-xs text-slate-400">No officers found</div>
                           ) : (
-                            filteredOfficers.slice(0, 50).map((officer, oIdx) => {
+                            filteredOfficers.slice(0, 10).map((officer, oIdx) => {
                               const isSelected = selectedRowRpIds.includes(officer.employeeId);
                               return (
                                 <div
@@ -710,10 +710,10 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                                       className="rounded text-emerald-600 pointer-events-none"
                                     />
                                     <span className="truncate">
-                                      {officer.employeeId} - {officer.name}
+                                      {officer.name} ({officer.employeeId})
                                     </span>
                                   </div>
-                                  {isSelected && <span className="text-[10px] text-emerald-600 font-bold shrink-0">Selected</span>}
+                                  <span className="text-sm font-bold text-teal-700 shrink-0" aria-hidden="true">{isSelected ? "✓" : "+"}</span>
                                 </div>
                               );
                             })

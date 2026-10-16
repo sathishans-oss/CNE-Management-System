@@ -816,6 +816,18 @@ function handleRequest(e, method) {
       case 'getCNERecords':
         output = handleGetCNERecords(params, session);
         break;
+
+      case 'getCNECalendarMonth':
+        output = handleGetCNECalendarMonth(params, session);
+        break;
+
+      case 'getCNESchedulePage':
+        output = handleGetCNESchedulePage(params, session);
+        break;
+
+      case 'getCNEScheduleById':
+        output = handleGetCNEScheduleById(params, session);
+        break;
         
       case 'getGallery':
         output = handleGetGallery(params, session);
@@ -4347,6 +4359,235 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
 
   logPerf('handleGetCNERecords', startedAt, 'records: ' + records.length);
   return { success: true, data: records };
+}
+
+/**
+ * Schedule-only read endpoints. Do not modify getCNERecords: Calendar, dashboard,
+ * personal records and reporting still depend on its existing response contract.
+ * Authentication comes from the same verifySession() path as getCNERecords.
+ *
+ * Important: authorization is applied BEFORE slicing history into pages. The
+ * selected rows are then passed through the authoritative handler to preserve
+ * its field-level sanitization and its defense-in-depth access checks.
+ */
+function getCneScheduleColumnValues_(sheet, column, lastRow) {
+  if (column < 0 || lastRow < 2) return [];
+  return sheet.getRange(2, column + 1, lastRow - 1, 1).getValues().map(function(row) { return row[0]; });
+}
+
+function cneScheduleDateKey_(value) {
+  var v = formatDateValue(value);
+  var iso = /^\\d{4}-\\d{2}-\\d{2}/.exec(v);
+  if (iso) return iso[0];
+  var dmy = /^(\\d{1,2})[\\/.-](\\d{1,2})[\\/.-](\\d{4})/.exec(v);
+  return dmy ? (dmy[3] + '-' + ('0' + dmy[2]).slice(-2) + '-' + ('0' + dmy[1]).slice(-2)) : '';
+}
+
+function cneScheduleDateMatches_(start, end, fromDate, toDate) {
+  if (!fromDate && !toDate) return true;
+  if (!start && !end) return false;
+  var startDate = start || end;
+  var endDate = end || start;
+  return (!fromDate || endDate >= fromDate) && (!toDate || startDate <= toDate);
+}
+
+function cneScheduleOrder_(a, b, status) {
+  if (status === 'Scheduled') {
+    // Upcoming dates first (nearest first); overdue Scheduled records follow.
+    var today = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd');
+    var af = a.fromDate >= today ? 0 : 1;
+    var bf = b.fromDate >= today ? 0 : 1;
+    if (af !== bf) return af - bf;
+    var aKey = a.fromDate || '';
+    var bKey = b.fromDate || '';
+    var cmp = af === 0 ? aKey.localeCompare(bKey) : bKey.localeCompare(aKey);
+    return cmp || b.rowNumber - a.rowNumber;
+  }
+  return (b.fromDate || '').localeCompare(a.fromDate || '') || b.rowNumber - a.rowNumber;
+}
+
+// Read only the selected full records, not all historical data. If the desired
+// rows are too scattered, one bulk read avoids dozens of Sheets RPC calls.
+function cneScheduleSelectedSnapshot_(sheet, headers, colMap, rowNumbers) {
+  var data = [headers];
+  var displayValues = [headers.map(function(v) { return String(v || ''); })];
+  if (!rowNumbers.length) return {sheet:sheet, data:data, displayValues:displayValues, colMap:colMap};
+  var sorted = rowNumbers.slice().sort(function(a,b) { return a-b; });
+  var groups = [];
+  var start=sorted[0], end=start;
+  for (var i=1;i<sorted.length;i++) {
+    if (sorted[i] <= end+1) end=sorted[i];
+    else { groups.push([start,end]); start=end=sorted[i]; }
+  }
+  groups.push([start,end]);
+  var byRow = {};
+  if (groups.length > 12) {
+    var wholeRange=sheet.getRange(1,1,sheet.getLastRow(),sheet.getLastColumn());
+    var allValues=wholeRange.getValues();
+    var allDisplay=wholeRange.getDisplayValues();
+    sorted.forEach(function(row) { byRow[row]={data:allValues[row-1], display:allDisplay[row-1]}; });
+  } else {
+    groups.forEach(function(group) {
+      var range=sheet.getRange(group[0],1,group[1]-group[0]+1,sheet.getLastColumn());
+      var values=range.getValues();
+      var shown=range.getDisplayValues();
+      for (var j=0;j<values.length;j++) byRow[group[0]+j]={data:values[j],display:shown[j]};
+    });
+  }
+  // Preserve input order (which was already sorted/selected).
+  rowNumbers.forEach(function(r) {
+    if (byRow[r]) { data.push(byRow[r].data); displayValues.push(byRow[r].display); }
+  });
+  return {sheet:sheet,data:data,displayValues:displayValues,colMap:colMap};
+}
+
+function cneSchedulePageResult_(authorized, status, page, pageSize, search, fromDate, toDate) {
+  var needle = search.toLowerCase();
+  var matches = authorized.filter(function(c) {
+    if (!cneScheduleDateMatches_(cneScheduleDateKey_(c.fromDate || c.date), cneScheduleDateKey_(c.toDate || c.fromDate || c.date), fromDate, toDate)) return false;
+    if (!needle) return true;
+    var terms = [c.cneId,c.classId,c.dataId,c.topic,c.area,c.resourcePersonEmpId,
+      c.resourcePersonName,(c.externalResourcePersons||[]).join(' '),c.modeOfTeaching,
+      c.description,c.staffEmpId,(c.staffEmpIds||[]).join(' '),(c.staffNames||[]).join(' '),
+      c.proposedByEmpId,c.proposedByName,c.adminRemarks,c.remarks,c.cneType].join(' ').toLowerCase();
+    return terms.indexOf(needle)!==-1;
+  });
+  var today=Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd');
+  matches.sort(function(a,b) {
+    var da=cneScheduleDateKey_(a.fromDate || a.date), db=cneScheduleDateKey_(b.fromDate || b.date);
+    if (status==='Scheduled') {
+      var aa=da >= today ? 0 : 1, bb=db >= today ? 0 : 1;
+      if (aa!==bb) return aa-bb;
+      return aa===0 ? da.localeCompare(db) : db.localeCompare(da);
+    }
+    return db.localeCompare(da);
+  });
+  var total=matches.length;
+  var begin=status==='Scheduled'?0:(page-1)*pageSize;
+  return {success:true,data:{records:status==='Scheduled'?matches:matches.slice(begin,begin+pageSize), total:total, page:page, pageSize:pageSize,hasMore:status!=='Scheduled' && begin+pageSize<total}};
+}
+
+/** Calendar-only monthly read. Full history is never enriched or returned. */
+function handleGetCNECalendarMonth(params, session) {
+  if (!session || !session.employeeId) return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required.' };
+  params = params || {};
+  var year = Number(params.year), month = Number(params.month);
+  if (!Number.isInteger(year) || year < 1970 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12)
+    return { success: false, errorCode: 'INVALID_MONTH', message: 'Invalid Calendar month.' };
+  var fromDate = String(year) + '-' + ('0' + month).slice(-2) + '-01';
+  var toDate = String(year) + '-' + ('0' + month).slice(-2) + '-' +
+    ('0' + new Date(Date.UTC(year, month, 0)).getUTCDate()).slice(-2);
+  var sheet = getSpreadsheet('CNE').getSheetByName('CNE Schedule');
+  if (!sheet || sheet.getLastRow() < 2) return { success: true, data: [] };
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var cols = buildHeaderMapFromRow_(headers);
+  var fromCol = cols['fromdate'] !== undefined ? cols['fromdate'] : (cols['date'] !== undefined ? cols['date'] : 2);
+  var toCol = cols['todate'] !== undefined ? cols['todate'] : 3;
+  var dates = getCneScheduleColumnValues_(sheet, fromCol, sheet.getLastRow());
+  var endDates = fromCol === toCol ? dates : getCneScheduleColumnValues_(sheet, toCol, sheet.getLastRow());
+  var selected = [];
+  for (var i = 0; i < dates.length; i++) {
+    var start = cneScheduleDateKey_(dates[i]);
+    var end = cneScheduleDateKey_(endDates[i]) || start;
+    if (cneScheduleDateMatches_(start, end, fromDate, toDate)) selected.push(i + 2);
+  }
+  if (!selected.length) return { success: true, data: [] };
+  var snapshot = cneScheduleSelectedSnapshot_(sheet, headers, cols, selected);
+  // This is the authoritative role/field filtering path used by the existing Calendar.
+  return handleGetCNERecords({}, session, snapshot);
+}
+
+function handleGetCNESchedulePage(params, session) {
+  if (!session || !session.employeeId) return {success:false,errorCode:'UNAUTHORIZED',message:'Authentication required.'};
+  params=params||{};
+  var requested=String(params.status||'Scheduled').trim().toUpperCase();
+  if (['SCHEDULED','COMPLETED','CANCELED','CANCELLED','ALL'].indexOf(requested)===-1)
+    return {success:false,errorCode:'INVALID_STATUS',message:'Invalid Schedule status.'};
+  var status=requested==='ALL'?'ALL':normalizeCNEStatus(requested);
+  var page=Math.max(1,Math.min(100000,parseInt(params.page,10)||1));
+  var pageSize=status==='Scheduled'?10000:Math.max(1,Math.min(50,parseInt(params.pageSize,10)||50));
+  var search=String(params.search||'').trim().slice(0,160);
+  var fromDate=String(params.fromDate||'').trim();
+  var toDate=String(params.toDate||'').trim();
+  if ((fromDate && !/^\\d{4}-\\d{2}-\\d{2}$/.test(fromDate)) || (toDate && !/^\\d{4}-\\d{2}-\\d{2}$/.test(toDate)) || (fromDate&&toDate&&fromDate>toDate))
+    return {success:false,errorCode:'INVALID_DATE',message:'Invalid date range.'};
+
+  // Search is infrequent; full authoritative enrichment retains search parity
+  // for employee names, descriptions and other non-index fields.
+  if (search) {
+    var full=handleGetCNERecords({status:status},session);
+    if (!full.success) return full;
+    return cneSchedulePageResult_(full.data||[],status,page,pageSize,search,fromDate,toDate);
+  }
+
+  var started=Date.now();
+  var sheet=getSpreadsheet('CNE').getSheetByName('CNE Schedule');
+  if (!sheet || sheet.getLastRow()<2) return {success:true,data:{records:[],total:0,page:page,pageSize:pageSize,hasMore:false}};
+  var headers=sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0];
+  var cols=buildHeaderMapFromRow_(headers);
+  var idCol=cols['cneid']!==undefined?cols['cneid']:(cols['classid']!==undefined?cols['classid']:(cols['dataid']!==undefined?cols['dataid']:0));
+  var statusCol=cols['status']!==undefined?cols['status']:-1;
+  var fromCol=cols['fromdate']!==undefined?cols['fromdate']:(cols['date']!==undefined?cols['date']:2);
+  var toCol=cols['todate']!==undefined?cols['todate']:fromCol;
+  var count=sheet.getLastRow()-1;
+  var ids=getCneScheduleColumnValues_(sheet,idCol,sheet.getLastRow());
+  var statuses=statusCol>=0?getCneScheduleColumnValues_(sheet,statusCol,sheet.getLastRow()):[];
+  var starts=getCneScheduleColumnValues_(sheet,fromCol,sheet.getLastRow());
+  var ends=toCol===fromCol?starts:getCneScheduleColumnValues_(sheet,toCol,sheet.getLastRow());
+  var candidates=[];
+  for(var i=0;i<count;i++) {
+    if (!String(ids[i]||'').trim()) continue;
+    var st=statusCol>=0?normalizeCNEStatus(statuses[i]):'Scheduled';
+    if(status!=='ALL'&&st!==status) continue;
+    var start=cneScheduleDateKey_(starts[i]), end=cneScheduleDateKey_(ends[i]||starts[i]);
+    if(!cneScheduleDateMatches_(start,end,fromDate,toDate)) continue;
+    candidates.push({rowNumber:i+2,status:st,fromDate:start});
+  }
+  // Historical access MUST be enforced before pagination, otherwise page totals
+  // can reveal restricted rows and pages can appear artificially empty.
+  var requiresHistory=candidates.some(function(c){return c.status!=='Scheduled';});
+  if(requiresHistory && String(session.role||'').toUpperCase()!=='ADMIN') {
+    var areaCol=cols['area']!==undefined?cols['area']:(cols['wardnamearea']!==undefined?cols['wardnamearea']:1);
+    var typeCol=cols['typeofcne']!==undefined?cols['typeofcne']:(cols['cnetype']!==undefined?cols['cnetype']:15);
+    var rpCol=cols['resourcepersonempid']!==undefined?cols['resourcepersonempid']:6;
+    var areas=getCneScheduleColumnValues_(sheet,areaCol,sheet.getLastRow());
+    var types=getCneScheduleColumnValues_(sheet,typeCol,sheet.getLastRow());
+    var rps=getCneScheduleColumnValues_(sheet,rpCol,sheet.getLastRow());
+    candidates=candidates.filter(function(c) {
+      if(c.status==='Scheduled') return true;
+      var idx=c.rowNumber-2;
+      return checkCNEActionAuthorized(session,{area:String(areas[idx]||''),cneType:normalizeCNEType(types[idx]),resourcePersonEmpId:String(rps[idx]||'')})===null;
+    });
+  }
+  candidates.sort(function(a,b){ return cneScheduleOrder_(a,b,status); });
+  var total=candidates.length;
+  var startAt=status==='Scheduled'?0:(page-1)*pageSize;
+  var pageRows=(status==='Scheduled'?candidates:candidates.slice(startAt,startAt+pageSize)).map(function(c){return c.rowNumber;});
+  var snapshot=cneScheduleSelectedSnapshot_(sheet,headers,cols,pageRows);
+  var materialized=handleGetCNERecords({status:status},session,snapshot);
+  if(!materialized.success) return materialized;
+  logPerf('handleGetCNESchedulePage',started,'status:'+status+', matching:'+total+', returned:'+(materialized.data||[]).length);
+  return {success:true,data:{records:materialized.data||[],total:total,page:page,pageSize:pageSize,hasMore:status!=='Scheduled' && startAt+pageSize<total}};
+}
+
+function handleGetCNEScheduleById(params, session) {
+  if(!session || !session.employeeId) return {success:false,errorCode:'UNAUTHORIZED',message:'Authentication required.'};
+  var wanted=String(params && params.cneId||'').trim();
+  if(!wanted || wanted.length>128) return {success:false,errorCode:'INVALID_CNE_ID',message:'Invalid CNE ID.'};
+  var sheet=getSpreadsheet('CNE').getSheetByName('CNE Schedule');
+  if(!sheet || sheet.getLastRow()<2) return {success:false,errorCode:'NOT_FOUND',message:'CNE not found or not authorized.'};
+  var headers=sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0];
+  var cols=buildHeaderMapFromRow_(headers);
+  var idCol=cols['cneid']!==undefined?cols['cneid']:(cols['classid']!==undefined?cols['classid']:(cols['dataid']!==undefined?cols['dataid']:0));
+  var ids=getCneScheduleColumnValues_(sheet,idCol,sheet.getLastRow());
+  var rowNumber=-1;
+  for(var i=0;i<ids.length;i++) if(String(ids[i]||'').trim()===wanted){ rowNumber=i+2;break; }
+  if(rowNumber===-1) return {success:false,errorCode:'NOT_FOUND',message:'CNE not found or not authorized.'};
+  var subset=cneScheduleSelectedSnapshot_(sheet,headers,cols,[rowNumber]);
+  var res=handleGetCNERecords({},session,subset);
+  if(!res.success) return res;
+  var one=(res.data||[]).find(function(c){return String(c.cneId||'').trim()===wanted;});
+  return one?{success:true,data:one}:{success:false,errorCode:'NOT_FOUND',message:'CNE not found or not authorized.'};
 }
 
 function handleCreateCNE(params, session) {
