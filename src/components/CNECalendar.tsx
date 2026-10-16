@@ -586,7 +586,6 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
             onManageInSchedule={() => {
               onViewFullCneDetails(fullDetailsCne.cneId, { year, month, viewMode });
             }}
-            onCneUpdated={() => { void loadEvents(); }}
           />
         </Suspense>
       )}

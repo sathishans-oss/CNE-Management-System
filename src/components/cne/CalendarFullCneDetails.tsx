@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CNEActivityProgress, CNERecord, SessionUser, Employee } from '../../types';
+import { Loader2, X } from 'lucide-react';
 import { ApiService } from '../../services/api';
 import { canManageCneActions, getUserAssignedAreas } from '../../utils';
 import { getCachedOfficers } from '../../services/officerLoader';
@@ -151,14 +152,47 @@ export const CalendarFullCneDetails: React.FC<Props> = ({ initialCne, user, onCl
   };
 
   if (!verified) return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4" role={detailsError ? 'alert' : 'status'}>
-      <section className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl space-y-4">
-        <h2 className="font-bold text-slate-900">{detailsError ? 'CNE details unavailable' : 'Opening CNE details…'}</h2>
-        <p className="text-sm text-slate-600">{detailsError || 'Verifying the selected CNE and your access permissions.'}</p>
-        <div className="flex flex-wrap gap-2">
-          {detailsError && <button type="button" className="rounded-lg border px-4 py-2 text-sm" onClick={() => { setDetailsError(null); void reloadDetails(); }}>Retry</button>}
-          <button type="button" className="rounded-lg bg-teal-700 px-4 py-2 text-sm text-white" onClick={onClose}>Back to Calendar</button>
-        </div>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="calendar-cne-loading-title"
+      aria-describedby="calendar-cne-loading-message"
+    >
+      <section className="relative w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl bg-white px-6 py-8 text-center shadow-xl sm:px-8">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close CNE details"
+          title="Close"
+          className="absolute right-3 top-3 inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
+        >
+          <X className="h-5 w-5" aria-hidden="true" />
+        </button>
+        {detailsError ? (
+          <div role="alert" className="space-y-4 pt-8">
+            <h2 id="calendar-cne-loading-title" className="text-lg font-bold text-slate-900">CNE details unavailable</h2>
+            <p id="calendar-cne-loading-message" className="text-sm text-slate-600">{detailsError}</p>
+            <button
+              type="button"
+              className="rounded-lg bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
+              onClick={() => { setDetailsError(null); void reloadDetails(); }}
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <div role="status" aria-live="polite" aria-busy="true" className="space-y-4 pt-6">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-teal-50" aria-hidden="true">
+              <Loader2 className="h-9 w-9 animate-spin text-teal-600" />
+            </div>
+            <h2 id="calendar-cne-loading-title" className="text-lg font-bold text-slate-900">Opening CNE Details</h2>
+            <p id="calendar-cne-loading-message" className="text-sm text-slate-600">
+              Please wait while we verify your access and load the CNE details.
+            </p>
+            <p className="text-xs text-slate-400">This may take a few moments.</p>
+          </div>
+        )}
       </section>
     </div>
   );
