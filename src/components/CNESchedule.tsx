@@ -1101,44 +1101,23 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           <ArrowLeft className="w-4 h-4" /> Back to Calendar
         </button>
       )}
-      {/* Scheduled is the only default request; historical data loads on demand. */}
-      {/* Compact CNE Schedule toolbar: Search | From Date | To Date | Clear | Schedule CNE */}
-      <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs">
-        {/* Status and search/date filters share one responsive panel. */}
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 mb-3">
-        <div className="hidden sm:flex flex-wrap gap-1" role="group" aria-label="CNE schedule status">
-          {(['Scheduled','Completed','Canceled','ALL'] as const).map((status) => (
-            <button type="button" key={status} onClick={() => setStatusFilter(status)}
-              aria-pressed={statusFilter === status}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors ${statusFilter === status ? 'bg-teal-700 text-white' : 'text-slate-700 hover:bg-slate-100'}`}>
-              {status === 'ALL' ? 'All' : status}
-            </button>
-          ))}
-        </div>
-        <div className="sm:hidden">
-          <label htmlFor="schedule-status-select" className="block mb-1 text-xs font-bold text-slate-600">CNE Status</label>
-          <select id="schedule-status-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm font-semibold">
-            <option value="Scheduled">Scheduled</option><option value="Completed">Completed</option>
-            <option value="Canceled">Canceled</option><option value="ALL">All</option>
-          </select>
-        </div>
-        <p className="px-2 pt-2 text-xs text-slate-500">
-          {statusFilter === 'Scheduled' ? 'All Scheduled CNEs are loaded together. Historical records are not fetched.' :
-            `${historyTotal} authorized ${statusFilter === 'ALL' ? 'CNEs' : statusFilter.toLowerCase() + ' CNEs'} match; ${classes.length} loaded. Older records load on request.`}
-        </p>
-      </div>
-        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
-          <div className="w-full sm:w-[300px] sm:min-w-[220px] min-w-0">
+      {/* Scheduled is the only default request; historical statuses are loaded on demand. */}
+      {/* On desktop this is ONE row: Search | From | To | Status | Schedule CNE. */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-xs">
+        <div className={`grid grid-cols-2 items-center gap-2.5 lg:gap-2.5 ${canScheduleCne
+          ? 'xl:grid-cols-[minmax(150px,1fr)_minmax(152px,165px)_minmax(152px,165px)_max-content_max-content]'
+          : 'xl:grid-cols-[minmax(150px,1fr)_minmax(152px,165px)_minmax(152px,165px)_max-content]'
+        }`}>
+          <div className="col-span-2 min-w-0 sm:col-span-1 xl:col-span-1">
             <SearchInput
               id="filter-search"
-              placeholder="Search..."
+              placeholder="Search CNE..."
               value={searchTerm}
               onChange={setSearchTerm}
             />
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <div className="min-w-0">
             <ConfirmDatePicker
               id="filter-from-date"
               value={fromDateFilter}
@@ -1148,8 +1127,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
               compact
             />
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <div className="min-w-0">
             <ConfirmDatePicker
               id="filter-to-date"
               value={toDateFilter}
@@ -1161,16 +1139,37 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             />
           </div>
 
-          {hasActiveFilters && (
-            <button
-              type="button"
-              id="btn-clear-filters"
-              onClick={handleClearFilters}
-              className="px-3 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer whitespace-nowrap shrink-0"
-            >
-              Clear
-            </button>
-          )}
+          <div className="col-span-2 min-w-0 sm:col-span-2 xl:col-span-1">
+            <div className="flex w-full items-center gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1" role="group" aria-label="Filter CNEs by status">
+              <div className="grid min-w-0 flex-1 grid-cols-2 gap-1 sm:grid-cols-4">
+                {(['Scheduled', 'Completed', 'Canceled', 'ALL'] as const).map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    onClick={() => setStatusFilter(status)}
+                    aria-pressed={statusFilter === status}
+                    className={`min-w-0 whitespace-nowrap rounded-lg px-1.5 py-2 text-[11px] font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 ${statusFilter === status
+                      ? 'bg-teal-700 text-white shadow-sm'
+                      : 'bg-transparent text-slate-700 hover:bg-white hover:text-teal-800'}`}
+                  >
+                    {status === 'ALL' ? 'All' : status}
+                  </button>
+                ))}
+              </div>
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  id="btn-clear-filters"
+                  onClick={handleClearFilters}
+                  title="Clear search and dates"
+                  aria-label="Clear search and dates"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          </div>
 
           {canScheduleCne && (
             <button
@@ -1183,9 +1182,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                   setIsDeptScheduleOpen(true);
                 }
               }}
-              className="sm:ml-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs whitespace-nowrap shrink-0"
+              className="col-span-2 inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-teal-600 px-3.5 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-teal-700 sm:col-span-1 xl:col-span-1"
             >
-              <PlusCircle className="w-4 h-4 text-teal-200" />
+              <PlusCircle className="h-4 w-4 text-teal-200" aria-hidden="true" />
               <span>Schedule CNE</span>
             </button>
           )}
