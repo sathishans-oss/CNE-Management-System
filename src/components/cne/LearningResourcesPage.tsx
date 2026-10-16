@@ -602,16 +602,17 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
           )}
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden xl:overflow-visible">
+          <div className="max-h-[70dvh] overflow-auto overscroll-contain xl:max-h-none xl:overflow-visible" role="region" aria-label="Learning resources" tabIndex={0}>
+            <table className="w-full min-w-[900px] text-left border-collapse">
+              <caption className="sr-only">Learning resources and available actions</caption>
               <thead>
                 <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                  <th className="py-3.5 px-4 sm:px-6">Resource Title & Category</th>
-                  <th className="py-3.5 px-4">Indexing / Author</th>
-                  <th className="py-3.5 px-4">File Format & Size</th>
-                  <th className="py-3.5 px-4">Uploaded / Updated</th>
-                  <th className="py-3.5 px-4 sm:px-6 text-right">Actions</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 sm:px-6">Resource Title & Category</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4">Indexing / Author</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4">File Format & Size</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4">Uploaded / Updated</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 sm:px-6 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
@@ -641,12 +642,12 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                             </span>
                           )}
                           {item.subtitle && (
-                            <span className="text-[11px] text-slate-400 truncate max-w-[200px]">
+                            <span className="text-[11px] text-slate-400 max-w-[200px] whitespace-normal break-words [overflow-wrap:anywhere]">
                               {item.subtitle}
                             </span>
                           )}
                         </div>
-                        <div className="font-bold text-slate-900 line-clamp-2 max-w-md">
+                        <div className="font-bold text-slate-900 max-w-md whitespace-normal break-words [overflow-wrap:anywhere]">
                           {item.title}
                         </div>
                       </td>
@@ -663,7 +664,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                                 {indexingDisplay.label}
                               </span>
                               {item.indexingStatus === 'FAILED' && item.indexingMessage && (
-                                <p className="text-[10px] text-rose-600 max-w-[220px] line-clamp-2" title={item.indexingMessage}>
+                                <p className="text-[10px] text-rose-600 max-w-[220px] line-clamp-2 break-words [overflow-wrap:anywhere]" title={item.indexingMessage}>
                                   {item.indexingMessage}
                                 </p>
                               )}
@@ -672,7 +673,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                         ) : (
                           <div className="flex items-center gap-1.5 text-slate-700 font-medium">
                             <Building2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                            <span className="truncate max-w-[180px]" title={item.authorOrSpeaker}>
+                            <span className="max-w-[180px] whitespace-normal break-words [overflow-wrap:anywhere]" title={item.authorOrSpeaker}>
                               {item.authorOrSpeaker || '—'}
                             </span>
                           </div>
@@ -688,7 +689,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                             {badge.label}
                           </span>
                           <div className="min-w-0">
-                            <p className="font-medium text-slate-800 truncate max-w-[180px]" title={item.fileName}>
+                            <p className="font-medium text-slate-800 max-w-[180px] whitespace-normal break-words [overflow-wrap:anywhere]" title={item.fileName}>
                               {item.fileName}
                             </p>
                             <p className="text-[10px] text-slate-400 font-mono">

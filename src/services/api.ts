@@ -27,7 +27,8 @@ import {
   DepartmentalCneOutcomeRow,
   CneInterestRegistration,
   CneInterestStatusResponse,
-  CneInterestedParticipantsResponse
+  CneInterestedParticipantsResponse,
+  CNEAnalytics
 } from '../types';
 import {
   INITIAL_AREAS,
@@ -197,6 +198,7 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getReferenceMaterial',
   'getCNERecords',
   'getCNESchedulePage',
+  'getCNEAnalytics',
   'getCNECalendarMonth',
   'getCNEScheduleById',
   'getProgramImpact',
@@ -1118,6 +1120,12 @@ export class ApiService {
    */
   static async getCNERecords(params?: { status?: string; cneType?: string; area?: string; myRecordsOnly?: boolean; scope?: string }): Promise<ApiResponse<CNERecord[]>> {
     return this.executeAction<CNERecord[]>('getCNERecords', params);
+  }
+
+
+  /** Admin-only, reporting-period aggregates. Never persists employee-level data in browser storage. */
+  static async getCNEAnalytics(params: {fromDate: string; toDate: string; search?: string; includeEmployees?: boolean}): Promise<ApiResponse<CNEAnalytics>> {
+    return this.executeAction<CNEAnalytics>('getCNEAnalytics', params);
   }
 
   // Schedule-specific server-side status/date/search and historical pagination.

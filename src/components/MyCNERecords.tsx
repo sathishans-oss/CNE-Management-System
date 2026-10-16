@@ -370,7 +370,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
       </div>
 
       {/* CNE Records Data Table (Desktop) & Cards (Mobile) */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden xl:overflow-visible">
         {loading ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
             <Loader2 className="w-8 h-8 animate-spin text-teal-600" />
@@ -458,16 +458,17 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
               </div>
             ) : (
               /* Desktop Table (Rendered only on desktop viewports) */
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
+              <div className="max-h-[70dvh] overflow-auto overscroll-contain xl:max-h-none xl:overflow-visible" role="region" aria-label="My completed CNE records" tabIndex={0}>
+                <table className="w-full min-w-[790px] text-left text-xs border-collapse">
+                  <caption className="sr-only">My completed CNE records</caption>
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
-                      <th className="py-3.5 px-3 w-12 text-center">Sr.</th>
-                      <th className="py-3.5 px-4 whitespace-nowrap text-left">Date &amp; Time</th>
-                      <th className="py-3.5 px-4 text-left w-2/5 min-w-[280px]">Topic / Skills</th>
-                      <th className="py-3.5 px-4 text-left whitespace-nowrap">Role</th>
-                      <th className="py-3.5 px-4 text-center whitespace-nowrap">Duration</th>
-                      <th className="py-3.5 px-4 text-center whitespace-nowrap">Post-Test Score</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-3 w-12 text-center">Sr.</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 whitespace-nowrap text-left">Date &amp; Time</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 text-left w-2/5 min-w-[280px]">Topic / Skills</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 text-left whitespace-nowrap">Role</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 text-center whitespace-nowrap">Duration</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 text-center whitespace-nowrap">Post-Test Score</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -496,8 +497,8 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                           <td className="py-3 px-4 whitespace-nowrap font-medium text-slate-800 text-left">
                             {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}
                           </td>
-                          <td className="py-3 px-4 font-semibold text-slate-900 text-left">
-                            <div className="line-clamp-2" title={rec.topic}>
+                          <td className="py-3 px-4 font-semibold text-slate-900 text-left whitespace-normal break-words [overflow-wrap:anywhere]">
+                            <div title={rec.topic}>
                               {rec.topic}
                             </div>
                           </td>

@@ -443,3 +443,20 @@ export interface CneInterestedParticipantsResponse {
 }
 
 
+
+
+/** Admin-only aggregated reports; individual employee rows are opt-in and fetched on demand. */
+export interface CNEAnalytics {
+  period: {fromDate:string;toDate:string;search:string};
+  kpis: {total:number;completed:number;scheduled:number;canceled:number;overdueScheduled?:number;deliveredHours:number;participantHours:number;resourceHours:number;attendanceVisits:number;uniqueParticipants:number;postTestCount:number;averagePostTestPercent:number|null;weightedPostTestPercent?:number|null;activeAreas:number};
+  status: Array<{name:string;value:number}>;
+  months: Array<{month:string;Scheduled:number;Completed:number;Canceled:number;postTestCount:number}>;
+  areas: Array<{name:string;completed:number;attendance:number;staffAllotted:number|null;postTestCount:number;avgPostTestPercent:number|null}>;
+  topics: Array<{name:string;completed:number;attendance:number;capacity:number;postTestCount:number;avgPostTestPercent:number|null}>;
+  modes: Array<{name:string;completed:number;attendance:number;postTestCount:number;avgPostTestPercent:number|null}>;
+  postTestTopics: Array<{name:string;postTestCount:number;avgPostTestPercent:number|null}>;
+  participantHours: Array<{employeeId:string;name:string;department:string;participantHours:number;cnesAttended:number;postTestCount:number;averageScore:number|null}>;
+  resourceHours: Array<{employeeId:string;name:string;resourceHours:number;sessions:number}>;
+  employeeTotal: number;
+  employeeRows: CNEAnalytics['participantHours'];
+}

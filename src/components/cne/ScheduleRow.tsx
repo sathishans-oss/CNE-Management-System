@@ -37,7 +37,7 @@ export const ScheduleRow: React.FC<ScheduleRowProps> = React.memo(({
         </span>
       </td>
       <td className="py-3 px-4">
-        <div className="font-bold text-slate-900 line-clamp-2 max-w-xs md:max-w-sm" title={cls.topic}>
+        <div className="font-bold text-slate-900 max-w-xs md:max-w-sm whitespace-normal break-words [overflow-wrap:anywhere]" title={cls.topic}>
           {cls.topic}
         </div>
         {cls.isLocked && (
@@ -46,13 +46,13 @@ export const ScheduleRow: React.FC<ScheduleRowProps> = React.memo(({
           </span>
         )}
         {cls.description && (
-          <div className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">
+          <div className="text-[11px] text-slate-500 line-clamp-2 mt-0.5 break-words [overflow-wrap:anywhere]">
             {cls.description}
           </div>
         )}
       </td>
-      <td className="py-3 px-4 whitespace-nowrap">
-        <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+      <td className="py-3 px-4 whitespace-normal break-words [overflow-wrap:anywhere]">
+        <span className="inline-block max-w-[220px] whitespace-normal break-words [overflow-wrap:anywhere] px-2 py-0.5 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
           {cls.area}
         </span>
         {isAreaIncharge && isCneAuthorized(user, cls.area, cls.cneType) && (
@@ -67,7 +67,7 @@ export const ScheduleRow: React.FC<ScheduleRowProps> = React.memo(({
         </div>
       </td>
       <td className="py-3 px-4">
-        <div className="line-clamp-2 max-w-[220px] text-slate-600 text-xs leading-relaxed" title={rpDisplay}>
+        <div className="max-w-[220px] text-slate-600 text-xs leading-relaxed whitespace-normal break-words [overflow-wrap:anywhere]" title={rpDisplay}>
           {rpDisplay}
         </div>
       </td>

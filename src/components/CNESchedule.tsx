@@ -1227,7 +1227,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             )}
           </div>
         ) : (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden xl:overflow-visible">
             {isMobile ? (
               /* Mobile CNE Cards Layout */
               <div className="p-3.5 space-y-3 bg-slate-50/50">
@@ -1253,16 +1253,17 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
               </div>
             ) : (
               /* Desktop Schedule Table */
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
+              <div className="max-h-[70dvh] overflow-auto overscroll-contain xl:max-h-none xl:overflow-visible" role="region" aria-label="CNE schedule records" tabIndex={0}>
+                <table className="w-full min-w-[860px] text-left border-collapse">
+                  <caption className="sr-only">CNE schedule records. Scroll to review all rows and columns.</caption>
                   <thead>
                     <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                      <th className="py-3.5 px-4 whitespace-nowrap">Type of CNE</th>
-                      <th className="py-3.5 px-4 min-w-[200px]">Topic</th>
-                      <th className="py-3.5 px-4 whitespace-nowrap">Area/Ward</th>
-                      <th className="py-3.5 px-4 whitespace-nowrap">Date &amp; Time</th>
-                      <th className="py-3.5 px-4 min-w-[180px]">Resource Person</th>
-                      <th className="py-3.5 px-4 whitespace-nowrap">Status</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 whitespace-nowrap">Type of CNE</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 min-w-[200px]">Topic</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 whitespace-nowrap">Area/Ward</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 whitespace-nowrap">Date &amp; Time</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 min-w-[180px]">Resource Person</th>
+                      <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3.5 px-4 whitespace-nowrap">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs text-slate-700">

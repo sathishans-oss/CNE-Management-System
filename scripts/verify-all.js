@@ -7467,8 +7467,8 @@ console.log('========================================================\\n');
     name: "CNE Read Performance Regression",
     originalFilename: "verify-cne-read-performance.cjs",
     mode: "commonjs",
-    expectedChecks: 13,
-    sha256: "cab434e5627765a52123180db6bfa7700d2d02e67b0d8863282199af9806b586",
+    expectedChecks: 15,
+    sha256: "a30b083e9596c2d746c21809418774223cb4fc268ed5c935b0a605f712113a04",
     source: `/**
  * CNE Read Performance & Bounded Query Regression Verification Suite
  *
@@ -8431,6 +8431,56 @@ runTest('Calendar month selection includes CNEs that span months', () => {
   assert.strictEqual(dec.success,true);
   assert.ok(nov.data.some(c=>c.cneId==='CNE-OVERLAP'));
   assert.ok(dec.data.some(c=>c.cneId==='CNE-OVERLAP'));
+});
+
+runTest('Admin analytics endpoint fails closed and requires authorized session', () => {
+  assert.ok(codeGsSource.includes("case 'getCNEAnalytics':"), 'Action must be routed through authenticated dispatcher');
+  assert.ok(codeGsSource.includes('function handleGetCNEAnalytics(params, session)'), 'Analytics function must exist');
+  const code = codeGsSource.slice(codeGsSource.lastIndexOf('function handleGetCNEAnalytics('));
+  const ctx = {requireAdmin: session => session && session.role === 'ADMIN' ? null : {success:false,errorCode:'FORBIDDEN'}, getCNECanonicalDay: x=>x==='bad'?'':x};
+  vm.runInNewContext(code, ctx);
+  assert.strictEqual(ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31'},null).success,false);
+  assert.strictEqual(ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31'},{role:'EMPLOYEE'}).success,false);
+  assert.strictEqual(ctx.handleGetCNEAnalytics({fromDate:'bad',toDate:'2026-10-31'},{role:'ADMIN'}).success,false);
+  const api = fs.readFileSync(path.join(rootDir,'src/services/api.ts'),'utf8');
+  assert.ok(api.includes("'getCNEAnalytics',"), 'Analytics API must be marked as protected from persistent caching');
+});
+
+runTest('Admin analytics aggregates verified attendance once per CNE and skips registration-only rows', () => {
+  const code=codeGsSource.slice(codeGsSource.lastIndexOf('function handleGetCNEAnalytics('));
+  const headers=['CNE ID','Area','From Date','To Date','Duration','Topic','Resource Person Emp ID','Mode of Teaching','Status','Total Allotted Staff','Max Participants'];
+  const sheetRows=[headers,['CNE-1','ICU','2026-10-01','2026-10-01','01:30:00','Sepsis','RP1','Lecture','Completed',40,50],['CNE-2','ICU','2026-10-10','2026-10-10','01:00:00','Vitals','RP1','Lecture','Scheduled',40,50]];
+  const responseRows=[['CNE-1','E1','Nurse A','NO','ICU',8,10,80,'POST_TEST'],['CNE-1','E1','Nurse A','NO','ICU','','','','MANUAL'],['CNE-1','E2','Nurse B','NO','ICU','','','','MANUAL'],['CNE-1','EXT-1','External','External','ICU','','','','EXTERNAL_REGISTRATION']];
+  let readCount=0;
+  const scheduleSheet={getLastRow:()=>sheetRows.length,getLastColumn:()=>headers.length,getRange:(r,c,n)=>({getValues:()=>r===1?[headers]:sheetRows.slice(r-1,r+n-1)})};
+  const responseSheet={getLastRow:()=>responseRows.length+1,getRange:(r,c,n,w)=>{assert.strictEqual(c,2);assert.strictEqual(w,9,'No answer-key/answers JSON column may be scanned');readCount++;return {getValues:()=>responseRows};}};
+  const ctx={
+    requireAdmin:s=>s&&s.role==='ADMIN'?null:{success:false,errorCode:'FORBIDDEN'},
+    getCNECanonicalDay:v=>v||'',
+    getSpreadsheet:()=>({getSheetByName:n=>n==='CNE Schedule'?scheduleSheet:n==='CNE Post Test Responses'?responseSheet:null}),
+    getHeaderMap:()=>Object.fromEntries(headers.map((x,i)=>[x.toLowerCase().replace(/[^a-z0-9]/g,''),i])),
+    readDepartmentalOutcomeScheduleRows_:(_,__,from,to)=>sheetRows.slice(1).filter(r=>r[2]>=from&&r[2]<=to),
+    getOfficerNameMap:()=>({RP1:'Teaching RP',E1:'Nurse A',E2:'Nurse B'}),
+    normalizeCNEStatus:s=>s,getIndiaTodayString:()=> '2026-10-16',formatDurationValue:v=>v,
+    parseDurationToSeconds:v=>v.split(':').map(Number).reduce((a,b)=>a*60+b),
+    normalizeEmpId:s=>String(s||'').toUpperCase(),isExternalParticipantId:s=>String(s).startsWith('EXT'),
+    logPerf:()=>{},Date,Math,Object,String,Number,Array,Boolean,isFinite
+  };
+  vm.runInNewContext(code,ctx);
+  const result=ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31'},{role:'ADMIN'});
+  assert.strictEqual(result.success,true);
+  assert.strictEqual(result.data.kpis.completed,1);
+  assert.strictEqual(result.data.kpis.scheduled,1);
+  assert.strictEqual(result.data.kpis.attendanceVisits,2,'Duplicate manual row and registration-only row must be excluded');
+  assert.strictEqual(result.data.kpis.uniqueParticipants,2);
+  assert.strictEqual(result.data.kpis.participantHours,3);
+  assert.strictEqual(result.data.kpis.resourceHours,1.5);
+  assert.strictEqual(result.data.kpis.postTestCount,1);
+  assert.strictEqual(result.data.kpis.averagePostTestPercent,80);
+  assert.strictEqual(result.data.employeeRows.length,0,'Employee directory should not be returned on initial overview');
+  assert.strictEqual(readCount,1,'Response sheet should be read once per aggregate request');
+  const details=ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31',includeEmployees:true},{role:'ADMIN'});
+  assert.strictEqual(details.data.employeeRows.length,2,'Explicit request exposes only verified internal participant rows');
 });
 
 // -----------------------------------------------------------------------------

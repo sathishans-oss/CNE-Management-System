@@ -813,6 +813,10 @@ function handleRequest(e, method) {
         output = handleGetTeachingModes(params);
         break;
         
+      case 'getCNEAnalytics':
+        output = handleGetCNEAnalytics(params, session);
+        break;
+
       case 'getCNERecords':
         output = handleGetCNERecords(params, session);
         break;
@@ -18193,6 +18197,144 @@ function handleGetCneInterestedParticipants(params, session) {
 
 
 
+
+
+/**
+ * Admin-only reporting aggregation, scoped to a selected CNE start-date interval.
+ * One read of filtered schedule rows and one B:J scan of response history; it never
+ * fetches answer JSON or performs a per-CNE spreadsheet request. No writes/locks.
+ * Unfinalized CNEs contribute status counts only, never verified training hours.
+ */
+function handleGetCNEAnalytics(params, session) {
+  var authError = requireAdmin(session);
+  if (authError) return authError;
+  params = params || {};
+  var from = getCNECanonicalDay(params.fromDate);
+  var to = getCNECanonicalDay(params.toDate);
+  if (!from || !to || from > to || !/^\\d{4}-\\d{2}-\\d{2}$/.test(from) || !/^\\d{4}-\\d{2}-\\d{2}$/.test(to)) {
+    return {success:false,errorCode:'INVALID_DATE_RANGE',message:'Select a valid From and To date.'};
+  }
+  var query = String(params.search || '').trim().toLowerCase().slice(0,120);
+  var startedAt = Date.now();
+  var sheet = getSpreadsheet('CNE').getSheetByName('CNE Schedule');
+  var empty = {period:{fromDate:from,toDate:to,search:query},status:[],months:[],areas:[],topics:[],modes:[],postTestTopics:[],participantHours:[],resourceHours:[],employeeRows:[],employeeTotal:0,
+    kpis:{total:0,completed:0,scheduled:0,canceled:0,deliveredHours:0,participantHours:0,resourceHours:0,attendanceVisits:0,uniqueParticipants:0,postTestCount:0,averagePostTestPercent:null,activeAreas:0}};
+  if (!sheet || sheet.getLastRow()<2) return {success:true,data:empty};
+  var map = getHeaderMap(sheet);
+  var getCol = function(keys,fallback){for(var i=0;i<keys.length;i++) if(map[keys[i]]!==undefined)return map[keys[i]];return fallback;};
+  var cId=getCol(['cneid','classid','dataid'],0), cDate=getCol(['fromdate','date'],2), cDuration=getCol(['duration'],4);
+  var cTopic=getCol(['topic'],5), cArea=getCol(['area','wardnamearea'],1), cStatus=getCol(['status'],-1);
+  var cMode=getCol(['modeofteaching','mode'],7), cRp=getCol(['resourcepersonempid'],6), cAllot=getCol(['totalallottedstaff'],-1), cCapacity=getCol(['maxparticipants'],-1);
+  // This helper reads the date column first and fetches only matching full rows where efficient.
+  var rows=readDepartmentalOutcomeScheduleRows_(sheet,cDate,from,to);
+  var selected={}, statuses={Scheduled:0,Completed:0,Canceled:0}, months={}, areas={}, topics={}, modes={}, testTopics={};
+  var rpHours={}, attendees={}, employeeHours={}, seenCne={}, allSelected=[];
+  var completed=0, deliveredSeconds=0, rpSeconds=0, participantSeconds=0;
+  var currentDay=getIndiaTodayString();
+  var overdue=0;
+  var officerNames=getOfficerNameMap();
+  function round1(n){return Math.round(n*10)/10;}
+  function getGroup(obj,key,defaults){key=String(key||'Unspecified').trim()||'Unspecified';if(!obj[key]){obj[key]=defaults();obj[key].name=key;}return obj[key];}
+  for(var i=0;i<rows.length;i++){
+    var r=rows[i], id=String(r[cId]||'').trim();if(!id)continue;
+    var day=getCNECanonicalDay(r[cDate]);if(!day||day<from||day>to)continue;
+    var topic=String(r[cTopic]||'Untitled CNE').trim()||'Untitled CNE';
+    var area=String(r[cArea]||'Unspecified').trim()||'Unspecified';
+    var mode=String(r[cMode]||'Unspecified').trim()||'Unspecified';
+    var rpString=String(r[cRp]||'');
+    var rpNamesForSearch=rpString.split(/[,;\\n]+/).map(function(rp){return officerNames[normalizeEmpId(rp)]||'';}).join(' ');
+    if(query && [id,topic,area,mode,rpString,rpNamesForSearch].join(' ').toLowerCase().indexOf(query)===-1)continue;
+    var key=id.toUpperCase();if(seenCne[key])continue;seenCne[key]=true;
+    var status=cStatus<0?'Scheduled':normalizeCNEStatus(r[cStatus]);
+    statuses[status]=(statuses[status]||0)+1;
+    if(status==='Scheduled'&&day<currentDay)overdue++;
+    var mo=day.slice(0,7), mm=getGroup(months,mo,function(){return {Scheduled:0,Completed:0,Canceled:0,postTestCount:0};});mm[status]=(mm[status]||0)+1;
+    var ag=getGroup(areas,area,function(){return {completed:0,attendance:0,uniqueParticipants:0,staffAllotted:null,postTestCount:0,scoreSum:0};});
+    var tg=getGroup(topics,topic,function(){return {completed:0,attendance:0,capacity:0,postTestCount:0,scoreSum:0};});
+    var mg=getGroup(modes,mode,function(){return {completed:0,attendance:0,scoreSum:0,postTestCount:0};});
+    // Allotted staff is a snapshot of department staffing, not CNE invitations. Never sum it by session.
+    if(cAllot>=0 && r[cAllot]!=='' && r[cAllot]!==null && isFinite(Number(r[cAllot])))ag.staffAllotted=Math.max(0,Number(r[cAllot]));
+    var durationRaw=r[cDuration];
+    var duration=formatDurationValue(durationRaw,'');
+    var seconds=parseDurationToSeconds(duration)||0;
+    var data={id:id,topic:topic,area:area,mode:mode,month:mo,seconds:seconds,status:status,ref:tg,areaRef:ag,modeRef:mg};
+    selected[key]=data;allSelected.push(data);
+    if(status!=='Completed')continue;
+    completed++;deliveredSeconds+=seconds;
+    ag.completed++;tg.completed++;mg.completed++;
+    if(cCapacity>=0 && r[cCapacity]!=='' && isFinite(Number(r[cCapacity])) && Number(r[cCapacity])>=0)tg.capacity+=Number(r[cCapacity]);
+    var ids=rpString.split(/[,;\\n]+/).map(function(v){return normalizeEmpId(v);}).filter(Boolean);
+    var perSession={};
+    for(var a=0;a<ids.length;a++){
+      var rpId=ids[a];if(perSession[rpId])continue;perSession[rpId]=true;
+      if(!rpHours[rpId])rpHours[rpId]={employeeId:rpId,name:officerNames[rpId]||rpId,hours:0,sessions:0};
+      rpHours[rpId].hours+=seconds/3600;rpHours[rpId].sessions++;rpSeconds+=seconds;
+    }
+  }
+  // Verify attendance and Post-Test against authoritative response rows; B:J excludes Answers JSON.
+  // Deduplicate by CNE + participant so manual and Post-Test entries cannot inflate hours.
+  var responseSheet=getSpreadsheet('CNE').getSheetByName('CNE Post Test Responses')||getSpreadsheet('CNE').getSheetByName('CNE_Participants');
+  var attendanceByCne={}, sourceSeen={}, testScoreSum=0,testPercentCount=0,weightedEarned=0,weightedPossible=0;
+  if(responseSheet && responseSheet.getLastRow()>1){
+    var resp=responseSheet.getRange(2,2,responseSheet.getLastRow()-1,9).getValues();
+    for(var j=0;j<resp.length;j++){
+      var row=resp[j], idKey=String(row[0]||'').trim().toUpperCase(), data=selected[idKey];
+      if(!data || data.status!=='Completed')continue;
+      var empId=normalizeEmpId(row[1]);
+      var personName=String(row[2]||'').trim();
+      var personKey=empId?('ID:'+empId):('NAME:'+personName.toLowerCase());
+      if(personKey==='NAME:')continue;
+      var pair=idKey+'|'+personKey;
+      var type=String(row[8]||'').trim().toUpperCase();
+      // An external email OTP registration is not proof of attendance.
+      if(type==='EXTERNAL_REGISTRATION')continue;
+      // Only registered attendance sources contribute to participant-hours.
+      if(type!=='MANUAL' && type!=='POST_TEST' && type!=='QR')continue;
+      if(!attendanceByCne[pair]){
+        attendanceByCne[pair]=true;
+        data.ref.attendance++;data.areaRef.attendance++;data.modeRef.attendance++;
+        if(empId && !isExternalParticipantId(empId)){
+          var entry=employeeHours[empId];
+          if(!entry)entry=employeeHours[empId]={employeeId:empId,name:officerNames[empId]||personName||empId,department:String(row[4]||data.area),hours:0,sessions:0,postTests:0,scoreSum:0};
+          entry.hours+=data.seconds/3600;entry.sessions++;participantSeconds+=data.seconds;
+          attendees[empId]=true;
+        }
+      }
+      if(type!=='POST_TEST'||sourceSeen[pair])continue;
+      sourceSeen[pair]=true;
+      var score=row[5],total=row[6],pct=row[7];
+      if(pct===''||pct===null||pct===undefined||!isFinite(Number(pct)))continue;
+      var percentage=Number(pct);if(percentage<0||percentage>100)continue;
+      testScoreSum+=percentage;testPercentCount++;
+      data.ref.postTestCount++;data.ref.scoreSum+=percentage;
+      data.areaRef.postTestCount++;data.areaRef.scoreSum+=percentage;
+      data.modeRef.postTestCount++;data.modeRef.scoreSum+=percentage;
+      months[data.month].postTestCount++;
+      var tt=getGroup(testTopics,data.topic,function(){return {count:0,scoreSum:0};});tt.count++;tt.scoreSum+=percentage;
+      if(score!==''&&total!==''&&isFinite(Number(score))&&isFinite(Number(total))&&Number(total)>0){weightedEarned+=Number(score);weightedPossible+=Number(total);}
+      if(empId && employeeHours[empId]){employeeHours[empId].postTests++;employeeHours[empId].scoreSum+=percentage;}
+    }
+  }
+  var topicRows=Object.keys(topics).map(function(k){var v=topics[k];return {name:v.name,completed:v.completed,attendance:v.attendance,capacity:v.capacity,postTestCount:v.postTestCount,avgPostTestPercent:v.postTestCount?round1(v.scoreSum/v.postTestCount):null};});
+  var areaRows=Object.keys(areas).map(function(k){var v=areas[k];return {name:v.name,completed:v.completed,attendance:v.attendance,staffAllotted:v.staffAllotted,postTestCount:v.postTestCount,avgPostTestPercent:v.postTestCount?round1(v.scoreSum/v.postTestCount):null};});
+  var modeRows=Object.keys(modes).map(function(k){var v=modes[k];return {name:v.name,completed:v.completed,attendance:v.attendance,postTestCount:v.postTestCount,avgPostTestPercent:v.postTestCount?round1(v.scoreSum/v.postTestCount):null};});
+  var testRows=Object.keys(testTopics).map(function(k){var v=testTopics[k];return {name:v.name,postTestCount:v.count,avgPostTestPercent:round1(v.scoreSum/v.count)};});
+  var employeeRows=Object.keys(employeeHours).map(function(k){var v=employeeHours[k];return {employeeId:v.employeeId,name:v.name,department:v.department,participantHours:round1(v.hours),cnesAttended:v.sessions,postTestCount:v.postTests,averageScore:v.postTests?round1(v.scoreSum/v.postTests):null};});
+  var rpRows=Object.keys(rpHours).map(function(k){var v=rpHours[k];return {employeeId:v.employeeId,name:v.name,resourceHours:round1(v.hours),sessions:v.sessions};});
+  employeeRows.sort(function(a,b){return a.participantHours-b.participantHours||a.employeeId.localeCompare(b.employeeId);});
+  rpRows.sort(function(a,b){return b.resourceHours-a.resourceHours||a.employeeId.localeCompare(b.employeeId);});
+  areaRows.sort(function(a,b){return b.attendance-a.attendance;});topicRows.sort(function(a,b){return b.attendance-a.attendance;});testRows.sort(function(a,b){return b.postTestCount-a.postTestCount;});
+  var monthly=Object.keys(months).sort().map(function(k){var v=months[k];return {month:k,Scheduled:v.Scheduled,Completed:v.Completed,Canceled:v.Canceled,postTestCount:v.postTestCount};});
+  var totalAtt=Object.keys(attendanceByCne).length;
+  var dataOut={period:{fromDate:from,toDate:to,search:query},
+    kpis:{total:allSelected.length,completed:completed,scheduled:statuses.Scheduled||0,canceled:statuses.Canceled||0,overdueScheduled:overdue,deliveredHours:round1(deliveredSeconds/3600),participantHours:round1(participantSeconds/3600),resourceHours:round1(rpSeconds/3600),attendanceVisits:totalAtt,uniqueParticipants:Object.keys(attendees).length,postTestCount:testPercentCount,averagePostTestPercent:testPercentCount?round1(testScoreSum/testPercentCount):null,weightedPostTestPercent:weightedPossible?round1(100*weightedEarned/weightedPossible):null,activeAreas:areaRows.filter(function(v){return v.completed>0;}).length},
+    status:[{name:'Scheduled',value:statuses.Scheduled||0},{name:'Completed',value:statuses.Completed||0},{name:'Canceled',value:statuses.Canceled||0}],
+    months:monthly,areas:areaRows,topics:topicRows,modes:modeRows,postTestTopics:testRows,
+    participantHours:employeeRows.slice(0,20),resourceHours:rpRows.slice(0,20),employeeTotal:employeeRows.length,
+    employeeRows:params.includeEmployees===true?employeeRows:[]};
+  logPerf('handleGetCNEAnalytics [read-only]',startedAt,'CNEs:'+allSelected.length+', responses:'+(totalAtt)+', employeeRows:'+employeeRows.length);
+  return {success:true,data:dataOut};
+}
 `;
 
 export const GOOGLE_APPS_SCRIPT_CODE = APPS_SCRIPT_SOURCE_CODE;
