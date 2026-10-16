@@ -240,7 +240,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
           <button
             type="button"
             onClick={handlePrint}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-purple-700 hover:bg-purple-800 rounded-xl shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="lg:ml-auto inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-purple-700 hover:bg-purple-800 rounded-xl shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
             title="Print current filtered report (A4 landscape)"
           >
             <Printer className="w-3.5 h-3.5" />

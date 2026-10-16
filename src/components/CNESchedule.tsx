@@ -1102,44 +1102,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         </button>
       )}
       {/* Scheduled is the only default request; historical statuses are loaded on demand. */}
-      {/* On desktop this is ONE row: Search | From | To | Status | Schedule CNE. */}
+      {/* Desktop: Status | From | To | Compact Search | Spacer | Schedule CNE.
+          Smaller viewports wrap naturally without introducing a separate filter panel. */}
       <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-xs">
-        <div className={`grid grid-cols-2 items-center gap-2.5 lg:gap-2.5 ${canScheduleCne
-          ? 'xl:grid-cols-[minmax(150px,1fr)_minmax(152px,165px)_minmax(152px,165px)_max-content_max-content]'
-          : 'xl:grid-cols-[minmax(150px,1fr)_minmax(152px,165px)_minmax(152px,165px)_max-content]'
-        }`}>
-          <div className="col-span-2 min-w-0 sm:col-span-1 xl:col-span-1">
-            <SearchInput
-              id="filter-search"
-              placeholder="Search CNE..."
-              value={searchTerm}
-              onChange={setSearchTerm}
-            />
-          </div>
-
-          <div className="min-w-0">
-            <ConfirmDatePicker
-              id="filter-from-date"
-              value={fromDateFilter}
-              onChange={setFromDateFilter}
-              placeholder="From Date..."
-              inlineLabel="From:"
-              compact
-            />
-          </div>
-          <div className="min-w-0">
-            <ConfirmDatePicker
-              id="filter-to-date"
-              value={toDateFilter}
-              onChange={setToDateFilter}
-              minDate={fromDateFilter}
-              placeholder="To Date..."
-              inlineLabel="To:"
-              compact
-            />
-          </div>
-
-          <div className="col-span-2 min-w-0 sm:col-span-2 xl:col-span-1">
+        <div className="flex flex-wrap items-center gap-2.5 xl:flex-nowrap xl:gap-3">
+          <div className="w-full min-w-0 sm:w-auto xl:w-auto xl:shrink-0">
             <div className="flex w-full items-center gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1" role="group" aria-label="Filter CNEs by status">
               <div className="grid min-w-0 flex-1 grid-cols-2 gap-1 sm:grid-cols-4">
                 {(['Scheduled', 'Completed', 'Canceled', 'ALL'] as const).map((status) => (
@@ -1171,22 +1138,56 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             </div>
           </div>
 
+          <div className="min-w-[120px] flex-1 sm:w-[145px] sm:flex-none xl:min-w-[120px] xl:w-[145px] xl:shrink">
+            <ConfirmDatePicker
+              id="filter-from-date"
+              value={fromDateFilter}
+              onChange={setFromDateFilter}
+              placeholder="From Date..."
+              inlineLabel="From:"
+              compact
+            />
+          </div>
+          <div className="min-w-[120px] flex-1 sm:w-[145px] sm:flex-none xl:min-w-[120px] xl:w-[145px] xl:shrink">
+            <ConfirmDatePicker
+              id="filter-to-date"
+              value={toDateFilter}
+              onChange={setToDateFilter}
+              minDate={fromDateFilter}
+              placeholder="To Date..."
+              inlineLabel="To:"
+              compact
+            />
+          </div>
+
+          <div className="w-full min-w-0 sm:w-[210px] xl:w-[190px] xl:min-w-[145px] xl:shrink">
+            <SearchInput
+              id="filter-search"
+              placeholder="Search CNE..."
+              value={searchTerm}
+              onChange={setSearchTerm}
+            />
+          </div>
+
           {canScheduleCne && (
-            <button
-              id="btn-schedule-cne"
-              type="button"
-              onClick={() => {
-                if (isAdmin) {
-                  setIsScheduleChoiceOpen(true);
-                } else {
-                  setIsDeptScheduleOpen(true);
-                }
-              }}
-              className="col-span-2 inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-teal-600 px-3.5 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-teal-700 sm:col-span-1 xl:col-span-1"
-            >
-              <PlusCircle className="h-4 w-4 text-teal-200" aria-hidden="true" />
-              <span>Schedule CNE</span>
-            </button>
+            <>
+              <div className="hidden xl:block xl:min-w-6 xl:flex-1" aria-hidden="true" />
+              <button
+                id="btn-schedule-cne"
+                type="button"
+                onClick={() => {
+                  if (isAdmin) {
+                    setIsScheduleChoiceOpen(true);
+                  } else {
+                    setIsDeptScheduleOpen(true);
+                  }
+                }}
+                className="inline-flex min-h-10 w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-teal-600 px-3.5 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-teal-700 sm:w-auto"
+              >
+                <PlusCircle className="h-4 w-4 text-teal-200" aria-hidden="true" />
+                <span>Schedule CNE</span>
+              </button>
+            </>
           )}
         </div>
       </div>
