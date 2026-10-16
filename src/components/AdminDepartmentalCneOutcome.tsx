@@ -255,20 +255,21 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
       </div>
 
       {/* Report Table */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden print:border-none print:shadow-none">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+      <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden xl:overflow-visible print:border-none print:shadow-none print:overflow-visible">
+        <div className="cne-outcome-table-scroll max-h-[70dvh] overflow-auto overscroll-contain xl:max-h-none xl:overflow-visible print:max-h-none print:overflow-visible" role="region" aria-label="Departmental CNE outcome results" tabIndex={0}>
+          <table className="w-full min-w-[1080px] text-left border-collapse text-xs print:min-w-0">
+            <caption className="sr-only">Departmental CNE outcome results</caption>
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider print:bg-slate-100">
-                <th className="py-3 px-3 w-12 text-center">S.No</th>
-                <th className="py-3 px-3 min-w-[160px]">Area / Ward</th>
-                <th className="py-3 px-3 min-w-[200px]">CNE Topic</th>
-                <th className="py-3 px-3 w-28 text-center">Status</th>
-                <th className="py-3 px-3 min-w-[140px]">Remarks</th>
-                <th className="py-3 px-3 min-w-[130px]">Created By</th>
-                <th className="py-3 px-3 w-28 text-center">Total Allotted Staff</th>
-                <th className="py-3 px-3 w-32 text-center">Attendance</th>
-                <th className="py-3 px-3 w-24 text-center">Outcome</th>
+                <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 w-12 text-center">S.No</th>
+                <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 min-w-[160px]">Area / Ward</th>
+                <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 min-w-[200px]">CNE Topic</th>
+                <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 w-28 text-center">Status</th>
+                <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 min-w-[140px]">Remarks</th>
+                <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 min-w-[130px]">Created By</th>
+                <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 w-28 text-center">Total Allotted Staff</th>
+                <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 w-32 text-center">Attendance</th>
+                <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 w-24 text-center">Outcome</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
@@ -309,11 +310,11 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
                         {idx + 1}
                       </td>
 
-                      <td className="py-2.5 px-3 font-semibold text-slate-900">
+                      <td className="py-2.5 px-3 font-semibold text-slate-900 whitespace-normal break-words [overflow-wrap:anywhere]">
                         {row.area}
                       </td>
 
-                      <td className="py-2.5 px-3">
+                      <td className="py-2.5 px-3 whitespace-normal break-words [overflow-wrap:anywhere]">
                         {row.topic ? (
                           <div className="font-medium text-slate-900">{row.topic}</div>
                         ) : (
@@ -343,11 +344,11 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
                         {isEmptyArea && <span className="text-slate-400">—</span>}
                       </td>
 
-                      <td className="py-2.5 px-3 text-slate-600">
+                      <td className="py-2.5 px-3 text-slate-600 whitespace-normal break-words [overflow-wrap:anywhere]">
                         {formatRemarks(row)}
                       </td>
 
-                      <td className="py-2.5 px-3">
+                      <td className="py-2.5 px-3 whitespace-normal break-words [overflow-wrap:anywhere]">
                         {row.createdByName ? (
                           <span className="font-medium text-slate-800">{row.createdByName}</span>
                         ) : (
@@ -403,6 +404,13 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
           }
           tr {
             page-break-inside: avoid !important;
+          }
+          .cne-outcome-table-scroll {
+            max-height: none !important;
+            overflow: visible !important;
+          }
+          .cne-outcome-table-scroll th {
+            position: static !important;
           }
           th, td {
             border: 1px solid #cbd5e1 !important;
