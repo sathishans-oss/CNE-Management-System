@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Award,
   FileDown,
@@ -7,7 +7,8 @@ import {
   CheckCircle2,
   Loader2,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Search
 } from 'lucide-react';
 import { CNERecord, SessionUser } from '../types';
 import { ApiService } from '../services/api';
@@ -17,7 +18,6 @@ import {
   formatResourcePersonsDisplay,
   isUserAssignedResourcePerson,
   parseDurationToSeconds,
-  parseToIsoDateString,
   getCneTypeLabel
 } from '../utils';
 import { SearchInput } from './SearchInput';
@@ -89,139 +89,89 @@ const isUserResourcePersonInRecord = (user: SessionUser, record: CNERecord): boo
 };
 
 export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
+  // Only a single authorized page is held in browser memory. Hours/total counts
+  // arrive separately from the backend and cover ALL matching completed sessions.
+  const PAGE_SIZE = 25;
   const [records, setRecords] = useState<CNERecord[]>([]);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [totalParticipantSeconds, setTotalParticipantSeconds] = useState(0);
+  const [totalResourceSeconds, setTotalResourceSeconds] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const generatingPdfRef = useRef(false);
   const recordsRequestIdRef = useRef(0);
+  const sessionGuardRef = useRef('');
   const [searchTerm, setSearchTerm] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [appliedFilters, setAppliedFilters] = useState({search:'',fromDate:'',toDate:''});
   const [selectedRecord, setSelectedRecord] = useState<CNERecord | null>(null);
-
-  const { success, error } = useToast();
+  const {success,error} = useToast();
+  const identity = `${user.employeeId}:${user.token}`;
+  sessionGuardRef.current = identity;
+  const previousIdentityRef = useRef(identity);
+  useEffect(() => {
+    if(previousIdentityRef.current === identity)return;
+    previousIdentityRef.current=identity;
+    setCurrentPage(1);
+    setSearchTerm('');setStartDate('');setEndDate('');
+    setAppliedFilters({search:'',fromDate:'',toDate:''});
+  },[identity]);
 
   useEffect(() => {
-    // Every account/session change starts a fresh request and invalidates any older response.
-    // This prevents records from a previous user or a slower request from overwriting newer state.
     const requestId = ++recordsRequestIdRef.current;
     setLoading(true);
     setRecords([]);
     setSelectedRecord(null);
-
-    const loadMyRecords = async () => {
+    const load = async () => {
       try {
-        const res = await ApiService.getCNERecords({
-          myRecordsOnly: true,
-          scope: 'my-cne-records',
-          status: 'Completed'
+        const res = await ApiService.getMyCNERecordsPage({
+          page:currentPage,pageSize:PAGE_SIZE,
+          search:appliedFilters.search,fromDate:appliedFilters.fromDate,toDate:appliedFilters.toDate
         });
-
-        if (requestId !== recordsRequestIdRef.current) return;
-
-        if (res.success && Array.isArray(res.data)) {
-          // Defensive client-side enforcement: My CNE Records is a completed-history view only.
-          // Scheduled, Draft, Pending and Cancelled/Canceled CNEs must never be shown here.
-          const completedRecords = res.data.filter(
-            (record) => String(record?.status ?? '').trim().toLowerCase() === 'completed'
-          );
-          setRecords(completedRecords);
+        if(requestId!==recordsRequestIdRef.current)return;
+        if(res.success && res.data && Array.isArray(res.data.records)){
+          const safe=res.data.records.filter(r=>String(r.status||'').toLowerCase()==='completed');
+          // If deletions shortened history between requests, return to page one.
+          if(currentPage>1 && (currentPage-1)*PAGE_SIZE>=res.data.total){setCurrentPage(1);return;}
+          setRecords(safe);
+          setTotalRecords(res.data.total);
+          setTotalParticipantSeconds(res.data.participantSeconds);
+          setTotalResourceSeconds(res.data.resourcePersonSeconds);
         } else {
-          setRecords([]);
-          error(res.message || 'Failed to load CNE records.');
+          setTotalRecords(0);setTotalParticipantSeconds(0);setTotalResourceSeconds(0);
+          error(res.message||'Unable to load your CNE records.');
         }
-      } catch (e: any) {
-        if (requestId !== recordsRequestIdRef.current) return;
-        setRecords([]);
-        error(e?.message || 'Error loading records.');
-      } finally {
-        if (requestId === recordsRequestIdRef.current) {
-          setLoading(false);
-        }
-      }
+      }catch(e:any){
+        if(requestId!==recordsRequestIdRef.current)return;
+        setRecords([]);setTotalRecords(0);setTotalParticipantSeconds(0);setTotalResourceSeconds(0);
+        error(e?.message||'Error loading your CNE records.');
+      }finally{if(requestId===recordsRequestIdRef.current)setLoading(false);}
     };
+    void load();
+    return ()=>{if(recordsRequestIdRef.current===requestId)recordsRequestIdRef.current++;};
+  },[identity,currentPage,appliedFilters.search,appliedFilters.fromDate,appliedFilters.toDate,error]);
 
-    void loadMyRecords();
-
-    return () => {
-      // Invalidate this request on unmount or before the next user/session effect runs.
-      if (recordsRequestIdRef.current === requestId) {
-        recordsRequestIdRef.current += 1;
-      }
-    };
-  }, [user.employeeId, user.token, error]);
-
-  // Filter logic: Search + Date Range (From Date / To Date)
-  const filteredRecords = useMemo(() => {
-    return records
-      .filter((rec) => {
-        // My CNE Records must remain completed-only even if a stale/cache response contains another status.
-        if (String(rec.status || '').trim().toLowerCase() !== 'completed') return false;
-
-        // Date Range filter using canonical date parsing so date-time values compare correctly.
-        const recDate = parseToIsoDateString(rec.fromDate);
-        if (startDate && (!recDate || recDate < startDate)) return false;
-        if (endDate && (!recDate || recDate > endDate)) return false;
-
-        // Global Search: normalize once, then use null-safe string conversion for incomplete API data.
-        const q = searchTerm.trim().toLowerCase();
-        if (q) {
-          const searchable = (value: unknown) => String(value ?? '').toLowerCase();
-          const matchTopic = searchable(rec?.topic).includes(q);
-          const matchArea = searchable(rec?.area).includes(q);
-          const matchMode = searchable(rec?.modeOfTeaching).includes(q);
-          const matchRpName = searchable(rec?.resourcePersonName).includes(q);
-          const matchRpId = searchable(rec?.resourcePersonEmpId).includes(q);
-          const matchExtRp = Array.isArray(rec?.externalResourcePersons)
-            ? rec.externalResourcePersons.some((p) => searchable(p).includes(q))
-            : false;
-          if (!matchTopic && !matchArea && !matchMode && !matchRpName && !matchRpId && !matchExtRp) return false;
-        }
-
-        return true;
-      })
-      .sort((a, b) => {
-        const aFromDate = parseToIsoDateString(a.fromDate) || '';
-        const bFromDate = parseToIsoDateString(b.fromDate) || '';
-        return bFromDate.localeCompare(aFromDate);
-      });
-  }, [records, startDate, endDate, searchTerm]);
-
-  // Compute earned training duration and resource person hours independently.
-  // If the same employee was both Participant and Resource Person for the same CNE, count that CNE duration in both totals.
-  // Missing/invalid duration contributes zero; decimal-hour values such as 1.5 are parsed as 1 hour 30 minutes.
-  const formatTotalSeconds = (totalSeconds: number): string => {
-    const hrs = Math.floor(totalSeconds / 3600);
-    const mins = Math.floor((totalSeconds % 3600) / 60);
-    const secs = totalSeconds % 60;
-
-    const parts = [`${hrs}h`];
-    if (mins > 0) parts.push(`${mins}m`);
-    if (secs > 0) parts.push(`${secs}s`);
-    return parts.join(' ');
+  const applyFilters = () => {
+    if(startDate && endDate && startDate>endDate){error('From Date must not be after To Date.');return;}
+    const next={search:searchTerm.trim(),fromDate:startDate,toDate:endDate};
+    setCurrentPage(1);setAppliedFilters(next);
   };
-
-  const trainingDurationStats = useMemo(() => {
-    let participantSeconds = 0;
-    let resourcePersonSeconds = 0;
-
-    filteredRecords.forEach((rec) => {
-      const seconds = getDurationSeconds(rec?.duration) ?? 0;
-
-      if (isUserParticipantInRecord(user, rec)) {
-        participantSeconds += seconds;
-      }
-
-      if (isUserResourcePersonInRecord(user, rec)) {
-        resourcePersonSeconds += seconds;
-      }
-    });
-
-    return {
-      participant: formatTotalSeconds(participantSeconds),
-      resourcePerson: formatTotalSeconds(resourcePersonSeconds)
-    };
-  }, [filteredRecords, user.employeeId]);
+  const clearFilters = () => {
+    setSearchTerm('');setStartDate('');setEndDate('');setCurrentPage(1);
+    setAppliedFilters({search:'',fromDate:'',toDate:''});
+  };
+  const filteredRecords=records; // Already filtered and authorized on the server.
+  const totalPages=Math.max(1,Math.ceil(totalRecords/PAGE_SIZE));
+  const safeCurrentPage=Math.min(Math.max(1,currentPage),totalPages);
+  const paginatedRecords=filteredRecords;
+  const formatTotalSeconds=(totalSeconds:number):string=>{
+    const seconds=Math.max(0,Math.floor(Number(totalSeconds)||0));
+    const hrs=Math.floor(seconds/3600),mins=Math.floor((seconds%3600)/60),secs=seconds%60;
+    return `${hrs}h${mins?` ${mins}m`:''}${secs?` ${secs}s`:''}`;
+  };
+  const trainingDurationStats={participant:formatTotalSeconds(totalParticipantSeconds),resourcePerson:formatTotalSeconds(totalResourceSeconds)};
 
   // Responsive display mode: render only desktop table OR mobile cards, never both
   const [isMobile, setIsMobile] = useState<boolean>(() => {
@@ -237,47 +187,42 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     return () => mql.removeEventListener('change', handler);
   }, []);
 
-  // Pagination for large personal histories: 25 records per page
-  const PAGE_SIZE = 25;
-  const [currentPage, setCurrentPage] = useState<number>(1);
-
-  // Reset to page 1 whenever filters change
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchTerm, startDate, endDate]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / PAGE_SIZE));
-  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
-
-  const paginatedRecords = useMemo(() => {
-    const start = (safeCurrentPage - 1) * PAGE_SIZE;
-    return filteredRecords.slice(start, start + PAGE_SIZE);
-  }, [filteredRecords, safeCurrentPage]);
-
   const handleGeneratePdf = async () => {
-    if (generatingPdfRef.current || isGeneratingPdf) return;
-
-    if (filteredRecords.length === 0) {
-      error('No CNE records found for the selected filters.');
-      return;
-    }
-
-    generatingPdfRef.current = true;
-    setIsGeneratingPdf(true);
-    try {
-      const { generateCNERecordsPdf } = await import('../services/pdfGenerator');
-      generateCNERecordsPdf(user, filteredRecords, {
-        fromDate: startDate || undefined,
-        toDate: endDate || undefined,
-        searchTerm: searchTerm.trim() || undefined
+    if(generatingPdfRef.current || isGeneratingPdf || loading)return;
+    if(totalRecords===0){error('No CNE records found for the selected filters.');return;}
+    generatingPdfRef.current=true;setIsGeneratingPdf(true);
+    const sessionAtStart=identity;
+    try{
+      // Export is deliberately independent from the 25-row UI page. Every batch
+      // is authorized by the server and uses the same applied search/date filters.
+      const complete:CNERecord[]=[];
+      const seen=new Set<string>();
+      const exportPageSize=100;
+      const pages=Math.ceil(totalRecords/exportPageSize);
+      for(let p=1;p<=pages;p++){
+        if(sessionGuardRef.current!==sessionAtStart)throw new Error('Session changed during export. Try again.');
+        const response=await ApiService.getMyCNERecordsPage({page:p,pageSize:exportPageSize,
+          search:appliedFilters.search,fromDate:appliedFilters.fromDate,toDate:appliedFilters.toDate});
+        if(!response.success||!response.data)throw new Error(response.message||'Failed to retrieve complete PDF records.');
+        if(response.data.total!==totalRecords)throw new Error('CNE records changed during export. Reload and retry.');
+        for(const r of response.data.records){
+          if(String(r.status||'').toLowerCase()!=='completed')continue;
+          const id=String(r.cneId||r.dataId||'').toUpperCase();
+          if(!id || seen.has(id))throw new Error('Duplicate or incomplete data received. Please retry.');
+          seen.add(id);complete.push(r);
+        }
+      }
+      if(complete.length!==totalRecords)throw new Error('Incomplete export. Reload and try again.');
+      if(sessionGuardRef.current!==sessionAtStart)throw new Error('Session changed during export.');
+      const {generateCNERecordsPdf}=await import('../services/pdfGenerator');
+      generateCNERecordsPdf(user,complete,{
+        fromDate:appliedFilters.fromDate||undefined,
+        toDate:appliedFilters.toDate||undefined,
+        searchTerm:appliedFilters.search||undefined
       });
-      success('CNE Record PDF downloaded successfully.', 'PDF Generated');
-    } catch (e: any) {
-      error('Failed to generate PDF document.');
-    } finally {
-      generatingPdfRef.current = false;
-      setIsGeneratingPdf(false);
-    }
+      success('Complete filtered CNE record PDF downloaded.','PDF Generated');
+    }catch(e:any){error(e?.message||'Failed to generate complete PDF document.');}
+    finally{generatingPdfRef.current=false;setIsGeneratingPdf(false);}
   };
 
   const selectedRecordIsParticipant = selectedRecord
@@ -324,6 +269,11 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             />
           </div>
 
+          <button type="button" onClick={applyFilters}
+            className="inline-flex h-9 items-center justify-center gap-1.5 px-3 rounded-lg bg-teal-700 text-white text-xs font-bold hover:bg-teal-800 cursor-pointer">
+            <Search className="w-3.5 h-3.5" /> Show Results
+          </button>
+
           <div className="whitespace-nowrap rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs text-slate-600">
             Participant Hours: <strong className="text-emerald-700">{trainingDurationStats.participant}</strong>
           </div>
@@ -335,11 +285,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
           {(searchTerm || startDate || endDate) && (
             <button
               type="button"
-              onClick={() => {
-                setSearchTerm('');
-                setStartDate('');
-                setEndDate('');
-              }}
+              onClick={clearFilters}
               className="inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors cursor-pointer"
               title="Clear filters"
             >
@@ -545,12 +491,12 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             )}
 
             {/* Pagination Controls */}
-            {filteredRecords.length > 0 && (
+            {totalRecords > 0 && (
               <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
                 <div className="font-medium">
                   Showing <span className="font-bold text-slate-900">{(safeCurrentPage - 1) * PAGE_SIZE + 1}</span> to{' '}
-                  <span className="font-bold text-slate-900">{Math.min(safeCurrentPage * PAGE_SIZE, filteredRecords.length)}</span> of{' '}
-                  <span className="font-bold text-slate-900">{filteredRecords.length}</span> records
+                  <span className="font-bold text-slate-900">{Math.min(safeCurrentPage * PAGE_SIZE, totalRecords)}</span> of{' '}
+                  <span className="font-bold text-slate-900">{totalRecords}</span> records
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-slate-500 mr-2">

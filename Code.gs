@@ -816,6 +816,10 @@ function handleRequest(e, method) {
         output = handleGetCNERecords(params, session);
         break;
 
+      case 'getMyCNERecordsPage':
+        output = handleGetMyCNERecordsPage(params, session);
+        break;
+
       case 'getCNECalendarMonth':
         output = handleGetCNECalendarMonth(params, session);
         break;
@@ -4121,6 +4125,40 @@ function getCNEScheduleSnapshot_() {
 }
 
 /**
+ * Personal-history page: score lookup reads only selected CNE responses when sparse.
+ * Never read answer JSON. The old getCNERecords contract remains unchanged for
+ * callers that do not explicitly opt in to bounded personal score lookup.
+ */
+function cnePersonalPageScores_(employeeId, cneIds) {
+  var scores = {}, wanted = {};
+  (cneIds || []).forEach(function(id) { wanted[String(id || '').trim().toUpperCase()] = true; });
+  if (!Object.keys(wanted).length) return scores;
+  var responseSheet = getResponsesSheet();
+  if (!responseSheet || responseSheet.getLastRow() < 2) return scores;
+  var last = responseSheet.getLastRow(), n = last - 1;
+  var ids = responseSheet.getRange(2, 2, n, 1).getValues();
+  var empIds = responseSheet.getRange(2, 3, n, 1).getValues();
+  var positions = [];
+  for (var i = 0; i < n; i++) {
+    if (wanted[String(ids[i][0] || '').trim().toUpperCase()] &&
+        normalizeEmpId(empIds[i][0]) === employeeId) positions.push(i + 2);
+  }
+  if (!positions.length) return scores;
+  // A wide scan is cheaper than hundreds of dispersed tiny Spreadsheet RPCs.
+  var rows = positions.length > n * 0.40 || positions.length > 125 ?
+    responseSheet.getRange(2, 1, n, 10).getValues() :
+    cneReadSelectedRowsBounded_(responseSheet, positions, 10, false).map(function(v) { return v.data; });
+  for (var j = 0; j < rows.length; j++) {
+    var row = rows[j], id = String(row[1] || '').trim().toUpperCase();
+    if (!wanted[id] || normalizeEmpId(row[2]) !== employeeId ||
+        String(row[9] || '').trim().toUpperCase() !== 'POST_TEST') continue;
+    var pct = row[8];
+    if (pct !== '' && pct !== null && pct !== undefined && isFinite(Number(pct))) scores[id] = Number(pct);
+  }
+  return scores;
+}
+
+/**
  * 6. CNE Records Retrieval with Strict Server-Side Role and Privacy Filtering
  */
 function handleGetCNERecords(params, session, scheduleSnapshot) {
@@ -4163,7 +4201,10 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
   var statusCol = colMap['status'] !== undefined ? colMap['status'] : -1;
 
   var myPostTestScores = {};
-  if (isMyRecordsOnly && loggedInId) {
+  if (isMyRecordsOnly && loggedInId && params && params.boundedPersonalScores) {
+    var personalIds = data.slice(1).map(function(row) { return row[idCol]; });
+    myPostTestScores = cnePersonalPageScores_(loggedInId, personalIds);
+  } else if (isMyRecordsOnly && loggedInId) {
     var responsesSheet = getResponsesSheet();
     if (responsesSheet && responsesSheet.getLastRow() > 1) {
       var responseRows = responsesSheet
@@ -4361,6 +4402,82 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
 }
 
 /**
+ * Authenticated employee-only completed CNE history. Filters and pagination run
+ * BEFORE record enrichment, officer-name resolution and post-test score lookup.
+ * Full-filter totals are calculated from the same authoritative matching rows.
+ * The caller-supplied employee ID/role are never trusted.
+ */
+function handleGetMyCNERecordsPage(params, session) {
+  if (!session || !normalizeEmpId(session.employeeId))
+    return {success:false,errorCode:'UNAUTHORIZED',message:'Sign in to view your records.'};
+  params = params || {};
+  var page = Math.max(1, Math.min(100000, parseInt(params.page,10) || 1));
+  var pageSize = Math.max(1, Math.min(100, parseInt(params.pageSize,10) || 25));
+  var search = String(params.search || '').trim().toLowerCase().slice(0,120);
+  var from = String(params.fromDate || '').trim(), to = String(params.toDate || '').trim();
+  if ((from && !/^\d{4}-\d{2}-\d{2}$/.test(from)) ||
+      (to && !/^\d{4}-\d{2}-\d{2}$/.test(to)) || (from && to && from > to))
+    return {success:false,errorCode:'INVALID_DATE_RANGE',message:'Select a valid date range.'};
+  var employeeId = normalizeEmpId(session.employeeId);
+  var sheet = getSpreadsheet('CNE').getSheetByName('CNE Schedule');
+  var empty = {records:[],total:0,page:page,pageSize:pageSize,hasMore:false,participantSeconds:0,resourcePersonSeconds:0};
+  if (!sheet || sheet.getLastRow() < 2) return {success:true,data:empty};
+  var headers = sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0];
+  var cols = buildHeaderMapFromRow_(headers);
+  var pick = function(keys, fallback) {for(var c=0;c<keys.length;c++)if(cols[keys[c]]!==undefined)return cols[keys[c]];return fallback;};
+  var statusCol=pick(['status'],-1),fromCol=pick(['fromdate','date'],2),
+    staffCol=pick(['staffempids','staffempid'],15),rpCol=pick(['resourcepersonempid'],6),
+    durationCol=pick(['duration'],5),idCol=pick(['cneid','classid','dataid'],0);
+  // No matching identities or status field means no defensible personal history.
+  if(statusCol<0 || staffCol<0 || rpCol<0) return {success:true,data:empty};
+  var n=sheet.getLastRow()-1;
+  // Narrow column scans: avoid full getDataRange/getDisplayValues for personal history.
+  var columnCache={};
+  var column=function(col){if(!columnCache[col])columnCache[col]=getCneScheduleColumnValues_(sheet,col,sheet.getLastRow());return columnCache[col];};
+  var statuses=column(statusCol), staff=column(staffCol), rp=column(rpCol), dates=column(fromCol);
+  var ids=column(idCol), durations=column(durationCol);
+  var candidate=[];
+  var containsId=function(raw, delimiter) {
+    return String(raw || '').split(delimiter).map(normalizeEmpId).indexOf(employeeId)!==-1;
+  };
+  for(var i=0;i<n;i++){
+    if(normalizeCNEStatus(statuses[i])!=='Completed')continue;
+    var isParticipant=containsId(staff[i], /,/),isRP=containsId(rp[i], /[,;\n]+/);
+    if(!isParticipant&&!isRP)continue;
+    var day=getCNECanonicalDay(dates[i]);
+    if((from&&(!day||day<from))||(to&&(!day||day>to)))continue;
+    candidate.push({row:i+2,day:day,isParticipant:isParticipant,isRP:isRP,duration:durations[i],id:String(ids[i]||'')});
+  }
+  if(search && candidate.length){
+    var topicCol=pick(['topic'],1),areaCol=pick(['wardnamearea','area'],2),
+      modeCol=pick(['modeofteaching'],7),extRpCol=pick(['externalresourcepersons'],-1);
+    var names=getOfficerNameMap();
+    var topics=column(topicCol),areas=column(areaCol),modes=column(modeCol);
+    var extRps=extRpCol>=0?column(extRpCol):[];
+    var rpSearchName=function(raw){return String(raw||'').split(/[,;\n]+/).map(function(v){return names[normalizeEmpId(v)]||'';}).join(' ');};
+    candidate=candidate.filter(function(c){var k=c.row-2;return [topics[k],areas[k],modes[k],rp[k],rpSearchName(rp[k]),extRps[k]].join(' ').toLowerCase().indexOf(search)!==-1;});
+  }
+  candidate.sort(function(a,b){return b.day.localeCompare(a.day)||b.row-a.row;});
+  // Duration-formatted Google Sheets dates can carry a misleading runtime timezone.
+  // Use the authoritative displayed HH:MM:SS alongside raw values when totalling
+  // ALL filtered sessions, exactly like the existing record formatter does.
+  var durationDisplays = candidate.length ? sheet.getRange(2,durationCol+1,n,1).getDisplayValues() : [];
+  var participantSeconds=0,resourcePersonSeconds=0;
+  candidate.forEach(function(c){var shown=durationDisplays[c.row-2] ? durationDisplays[c.row-2][0] : '';
+    var duration=formatDurationValue(c.duration,shown);var sec=parseDurationToSeconds(duration)||0;
+    if(c.isParticipant)participantSeconds+=sec;if(c.isRP)resourcePersonSeconds+=sec;});
+  var total=candidate.length,offset=(page-1)*pageSize;
+  var pageRows=candidate.slice(offset,offset+pageSize).map(function(c){return c.row;});
+  if(!pageRows.length)return {success:true,data:{records:[],total:total,page:page,pageSize:pageSize,hasMore:false,participantSeconds:participantSeconds,resourcePersonSeconds:resourcePersonSeconds}};
+  var snapshot=cneScheduleSelectedSnapshot_(sheet,headers,cols,pageRows);
+  // Authoritative renderer enforces personal ownership again and minimizes IDs.
+  var result=handleGetCNERecords({myRecordsOnly:true,scope:'my-cne-records',status:'Completed',boundedPersonalScores:true},session,snapshot);
+  if(!result.success)return result;
+  return {success:true,data:{records:result.data,total:total,page:page,pageSize:pageSize,
+    hasMore:offset+pageSize<total,participantSeconds:participantSeconds,resourcePersonSeconds:resourcePersonSeconds}};
+}
+
+/**
  * Schedule-only read endpoints. Do not modify getCNERecords: Calendar, dashboard,
  * personal records and reporting still depend on its existing response contract.
  * Authentication comes from the same verifySession() path as getCNERecords.
@@ -4405,39 +4522,58 @@ function cneScheduleOrder_(a, b, status) {
   return (b.fromDate || '').localeCompare(a.fromDate || '') || b.rowNumber - a.rowNumber;
 }
 
-// Read only the selected full records, not all historical data. If the desired
-// rows are too scattered, one bulk read avoids dozens of Sheets RPC calls.
+/**
+ * Bounded, sparse worksheet reads. Do not download the full CNE history merely
+ * because selected rows are dispersed. Sparse windows span <= 160 rows;
+ * remote rows are read independently. The result preserves the requested order.
+ *
+ * Tradeoff: dispersed records may require several small Spreadsheet RPCs, but
+ * large sheets avoid massive getValues/getDisplayValues payloads. No writes.
+ */
+function cneReadSelectedRowsBounded_(sheet, rowNumbers, columnCount, withDisplay) {
+  if (!rowNumbers.length) return [];
+  var ordered = rowNumbers.slice();
+  var sorted = rowNumbers.slice().sort(function(a, b) { return a - b; });
+  var unique = [];
+  for (var i = 0; i < sorted.length; i++) {
+    if (!unique.length || unique[unique.length - 1] !== sorted[i]) unique.push(sorted[i]);
+  }
+  var windows = [], start = unique[0], end = start;
+  var totalSpan = unique[unique.length - 1] - start + 1;
+  if (unique.length >= 100 && unique.length / totalSpan >= 0.85) {
+    // Dense selections are cheaper as one read; these rows are mostly requested.
+    windows.push([start, unique[unique.length - 1]]);
+  } else {
+    for (var j = 1; j < unique.length; j++) {
+      var next = unique[j];
+      if (next - end <= 8 && next - start < 160) end = next;
+      else { windows.push([start, end]); start = end = next; }
+    }
+    windows.push([start, end]);
+  }
+  var wanted = {};
+  unique.forEach(function(r) { wanted[r] = true; });
+  var resultByRow = {};
+  windows.forEach(function(window) {
+    var range = sheet.getRange(window[0], 1, window[1] - window[0] + 1, columnCount);
+    var values = range.getValues();
+    var display = withDisplay ? range.getDisplayValues() : null;
+    for (var k = 0; k < values.length; k++) {
+      var number = window[0] + k;
+      if (wanted[number]) resultByRow[number] = { data: values[k], display: display ? display[k] : null };
+    }
+  });
+  return ordered.filter(function(r) { return !!resultByRow[r]; })
+    .map(function(r) { return resultByRow[r]; });
+}
+
 function cneScheduleSelectedSnapshot_(sheet, headers, colMap, rowNumbers) {
   var data = [headers];
   var displayValues = [headers.map(function(v) { return String(v || ''); })];
   if (!rowNumbers.length) return {sheet:sheet, data:data, displayValues:displayValues, colMap:colMap};
-  var sorted = rowNumbers.slice().sort(function(a,b) { return a-b; });
-  var groups = [];
-  var start=sorted[0], end=start;
-  for (var i=1;i<sorted.length;i++) {
-    if (sorted[i] <= end+1) end=sorted[i];
-    else { groups.push([start,end]); start=end=sorted[i]; }
-  }
-  groups.push([start,end]);
-  var byRow = {};
-  if (groups.length > 12) {
-    var wholeRange=sheet.getRange(1,1,sheet.getLastRow(),sheet.getLastColumn());
-    var allValues=wholeRange.getValues();
-    var allDisplay=wholeRange.getDisplayValues();
-    sorted.forEach(function(row) { byRow[row]={data:allValues[row-1], display:allDisplay[row-1]}; });
-  } else {
-    groups.forEach(function(group) {
-      var range=sheet.getRange(group[0],1,group[1]-group[0]+1,sheet.getLastColumn());
-      var values=range.getValues();
-      var shown=range.getDisplayValues();
-      for (var j=0;j<values.length;j++) byRow[group[0]+j]={data:values[j],display:shown[j]};
-    });
-  }
-  // Preserve input order (which was already sorted/selected).
-  rowNumbers.forEach(function(r) {
-    if (byRow[r]) { data.push(byRow[r].data); displayValues.push(byRow[r].display); }
-  });
-  return {sheet:sheet,data:data,displayValues:displayValues,colMap:colMap};
+  var selected = cneReadSelectedRowsBounded_(sheet, rowNumbers, sheet.getLastColumn(), true);
+  selected.forEach(function(item) { data.push(item.data); displayValues.push(item.display); });
+  return {sheet:sheet, data:data, displayValues:displayValues, colMap:colMap};
 }
 
 function cneSchedulePageResult_(authorized, status, page, pageSize, search, fromDate, toDate) {
@@ -4511,14 +4647,6 @@ function handleGetCNESchedulePage(params, session) {
   if ((fromDate && !/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) || (toDate && !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) || (fromDate&&toDate&&fromDate>toDate))
     return {success:false,errorCode:'INVALID_DATE',message:'Invalid date range.'};
 
-  // Search is infrequent; full authoritative enrichment retains search parity
-  // for employee names, descriptions and other non-index fields.
-  if (search) {
-    var full=handleGetCNERecords({status:status},session);
-    if (!full.success) return full;
-    return cneSchedulePageResult_(full.data||[],status,page,pageSize,search,fromDate,toDate);
-  }
-
   var started=Date.now();
   var sheet=getSpreadsheet('CNE').getSheetByName('CNE Schedule');
   if (!sheet || sheet.getLastRow()<2) return {success:true,data:{records:[],total:0,page:page,pageSize:pageSize,hasMore:false}};
@@ -4557,6 +4685,15 @@ function handleGetCNESchedulePage(params, session) {
       var idx=c.rowNumber-2;
       return checkCNEActionAuthorized(session,{area:String(areas[idx]||''),cneType:normalizeCNEType(types[idx]),resourcePersonEmpId:String(rps[idx]||'')})===null;
     });
+  }
+  // Search only the already status/date/role-filtered candidates. Preserve the
+  // authoritative enrichment and exact search terms, including officer names.
+  if (search) {
+    var searchRows = candidates.map(function(c) { return c.rowNumber; });
+    var searchSnapshot = cneScheduleSelectedSnapshot_(sheet,headers,cols,searchRows);
+    var authorizedSearch = handleGetCNERecords({status:status},session,searchSnapshot);
+    if (!authorizedSearch.success) return authorizedSearch;
+    return cneSchedulePageResult_(authorizedSearch.data||[],status,page,pageSize,search,fromDate,toDate);
   }
   candidates.sort(function(a,b){ return cneScheduleOrder_(a,b,status); });
   var total=candidates.length;
@@ -6046,31 +6183,11 @@ function readDepartmentalOutcomeScheduleRows_(sheet, dateCol, fromDay, toDay) {
   }
   if (!matched.length) return [];
 
-  var ranges = [];
-  var start = matched[0], end = start;
-  for (var j = 1; j < matched.length; j++) {
-    if (matched[j] === end + 1) {
-      end = matched[j];
-    } else {
-      ranges.push([start, end]);
-      start = end = matched[j];
-    }
-  }
-  ranges.push([start, end]);
-
-  // Avoid dozens of Sheet API calls when records are scattered across history.
-  if (ranges.length > 20 || matched.length > count * 0.65) {
-    var all = sheet.getRange(2, 1, count, lastCol).getValues();
-    return matched.map(function(index) { return all[index]; });
-  }
-
-  var selected = [];
-  for (var k = 0; k < ranges.length; k++) {
-    var block = ranges[k];
-    var records = sheet.getRange(block[0] + 2, 1, block[1] - block[0] + 1, lastCol).getValues();
-    for (var r = 0; r < records.length; r++) selected.push(records[r]);
-  }
-  return selected;
+  // Sparse reporting periods must never download the entire historic schedule.
+  // Dates are index-only; full details are read in bounded selected-row windows.
+  var rowNumbers = matched.map(function(index) { return index + 2; });
+  return cneReadSelectedRowsBounded_(sheet, rowNumbers, lastCol, false)
+    .map(function(item) { return item.data; });
 }
 
 function handleGetDepartmentalCneOutcomeReport(params, session) {
@@ -6618,15 +6735,38 @@ var HOME_CACHE_CHAIR_PHOTO = 'cne_public_chairphoto_v1';
 /**
  * 11. News & Events Management (Public Read, Admin Write)
  */
+// Optional, backward-compatible News flags. Existing nine-column sheets remain readable.
+// Missing columns are appended only inside an Admin mutation's ScriptLock.
+function newsFlagEnabled_(value) {
+  return value === true || value === 1 || String(value || '').trim().toUpperCase() === 'TRUE' || String(value || '').trim() === '1';
+}
+
+function ensureNewsAttentionColumns_(sheet) {
+  var map = getHeaderMap(sheet);
+  var additions = [];
+  if (map.isimportant === undefined) additions.push('Is Important');
+  if (map.blinkattention === undefined) additions.push('Blink Attention');
+  if (additions.length) {
+    var first = sheet.getLastColumn() + 1;
+    var needed = first + additions.length - 1;
+    if (sheet.getMaxColumns() < needed) sheet.insertColumnsAfter(sheet.getMaxColumns(), needed - sheet.getMaxColumns());
+    sheet.getRange(1, first, 1, additions.length).setValues([additions]);
+    map = getHeaderMap(sheet);
+  }
+  return map;
+}
+
 function handleGetNewsEvents(params) {
   var cachedNews = getPublicHomeCache_(HOME_CACHE_NEWS);
   if (Array.isArray(cachedNews)) return { success: true, data: cachedNews, _cached: true };
 
   var sheet = getOrCreateSheet('News and Events');
   var data = sheet.getDataRange().getValues();
+  var map = getHeaderMap(sheet);
   var list = [];
-  
-  for (var r = 1; r < data.length; r++) {
+
+  // Newest published records first (rows append chronologically).
+  for (var r = data.length - 1; r >= 1; r--) {
     var id = String(data[r][0] || '').trim();
     var status = String(data[r][6] || 'ACTIVE').toUpperCase().trim();
     if (!id || status === 'INACTIVE') continue;
@@ -6638,6 +6778,8 @@ function handleGetNewsEvents(params) {
       date: formatDateValue(data[r][3]),
       summary: String(data[r][4] || ''),
       content: String(data[r][5] || ''),
+      isImportant: map.isimportant !== undefined && newsFlagEnabled_(data[r][map.isimportant]),
+      blinkAttention: map.blinkattention !== undefined && newsFlagEnabled_(data[r][map.blinkattention]),
       createdAt: formatDateValue(data[r][7])
     });
   }
@@ -6687,21 +6829,24 @@ function handleAddNewsEvent(params, session) {
   
   try {
     var sheet = getOrCreateSheet('News and Events');
-    
+    var flagCols = ensureNewsAttentionColumns_(sheet);
+
     var curYear = new Date().getFullYear();
     var eventId = 'NEWS-' + curYear + '-' + Date.now().toString().slice(-4) + ('000' + Math.floor(Math.random() * 1000)).slice(-3);
     
-    sheet.appendRow([
-      eventId,
-      title,
-      category,
-      date,
-      summary,
-      content,
-      'ACTIVE',
-      new Date().toISOString(),
-      session.employeeId || ''
-    ]);
+    var newRow = new Array(sheet.getLastColumn()).fill('');
+    newRow[0] = eventId;
+    newRow[1] = title;
+    newRow[2] = category;
+    newRow[3] = date;
+    newRow[4] = summary;
+    newRow[5] = content;
+    newRow[6] = 'ACTIVE';
+    newRow[7] = new Date().toISOString();
+    newRow[8] = session.employeeId || '';
+    newRow[flagCols.isimportant] = newsFlagEnabled_(params.isImportant) ? 'TRUE' : 'FALSE';
+    newRow[flagCols.blinkattention] = newsFlagEnabled_(params.blinkAttention) ? 'TRUE' : 'FALSE';
+    sheet.appendRow(newRow);
     
     removeScriptCacheEntry_(HOME_CACHE_NEWS);
     logAuditAction('ADD_NEWS', session.employeeId, 'Published News: ' + eventId + ' (' + title + ')', 'SUCCESS');
@@ -6732,7 +6877,8 @@ function handleUpdateNewsEvent(params, session) {
     var ss = getSpreadsheet('CNE');
     var sheet = ss.getSheetByName('News and Events');
     if (!sheet) return { success: false, message: 'News and Events sheet not found.' };
-    
+    var flagCols = ensureNewsAttentionColumns_(sheet);
+
     var data = sheet.getDataRange().getValues();
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0]).trim().toLowerCase() === id.toLowerCase()) {
@@ -6742,7 +6888,9 @@ function handleUpdateNewsEvent(params, session) {
         if (params.summary !== undefined) sheet.getRange(r + 1, 5).setValue(sanitizeCellInput(params.summary));
         if (params.content !== undefined) sheet.getRange(r + 1, 6).setValue(sanitizeCellInput(params.content));
         if (params.status !== undefined) sheet.getRange(r + 1, 7).setValue(params.status);
-        
+        if (params.isImportant !== undefined) sheet.getRange(r + 1, flagCols.isimportant + 1).setValue(newsFlagEnabled_(params.isImportant) ? 'TRUE' : 'FALSE');
+        if (params.blinkAttention !== undefined) sheet.getRange(r + 1, flagCols.blinkattention + 1).setValue(newsFlagEnabled_(params.blinkAttention) ? 'TRUE' : 'FALSE');
+
         removeScriptCacheEntry_(HOME_CACHE_NEWS);
         logAuditAction('UPDATE_NEWS', session.employeeId, 'Updated News ID: ' + id, 'SUCCESS');
         return { success: true, message: 'News event updated successfully.' };
@@ -7247,7 +7395,6 @@ function ensureCoordinatorContentSeeded_() {
   // If the sheet already existed with unrelated content, adding only missing
   // Coordinator keys is safe and non-destructive.
   var props = PropertiesService.getScriptProperties();
-  var note = props.getProperty('COORDINATOR_NOTE') || 'Have questions regarding class credits, attendance verification, or training schedules?';
   var email = props.getProperty('COORDINATOR_EMAIL') || 'training.nur@aiimsrishikesh.edu.in';
   var names = ['Ms. Ramya T', 'Ms. Suman Choudhary'];
   var namesRaw = props.getProperty('COORDINATOR_NAMES');
@@ -7265,7 +7412,6 @@ function ensureCoordinatorContentSeeded_() {
     : 'SYSTEM_DEFAULT';
   sheet.appendRow(['COORDINATOR', 'NAMES', names.join('\n'), new Date().toISOString(), source]);
   sheet.appendRow(['COORDINATOR', 'EMAIL', sanitizeCellInput(email), new Date().toISOString(), source]);
-  sheet.appendRow(['COORDINATOR', 'NOTE', sanitizeCellInput(note), new Date().toISOString(), source]);
   return sheet;
 }
 
@@ -7332,22 +7478,69 @@ function handleGetCoordinatorDesk(params) {
   return coordinatorResponse;
 }
 
+// Versioned, structured desk content in existing Portal Content rows; no additional sheet required.
+var DEFAULT_CNE_COORDINATOR_PEOPLE_ = [{"name": "Mr. Jino Jacob", "designation": "Deputy Nursing Superintendent"}, {"name": "Mr. Arun Ravi", "designation": "Deputy Nursing Superintendent"}];
+var DEFAULT_CNE_MEMBERS_ = [{"name": "Ms. Vandana", "designation": "Deputy Nursing Superintendent"}, {"name": "Mr. Hemanthkumar K", "designation": "Assistant Nursing Superintendent"}, {"name": "Mr. Chandu Raj B", "designation": "Assistant Nursing Superintendent"}, {"name": "Mr. Girraj Saini", "designation": "Assistant Nursing Superintendent"}, {"name": "Ms. Priyanka Patiyal", "designation": "Senior Nursing Officer"}, {"name": "Mr. Alwin T. Varghese", "designation": "Senior Nursing Officer"}, {"name": "Mr. Robi Kuldeep", "designation": "Senior Nursing Officer"}, {"name": "Mr. Pankaj Punjot", "designation": "Nursing Officer"}, {"name": "Ms. Deepika Kandpal", "designation": "Nursing Officer"}, {"name": "Ms. Anjani Dobhal", "designation": "Nursing Officer"}, {"name": "Ms. Suman Choudhary", "designation": "Nursing Officer"}, {"name": "Ms. Ramya T", "designation": "Nursing Officer"}];
+
+function parseDeskPeople_(raw, defaults) {
+  if (!raw) return defaults.map(function(p) { return { name: p.name, designation: p.designation }; });
+  try {
+    var value = JSON.parse(raw);
+    if (!Array.isArray(value)) throw new Error('Invalid roster');
+    return value.filter(function(p) { return p && typeof p.name === 'string' && typeof p.designation === 'string' && p.name.trim() && p.designation.trim(); })
+      .map(function(p) { return { name: p.name.trim(), designation: p.designation.trim() }; });
+  } catch (e) {
+    return defaults.map(function(p) { return { name: p.name, designation: p.designation }; });
+  }
+}
+
+function cleanDeskPeopleForSave_(people, maximum) {
+  if (!Array.isArray(people) || people.length > maximum) return null;
+  var result = [];
+  var seen = {};
+  for (var i = 0; i < people.length; i++) {
+    var person = people[i];
+    if (!person || typeof person.name !== 'string' || typeof person.designation !== 'string') return null;
+    var name = person.name.trim();
+    var designation = person.designation.trim();
+    if (!name || !designation || name.length > 120 || designation.length > 150) return null;
+    var key = name.toLowerCase();
+    if (seen[key]) return null;
+    seen[key] = true;
+    result.push({ name: String(sanitizeCellInput(name)), designation: String(sanitizeCellInput(designation)) });
+  }
+  return result;
+}
+
 function buildCoordinatorDeskResponse_(sheet) {
-  var namesRaw = getPortalContentValue_(sheet, 'COORDINATOR', 'NAMES');
-  var coordinators = namesRaw
-    ? namesRaw.split(/\r?\n|,/).map(function(v) { return v.trim(); }).filter(Boolean)
-    : [];
-  var email = getPortalContentValue_(sheet, 'COORDINATOR', 'EMAIL');
-  var note = getPortalContentValue_(sheet, 'COORDINATOR', 'NOTE');
+  var coordinatorPeople = parseDeskPeople_(getPortalContentValue_(sheet, 'COORDINATOR', 'COORDINATORS_V2'), DEFAULT_CNE_COORDINATOR_PEOPLE_);
+  var members = parseDeskPeople_(getPortalContentValue_(sheet, 'COORDINATOR', 'MEMBERS_V2'), DEFAULT_CNE_MEMBERS_);
+  var email = getPortalContentValue_(sheet, 'COORDINATOR', 'EMAIL') || 'training.nur@aiimsrishikesh.edu.in';
   return {
     success: true,
-    data: { note: note, coordinators: coordinators, email: email }
+    data: {
+      coordinators: coordinatorPeople.map(function(p) { return p.name; }),
+      coordinatorPeople: coordinatorPeople,
+      members: members,
+      email: email
+    }
   };
 }
 
 function handleUpdateCoordinatorDesk(params, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
+
+  // Validate all roster fields before acquiring the mutation lock.
+  var coordinatorPeople = params.coordinatorPeople !== undefined ? cleanDeskPeopleForSave_(params.coordinatorPeople, 20) : undefined;
+  var members = params.members !== undefined ? cleanDeskPeopleForSave_(params.members, 100) : undefined;
+  if ((coordinatorPeople !== undefined && (!coordinatorPeople || coordinatorPeople.length === 0)) ||
+      (members !== undefined && !members)) {
+    return { success: false, errorCode: 'INVALID_DESK_ROSTER', message: 'Provide valid, unique names and designations for the CNE Desk.' };
+  }
+  if (params.email !== undefined && (typeof params.email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(params.email.trim()))) {
+    return { success: false, errorCode: 'INVALID_EMAIL', message: 'Provide a valid coordinator email address.' };
+  }
 
   var lock = LockService.getScriptLock();
   try {
@@ -7361,18 +7554,16 @@ function handleUpdateCoordinatorDesk(params, session) {
 
   try {
     var sheet = ensureCoordinatorContentSeeded_();
-    if (params.note !== undefined) {
-      upsertPortalContentValue_(sheet, 'COORDINATOR', 'NOTE', sanitizeCellInput(params.note), session.employeeId);
-    }
     if (params.email !== undefined) {
       upsertPortalContentValue_(sheet, 'COORDINATOR', 'EMAIL', sanitizeCellInput(params.email), session.employeeId);
     }
-    if (params.coordinators !== undefined) {
-      var coords = Array.isArray(params.coordinators)
-        ? params.coordinators.map(function(c) { return sanitizeCellInput(c); }).filter(Boolean)
-        : [sanitizeCellInput(params.coordinators)].filter(Boolean);
-      upsertPortalContentValue_(sheet, 'COORDINATOR', 'NAMES', coords.join('\n'), session.employeeId);
+    if (coordinatorPeople !== undefined) {
+      upsertPortalContentValue_(sheet, 'COORDINATOR', 'COORDINATORS_V2', JSON.stringify(coordinatorPeople), session.employeeId);
     }
+    if (members !== undefined) {
+      upsertPortalContentValue_(sheet, 'COORDINATOR', 'MEMBERS_V2', JSON.stringify(members), session.employeeId);
+    }
+    // Preserve old NAMES / NOTE rows for backwards compatibility; the updated UI does not display the note.
 
     removeScriptCacheEntry_(HOME_CACHE_COORDINATOR);
     logAuditAction('UPDATE_COORDINATOR_DESK', session.employeeId, 'Updated Coordinator Desk info', 'SUCCESS');
@@ -7540,31 +7731,78 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
  */
 function handleGetHomeDashboard(params, session) {
   var startedAt = Date.now();
-  var scheduleSnapshot = getCNEScheduleSnapshot_();
-  var scheduleRes = handleGetCNERecords({ status: 'Scheduled' }, null, scheduleSnapshot);
+  // Program Impact needs all completed CNEs on a cache miss; reuse that same
+  // request-local snapshot. On a cache HIT avoid a broad schedule read entirely:
+  // scan just today's start/status columns and enrich matching rows only.
+  var impactRes = handleGetProgramImpact({}, session);
+  var scheduleSnapshot = _executionCneScheduleSnapshot;
+  var today = getIndiaTodayString();
+  var todaySnapshot;
+  if (scheduleSnapshot && scheduleSnapshot.data && scheduleSnapshot.data.length) {
+    var allRows = scheduleSnapshot.data;
+    var cols = scheduleSnapshot.colMap || {};
+    var fromCol = cols['fromdate'] !== undefined ? cols['fromdate'] : (cols['date'] !== undefined ? cols['date'] : 2);
+    var statusCol = cols['status'] !== undefined ? cols['status'] : -1;
+    var todaysData = [allRows[0]];
+    var todaysDisplay = scheduleSnapshot.displayValues && scheduleSnapshot.displayValues.length
+      ? [scheduleSnapshot.displayValues[0]] : [[]];
+    for (var h = 1; h < allRows.length; h++) {
+      var currentRow = allRows[h];
+      if (statusCol < 0 || !String(currentRow[statusCol] || '').trim() ||
+          normalizeCNEStatus(currentRow[statusCol]) !== 'Scheduled') continue;
+      if (getCNECanonicalDay(currentRow[fromCol]) !== today) continue;
+      todaysData.push(currentRow);
+      todaysDisplay.push(scheduleSnapshot.displayValues[h] || []);
+    }
+    todaySnapshot = {sheet:scheduleSnapshot.sheet, data:todaysData,
+      displayValues:todaysDisplay, colMap:cols};
+  } else {
+    var sheet = getSpreadsheet('CNE').getSheetByName('CNE Schedule');
+    if (!sheet || sheet.getLastRow() < 2) {
+      todaySnapshot = {sheet:sheet,data:[],displayValues:[],colMap:{}};
+    } else {
+      var headers = sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0];
+      var cols = buildHeaderMapFromRow_(headers);
+      var fromCol = cols['fromdate'] !== undefined ? cols['fromdate'] : (cols['date'] !== undefined ? cols['date'] : 2);
+      var statusCol = cols['status'] !== undefined ? cols['status'] : -1;
+      var selected = [];
+      if (statusCol >= 0) {
+        var n = sheet.getLastRow() - 1;
+        var starts = getCneScheduleColumnValues_(sheet,fromCol,sheet.getLastRow());
+        var statuses = getCneScheduleColumnValues_(sheet,statusCol,sheet.getLastRow());
+        for (var i = 0; i < n; i++) {
+          if (String(statuses[i] || '').trim() && normalizeCNEStatus(statuses[i]) === 'Scheduled' &&
+              getCNECanonicalDay(starts[i]) === today) selected.push(i+2);
+        }
+      }
+      todaySnapshot = cneScheduleSelectedSnapshot_(sheet,headers,cols,selected);
+    }
+  }
+  var scheduleRes = handleGetCNERecords({ status: 'Scheduled' }, null, todaySnapshot);
+  if (scheduleRes.success && Array.isArray(scheduleRes.data)) {
+    scheduleRes.data.sort(function(a,b) {
+      return String(a.fromDate || '').localeCompare(String(b.fromDate || '')) ||
+        String(a.cneId || '').localeCompare(String(b.cneId || ''));
+    });
+  }
   var newsRes = handleGetNewsEvents({});
   var linksRes = handleGetQuickLinks({});
   var coordinatorRes = handleGetCoordinatorDesk({});
-  var impactRes = handleGetProgramImpact({}, session, scheduleSnapshot);
-
   var response = {
     success: true,
     data: {
       upcomingClasses: scheduleRes && scheduleRes.success && Array.isArray(scheduleRes.data) ? scheduleRes.data : [],
-      newsEvents: newsRes && newsRes.success && Array.isArray(newsRes.data) ? newsRes.data : [],
-      quickLinks: linksRes && linksRes.success && Array.isArray(linksRes.data) ? linksRes.data : [],
+      newsEvents: newsRes && newsRes.success ? newsRes.data : [],
+      quickLinks: linksRes && linksRes.success ? linksRes.data : [],
       coordinatorDesk: coordinatorRes && coordinatorRes.success && coordinatorRes.data
-        ? coordinatorRes.data
-        : { note: '', coordinators: [], email: '' },
+        ? coordinatorRes.data : { coordinators: DEFAULT_CNE_COORDINATOR_PEOPLE_.map(function(p) { return p.name; }), coordinatorPeople: DEFAULT_CNE_COORDINATOR_PEOPLE_, members: DEFAULT_CNE_MEMBERS_, email: 'training.nur@aiimsrishikesh.edu.in' },
       impactStats: impactRes && impactRes.success && impactRes.data
-        ? impactRes.data
-        : { totalCompletedClasses: 0, cneDuration: '0 Hrs', uniqueStaffTrained: 0, scope: session && session.employeeId ? 'user' : 'institutional' }
+        ? impactRes.data : { totalCompletedClasses: 0, cneDuration: '0 Hrs', uniqueStaffTrained: 0, scope: session && session.employeeId ? 'user' : 'institutional' }
     }
   };
-  logPerf('handleGetHomeDashboard', startedAt, 'single CNE Schedule snapshot');
+  logPerf('handleGetHomeDashboard', startedAt, 'today-only CNE preview with cached-impact narrow-read fast path');
   return response;
 }
-
 
 /**
  * Format Date Helper (Asia/Kolkata consistent)
@@ -7622,7 +7860,7 @@ var CNE_SHEET_HEADERS = {
   'Teaching Mode': ['Mode Name', 'Status', 'Updated At'],
   'Role': ['Employee ID No.', 'Name of the Officers', 'Designation', 'Role', 'Department / Area'],
   'Gallery': ['Image ID', 'Title', 'Description', 'Date', 'Drive File ID', 'Image URL', 'Uploaded By', 'Uploaded At', 'Status'],
-  'News and Events': ['Event ID', 'Title', 'Category', 'Date', 'Summary', 'Full Content', 'Status', 'CreatedAt', 'CreatedBy'],
+  'News and Events': ['Event ID', 'Title', 'Category', 'Date', 'Summary', 'Full Content', 'Status', 'CreatedAt', 'CreatedBy', 'Is Important', 'Blink Attention'],
   'Portal Content': ['Section', 'Key', 'Value', 'Updated At', 'Updated By'],
   'Quick Links': ['ID', 'Title', 'Description', 'Icon Name', 'Target', 'Badge', 'Action Type', 'URL', 'Modal Title', 'Modal Body', 'Status', 'Sort Order', 'Updated At', 'Updated By'],
   'Auth_Credentials': [
@@ -12386,10 +12624,12 @@ function handleGetCNEActivityProgress(params, session) {
   var participantsCount = 0;
   try {
     var respSheet = getResponsesSheet();
-    var respBlock = readMatchedCneRows_(respSheet, 1, cleanId, 2, 3); // B:D only (CNE ID, Employee ID, Name)
+    // B:J includes Source without downloading the large Answers JSON column L.
+    var respBlock = readMatchedCneRows_(respSheet, 1, cleanId, 2, 9);
     var participantKeys = {};
     for (var pi = 0; pi < respBlock.length; pi++) {
       var pRow = respBlock[pi];
+      if (!isConfirmedCNEAttendanceResponse_(pRow[8], '')) continue;
       var progressEmpId = String(pRow[1] || '').trim().toUpperCase();
       var progressName = String(pRow[2] || '').trim().toLowerCase();
       var progressKey = progressEmpId ? ('ID:' + progressEmpId) : (progressName ? ('NAME:' + progressName) : '');
@@ -15752,23 +15992,49 @@ function handleAddManualParticipants(params, session) {
     }
 
     var partSheet = getResponsesSheet();
+    // Look up only this CNE's response rows. B:J includes Source but not Answers JSON.
     var pData = partSheet.getLastRow() > 1
-      ? partSheet.getRange(2, 2, partSheet.getLastRow() - 1, 3).getValues()
-      : []; // B:D only: CNE ID, Employee ID, Employee Name
+      ? readMatchedCneRows_(partSheet, 1, cneId, 2, 9)
+      : [];
 
     var existingEmpIds = {};
     var existingNames = {};
+    var registrationByName = {};
     for (var p = 0; p < pData.length; p++) {
-      if (String(pData[p][0] || '').trim().toUpperCase() === cneId.toUpperCase()) {
-        var existingEmp = normalizeEmpId(pData[p][1]);
-        if (existingEmp) existingEmpIds[existingEmp] = true;
-        var existingNm = String(pData[p][2] || '').trim().toLowerCase();
-        if (existingNm) existingNames[existingNm] = true;
+      var existingEmp = normalizeEmpId(pData[p][1]);
+      var existingNm = String(pData[p][2] || '').trim().toLowerCase();
+      var existingSrc = String(pData[p][8] || '').trim().toUpperCase();
+
+      // Email verification is not attendance. It also must not prevent an
+      // authorized officer from marking the registered visitor as attended.
+      if (existingSrc === 'EXTERNAL_REGISTRATION') {
+        if (existingNm && isExternalParticipantId(existingEmp)) {
+          if (!registrationByName[existingNm]) registrationByName[existingNm] = {};
+          registrationByName[existingNm][existingEmp] = true;
+        }
+        continue;
       }
+      if (!isConfirmedCNEAttendanceResponse_(existingSrc, '')) continue;
+      if (existingEmp) existingEmpIds[existingEmp] = true;
+      if (existingNm) existingNames[existingNm] = true;
     }
 
     for (var v = 0; v < validatedList.length; v++) {
       var vItem = validatedList[v];
+      var itemName = vItem.manualName.toLowerCase();
+      if (!vItem.empId && registrationByName[itemName]) {
+        var matchedRegistrations = Object.keys(registrationByName[itemName]);
+        if (matchedRegistrations.length !== 1) {
+          return {
+            success: false,
+            errorCode: 'AMBIGUOUS_EXTERNAL_PARTICIPANT',
+            message: 'Multiple external registrations share the name ' + vItem.manualName + '. Confirm the participant identity before recording attendance.'
+          };
+        }
+        // Reuse the verified registration identity, so a later POST_TEST for
+        // this email and this MANUAL row cannot be counted as two attendees.
+        vItem.empId = matchedRegistrations[0];
+      }
       if (vItem.empId && existingEmpIds[vItem.empId]) {
         return {
           success: false,
@@ -15776,7 +16042,7 @@ function handleAddManualParticipants(params, session) {
           message: 'Employee ID ' + vItem.empId + ' is already recorded as a participant for this CNE.'
         };
       }
-      if (!vItem.empId && existingNames[vItem.manualName.toLowerCase()]) {
+      if (!vItem.empId && existingNames[itemName]) {
         return {
           success: false,
           errorCode: 'DUPLICATE_PARTICIPANT',
@@ -15858,6 +16124,24 @@ function handleAddManualParticipants(params, session) {
 }
 
 /**
+ * A registration/OTP verification is not evidence of CNE attendance.
+ * Only a recorded manual/QR attendance or an actual Post-Test response qualifies.
+ * Keep this policy shared by Progress, Participants and Finalization to prevent
+ * inconsistent totals. Historical records with an accepted Source and a blank
+ * Status remain valid; explicit registration/pending/revoked statuses do not.
+ * Fail closed for missing, unsupported or ambiguous Source values.
+ */
+function isConfirmedCNEAttendanceResponse_(source, status) {
+  var normalizedSource = String(source || '').trim().toUpperCase();
+  var normalizedStatus = String(status || '').trim().toUpperCase();
+  if (normalizedSource === 'EXTERNAL_REGISTRATION') return false;
+  if (normalizedStatus === 'REGISTERED' || normalizedStatus === 'PENDING' ||
+      normalizedStatus === 'CANCELED' || normalizedStatus === 'CANCELLED' ||
+      normalizedStatus === 'REVOKED' || normalizedStatus === 'INVALID') return false;
+  return normalizedSource === 'MANUAL' || normalizedSource === 'QR' || normalizedSource === 'POST_TEST';
+}
+
+/**
  * Get All Participants for CNE & Calculate Pure Average Score
  * Note: Average Score is computed EXCLUSIVELY from POST_TEST participants!
  * If no post-test submissions exist, averageScore is null (never 0).
@@ -15878,7 +16162,8 @@ function handleGetCNEParticipants(params, session) {
   var byParticipant = {};
 
   for (var r = 0; r < data.length; r++) {
-    var pType = String(data[r][9] || 'POST_TEST').trim().toUpperCase();
+    var pType = String(data[r][9] || '').trim().toUpperCase();
+    if (!isConfirmedCNEAttendanceResponse_(pType, data[r][12])) continue;
     var empId = String(data[r][2] || '').trim().toUpperCase();
     var name = String(data[r][3] || '').trim();
     var key = empId ? ('ID:' + empId) : ('NAME:' + name.toLowerCase());
@@ -16059,23 +16344,36 @@ function handleFinalizeCNE(params, session) {
     var postTestScores = [];
 
     if (partSheet && partSheet.getLastRow() > 1) {
-      var pData = partSheet.getDataRange().getValues();
-      for (var p = 1; p < pData.length; p++) {
-        if (String(pData[p][1] || '').trim().toUpperCase() !== cneId.toUpperCase()) continue;
+      // Read only this CNE's response rows; do not scan all CNE history while
+      // holding ScriptLock. The authoritative schema is A:N (14 columns).
+      var pData = readMatchedCneRows_(partSheet, 1, cneId, 1, 14);
+      for (var p = 0; p < pData.length; p++) {
+        var pSrc = String(pData[p][9] || '').trim().toUpperCase();
+        if (!isConfirmedCNEAttendanceResponse_(pSrc, pData[p][12])) continue;
         var rawEmp = String(pData[p][2] || '').trim().toUpperCase();
         var pName = String(pData[p][3] || '').trim();
-        var pSrc = String(pData[p][9] || '').trim().toUpperCase();
         var key = rawEmp ? ('ID:' + rawEmp) : ('NAME:' + pName.toLowerCase());
         if (!key || key === 'NAME:') continue;
-        if (!participantMap[key] || pSrc === 'POST_TEST') {
-          participantMap[key] = { empId: rawEmp, name: pName, source: pSrc };
-        }
-        var pctRaw = pData[p][8];
-        if (pSrc === 'POST_TEST' && pctRaw !== '' && pctRaw !== null && pctRaw !== undefined && !isNaN(Number(pctRaw))) {
-          postTestScores.push(Number(pctRaw));
+
+        // One person is counted once even when MANUAL and POST_TEST both exist.
+        // Prefer an actual Post-Test to manual/QR records for score reporting.
+        var current = participantMap[key];
+        if (!current || pSrc === 'POST_TEST' || (current.source !== 'POST_TEST' && pSrc !== 'EXTERNAL_REGISTRATION')) {
+          var pctRaw = pData[p][8];
+          var pct = pSrc === 'POST_TEST' && pctRaw !== '' && pctRaw !== null && pctRaw !== undefined &&
+            isFinite(Number(pctRaw)) && Number(pctRaw) >= 0 && Number(pctRaw) <= 100
+              ? Number(pctRaw) : null;
+          participantMap[key] = { empId: rawEmp, name: pName, source: pSrc, percentage: pct };
         }
       }
     }
+    // Average is based on one eligible Post-Test score per unique attendee.
+    Object.keys(participantMap).forEach(function(key) {
+      var item = participantMap[key];
+      if (item.source === 'POST_TEST' && item.percentage !== null) {
+        postTestScores.push(item.percentage);
+      }
+    });
 
     var internalEmpIds = [];
     var externalParticipants = [];
@@ -16093,7 +16391,7 @@ function handleFinalizeCNE(params, session) {
       return {
         success: false,
         errorCode: 'NO_PARTICIPANTS',
-        message: 'Cannot finalize CNE: At least one participant must be recorded before finalization.'
+        message: 'Cannot finalize CNE: No confirmed participant attendance was found. Registration alone is not considered attendance.'
       };
     }
 
@@ -18195,6 +18493,31 @@ function handleGetCneInterestedParticipants(params, session) {
 
 
 /**
+ * Reports response optimization: scan only CNE IDs first, then fetch bounded
+ * response rows when a short reporting period touches a small fraction of history.
+ * Dense and highly scattered selections retain the single-read fast path.
+ * Output is always B:J; Answers JSON (L) is never read.
+ */
+function cneAnalyticsSelectedResponseRows_(responseSheet, selected) {
+  var n=responseSheet.getLastRow()-1;
+  if(n<=0)return [];
+  var fullRead=function(){return responseSheet.getRange(2,2,n,9).getValues();};
+  if(n<250)return fullRead();
+  var keys=responseSheet.getRange(2,2,n,1).getValues(),wanted=[];
+  for(var i=0;i<n;i++){
+    var key=String(keys[i][0]||'').trim().toUpperCase();
+    if(selected[key] && selected[key].status==='Completed')wanted.push(i+2);
+  }
+  if(!wanted.length)return [];
+  if(wanted.length>n*0.3 || wanted.length>400)return fullRead();
+  // Bound Spreadsheet calls when matches are distributed across the entire sheet.
+  var windows=1;
+  for(var j=1;j<wanted.length;j++)if(wanted[j]-wanted[j-1]>8)windows++;
+  if(windows>35)return fullRead();
+  return cneReadSelectedRowsBounded_(responseSheet,wanted,10,false).map(function(item){return item.data.slice(1);});
+}
+
+/**
  * Admin-only reporting aggregation, scoped to a selected CNE start-date interval.
  * One read of filtered schedule rows and one B:J scan of response history; it never
  * fetches answer JSON or performs a per-CNE spreadsheet request. No writes/locks.
@@ -18211,6 +18534,24 @@ function handleGetCNEAnalytics(params, session) {
   }
   var query = String(params.search || '').trim().toLowerCase().slice(0,120);
   var startedAt = Date.now();
+  // An overview ALWAYS reads live Sheets. Its already-calculated employee rows
+  // are retained for 45 seconds solely to serve the corresponding Training tab.
+  // The role/credential checks run afresh on BOTH requests. No browser persistence.
+  var analyticsCacheKey = '';
+  try {
+    var scope = [normalizeEmpId(session.employeeId), String(session.passwordVersion || 0), from, to, query].join('|');
+    var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, scope);
+    analyticsCacheKey = 'cne_analytics_register_' + digest.map(function(b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
+  } catch (cacheKeyError) { /* Cache unavailable: use authoritative reads. */ }
+  if (params.includeEmployees === true && analyticsCacheKey) {
+    var cachedAnalytics = getFromScriptCache(analyticsCacheKey);
+    if (cachedAnalytics && cachedAnalytics.period &&
+        cachedAnalytics.period.fromDate === from && cachedAnalytics.period.toDate === to &&
+        cachedAnalytics.period.search === query && Array.isArray(cachedAnalytics.employeeRows)) {
+      logPerf('handleGetCNEAnalytics [register cache]', startedAt, 'employeeRows:' + cachedAnalytics.employeeRows.length);
+      return {success:true,data:cachedAnalytics};
+    }
+  }
   var sheet = getSpreadsheet('CNE').getSheetByName('CNE Schedule');
   var empty = {period:{fromDate:from,toDate:to,search:query},status:[],months:[],areas:[],topics:[],modes:[],postTestTopics:[],participantHours:[],resourceHours:[],employeeRows:[],employeeTotal:0,
     kpis:{total:0,completed:0,scheduled:0,canceled:0,deliveredHours:0,participantHours:0,resourceHours:0,attendanceVisits:0,uniqueParticipants:0,postTestCount:0,averagePostTestPercent:null,activeAreas:0}};
@@ -18271,7 +18612,7 @@ function handleGetCNEAnalytics(params, session) {
   var responseSheet=getSpreadsheet('CNE').getSheetByName('CNE Post Test Responses')||getSpreadsheet('CNE').getSheetByName('CNE_Participants');
   var attendanceByCne={}, sourceSeen={}, testScoreSum=0,testPercentCount=0,weightedEarned=0,weightedPossible=0;
   if(responseSheet && responseSheet.getLastRow()>1){
-    var resp=responseSheet.getRange(2,2,responseSheet.getLastRow()-1,9).getValues();
+    var resp=cneAnalyticsSelectedResponseRows_(responseSheet,selected);
     for(var j=0;j<resp.length;j++){
       var row=resp[j], idKey=String(row[0]||'').trim().toUpperCase(), data=selected[idKey];
       if(!data || data.status!=='Completed')continue;
@@ -18326,7 +18667,14 @@ function handleGetCNEAnalytics(params, session) {
     status:[{name:'Scheduled',value:statuses.Scheduled||0},{name:'Completed',value:statuses.Completed||0},{name:'Canceled',value:statuses.Canceled||0}],
     months:monthly,areas:areaRows,topics:topicRows,modes:modeRows,postTestTopics:testRows,
     participantHours:employeeRows.slice(0,20),resourceHours:rpRows.slice(0,20),employeeTotal:employeeRows.length,
-    employeeRows:params.includeEmployees===true?employeeRows:[]};
+    employeeRows:employeeRows};
+  // Cache a bounded, short-lived full aggregate for this authenticated ADMIN only.
+  // The existing chunked cache helper fails safely if payload exceeds 400 KB.
+  if (params.includeEmployees !== true) {
+    if (analyticsCacheKey) putToScriptCache(analyticsCacheKey, dataOut, 45);
+    // Do not send employee-level rows with initial charts, even if caching fails.
+    dataOut.employeeRows = [];
+  }
   logPerf('handleGetCNEAnalytics [read-only]',startedAt,'CNEs:'+allSelected.length+', responses:'+(totalAtt)+', employeeRows:'+employeeRows.length);
   return {success:true,data:dataOut};
 }

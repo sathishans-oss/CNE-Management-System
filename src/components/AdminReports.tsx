@@ -111,7 +111,7 @@ export const AdminReports:React.FC<{user:SessionUser}> = ({user}) => {
     setEmployeeBusy(true);setEmployeeError('');
     ApiService.getCNEAnalytics({...applied,includeEmployees:true}).then(res=>{
       if(id!==employeeRequestId.current||sessionAtStart!==sessionRef.current)return;
-      if(res.success&&res.data)setData(old=>old?{...old,employeeRows:res.data!.employeeRows}:old);
+      if(res.success&&res.data)setData(res.data);
       else setEmployeeError(res.message||'Cannot retrieve employee training register.');
     }).catch((e:any)=>{if(id===employeeRequestId.current&&sessionAtStart===sessionRef.current)setEmployeeError(e?.message||'Cannot retrieve employee register.');})
       .finally(()=>{if(id===employeeRequestId.current&&sessionAtStart===sessionRef.current)setEmployeeBusy(false);});

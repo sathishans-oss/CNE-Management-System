@@ -26,7 +26,7 @@ export const UpcomingClassesWidget: React.FC<UpcomingClassesWidgetProps> = ({
     String(item.status || 'Scheduled').trim().toLowerCase() === 'scheduled'
   );
   const effectiveTotal = totalCount !== undefined ? totalCount : scheduledClasses.length;
-  const hasMoreThanFive = effectiveTotal > 5;
+  const hasMoreThanFive = effectiveTotal > 5; // Navigation remains for exceptionally busy days.
   const iconColor = {
     emerald: 'text-emerald-400',
     blue: 'text-blue-400',
@@ -67,7 +67,7 @@ export const UpcomingClassesWidget: React.FC<UpcomingClassesWidgetProps> = ({
       <div className="bg-slate-900 text-white px-4 py-3.5 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Sparkles className={`w-4 h-4 ${iconColor}`} />
-          <h2 className="text-sm font-bold tracking-tight">CNE Schedule</h2>
+          <h2 className="text-sm font-bold tracking-tight">Today's CNE Schedule</h2>
         </div>
         {hasMoreThanFive && (
           <button
@@ -81,7 +81,7 @@ export const UpcomingClassesWidget: React.FC<UpcomingClassesWidgetProps> = ({
         )}
       </div>
 
-      <div className="p-3.5 divide-y divide-slate-100">
+      <div className="p-3.5 divide-y divide-slate-100 max-h-[26rem] overflow-y-auto">
         {loading ? (
           <div className="py-8 flex flex-col items-center justify-center gap-2 text-slate-500">
             <Loader2 className={`w-5 h-5 animate-spin ${iconColor}`} />
@@ -90,7 +90,7 @@ export const UpcomingClassesWidget: React.FC<UpcomingClassesWidgetProps> = ({
         ) : scheduledClasses.length === 0 ? (
           <div className="py-8 text-center px-4 space-y-2">
             <Calendar className="w-8 h-8 text-slate-300 mx-auto" />
-            <p className="text-xs font-semibold text-slate-700">No Upcoming CNE Sessions</p>
+            <p className="text-xs font-semibold text-slate-700">No CNE Sessions Scheduled for Today</p>
             <p className="text-[11px] text-slate-500 leading-relaxed">
               Check back soon or open the CNE Calendar for the full schedule.
             </p>
@@ -138,9 +138,9 @@ export const UpcomingClassesWidget: React.FC<UpcomingClassesWidgetProps> = ({
                 </div>
 
                 <div className="flex items-center justify-between text-[11px] text-slate-500 pt-0.5">
-                  <div className="flex items-center gap-1 truncate max-w-[200px]" title={formatCneDateTimeDisplay(item.date, item.toDate)}>
+                  <div className="flex items-center gap-1 truncate max-w-[200px]" title={formatCneDateTimeDisplay(item.fromDate, item.toDate)}>
                     <Clock className="w-3 h-3 text-slate-400 shrink-0" />
-                    <span className="truncate">{formatCneDateTimeDisplay(item.date, item.toDate)}</span>
+                    <span className="truncate">{formatCneDateTimeDisplay(item.fromDate, item.toDate)}</span>
                   </div>
 
                   <button

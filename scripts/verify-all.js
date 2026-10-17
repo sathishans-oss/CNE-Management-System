@@ -3373,8 +3373,8 @@ console.log('========================================================\\n');
     name: "System Integration",
     originalFilename: "verify-system-integration.js",
     mode: "module",
-    expectedChecks: 19,
-    sha256: "8a12827a93e8057479ad9d9c612024b6c9189aea9e7188c0300013767bb7aeb5",
+    expectedChecks: 23,
+    sha256: "002861d626f74f9d5bbf5339339d64c65f0cd97004a6938696eaaff8f68b355b",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -3397,6 +3397,7 @@ console.log('========================================================\\n');
 import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
+import vm from 'node:vm';
 
 console.log('========================================================');
 console.log('System Integration Verification');
@@ -4536,10 +4537,12 @@ runTest('Home Dashboard reuses one CNE Schedule snapshot for Schedule and Impact
   );
   assert.ok(
     codeGs.includes('function getCNEScheduleSnapshot_(') &&
-    homeSection.includes('var scheduleSnapshot = getCNEScheduleSnapshot_();') &&
-    homeSection.includes("handleGetCNERecords({ status: 'Scheduled' }, null, scheduleSnapshot)") &&
-    homeSection.includes('handleGetProgramImpact({}, session, scheduleSnapshot)'),
-    'Home Dashboard must read CNE Schedule once and reuse the snapshot for upcoming classes and impact metrics'
+    homeSection.includes('var impactRes = handleGetProgramImpact({}, session);') &&
+    homeSection.includes('var scheduleSnapshot = _executionCneScheduleSnapshot;') &&
+    homeSection.includes("handleGetCNERecords({ status: 'Scheduled' }, null, todaySnapshot)") &&
+    homeSection.includes('cneScheduleSelectedSnapshot_(sheet,headers,cols,selected)') &&
+    homeSection.includes('getCNECanonicalDay(currentRow[fromCol]) !== today'),
+    'Homepage must reuse impact snapshot on cache miss and read only today rows when impact is cached'
   );
   assert.ok(
     !homeSection.includes('handleGetChairpersonPhoto()'),
@@ -4618,10 +4621,11 @@ runTest('Coordinator Desk homepage renders sheet-backed Admin content', () => {
   );
 
   assert.ok(
-    coordinatorCardTs.includes('coordinatorDesk.note') &&
-    coordinatorCardTs.includes('coordinatorDesk.coordinators.map') &&
-    coordinatorCardTs.includes('coordinatorDesk.email'),
-    'CoordinatorDeskCard must render backend-provided note, coordinator names, and email'
+    coordinatorCardTs.includes('coordinatorDesk.coordinatorPeople') &&
+    coordinatorCardTs.includes('coordinatorDesk.members') &&
+    coordinatorCardTs.includes('coordinatorDesk.email') &&
+    !coordinatorCardTs.includes('coordinatorDesk.note'),
+    'CoordinatorDeskCard must render backend-provided structured coordinators, members and email, without legacy note'
   );
 
   assert.ok(
@@ -4630,6 +4634,123 @@ runTest('Coordinator Desk homepage renders sheet-backed Admin content', () => {
     !coordinatorCardTs.includes('training.nur@aiimsrishikesh.edu.in'),
     'CoordinatorDeskCard must not hard-code editable Coordinator Desk content'
   );
+});
+
+// Stage 4: CNE Desk committee and public News attention flags.
+// These run in-memory against the actual Code.gs handlers, including legacy nine-column sheets.
+function createStage4CmsEnvironment() {
+  const makeSheet = (headers, rows = []) => {
+    const grid = [headers.slice(), ...rows.map(row => row.slice())];
+    return {
+      grid,
+      getLastColumn() { return grid[0].length; },
+      getMaxColumns() { return 30; },
+      getLastRow() { return grid.length; },
+      insertColumnsAfter() {},
+      getDataRange() { return { getValues() { return grid.map(row => row.slice()); } }; },
+      getRange(row, column, height = 1, width = 1) {
+        return {
+          getValues() {
+            return Array.from({ length: height }, (_, i) =>
+              Array.from({ length: width }, (_, j) => grid[row + i - 1]?.[column + j - 1] || ''));
+          },
+          setValue(value) {
+            while (grid.length < row) grid.push([]);
+            grid[row - 1][column - 1] = value;
+            return this;
+          },
+          setValues(values) {
+            for (let i = 0; i < values.length; i++) for (let j = 0; j < values[i].length; j++) {
+              while (grid.length < row + i) grid.push([]);
+              grid[row + i - 1][column + j - 1] = values[i][j];
+            }
+            return this;
+          }
+        };
+      },
+      appendRow(row) { grid.push(row.slice()); }
+    };
+  };
+  const news = makeSheet(['Event ID','Title','Category','Date','Summary','Full Content','Status','CreatedAt','CreatedBy']);
+  const portal = makeSheet(['Section','Key','Value','Updated At','Updated By'], [
+    ['COORDINATOR','EMAIL','training.nur@aiimsrishikesh.edu.in','','SYSTEM'],
+    ['COORDINATOR','NOTE','Legacy note should remain stored but not displayed','','SYSTEM'],
+    ['COORDINATOR','NAMES','Legacy Coordinator','','SYSTEM']
+  ]);
+  const sandbox = { console, Date, Math, JSON, Array, String, Number, Object, RegExp, Error,
+    LockService: { getScriptLock() { return { waitLock() {}, releaseLock() {} }; } }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(codeGs, sandbox);
+  sandbox.getPublicHomeCache_ = () => null;
+  sandbox.putPublicHomeCache_ = () => {};
+  sandbox.removeScriptCacheEntry_ = () => {};
+  sandbox.getOrCreateSheet = name => ({ 'News and Events': news, 'Portal Content': portal })[name];
+  sandbox.getSpreadsheet = () => ({ getSheetByName: name => ({ 'News and Events': news, 'Portal Content': portal })[name] });
+  sandbox.requireAdmin = session => session && session.role === 'ADMIN' ? null : { success: false, errorCode: 'FORBIDDEN' };
+  sandbox.requireFreshAdminMutation = session => ({ success: true, session });
+  sandbox.logAuditAction = () => {};
+  sandbox.ensureCoordinatorContentSeeded_ = () => portal;
+  sandbox.formatDateValue = value => String(value);
+  sandbox.getIndiaTodayString = () => '2026-10-17';
+  return { sandbox, portal, news, admin: { role: 'ADMIN', employeeId: 'ADMIN001' }, employee: { role: 'EMPLOYEE', employeeId: 'EMP001' } };
+}
+
+runTest('Stage 4 CNE Desk defaults to two new coordinators and twelve designated members without displaying legacy note', () => {
+  const env = createStage4CmsEnvironment();
+  const desk = env.sandbox.handleGetCoordinatorDesk({});
+  assert.strictEqual(desk.success, true);
+  assert.strictEqual(desk.data.coordinatorPeople.length, 2);
+  assert.strictEqual(desk.data.members.length, 12);
+  assert.strictEqual(desk.data.coordinatorPeople[0].name, 'Mr. Jino Jacob');
+  assert.strictEqual(desk.data.coordinatorPeople[1].designation, 'Deputy Nursing Superintendent');
+  assert.strictEqual(desk.data.members[0].name, 'Ms. Vandana');
+  assert.strictEqual(desk.data.members[11].name, 'Ms. Ramya T');
+  assert.strictEqual(desk.data.note, undefined);
+  assert.strictEqual(env.portal.grid.some(row => row[1] === 'NOTE'), true);
+});
+
+runTest('Stage 4 CNE Desk roster writes are Admin-only, validated and non-destructive', () => {
+  const env = createStage4CmsEnvironment();
+  const payload = { coordinatorPeople: [{ name: 'Coordinator New', designation: 'DNS' }],
+    members: [{ name: 'Member New', designation: 'ANS' }], email: 'desk@example.org' };
+  assert.strictEqual(env.sandbox.handleUpdateCoordinatorDesk(payload, env.employee).errorCode, 'FORBIDDEN');
+  assert.strictEqual(env.sandbox.handleUpdateCoordinatorDesk({ coordinatorPeople: [{ name: 'Broken', designation: '' }] }, env.admin).errorCode, 'INVALID_DESK_ROSTER');
+  const saved = env.sandbox.handleUpdateCoordinatorDesk(payload, env.admin);
+  assert.strictEqual(saved.success, true);
+  assert.strictEqual(saved.data.coordinatorPeople[0].name, 'Coordinator New');
+  assert.strictEqual(saved.data.members[0].designation, 'ANS');
+  assert.strictEqual(saved.data.email, 'desk@example.org');
+  assert.strictEqual(env.portal.grid.some(row => row[1] === 'NOTE' && String(row[2]).includes('Legacy note')), true);
+  assert.strictEqual(env.portal.grid.filter(row => row[1] === 'MEMBERS_V2').length, 1);
+});
+
+runTest('Stage 4 News flags add two optional columns on Admin publish and remain independently editable', () => {
+  const env = createStage4CmsEnvironment();
+  assert.strictEqual(env.news.grid[0].length, 9);
+  assert.strictEqual(env.sandbox.handleAddNewsEvent({ title: 'Blocked', summary: 'Private' }, env.employee).errorCode, 'FORBIDDEN');
+  const created = env.sandbox.handleAddNewsEvent({ title: 'Memo', summary: 'Read me', isImportant: true, blinkAttention: false }, env.admin);
+  assert.strictEqual(created.success, true);
+  assert.deepStrictEqual(env.news.grid[0].slice(9), ['Is Important', 'Blink Attention']);
+  let item = env.sandbox.handleGetNewsEvents({}).data[0];
+  assert.strictEqual(item.isImportant, true);
+  assert.strictEqual(item.blinkAttention, false);
+  assert.strictEqual(env.sandbox.handleUpdateNewsEvent({ id: created.data.id, isImportant: false, blinkAttention: true }, env.admin).success, true);
+  item = env.sandbox.handleGetNewsEvents({}).data[0];
+  assert.strictEqual(item.isImportant, false);
+  assert.strictEqual(item.blinkAttention, true);
+});
+
+runTest('Stage 4 frontend independently renders Urgent and Attention, and Admin can edit both flags', () => {
+  const widget = fs.readFileSync('src/components/home/NewsCircularsWidget.tsx', 'utf8');
+  const admin = fs.readFileSync('src/components/AdminContent.tsx', 'utf8');
+  const desk = fs.readFileSync('src/components/home/CoordinatorDeskCard.tsx', 'utf8');
+  assert.ok(widget.includes('news.blinkAttention') && widget.includes('news.isImportant'));
+  assert.ok(widget.includes('motion-safe:animate-pulse') && widget.includes('9000'));
+  assert.ok(admin.includes('id="chk-important"') && admin.includes('id="chk-blink-attention"'));
+  assert.ok(admin.includes('coordinatorPeople: deskForm.coordinatorPeople.map') && admin.includes('members: deskForm.members.map'));
+  assert.ok(desk.includes('CNE Desk') && desk.includes('coordinatorDesk.members'));
+  assert.ok(!desk.includes('coordinatorDesk.note'));
 });
 
 // -----------------------------------------------------------------------------
@@ -7467,8 +7588,8 @@ console.log('========================================================\\n');
     name: "CNE Read Performance Regression",
     originalFilename: "verify-cne-read-performance.cjs",
     mode: "commonjs",
-    expectedChecks: 15,
-    sha256: "a30b083e9596c2d746c21809418774223cb4fc268ed5c935b0a605f712113a04",
+    expectedChecks: 27,
+    sha256: "0a11cb058cd10fc65793a9cf74088544326c1862a9cdc225b46157090c452a04",
     source: `/**
  * CNE Read Performance & Bounded Query Regression Verification Suite
  *
@@ -8064,11 +8185,11 @@ runTest('handleGetCNEActivityProgress uses bounded, CNE-specific reads without f
     'Responses sheet must NEVER have getDataRange() called during activity progress read'
   );
 
-  // Must only read bounded columns B:D (column 2, 3 columns wide)
-  const respBoundedReads = env.responsesSheet.readOps.filter(op => op.col === 2 && op.numCols === 3);
+  // Read only columns B:J to include Source. Never fetch large Answers JSON in L.
+  const respBoundedReads = env.responsesSheet.readOps.filter(op => op.col === 2 && op.numCols === 9);
   assert.ok(
     respBoundedReads.length > 0,
-    'Responses sheet read must be bounded to columns B:D (CNE ID, Employee ID, Name)'
+    'Responses sheet read must be bounded to columns B:J (identity plus attendance Source)'
   );
 
   // Large answers JSON column (column 12 / L) must NOT be read during progress check
@@ -8436,7 +8557,7 @@ runTest('Calendar month selection includes CNEs that span months', () => {
 runTest('Admin analytics endpoint fails closed and requires authorized session', () => {
   assert.ok(codeGsSource.includes("case 'getCNEAnalytics':"), 'Action must be routed through authenticated dispatcher');
   assert.ok(codeGsSource.includes('function handleGetCNEAnalytics(params, session)'), 'Analytics function must exist');
-  const code = codeGsSource.slice(codeGsSource.lastIndexOf('function handleGetCNEAnalytics('));
+  const code = codeGsSource.slice(codeGsSource.lastIndexOf('function cneAnalyticsSelectedResponseRows_('));
   const ctx = {requireAdmin: session => session && session.role === 'ADMIN' ? null : {success:false,errorCode:'FORBIDDEN'}, getCNECanonicalDay: x=>x==='bad'?'':x};
   vm.runInNewContext(code, ctx);
   assert.strictEqual(ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31'},null).success,false);
@@ -8447,11 +8568,12 @@ runTest('Admin analytics endpoint fails closed and requires authorized session',
 });
 
 runTest('Admin analytics aggregates verified attendance once per CNE and skips registration-only rows', () => {
-  const code=codeGsSource.slice(codeGsSource.lastIndexOf('function handleGetCNEAnalytics('));
+  const code=codeGsSource.slice(codeGsSource.lastIndexOf('function cneAnalyticsSelectedResponseRows_('));
   const headers=['CNE ID','Area','From Date','To Date','Duration','Topic','Resource Person Emp ID','Mode of Teaching','Status','Total Allotted Staff','Max Participants'];
   const sheetRows=[headers,['CNE-1','ICU','2026-10-01','2026-10-01','01:30:00','Sepsis','RP1','Lecture','Completed',40,50],['CNE-2','ICU','2026-10-10','2026-10-10','01:00:00','Vitals','RP1','Lecture','Scheduled',40,50]];
   const responseRows=[['CNE-1','E1','Nurse A','NO','ICU',8,10,80,'POST_TEST'],['CNE-1','E1','Nurse A','NO','ICU','','','','MANUAL'],['CNE-1','E2','Nurse B','NO','ICU','','','','MANUAL'],['CNE-1','EXT-1','External','External','ICU','','','','EXTERNAL_REGISTRATION']];
   let readCount=0;
+  const inMemoryAnalyticsCache = new Map();
   const scheduleSheet={getLastRow:()=>sheetRows.length,getLastColumn:()=>headers.length,getRange:(r,c,n)=>({getValues:()=>r===1?[headers]:sheetRows.slice(r-1,r+n-1)})};
   const responseSheet={getLastRow:()=>responseRows.length+1,getRange:(r,c,n,w)=>{assert.strictEqual(c,2);assert.strictEqual(w,9,'No answer-key/answers JSON column may be scanned');readCount++;return {getValues:()=>responseRows};}};
   const ctx={
@@ -8464,7 +8586,10 @@ runTest('Admin analytics aggregates verified attendance once per CNE and skips r
     normalizeCNEStatus:s=>s,getIndiaTodayString:()=> '2026-10-16',formatDurationValue:v=>v,
     parseDurationToSeconds:v=>v.split(':').map(Number).reduce((a,b)=>a*60+b),
     normalizeEmpId:s=>String(s||'').toUpperCase(),isExternalParticipantId:s=>String(s).startsWith('EXT'),
-    logPerf:()=>{},Date,Math,Object,String,Number,Array,Boolean,isFinite
+    logPerf:()=>{},Date,Math,Object,String,Number,Array,Boolean,isFinite,
+    Utilities: {DigestAlgorithm: {SHA_256:'SHA_256'}, computeDigest:(_,message)=>Array.from(require('crypto').createHash('sha256').update(message).digest())},
+    putToScriptCache:(key,data,ttl)=>{assert.strictEqual(ttl,45);inMemoryAnalyticsCache.set(key,JSON.parse(JSON.stringify(data)));},
+    getFromScriptCache:key=>inMemoryAnalyticsCache.get(key)||null
   };
   vm.runInNewContext(code,ctx);
   const result=ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31'},{role:'ADMIN'});
@@ -8479,8 +8604,335 @@ runTest('Admin analytics aggregates verified attendance once per CNE and skips r
   assert.strictEqual(result.data.kpis.averagePostTestPercent,80);
   assert.strictEqual(result.data.employeeRows.length,0,'Employee directory should not be returned on initial overview');
   assert.strictEqual(readCount,1,'Response sheet should be read once per aggregate request');
+  const requestsAfterOverview=readCount;
   const details=ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31',includeEmployees:true},{role:'ADMIN'});
   assert.strictEqual(details.data.employeeRows.length,2,'Explicit request exposes only verified internal participant rows');
+  assert.strictEqual(readCount,requestsAfterOverview,'Training register must reuse the overview calculation without another response scan');
+  assert.strictEqual(ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31',includeEmployees:true},{role:'EMPLOYEE'}).errorCode,'FORBIDDEN','Cache never bypasses fresh Admin authorization');
+  // A different reporting period must not read unrelated cached employee rows.
+  const newPeriod=ctx.handleGetCNEAnalytics({fromDate:'2026-11-01',toDate:'2026-11-30',includeEmployees:true},{role:'ADMIN'});
+  assert.strictEqual(newPeriod.data.employeeRows.length,0);
+  assert.strictEqual(readCount,requestsAfterOverview+1,'Changing dates must trigger a fresh authoritative response scan');
+});
+
+runTest('Stage 3 today-only homepage uses From Date and excludes historical records', () => {
+  const homeStart=codeGsSource.indexOf('function handleGetHomeDashboard(');
+  const homeEnd=codeGsSource.indexOf('function formatDateValue(',homeStart);
+  const script=codeGsSource.slice(homeStart,homeEnd);
+  const headers=['CNE ID','Topic','Area','From Date','Status'];
+  const rows=[headers,
+    ['CNE-TODAY','Morning CNE','ICU','2026-10-17T09:00','Scheduled'],
+    ['CNE-TOMORROW','Tomorrow','OT','2026-10-18T09:00','Scheduled'],
+    ['CNE-COMPLETE','Completed','ICU','2026-10-17T09:00','Completed'],
+    ['CNE-NODATE','Undated','OT','','Scheduled']];
+  let actualIds=[];
+  const snap={sheet:{},data:rows,displayValues:rows,colMap:{cneid:0,topic:1,area:2,fromdate:3,status:4}};
+  const ctx={getCNEScheduleSnapshot_:()=>snap,getIndiaTodayString:()=> '2026-10-17',
+    getCNECanonicalDay:v=>String(v||'').slice(0,10),normalizeCNEStatus:v=>v,
+    handleGetCNERecords:(_,__,selected)=>{actualIds=selected.data.slice(1).map(r=>r[0]);return {success:true,data: selected.data.slice(1).map(r=>({cneId:r[0],fromDate:r[3]}))};},
+    handleGetProgramImpact:()=>{ctx._executionCneScheduleSnapshot=snap;return {success:true,data:{totalCompletedClasses:2}};},
+    handleGetNewsEvents:()=>({success:true,data:[]}),handleGetQuickLinks:()=>({success:true,data:[]}),
+    handleGetCoordinatorDesk:()=>({success:true,data:{}}),logPerf:()=>{},Date};
+  vm.runInNewContext(script,ctx);
+  const response=ctx.handleGetHomeDashboard({},null);
+  assert.strictEqual(response.success,true);
+  assert.strictEqual(JSON.stringify(actualIds),JSON.stringify(['CNE-TODAY']),"Only today's Scheduled start dates qualify");
+  assert.strictEqual(response.data.impactStats.totalCompletedClasses,2,'Homepage impact is independent of today-only preview');
+});
+
+runTest('Stage 3 homepage uses narrow Schedule reads when impact metrics are cached', () => {
+  const start=codeGsSource.indexOf('function handleGetHomeDashboard(');
+  const end=codeGsSource.indexOf('function formatDateValue(',start);
+  const rows=[['CNE ID','Topic','Area','From Date','Status'],
+    ['CNE-17','Today','ICU','2026-10-17T09:00','Scheduled'],
+    ['CNE-18','Tomorrow','ICU','2026-10-18T09:00','Scheduled']];
+  const reads=[];
+  const sheet={getLastRow:()=>3,getLastColumn:()=>5,
+    getRange:(r,c,n,w)=>{reads.push({r,c,n,w});return {getValues:()=>r===1?[rows[0]]:rows.slice(r-1,r+n-1).map(v=>w===1?[v[c-1]]:v.slice(c-1,c+w-1))};}};
+  const ctx={_executionCneScheduleSnapshot:null,getSpreadsheet:()=>({getSheetByName:()=>sheet}),
+    getIndiaTodayString:()=> '2026-10-17',getCNECanonicalDay:v=>String(v||'').slice(0,10),
+    normalizeCNEStatus:v=>v,buildHeaderMapFromRow_:h=>Object.fromEntries(h.map((v,i)=>[v.toLowerCase().replace(/[^a-z0-9]/g,''),i])),
+    getCneScheduleColumnValues_:(_,col)=>rows.slice(1).map(r=>r[col]),
+    cneScheduleSelectedSnapshot_:(_,headers,cols,selected)=>({sheet,data:[headers,...selected.map(row=>rows[row-1])],colMap:cols,displayValues:[]}),
+    handleGetProgramImpact:()=>({success:true,data:{totalCompletedClasses:7}}),
+    handleGetCNERecords:(_,__,snapshot)=>({success:true,data:snapshot.data.slice(1).map(r=>({cneId:r[0],fromDate:r[3]}))}),
+    handleGetNewsEvents:()=>({success:true,data:[]}),handleGetQuickLinks:()=>({success:true,data:[]}),
+    handleGetCoordinatorDesk:()=>({success:true,data:{}}),logPerf:()=>{}};
+  vm.runInNewContext(codeGsSource.slice(start,end),ctx);
+  const result=ctx.handleGetHomeDashboard({},null);
+  assert.strictEqual(result.data.upcomingClasses.length,1);
+  assert.strictEqual(result.data.upcomingClasses[0].cneId,'CNE-17');
+  assert.ok(reads.every(v=>v.r===1),'Impact-cache homepage must not read the complete Schedule rows');
+});
+
+runTest('Stage 3 My CNE Records is employee-only, paginated and full-filter hours remain accurate', () => {
+  const env=createFreshTestEnvironment();
+  const sheet=env.cneSpreadsheet.getSheetByName('CNE Schedule');
+  const template=[...sheet.grid[2]];
+  for(let i=0;i<28;i++){
+    const row=[...template];row[0]='CNE-MY-'+String(i).padStart(3,'0');
+    row[1]='Staff Development Topic '+i;row[3]='2026-10-12T10:00';
+    row[5]='01:30:00';row[10]='Completed';row[13]='EMP-STF-001';
+    row[6]=i===0?'EMP-STF-001':'EMP-RP-200';
+    sheet.appendRow(row);
+  }
+  env.responsesSheet.appendRow(['RESP-MY','CNE-MY-000','EMP-STF-001','Staff Nurse John','Nursing Officer','ICU',8,10,80,'POST_TEST','2026-10-12T10:00:00Z','','ATTENDED','']);
+  const emp={employeeId:'EMP-STF-001',role:'EMPLOYEE'};
+  const first=env.sandbox.handleGetMyCNERecordsPage({page:1,pageSize:25},emp);
+  assert.strictEqual(first.success,true,first.message);
+  assert.strictEqual(first.data.total,28);
+  assert.strictEqual(first.data.records.length,25);
+  assert.strictEqual(first.data.hasMore,true);
+  assert.strictEqual(first.data.participantSeconds,28*5400);
+  assert.strictEqual(first.data.resourcePersonSeconds,5400);
+  assert.ok(first.data.records.every(r=>r.status==='Completed'));
+  const next=env.sandbox.handleGetMyCNERecordsPage({page:2,pageSize:25},emp);
+  assert.strictEqual(next.data.records.length,3);
+  assert.strictEqual(next.data.records.find(r=>r.cneId==='CNE-MY-000').myPostTestScore,80,'Per-page Post-Test percentage must be present');
+  assert.strictEqual(next.data.participantSeconds,first.data.participantSeconds);
+  const filtered=env.sandbox.handleGetMyCNERecordsPage({search:'Topic 1',fromDate:'2026-10-01',toDate:'2026-10-31'},emp);
+  assert.strictEqual(filtered.data.total,11,'Server must filter before pagination and hour calculations');
+  assert.strictEqual(filtered.data.participantSeconds,11*5400);
+  const denied=env.sandbox.handleGetMyCNERecordsPage({},null);
+  assert.strictEqual(denied.success,false);
+  const unrelated=env.sandbox.handleGetMyCNERecordsPage({}, {employeeId:'EMP-OTHER',role:'ADMIN'});
+  assert.strictEqual(unrelated.data.total,0,"Admin may not retrieve another employee's history by role");
+  assert.strictEqual(env.sandbox.handleGetMyCNERecordsPage({fromDate:'2026-10-30',toDate:'2026-10-01'},emp).success,false);
+  const offset=[...template];offset[0]='CNE-IST-OFFSET';offset[3]='2026-10-16T20:30:00Z';offset[13]='EMP-STF-001';offset[10]='Completed';sheet.appendRow(offset);
+  const indiaDay=env.sandbox.handleGetMyCNERecordsPage({fromDate:'2026-10-17',toDate:'2026-10-17'},emp);
+  assert.strictEqual(indiaDay.data.total,1,'Explicit UTC offsets must be grouped by their actual Asia/Kolkata date');
+});
+
+runTest('Stage 3 report response lookup uses sparse bounded rows and retains B:J projection', () => {
+  const env=createFreshTestEnvironment();
+  const sheet=env.responsesSheet;
+  for(let i=0;i<500;i++){
+    sheet.appendRow(['RESP-BIG-'+i,'CNE-UNRELATED-'+i,'EMP-'+i,'Other','','',5,10,50,'POST_TEST','','','ATTENDED','']);
+  }
+  const selected={'CNE-2026-PERF1':{status:'Completed'}};
+  sheet.resetReadOps();
+  const rows=env.sandbox.cneAnalyticsSelectedResponseRows_(sheet,selected);
+  assert.strictEqual(rows.length,4);
+  assert.ok(rows.every(r=>r.length===9 && r[0]==='CNE-2026-PERF1'));
+  assert.ok(sheet.readOps.filter(op=>op.numCols>1).every(op=>op.numRows<=160),
+    'Sparse report response rows must avoid whole-history wide scans');
+});
+
+runTest('Schedule search first narrows by status/date and still enforces historical permissions', () => {
+  const env=createFreshTestEnvironment();
+  const sheet=env.cneSpreadsheet.getSheetByName('CNE Schedule');
+  const historical=[...sheet.grid[2]];
+  for(let i=0;i<200;i++) {
+    const row=[...historical];row[0]='CNE-OLD-SEARCH-'+i;
+    row[3]='2025-05-12T10:00';row[4]='2025-05-12T11:00';
+    row[1]='Historical archived sepsis session';
+    sheet.appendRow(row);
+  }
+  const admin={employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  sheet.resetReadOps();
+  const result=env.sandbox.handleGetCNESchedulePage({status:'Completed',fromDate:'2026-10-01',toDate:'2026-10-31',search:'sterilization',pageSize:50},admin);
+  assert.strictEqual(result.success,true);
+  assert.strictEqual(result.data.total,1);
+  assert.strictEqual(result.data.records[0].cneId,'CNE-2026-PERF2');
+  assert.ok(sheet.readOps.filter(op=>op.numCols>1).every(op=>op.numRows<=160),
+    'Search should materialize only status/date candidates, not full historic rows');
+  const employee={employeeId:'EMP-STF-001',role:'EMPLOYEE',assignedAreas:[]};
+  const denied=env.sandbox.handleGetCNESchedulePage({status:'Completed',fromDate:'2026-10-01',toDate:'2026-10-31',search:'sterilization'},employee);
+  assert.strictEqual(denied.data.total,0,'Historical search must not disclose unauthorized records');
+});
+
+runTest('Sparse Schedule rows use bounded windows instead of whole-history reads', () => {
+  const env=createFreshTestEnvironment();
+  const sheet=env.cneSpreadsheet.getSheetByName('CNE Schedule');
+  const sample=[...sheet.grid[1]];
+  for(let i=0;i<600;i++) {
+    const row=[...sample]; row[0]='CNE-SPARSE-'+i; row[3]='2029-01-01T09:00';
+    sheet.appendRow(row);
+  }
+  const selected=[2,100,200,300,400,500,600];
+  sheet.resetReadOps();
+  const snapshot=env.sandbox.cneScheduleSelectedSnapshot_(sheet,sheet.grid[0],{},selected);
+  assert.strictEqual(snapshot.data.length,selected.length+1);
+  assert.strictEqual(snapshot.data[1][0],sheet.grid[selected[0]-1][0]);
+  assert.strictEqual(snapshot.data.at(-1)[0],sheet.grid[selected.at(-1)-1][0]);
+  const heavy=sheet.readOps.filter(op=>op.numCols>1);
+  assert.ok(heavy.length>1,'Remote matches should be read in independent bounded groups');
+  assert.ok(heavy.every(op=>op.numRows<=160),'No enormous sparse read is allowed');
+  assert.ok(heavy.reduce((count,op)=>count+op.numRows,0)<100,'Sparse reads should not read unrelated history');
+});
+
+runTest('Date-filtered outcomes do not scan full history when matches are scattered', () => {
+  const env=createFreshTestEnvironment();
+  const sheet=env.cneSpreadsheet.getSheetByName('CNE Schedule');
+  const sample=[...sheet.grid[1]];
+  for(let i=0;i<600;i++) {
+    const row=[...sample]; row[0]='CNE-DATE-SPARSE-'+i;
+    row[3]=i%90===0?'2027-02-03T09:00':'2025-01-01T09:00';
+    sheet.appendRow(row);
+  }
+  sheet.resetReadOps();
+  const selected=env.sandbox.readDepartmentalOutcomeScheduleRows_(sheet,3,'2027-02-01','2027-02-28');
+  assert.strictEqual(selected.length,7);
+  assert.ok(selected.every(r=>r[3]==='2027-02-03T09:00'));
+  const full=sheet.readOps.filter(op=>op.numCols>1);
+  assert.ok(full.length>=2,'Scattered outcomes should use multiple small ranges');
+  assert.ok(full.every(op=>op.numRows<=160),'No full-history fallback for sparse results');
+});
+
+// -----------------------------------------------------------------------------
+// Attendance eligibility consistency: registration is never attendance.
+// -----------------------------------------------------------------------------
+runTest('Shared attendance policy excludes registration and unsupported sources', () => {
+  const env = createFreshTestEnvironment();
+  const eligible = env.sandbox.isConfirmedCNEAttendanceResponse_;
+  assert.strictEqual(eligible('EXTERNAL_REGISTRATION', 'REGISTERED'), false);
+  assert.strictEqual(eligible('EXTERNAL_REGISTRATION', 'ATTENDED'), false,
+    'A registration row must never become attendance by changing status alone');
+  assert.strictEqual(eligible('', 'ATTENDED'), false, 'Unknown Source fails closed');
+  assert.strictEqual(eligible('PENDING', 'ATTENDED'), false);
+  assert.strictEqual(eligible('MANUAL', 'REGISTERED'), false);
+  assert.strictEqual(eligible('POST_TEST', 'PENDING'), false);
+  assert.strictEqual(eligible('MANUAL', 'ATTENDED'), true);
+  assert.strictEqual(eligible('QR', 'ATTENDED'), true);
+  assert.strictEqual(eligible('POST_TEST', 'PASSED'), true);
+  assert.strictEqual(eligible('POST_TEST', 'NEEDS_IMPROVEMENT'), true);
+});
+
+runTest('Registration alone does not inflate Participants or Calendar Progress', () => {
+  const env = createFreshTestEnvironment();
+  const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  env.responsesSheet.appendRow([
+    'EXTREG-ONLY','CNE-2026-EMPTY','EXT-AAAAAAAAAAAAAAAAAAAAAAAA','Registered Visitor',
+    'External Participant','Emergency','','','','EXTERNAL_REGISTRATION',
+    '2026-10-15T10:00:00Z','','REGISTERED','Email verified'
+  ]);
+  const before = env.sandbox.handleGetCNEParticipants({cneId:'CNE-2026-EMPTY'},admin);
+  const progress = env.sandbox.handleGetCNEActivityProgress({cneId:'CNE-2026-EMPTY',forceFresh:true},admin);
+  assert.strictEqual(before.success,true);
+  assert.strictEqual(before.data.totalParticipants,0);
+  assert.strictEqual(before.data.manualCount,0);
+  assert.strictEqual(before.data.postTestCount,0);
+  assert.strictEqual(before.data.participants.length,0);
+  assert.strictEqual(progress.success,true);
+  assert.strictEqual(progress.data.participantsCount,0);
+  assert.strictEqual(env.responsesSheet.getDataRangeCount,0,'CNE reads must be bounded');
+  assert.strictEqual(env.responsesSheet.grid.at(-1)[9],'EXTERNAL_REGISTRATION',
+    'Registration source data must be preserved');
+});
+
+runTest('Finalization rejects registration-only CNE, then deduplicates confirmed attendees', () => {
+  const env = createFreshTestEnvironment();
+  const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  // Keep lifecycle/session boundaries intact in production; stub only the independent
+  // authentication revalidation and side-effect dependencies of this mock fixture.
+  env.sandbox.refreshMutationSession = session => ({success:true,session});
+  env.sandbox.deactivateQRTokensForCNE = () => {};
+  env.sandbox.logAuditAction = () => {};
+  const schedule = env.cneSpreadsheet.getSheetByName('CNE Schedule');
+  env.responsesSheet.appendRow([
+    'EXTREG-1','CNE-2026-EMPTY','EXT-AAAAAAAAAAAAAAAAAAAAAAAA','Visitor A',
+    'External Participant','Emergency','','','','EXTERNAL_REGISTRATION',
+    '2026-10-01T09:00:00Z','','REGISTERED','Registration retained'
+  ]);
+  const denied = env.sandbox.handleFinalizeCNE({cneId:'CNE-2026-EMPTY'},admin);
+  assert.strictEqual(denied.success,false);
+  assert.strictEqual(denied.errorCode,'NO_PARTICIPANTS');
+  assert.ok(denied.message.includes('Registration alone'));
+  assert.strictEqual(schedule.grid[3][10],'Scheduled', 'CNE must remain Scheduled');
+
+  env.responsesSheet.appendRow([
+    'M-1','CNE-2026-EMPTY','EMP-STF-001','John',
+    'Nursing Officer','Emergency','','','','MANUAL',
+    '2026-10-01T10:00:00Z','','ATTENDED',''
+  ]);
+  env.responsesSheet.appendRow([
+    'PT-1','CNE-2026-EMPTY','EMP-STF-001','John',
+    'Nursing Officer','Emergency',8,10,80,'POST_TEST',
+    '2026-10-01T10:05:00Z','','PASSED',''
+  ]);
+  env.responsesSheet.appendRow([
+    'PT-2','CNE-2026-EMPTY','EXT-AAAAAAAAAAAAAAAAAAAAAAAA','Visitor A',
+    'External Participant','Emergency',7,10,70,'POST_TEST',
+    '2026-10-01T10:08:00Z','','NEEDS_IMPROVEMENT',''
+  ]);
+  env.responsesSheet.appendRow([
+    'EXTREG-2','CNE-2026-EMPTY','EXT-BBBBBBBBBBBBBBBBBBBBBBBB','Visitor B',
+    'External Participant','Emergency','','','','EXTERNAL_REGISTRATION',
+    '2026-10-01T10:09:00Z','','REGISTERED',''
+  ]);
+  const beforeFinal = env.sandbox.handleGetCNEParticipants({cneId:'CNE-2026-EMPTY'},admin);
+  const progress = env.sandbox.handleGetCNEActivityProgress({cneId:'CNE-2026-EMPTY',forceFresh:true},admin);
+  assert.strictEqual(beforeFinal.data.totalParticipants,2);
+  assert.strictEqual(beforeFinal.data.postTestCount,2);
+  assert.strictEqual(beforeFinal.data.manualCount,0);
+  assert.strictEqual(progress.data.participantsCount,2);
+  env.responsesSheet.resetReadOps();
+  const finalized = env.sandbox.handleFinalizeCNE({cneId:'CNE-2026-EMPTY'},admin);
+  assert.strictEqual(finalized.success,true, finalized.message);
+  assert.strictEqual(schedule.grid[3][10],'Completed');
+  assert.strictEqual(Number(schedule.grid[3][14]),2,'Staff Count = 2 verified attendees, not registrations');
+  assert.strictEqual(schedule.grid[3][13],'EMP-STF-001');
+  assert.strictEqual(schedule.grid[3][15],'Visitor A');
+  assert.ok(schedule.grid[3][17].includes('Total Attendees: 2'));
+  assert.ok(schedule.grid[3][17].includes('75%'), 'Average score must use unique Post-Test attendees');
+  assert.strictEqual(env.responsesSheet.getDataRangeCount,0,'No full response history inside ScriptLock');
+  assert.ok(env.responsesSheet.readOps.some(op=>op.col===1&&op.numCols===14),
+    'Finalization must use bounded matched-CNE row reads');
+  assert.strictEqual(env.responsesSheet.grid.at(-1)[9],'EXTERNAL_REGISTRATION',
+    'Registration-only rows must remain unchanged');
+});
+
+runTest('Manual attendance converts one verified external registration to a shared identity', () => {
+  const env = createFreshTestEnvironment();
+  const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  env.sandbox.refreshMutationSession = session => ({success:true,session});
+  env.sandbox.logAuditActionsBatch = () => {};
+  const externalId = 'EXT-CCCCCCCCCCCCCCCCCCCCCCCC';
+  env.responsesSheet.appendRow([
+    'EXTREG-C','CNE-2026-EMPTY',externalId,'Visitor C',
+    'External Participant','Emergency','','','','EXTERNAL_REGISTRATION',
+    '2026-10-01T08:00:00Z','','REGISTERED','Verified email'
+  ]);
+  const beforeCount = env.sandbox.handleGetCNEParticipants({cneId:'CNE-2026-EMPTY'},admin);
+  assert.strictEqual(beforeCount.data.totalParticipants,0);
+  env.responsesSheet.resetReadOps();
+  const added = env.sandbox.handleAddManualParticipants({
+    cneId:'CNE-2026-EMPTY',participants:[{name:'Visitor C',designation:'External Participant',department:'Emergency'}]
+  },admin);
+  assert.strictEqual(added.success,true,added.message);
+  const manual = env.responsesSheet.grid.at(-1);
+  assert.strictEqual(manual[2],externalId,'Manual row must reuse external verified ID');
+  assert.strictEqual(manual[9],'MANUAL');
+  assert.strictEqual(manual[12],'ATTENDED');
+  assert.strictEqual(env.responsesSheet.getDataRangeCount,0,'Manual duplicate check avoids reading response history');
+  env.responsesSheet.appendRow([
+    'PT-C','CNE-2026-EMPTY',externalId,'Visitor C',
+    'External Participant','Emergency',8,10,80,'POST_TEST',
+    '2026-10-01T10:00:00Z','','PASSED',''
+  ]);
+  const counted = env.sandbox.handleGetCNEParticipants({cneId:'CNE-2026-EMPTY'},admin);
+  assert.strictEqual(counted.data.totalParticipants,1,'Registration + manual + test count once');
+  assert.strictEqual(counted.data.postTestCount,1);
+  const prog = env.sandbox.handleGetCNEActivityProgress({cneId:'CNE-2026-EMPTY',forceFresh:true},admin);
+  assert.strictEqual(prog.data.participantsCount,1);
+});
+
+runTest('Ambiguous same-name external registrations cannot be assigned to one attendee', () => {
+  const env = createFreshTestEnvironment();
+  const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  env.sandbox.refreshMutationSession = session => ({success:true,session});
+  for (const suffix of ['DDDDDDDDDDDDDDDDDDDDDDDD','EEEEEEEEEEEEEEEEEEEEEEEE']) {
+    env.responsesSheet.appendRow([
+      'EXTREG-'+suffix,'CNE-2026-EMPTY','EXT-'+suffix,'Shared Visitor',
+      'External Participant','Emergency','','','','EXTERNAL_REGISTRATION',
+      '2026-10-01T08:00:00Z','','REGISTERED','Email verified'
+    ]);
+  }
+  const before = env.responsesSheet.getLastRow();
+  const attempted = env.sandbox.handleAddManualParticipants({cneId:'CNE-2026-EMPTY',name:'Shared Visitor'},admin);
+  assert.strictEqual(attempted.success,false);
+  assert.strictEqual(attempted.errorCode,'AMBIGUOUS_EXTERNAL_PARTICIPANT');
+  assert.strictEqual(env.responsesSheet.getLastRow(),before,'No attendance row may be added');
 });
 
 // -----------------------------------------------------------------------------

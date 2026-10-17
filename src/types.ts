@@ -35,6 +35,7 @@ export interface NewsEventItem {
   venue?: string;
   speaker?: string;
   isImportant?: boolean;
+  blinkAttention?: boolean;
 }
 
 export interface ChairpersonMessageData {
@@ -398,9 +399,17 @@ export interface ProgramImpactStats {
   scope: 'institutional' | 'user';
 }
 
+export interface DeskPerson {
+  name: string;
+  designation: string;
+}
+
 export interface CoordinatorDeskInfo {
-  note: string;
+  // Legacy fields retained for backward compatibility with existing portal data.
+  note?: string;
   coordinators: string[];
+  coordinatorPeople: DeskPerson[];
+  members: DeskPerson[];
   email: string;
 }
 

@@ -15,12 +15,11 @@ import { ApiService } from '../services/api';
 import {
   INITIAL_CHAIRPERSON_MESSAGE,
   INITIAL_COORDINATOR_DESK,
-  INITIAL_UPCOMING_CLASSES,
   INITIAL_NEWS_EVENTS,
   INITIAL_QUICK_LINKS,
   INITIAL_PROGRAM_IMPACT
 } from '../services/initialData';
-import { formatCneDateTimeDisplay, parseToIsoDateString, getSafeExternalUrl } from '../utils';
+import { formatCneDateTimeDisplay, parseToIsoDateString, getIndiaTodayIsoDate, getSafeExternalUrl } from '../utils';
 import { useToast } from './Toast';
 
 // Critical Above-the-fold Widgets (Immediately Available)
@@ -47,7 +46,8 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   user,
   onNavigate
 }) => {
-  const [upcomingClasses, setUpcomingClasses] = useState<CNERecord[]>(() => ApiService.getCachedData<CNERecord[]>('getCNERecords') || INITIAL_UPCOMING_CLASSES);
+  // Never show stale generic Schedule cache / demo classes in today's live preview.
+  const [upcomingClasses, setUpcomingClasses] = useState<CNERecord[]>([]);
   const [newsEvents, setNewsEvents] = useState<NewsEventItem[]>(() => ApiService.getCachedData<NewsEventItem[]>('getNewsEvents') || INITIAL_NEWS_EVENTS);
   const [quickLinks, setQuickLinks] = useState<QuickLinkItem[]>(() => ApiService.getCachedData<QuickLinkItem[]>('getQuickLinks') || INITIAL_QUICK_LINKS);
   const [coordinatorDesk, setCoordinatorDesk] = useState<CoordinatorDeskInfo>(() => ApiService.getCachedData<CoordinatorDeskInfo>('getCoordinatorDesk') || INITIAL_COORDINATOR_DESK);
@@ -157,41 +157,33 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
     }
   };
 
-  // Scheduled upcoming classes filter: maximum 5 classes displayed on home card.
-  // Normalize status and order by canonical CNE date so backend casing/order cannot
-  // make completed/cancelled records appear in the public upcoming preview.
-  const scheduledClasses = upcomingClasses
-    .filter((c) => String(c?.status || '').trim().toLowerCase() === 'scheduled')
-    .sort((a, b) => {
-      const aDate = parseToIsoDateString(a?.date) || '';
-      const bDate = parseToIsoDateString(b?.date) || '';
-      if (aDate !== bDate) return aDate.localeCompare(bDate);
-      return String(a?.date || '').localeCompare(String(b?.date || ''));
-    });
-  const openClasses = scheduledClasses.slice(0, 5);
-  const totalScheduledCount = scheduledClasses.length;
+  // Today means the canonical From Date in Asia/Kolkata, not device-local time.
+  // Backend already filters; defensive client filtering guards against stale data.
+  const today = getIndiaTodayIsoDate();
+  const openClasses = upcomingClasses
+    .filter(c => String(c?.status || '').trim().toLowerCase() === 'scheduled' &&
+      parseToIsoDateString(c?.fromDate) === today)
+    .sort((a,b) => String(a.fromDate || '').localeCompare(String(b.fromDate || '')) ||
+      String(a.cneId || '').localeCompare(String(b.cneId || '')));
+  const totalScheduledCount = openClasses.length;
 
   return (
     <div className="space-y-8 pb-16">
-      {/* Streamlined 2-Column Nordic Clinical Layout */}
+      {/* Responsive homepage: leadership/guidance in main; impact/today's schedule in sidebar. */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column (7 cols: Leadership, Active Classes) */}
+        {/* Main content (7 columns on desktop): Chairperson, Coordinator Desk, Certification. */}
         <main className="lg:col-span-7 space-y-6">
           <CnoLeadershipCard
             cnoMessage={cnoMessage}
             accentColor="teal"
           />
-          <UpcomingClassesWidget
-            openClasses={openClasses}
-            totalCount={totalScheduledCount}
-            loading={classesLoading}
-            onNavigate={onNavigate}
-            onSelectClass={(c) => setSelectedClass(c)}
-            accentColor="teal"
-          />
+          <Suspense fallback={<div className="h-64 rounded-2xl bg-slate-50 border border-slate-200/60" />}>
+            <CoordinatorDeskCard coordinatorDesk={coordinatorDesk} accentColor="teal" />
+            <CertificationWorkflowWidget accentColor="teal" />
+          </Suspense>
         </main>
 
-        {/* Right Column (5 cols: Impact, Circulars, Quick Links, Desk, Certification) */}
+        {/* Right sidebar (5 columns on desktop): Program Impact, Today's CNE, News, Links. */}
         <aside className="lg:col-span-5 space-y-6">
           <InstitutionalImpactWidget
             totalCompletedClasses={impactStats?.totalCompletedClasses ?? 0}
@@ -200,6 +192,14 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             loading={impactLoading}
             error={impactError}
             scope={impactStats?.scope || (user ? 'user' : 'institutional')}
+            accentColor="teal"
+          />
+          <UpcomingClassesWidget
+            openClasses={openClasses}
+            totalCount={totalScheduledCount}
+            loading={classesLoading}
+            onNavigate={onNavigate}
+            onSelectClass={(c) => setSelectedClass(c)}
             accentColor="teal"
           />
           <NewsCircularsWidget
@@ -212,10 +212,6 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             onQuickLinkClick={handleQuickLinkClick}
             accentColor="teal"
           />
-          <Suspense fallback={<div className="h-64 rounded-2xl bg-slate-50 border border-slate-200/60" />}>
-            <CoordinatorDeskCard coordinatorDesk={coordinatorDesk} accentColor="teal" />
-            <CertificationWorkflowWidget accentColor="teal" />
-          </Suspense>
         </aside>
       </div>
 
@@ -341,7 +337,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             <div className="bg-slate-50 p-3 sm:p-4 rounded-xl space-y-2 text-xs text-slate-700 border border-slate-200 overflow-y-auto min-h-0 flex-1 overscroll-contain">
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Date &amp; Schedule:</span>
-                <span className="font-bold text-slate-900">{formatCneDateTimeDisplay(selectedClass.date, selectedClass.toDate)}</span>
+                <span className="font-bold text-slate-900">{formatCneDateTimeDisplay(selectedClass.fromDate || selectedClass.date, selectedClass.toDate)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Duration:</span>

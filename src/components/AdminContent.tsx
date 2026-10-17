@@ -20,7 +20,8 @@ import {
   GalleryItem,
   NewsEventItem,
   QuickLinkItem,
-  SessionUser
+  SessionUser,
+  DeskPerson
 } from '../types';
 import { ApiService } from '../services/api';
 import { INITIAL_COORDINATOR_DESK } from '../services/initialData';
@@ -58,6 +59,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     venue: string;
     speaker: string;
     isImportant: boolean;
+    blinkAttention: boolean;
   }>({
     title: '',
     date: getIndiaTodayIsoDate(),
@@ -66,7 +68,8 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     content: '',
     venue: '',
     speaker: '',
-    isImportant: false
+    isImportant: false,
+    blinkAttention: false
   });
 
   // -------------------------------------------------------------
@@ -76,12 +79,12 @@ export const AdminContent: React.FC<AdminContentProps> = ({
   const [deskSaving, setDeskSaving] = useState(false);
   const deskSavingRef = useRef(false);
   const [deskForm, setDeskForm] = useState<{
-    note: string;
-    coordinatorsText: string;
+    coordinatorPeople: DeskPerson[];
+    members: DeskPerson[];
     email: string;
   }>({
-    note: INITIAL_COORDINATOR_DESK.note,
-    coordinatorsText: INITIAL_COORDINATOR_DESK.coordinators.join(', '),
+    coordinatorPeople: INITIAL_COORDINATOR_DESK.coordinatorPeople,
+    members: INITIAL_COORDINATOR_DESK.members,
     email: INITIAL_COORDINATOR_DESK.email
   });
 
@@ -164,13 +167,13 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       const res = await ApiService.getCoordinatorDesk();
       if (res.success && res.data) {
         setDeskForm({
-          note: res.data.note || '',
-          coordinatorsText: (res.data.coordinators || []).join(', '),
-          email: res.data.email || ''
+          coordinatorPeople: res.data.coordinatorPeople || INITIAL_COORDINATOR_DESK.coordinatorPeople,
+          members: res.data.members || INITIAL_COORDINATOR_DESK.members,
+          email: res.data.email || INITIAL_COORDINATOR_DESK.email
         });
       }
     } catch {
-      error('Failed to load Coordinator Desk info.');
+      error('Failed to load CNE Desk information.');
     } finally {
       setDeskLoading(false);
     }
@@ -216,7 +219,8 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       content: '',
       venue: '',
       speaker: '',
-      isImportant: false
+      isImportant: false,
+      blinkAttention: false
     });
     setEditingNews(null);
     setIsAddNewsOpen(true);
@@ -232,7 +236,8 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       content: news.content || '',
       venue: news.venue || '',
       speaker: news.speaker || '',
-      isImportant: !!news.isImportant
+      isImportant: !!news.isImportant,
+      blinkAttention: !!news.blinkAttention
     });
     setIsAddNewsOpen(true);
   };
@@ -300,26 +305,22 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     e.preventDefault();
     if (deskSavingRef.current || deskSaving) return;
 
-    const coords = deskForm.coordinatorsText
-      .split(',')
-      .map((c) => c.trim())
-      .filter(Boolean);
-
     deskSavingRef.current = true;
     setDeskSaving(true);
     try {
       const res = await ApiService.updateCoordinatorDesk({
-        note: deskForm.note.trim(),
-        coordinators: coords,
+        coordinatorPeople: deskForm.coordinatorPeople.map(p => ({ name: p.name.trim(), designation: p.designation.trim() })),
+        members: deskForm.members.map(p => ({ name: p.name.trim(), designation: p.designation.trim() })),
         email: deskForm.email.trim()
       });
       if (res.success) {
-        success('CNE Coordinator Desk information updated.', 'Desk Updated');
+        success('CNE Desk information updated.', 'Desk Updated');
+        await loadDesk();
       } else {
-        error(res.message || 'Failed to update Coordinator Desk.');
+        error(res.message || 'Failed to update CNE Desk.');
       }
     } catch (err: any) {
-      error(err?.message || 'Error updating Coordinator Desk.');
+      error(err?.message || 'Error updating CNE Desk.');
     } finally {
       deskSavingRef.current = false;
       setDeskSaving(false);
@@ -577,7 +578,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
             }`}
           >
             <HeartHandshake className="w-3.5 h-3.5 text-teal-600" />
-            <span>Coordinator Desk</span>
+            <span>CNE Desk</span>
           </button>
 
           <button
@@ -688,13 +689,11 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                           )}
                         </td>
                         <td className="py-3 px-4">
-                          {item.isImportant ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-rose-100 text-rose-800">
-                              URGENT
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-slate-400 font-medium">Standard</span>
-                          )}
+                          <div className="flex flex-col gap-1 items-start">
+                            {item.isImportant && <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-rose-100 text-rose-800">URGENT</span>}
+                            {item.blinkAttention && <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-amber-100 text-amber-800">Attention animation</span>}
+                            {!item.isImportant && !item.blinkAttention && <span className="text-[10px] text-slate-400 font-medium">Standard</span>}
+                          </div>
                         </td>
                         <td className="py-3 px-4 text-right">
                           <div className="flex items-center justify-end gap-1">
@@ -729,92 +728,80 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       )}
 
       {/* ========================================================= */}
-      {/* TAB 2: CNE Coordinator Desk                               */}
+      {/* TAB 2: CNE Desk (Admin-editable committee membership)      */}
       {/* ========================================================= */}
       {activeTab === 'desk' && (
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs max-w-2xl space-y-5">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-xs max-w-4xl space-y-5">
+          <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
             <div>
-              <h2 className="text-sm font-bold text-slate-900">Coordinator Desk Configuration</h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Displays directly on the portal home sidebar for nursing staff queries and coordination.
-              </p>
+              <h2 className="text-sm font-bold text-slate-900">CNE Desk Configuration</h2>
+              <p className="text-xs text-slate-500 mt-0.5">Manage the coordinators and committee members shown in the homepage main section.</p>
             </div>
-            <button
-              type="button"
-              onClick={loadDesk}
-              disabled={deskLoading || deskSaving}
-              className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 disabled:opacity-50"
-              title="Reload from backend"
-            >
+            <button type="button" onClick={loadDesk} disabled={deskLoading || deskSaving}
+              className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 disabled:opacity-50" title="Reload CNE Desk">
               <RefreshCw className={`w-4 h-4 ${deskLoading ? 'animate-spin' : ''}`} />
             </button>
           </div>
-
-          <form onSubmit={handleSaveDesk} className="space-y-4 text-xs">
+          <form onSubmit={handleSaveDesk} className="space-y-5 text-xs">
+            {(['coordinatorPeople', 'members'] as const).map((section) => (
+              <div key={section} className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wide text-slate-800">
+                      {section === 'coordinatorPeople' ? 'CNE Coordinators' : 'CNE Members'}
+                    </h3>
+                    <p className="text-[11px] text-slate-500">Each person has an editable name and designation.</p>
+                  </div>
+                  <button type="button" disabled={deskSaving || deskForm[section].length >= (section === 'coordinatorPeople' ? 20 : 100)}
+                    onClick={() => setDeskForm(prev => ({ ...prev, [section]: [...prev[section], { name: '', designation: '' }] }))}
+                    className="inline-flex items-center gap-1 px-3 py-2 bg-teal-50 text-teal-800 border border-teal-200 rounded-lg font-semibold disabled:opacity-50">
+                    <PlusCircle className="w-3.5 h-3.5" /> Add {section === 'coordinatorPeople' ? 'Coordinator' : 'Member'}
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {deskForm[section].map((person, index) => (
+                    <div key={`${section}-${index}`} className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 items-end rounded-xl border border-slate-200 p-2.5 bg-slate-50">
+                      <label className="min-w-0 font-semibold text-slate-700">
+                        Name
+                        <input required maxLength={120} type="text" value={person.name} placeholder="Full name"
+                          onChange={e => setDeskForm(prev => ({ ...prev,
+                            [section]: prev[section].map((p, i) => i === index ? { ...p, name: e.target.value } : p)
+                          }))}
+                          className="mt-1 w-full p-2.5 rounded-lg border border-slate-300 bg-white font-normal text-xs" />
+                      </label>
+                      <label className="min-w-0 font-semibold text-slate-700">
+                        Designation
+                        <input required maxLength={150} type="text" value={person.designation} placeholder="Designation"
+                          onChange={e => setDeskForm(prev => ({ ...prev,
+                            [section]: prev[section].map((p, i) => i === index ? { ...p, designation: e.target.value } : p)
+                          }))}
+                          className="mt-1 w-full p-2.5 rounded-lg border border-slate-300 bg-white font-normal text-xs" />
+                      </label>
+                      <button type="button" title="Remove person" aria-label={`Remove ${person.name || 'entry'}`}
+                        disabled={deskSaving || (section === 'coordinatorPeople' && deskForm.coordinatorPeople.length <= 1)}
+                        onClick={() => setDeskForm(prev => ({ ...prev, [section]: prev[section].filter((_, i) => i !== index) }))}
+                        className="p-2.5 text-rose-600 hover:bg-rose-50 rounded-lg disabled:opacity-40">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                Sidebar Introductory Question / Note *
-              </label>
-              <textarea
-                rows={2}
-                required
-                value={deskForm.note}
-                onChange={(e) => setDeskForm({ ...deskForm, note: e.target.value })}
-                placeholder="Have questions regarding class credits, attendance verification, or training schedules?"
-                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                CNE Coordinator Names (Comma-separated) *
-              </label>
-              <input
-                type="text"
-                required
-                value={deskForm.coordinatorsText}
-                onChange={(e) => setDeskForm({ ...deskForm, coordinatorsText: e.target.value })}
-                placeholder="e.g. Ms. Suman Choudhary, Ms. Ramya T"
-                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs"
-              />
-              <p className="text-[11px] text-slate-400 mt-1">Separate individual coordinator names with commas.</p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                Coordinator Official Email Address *
-              </label>
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">Coordinator Email *</label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
-                  type="email"
-                  required
-                  value={deskForm.email}
-                  onChange={(e) => setDeskForm({ ...deskForm, email: e.target.value })}
+                <input type="email" required maxLength={200} value={deskForm.email}
+                  onChange={e => setDeskForm(prev => ({ ...prev, email: e.target.value }))}
                   placeholder="training.nur@aiimsrishikesh.edu.in"
-                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs"
-                />
+                  className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs" />
               </div>
             </div>
-
-            <div className="pt-2 flex justify-end">
-              <button
-                type="submit"
-                disabled={deskSaving}
-                className="flex items-center gap-1.5 px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 disabled:opacity-50 cursor-pointer shadow-xs"
-              >
-                {deskSaving ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
-                    <span>Saving Desk Information...</span>
-                  </>
-                ) : (
-                  <>
-                    <Check className="w-4 h-4 text-emerald-400" />
-                    <span>Save Coordinator Desk</span>
-                  </>
-                )}
+            <div className="pt-2 flex justify-end border-t border-slate-100">
+              <button type="submit" disabled={deskSaving || deskLoading || deskForm.coordinatorPeople.length === 0}
+                className="flex items-center gap-1.5 px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 disabled:opacity-50 cursor-pointer shadow-xs">
+                {deskSaving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving CNE Desk...</> : <><Check className="w-4 h-4 text-emerald-400" /> Save CNE Desk</>}
               </button>
             </div>
           </form>
@@ -1166,6 +1153,18 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                 />
                 <label htmlFor="chk-important" className="text-xs font-semibold text-slate-800 cursor-pointer">
                   Mark as URGENT / High Priority (Red badge)
+                </label>
+              </div>
+              <div className="flex items-start gap-2 pt-1">
+                <input type="checkbox" id="chk-blink-attention"
+                  checked={newsForm.blinkAttention}
+                  onChange={(e) => setNewsForm(prev => ({ ...prev, blinkAttention: e.target.checked }))}
+                  className="mt-0.5 rounded text-amber-600 focus:ring-amber-500" />
+                <label htmlFor="chk-blink-attention" className="text-xs font-semibold text-slate-800 cursor-pointer">
+                  Show animated Attention indicator on homepage
+                  <span className="block text-[11px] font-normal text-slate-500 mt-0.5">
+                    The icon gently pulses for 9 seconds, then stays visible. It respects reduced-motion settings.
+                  </span>
                 </label>
               </div>
 

@@ -1,5 +1,5 @@
-import React from 'react';
-import { Bell } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Bell, AlertCircle } from 'lucide-react';
 import { NewsEventItem } from '../../types';
 
 interface NewsCircularsWidgetProps {
@@ -30,15 +30,21 @@ export const NewsCircularsWidget: React.FC<NewsCircularsWidgetProps> = ({
   }[accentColor];
 
   const items = newsEvents.slice(0, limit);
+  // A finite, subtle animation avoids constant distractions. Reduced-motion users see a static icon.
+  const [pulseActive, setPulseActive] = useState(true);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setPulseActive(false), 9000);
+    return () => window.clearTimeout(timeout);
+  }, []);
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
       <div className="bg-slate-900 text-white px-4 py-3.5 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Bell className={`w-4 h-4 ${iconColor}`} />
           <h2 className="text-sm font-bold tracking-tight">News & Circulars</h2>
         </div>
-        <span className="inline-flex items-center px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
           Live
         </span>
       </div>
@@ -51,17 +57,25 @@ export const NewsCircularsWidget: React.FC<NewsCircularsWidgetProps> = ({
             <div
               key={news.id}
               onClick={() => onSelectNews(news)}
-              className="py-3 first:pt-1 last:pb-1 space-y-1.5 cursor-pointer group"
+              className={`py-3 first:pt-1 last:pb-1 space-y-1.5 cursor-pointer group ${news.blinkAttention ? 'border-l-2 border-amber-400 pl-2' : ''}`}
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] font-extrabold uppercase text-slate-400">
                   {news.date}
                 </span>
-                {news.isImportant && (
-                  <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-100 text-rose-800">
-                    URGENT
-                  </span>
-                )}
+                <div className="flex flex-wrap items-center gap-1">
+                  {news.blinkAttention && (
+                    <span className="inline-flex items-center gap-1 rounded bg-amber-50 text-amber-800 px-1.5 py-0.5 text-[9px] font-bold" aria-label="Attention">
+                      <AlertCircle className={`w-3 h-3 ${pulseActive ? 'motion-safe:animate-pulse' : ''}`} aria-hidden="true" />
+                      Attention
+                    </span>
+                  )}
+                  {news.isImportant && (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 text-rose-800">
+                      URGENT
+                    </span>
+                  )}
+                </div>
               </div>
               <h3 className={`text-xs font-bold text-slate-900 ${titleHoverColor} transition-colors line-clamp-2 leading-snug`}>
                 {news.title}

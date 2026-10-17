@@ -197,6 +197,7 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getLearningResource',
   'getReferenceMaterial',
   'getCNERecords',
+  'getMyCNERecordsPage',
   'getCNESchedulePage',
   'getCNEAnalytics',
   'getCNECalendarMonth',
@@ -1120,6 +1121,13 @@ export class ApiService {
    */
   static async getCNERecords(params?: { status?: string; cneType?: string; area?: string; myRecordsOnly?: boolean; scope?: string }): Promise<ApiResponse<CNERecord[]>> {
     return this.executeAction<CNERecord[]>('getCNERecords', params);
+  }
+
+  /** Personal completed CNE history: authorized server filtering, page and full-filter totals. */
+  static async getMyCNERecordsPage(params: {page:number;pageSize?:number;search?:string;fromDate?:string;toDate?:string}): Promise<ApiResponse<{
+    records:CNERecord[];total:number;page:number;pageSize:number;hasMore:boolean;participantSeconds:number;resourcePersonSeconds:number
+  }>> {
+    return this.executeAction('getMyCNERecordsPage',params);
   }
 
 
