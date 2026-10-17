@@ -3374,7 +3374,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 23,
-    sha256: "002861d626f74f9d5bbf5339339d64c65f0cd97004a6938696eaaff8f68b355b",
+    sha256: "c0e79494313ef7a11f79fa3fab33280cd2a4e14c95d649af22b572677625b652",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -4741,13 +4741,32 @@ runTest('Stage 4 News flags add two optional columns on Admin publish and remain
   assert.strictEqual(item.blinkAttention, true);
 });
 
-runTest('Stage 4 frontend independently renders Urgent and Attention, and Admin can edit both flags', () => {
+runTest('Stage 4 frontend animates ATTENTION text and icon, and removes Urgent controls', () => {
   const widget = fs.readFileSync('src/components/home/NewsCircularsWidget.tsx', 'utf8');
   const admin = fs.readFileSync('src/components/AdminContent.tsx', 'utf8');
   const desk = fs.readFileSync('src/components/home/CoordinatorDeskCard.tsx', 'utf8');
-  assert.ok(widget.includes('news.blinkAttention') && widget.includes('news.isImportant'));
-  assert.ok(widget.includes('motion-safe:animate-pulse') && widget.includes('9000'));
-  assert.ok(admin.includes('id="chk-important"') && admin.includes('id="chk-blink-attention"'));
+  assert.ok(widget.includes('news.blinkAttention') && !widget.includes('news.isImportant'));
+  assert.ok(!widget.includes('URGENT'));
+  const css = fs.readFileSync('src/index.css', 'utf8');
+  // The attention indicator must not expire while asynchronous homepage data loads.
+  assert.ok(widget.includes('cne-news-attention-badge') && widget.includes('cne-news-attention-halo'));
+  assert.ok(widget.includes('cne-news-attention-text') && widget.includes('cne-news-attention-icon'));
+  assert.ok(widget.includes('>ATTENTION</span>'));
+  assert.ok(!widget.includes('setTimeout(') && !widget.includes('pulseActive'));
+  assert.ok(css.includes('@keyframes cne-news-attention-breathe'));
+  assert.ok(css.includes('@keyframes cne-news-attention-ring'));
+  assert.ok(css.includes('@keyframes cne-news-attention-text-flash'));
+  assert.ok(css.includes('animation: cne-news-attention-text-flash 2.6s ease-in-out infinite'));
+  assert.ok(css.includes('.cne-news-attention-text,') && css.includes('.cne-news-attention-icon {'));
+  assert.ok(css.includes('@media (prefers-reduced-motion: reduce)'));
+  assert.ok(css.includes('animation: cne-news-attention-breathe 2.6s ease-in-out infinite'));
+  assert.ok(widget.includes('type="button"') && widget.includes('focus-visible:ring-2'));
+  assert.ok(admin.includes('id="chk-blink-attention"') && !admin.includes('id="chk-important"'));
+  assert.ok(!admin.includes('newsForm.isImportant') && !admin.includes('item.isImportant'));
+  assert.ok(!admin.includes('URGENT') && admin.includes('Blink ATTENTION text and icon'));
+  assert.ok(admin.includes('The ATTENTION letters and icon repeatedly pulse'));
+  // Legacy Is Important sheet data is intentionally preserved for backward compatibility.
+  assert.ok(css.includes('.cne-news-attention-icon {') && css.includes('animation: none !important;'));
   assert.ok(admin.includes('coordinatorPeople: deskForm.coordinatorPeople.map') && admin.includes('members: deskForm.members.map'));
   assert.ok(desk.includes('CNE Desk') && desk.includes('coordinatorDesk.members'));
   assert.ok(!desk.includes('coordinatorDesk.note'));

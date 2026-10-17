@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 
-/* News attention: prominent but non-flashing, including mobile browsers.
-   Animate only a tiny badge/halo; leave the circular text completely still. */
+/* News attention: the selected ATTENTION label and icon gently flash on mobile and
+   desktop, while the circular title/summary remain steady and readable. */
 @keyframes cne-news-attention-breathe {
   0%, 100% {
     background-color: #fef3c7;
@@ -14,6 +14,11 @@
     border-color: #d97706;
     box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.16);
   }
+}
+
+@keyframes cne-news-attention-text-flash {
+  0%, 24%, 76%, 100% { opacity: 1; }
+  44%, 56% { opacity: 0.15; }
 }
 
 @keyframes cne-news-attention-ring {
@@ -29,10 +34,18 @@
   animation: cne-news-attention-ring 2.6s ease-out infinite;
 }
 
+/* Animate the actual letters and exclamation icon, not only the badge colour. */
+.cne-news-attention-text,
+.cne-news-attention-icon {
+  animation: cne-news-attention-text-flash 2.6s ease-in-out infinite;
+}
+
 /* Respect user accessibility preferences on desktop, iOS and Android. */
 @media (prefers-reduced-motion: reduce) {
   .cne-news-attention-badge,
-  .cne-news-attention-halo {
+  .cne-news-attention-halo,
+  .cne-news-attention-text,
+  .cne-news-attention-icon {
     animation: none !important;
   }
 }

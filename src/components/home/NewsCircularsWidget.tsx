@@ -29,9 +29,9 @@ export const NewsCircularsWidget: React.FC<NewsCircularsWidgetProps> = ({
     teal: 'group-hover:text-teal-700'
   }[accentColor];
 
-  // Keep news in its published order. Attention persists past the initial 9000ms threshold
-  // and is controlled by each published item, remaining noticeable when news arrives
-  // asynchronously on mobile and desktop devices with motion-safe:animate-pulse styling.
+  // Keep news in its published order. Unlike the old one-time 9-second timer,
+  // attention is controlled by each published item and remains noticeable when
+  // news arrives after an asynchronous homepage bootstrap request.
   const items = newsEvents.slice(0, limit);
 
   return (
@@ -64,19 +64,14 @@ export const NewsCircularsWidget: React.FC<NewsCircularsWidgetProps> = ({
                 <span className="flex flex-wrap items-center gap-1">
                   {news.blinkAttention && (
                     <span
-                      className="cne-news-attention-badge inline-flex shrink-0 items-center gap-1.5 rounded-full border border-amber-400 bg-amber-100 px-2 py-1 text-[10px] font-extrabold text-amber-950 motion-safe:animate-pulse"
+                      className="cne-news-attention-badge inline-flex shrink-0 items-center gap-1.5 rounded-full border border-amber-400 bg-amber-100 px-2 py-1 text-[10px] font-extrabold text-amber-950"
                       aria-label="Attention: highlighted circular"
                     >
                       <span className="relative inline-flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden="true">
                         <span className="cne-news-attention-halo absolute inset-0 rounded-full bg-amber-500/40" />
-                        <AlertCircle className="relative h-4 w-4 text-amber-700" />
+                        <AlertCircle className="cne-news-attention-icon relative h-4 w-4 text-amber-700" />
                       </span>
-                      Attention
-                    </span>
-                  )}
-                  {news.isImportant && (
-                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 text-rose-800">
-                      URGENT
+                      <span className="cne-news-attention-text">ATTENTION</span>
                     </span>
                   )}
                 </span>

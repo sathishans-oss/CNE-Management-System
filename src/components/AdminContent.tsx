@@ -58,7 +58,6 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     content: string;
     venue: string;
     speaker: string;
-    isImportant: boolean;
     blinkAttention: boolean;
   }>({
     title: '',
@@ -68,7 +67,6 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     content: '',
     venue: '',
     speaker: '',
-    isImportant: false,
     blinkAttention: false
   });
 
@@ -219,7 +217,6 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       content: '',
       venue: '',
       speaker: '',
-      isImportant: false,
       blinkAttention: false
     });
     setEditingNews(null);
@@ -236,7 +233,6 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       content: news.content || '',
       venue: news.venue || '',
       speaker: news.speaker || '',
-      isImportant: !!news.isImportant,
       blinkAttention: !!news.blinkAttention
     });
     setIsAddNewsOpen(true);
@@ -665,7 +661,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                       <th className="py-3 px-4 w-28">Date</th>
                       <th className="py-3 px-4 w-24">Category</th>
                       <th className="py-3 px-4">Title & Summary</th>
-                      <th className="py-3 px-4 w-24">Priority</th>
+                      <th className="py-3 px-4 w-24">Attention</th>
                       <th className="py-3 px-4 text-right w-24">Actions</th>
                     </tr>
                   </thead>
@@ -690,9 +686,8 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                         </td>
                         <td className="py-3 px-4">
                           <div className="flex flex-col gap-1 items-start">
-                            {item.isImportant && <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-rose-100 text-rose-800">URGENT</span>}
                             {item.blinkAttention && <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-amber-100 text-amber-800">Attention animation</span>}
-                            {!item.isImportant && !item.blinkAttention && <span className="text-[10px] text-slate-400 font-medium">Standard</span>}
+                            {!item.blinkAttention && <span className="text-[10px] text-slate-400 font-medium">Standard</span>}
                           </div>
                         </td>
                         <td className="py-3 px-4 text-right">
@@ -1143,27 +1138,15 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 pt-1">
-                <input
-                  type="checkbox"
-                  id="chk-important"
-                  checked={newsForm.isImportant}
-                  onChange={(e) => setNewsForm({ ...newsForm, isImportant: e.target.checked })}
-                  className="rounded text-rose-600 focus:ring-rose-500"
-                />
-                <label htmlFor="chk-important" className="text-xs font-semibold text-slate-800 cursor-pointer">
-                  Mark as URGENT / High Priority (Red badge)
-                </label>
-              </div>
               <div className="flex items-start gap-2 pt-1">
                 <input type="checkbox" id="chk-blink-attention"
                   checked={newsForm.blinkAttention}
                   onChange={(e) => setNewsForm(prev => ({ ...prev, blinkAttention: e.target.checked }))}
                   className="mt-0.5 rounded text-amber-600 focus:ring-amber-500" />
                 <label htmlFor="chk-blink-attention" className="text-xs font-semibold text-slate-800 cursor-pointer">
-                  Show animated Attention indicator on homepage
+                  Blink ATTENTION text and icon on homepage
                   <span className="block text-[11px] font-normal text-slate-500 mt-0.5">
-                    The icon gently pulses for 9 seconds, then stays visible. It respects reduced-motion settings.
+                    The ATTENTION letters and icon repeatedly pulse while this option is enabled. Users requesting reduced motion see a steady indicator.
                   </span>
                 </label>
               </div>
