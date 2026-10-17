@@ -70,9 +70,9 @@ export const CoordinatorDeskCard: React.FC<CoordinatorDeskCardProps> = ({
                   <div className={`w-7 h-7 rounded-lg ${coordinatorBadge} flex items-center justify-center shrink-0 mt-0.5`}>
                     <UserCheck className="w-3.5 h-3.5" />
                   </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-bold text-slate-900 truncate">{coord.name}</p>
-                    <p className="text-[11px] text-slate-600 truncate">{coord.designation}</p>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-slate-900 whitespace-normal break-words [overflow-wrap:anywhere]">{coord.name}</p>
+                    <p className="text-[11px] text-slate-600 whitespace-normal break-words [overflow-wrap:anywhere]">{coord.designation}</p>
                   </div>
                 </div>
               ))}
@@ -93,8 +93,8 @@ export const CoordinatorDeskCard: React.FC<CoordinatorDeskCardProps> = ({
                   key={`member-${idx}`}
                   className="p-2.5 rounded-xl border border-slate-100 bg-slate-50/70 hover:bg-slate-50 transition-colors"
                 >
-                  <p className="text-xs font-semibold text-slate-800 truncate">{member.name}</p>
-                  <p className="text-[10px] text-slate-500 truncate">{member.designation}</p>
+                  <p className="text-xs font-semibold text-slate-800 whitespace-normal break-words [overflow-wrap:anywhere]">{member.name}</p>
+                  <p className="text-[10px] text-slate-500 whitespace-normal break-words [overflow-wrap:anywhere]">{member.designation}</p>
                 </div>
               ))}
             </div>
@@ -110,7 +110,7 @@ export const CoordinatorDeskCard: React.FC<CoordinatorDeskCardProps> = ({
             </span>
             <a
               href={`mailto:${coordinatorDesk.email}`}
-              className={`font-semibold text-slate-800 ${emailHover} transition-colors truncate`}
+              className={`min-w-0 max-w-full font-semibold text-slate-800 ${emailHover} transition-colors whitespace-normal break-words [overflow-wrap:anywhere]`}
             >
               {coordinatorDesk.email}
             </a>
