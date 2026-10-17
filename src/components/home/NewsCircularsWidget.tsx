@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Bell, AlertCircle } from 'lucide-react';
 import { NewsEventItem } from '../../types';
 
@@ -29,13 +29,10 @@ export const NewsCircularsWidget: React.FC<NewsCircularsWidgetProps> = ({
     teal: 'group-hover:text-teal-700'
   }[accentColor];
 
+  // Keep news in its published order. Attention persists past the initial 9000ms threshold
+  // and is controlled by each published item, remaining noticeable when news arrives
+  // asynchronously on mobile and desktop devices with motion-safe:animate-pulse styling.
   const items = newsEvents.slice(0, limit);
-  // A finite, subtle animation avoids constant distractions. Reduced-motion users see a static icon.
-  const [pulseActive, setPulseActive] = useState(true);
-  useEffect(() => {
-    const timeout = window.setTimeout(() => setPulseActive(false), 9000);
-    return () => window.clearTimeout(timeout);
-  }, []);
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
@@ -54,19 +51,26 @@ export const NewsCircularsWidget: React.FC<NewsCircularsWidgetProps> = ({
           <div className="py-6 text-center text-xs text-slate-400">No circulars posted.</div>
         ) : (
           items.map((news) => (
-            <div
+            <button
               key={news.id}
+              type="button"
               onClick={() => onSelectNews(news)}
-              className={`py-3 first:pt-1 last:pb-1 space-y-1.5 cursor-pointer group ${news.blinkAttention ? 'border-l-2 border-amber-400 pl-2' : ''}`}
+              className={`block w-full text-left py-3 first:pt-1 last:pb-1 space-y-1.5 cursor-pointer group rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 ${news.blinkAttention ? 'border-l-[3px] border-amber-500 bg-amber-50/30 pl-2 pr-1' : ''}`}
             >
-              <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center justify-between gap-2">
                 <span className="text-[10px] font-extrabold uppercase text-slate-400">
                   {news.date}
                 </span>
-                <div className="flex flex-wrap items-center gap-1">
+                <span className="flex flex-wrap items-center gap-1">
                   {news.blinkAttention && (
-                    <span className="inline-flex items-center gap-1 rounded bg-amber-50 text-amber-800 px-1.5 py-0.5 text-[9px] font-bold" aria-label="Attention">
-                      <AlertCircle className={`w-3 h-3 ${pulseActive ? 'motion-safe:animate-pulse' : ''}`} aria-hidden="true" />
+                    <span
+                      className="cne-news-attention-badge inline-flex shrink-0 items-center gap-1.5 rounded-full border border-amber-400 bg-amber-100 px-2 py-1 text-[10px] font-extrabold text-amber-950 motion-safe:animate-pulse"
+                      aria-label="Attention: highlighted circular"
+                    >
+                      <span className="relative inline-flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden="true">
+                        <span className="cne-news-attention-halo absolute inset-0 rounded-full bg-amber-500/40" />
+                        <AlertCircle className="relative h-4 w-4 text-amber-700" />
+                      </span>
                       Attention
                     </span>
                   )}
@@ -75,15 +79,15 @@ export const NewsCircularsWidget: React.FC<NewsCircularsWidgetProps> = ({
                       URGENT
                     </span>
                   )}
-                </div>
-              </div>
-              <h3 className={`text-xs font-bold text-slate-900 ${titleHoverColor} transition-colors line-clamp-2 leading-snug`}>
+                </span>
+              </span>
+              <span className={`block text-xs font-bold text-slate-900 ${titleHoverColor} transition-colors line-clamp-2 leading-snug`}>
                 {news.title}
-              </h3>
-              <p className="text-[11px] text-slate-500 line-clamp-2 leading-relaxed">
+              </span>
+              <span className="block text-[11px] text-slate-500 line-clamp-2 leading-relaxed">
                 {news.summary}
-              </p>
-            </div>
+              </span>
+            </button>
           ))
         )}
       </div>

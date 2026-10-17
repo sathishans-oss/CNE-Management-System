@@ -1,1 +1,38 @@
 @import "tailwindcss";
+
+
+/* News attention: prominent but non-flashing, including mobile browsers.
+   Animate only a tiny badge/halo; leave the circular text completely still. */
+@keyframes cne-news-attention-breathe {
+  0%, 100% {
+    background-color: #fef3c7;
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.08);
+  }
+  50% {
+    background-color: #fde68a;
+    border-color: #d97706;
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.16);
+  }
+}
+
+@keyframes cne-news-attention-ring {
+  0%, 12% { transform: scale(0.8); opacity: 0.7; }
+  65%, 100% { transform: scale(1.7); opacity: 0; }
+}
+
+.cne-news-attention-badge {
+  animation: cne-news-attention-breathe 2.6s ease-in-out infinite;
+}
+
+.cne-news-attention-halo {
+  animation: cne-news-attention-ring 2.6s ease-out infinite;
+}
+
+/* Respect user accessibility preferences on desktop, iOS and Android. */
+@media (prefers-reduced-motion: reduce) {
+  .cne-news-attention-badge,
+  .cne-news-attention-halo {
+    animation: none !important;
+  }
+}
