@@ -3373,8 +3373,8 @@ console.log('========================================================\\n');
     name: "System Integration",
     originalFilename: "verify-system-integration.js",
     mode: "module",
-    expectedChecks: 23,
-    sha256: "c0e79494313ef7a11f79fa3fab33280cd2a4e14c95d649af22b572677625b652",
+    expectedChecks: 25,
+    sha256: "5da8d1499f24379a3acb9d4adb2f6044661666d965e27c87043a5bbccbdf4cc5",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -4741,35 +4741,56 @@ runTest('Stage 4 News flags add two optional columns on Admin publish and remain
   assert.strictEqual(item.blinkAttention, true);
 });
 
-runTest('Stage 4 frontend animates ATTENTION text and icon, and removes Urgent controls', () => {
+runTest('Stage 4 frontend highlights circulars with accessible red NEW styling', () => {
   const widget = fs.readFileSync('src/components/home/NewsCircularsWidget.tsx', 'utf8');
   const admin = fs.readFileSync('src/components/AdminContent.tsx', 'utf8');
   const desk = fs.readFileSync('src/components/home/CoordinatorDeskCard.tsx', 'utf8');
-  assert.ok(widget.includes('news.blinkAttention') && !widget.includes('news.isImportant'));
-  assert.ok(!widget.includes('URGENT'));
   const css = fs.readFileSync('src/index.css', 'utf8');
-  // The attention indicator must not expire while asynchronous homepage data loads.
-  assert.ok(widget.includes('cne-news-attention-badge') && widget.includes('cne-news-attention-halo'));
-  assert.ok(widget.includes('cne-news-attention-text') && widget.includes('cne-news-attention-icon'));
-  assert.ok(widget.includes('>ATTENTION</span>'));
+  // The old Sheet flag persists for compatibility; the user-facing label is NEW.
+  assert.ok(widget.includes('news.blinkAttention') && !widget.includes('news.isImportant'));
+  assert.ok(widget.includes('cne-news-new-badge') && widget.includes('>NEW</span>'));
+  assert.ok(!widget.includes('>ATTENTION</span>') && !widget.includes('>Live</span>'));
   assert.ok(!widget.includes('setTimeout(') && !widget.includes('pulseActive'));
-  assert.ok(css.includes('@keyframes cne-news-attention-breathe'));
-  assert.ok(css.includes('@keyframes cne-news-attention-ring'));
-  assert.ok(css.includes('@keyframes cne-news-attention-text-flash'));
-  assert.ok(css.includes('animation: cne-news-attention-text-flash 2.6s ease-in-out infinite'));
-  assert.ok(css.includes('.cne-news-attention-text,') && css.includes('.cne-news-attention-icon {'));
+  assert.ok(widget.includes('border-rose-600') && widget.includes('bg-rose-50/60'));
+  assert.ok(css.includes('@keyframes cne-news-new-pulse'));
+  assert.ok(css.includes('animation: cne-news-new-pulse 1.15s ease-in-out infinite'));
   assert.ok(css.includes('@media (prefers-reduced-motion: reduce)'));
-  assert.ok(css.includes('animation: cne-news-attention-breathe 2.6s ease-in-out infinite'));
+  assert.ok(css.includes('.cne-news-new-badge') && css.includes('animation: none !important;'));
   assert.ok(widget.includes('type="button"') && widget.includes('focus-visible:ring-2'));
   assert.ok(admin.includes('id="chk-blink-attention"') && !admin.includes('id="chk-important"'));
   assert.ok(!admin.includes('newsForm.isImportant') && !admin.includes('item.isImportant'));
-  assert.ok(!admin.includes('URGENT') && admin.includes('Blink ATTENTION text and icon'));
-  assert.ok(admin.includes('The ATTENTION letters and icon repeatedly pulse'));
-  // Legacy Is Important sheet data is intentionally preserved for backward compatibility.
-  assert.ok(css.includes('.cne-news-attention-icon {') && css.includes('animation: none !important;'));
+  assert.ok(admin.includes('Highlight this circular as NEW on the homepage'));
+  assert.ok(admin.includes('NEW highlight') && !admin.includes('Attention animation'));
   assert.ok(admin.includes('coordinatorPeople: deskForm.coordinatorPeople.map') && admin.includes('members: deskForm.members.map'));
   assert.ok(desk.includes('CNE Desk') && desk.includes('coordinatorDesk.members'));
   assert.ok(!desk.includes('coordinatorDesk.note'));
+});
+
+runTest('Homepage News & Circulars sort newest published dates ahead of old entries', () => {
+  const widget = fs.readFileSync('src/components/home/NewsCircularsWidget.tsx', 'utf8');
+  const admin = fs.readFileSync('src/components/AdminContent.tsx', 'utf8');
+  const utils = fs.readFileSync('src/utils.ts', 'utf8');
+  assert.ok(utils.includes('export function newestNewsFirst('));
+  assert.ok(utils.includes('parseToIsoDateString(a.date)') && utils.includes('parseToIsoDateString(b.date)'));
+  assert.ok(utils.includes('return bDate.localeCompare(aDate)'));
+  assert.ok(widget.includes('newestNewsFirst(newsEvents).slice(0, limit)'));
+  assert.ok(admin.includes('newestNewsFirst(newsList).filter('));
+  assert.ok(widget.includes('date') && widget.includes('aria-labelledby="cne-news-title"'));
+});
+
+runTest('Homepage previews real published class photos with public image lightbox and staff gallery link', () => {
+  const home = fs.readFileSync('src/components/CneHomePage.tsx', 'utf8');
+  const moments = fs.readFileSync('src/components/home/ClassMomentsWidget.tsx', 'utf8');
+  const toolbar = fs.readFileSync('src/components/TopToolbar.tsx', 'utf8');
+  const gallery = fs.readFileSync('src/components/Gallery.tsx', 'utf8');
+  assert.ok(home.includes('ApiService.getGallery()') && home.includes('ClassMomentsWidget'));
+  assert.ok(home.indexOf('<ClassMomentsWidget') < home.indexOf('<CnoLeadershipCard'));
+  assert.ok(home.includes("onNavigate('gallery')") && home.includes('user?.employeeId'));
+  assert.ok(moments.includes('latestClassMoments(') && moments.includes('parseToIsoDateString('));
+  assert.ok(moments.includes('item.isActive !== false') && moments.includes('item.imageUrl'));
+  assert.ok(moments.includes('aria-modal="true"') && moments.includes("event.key === 'Escape'"));
+  assert.ok(toolbar.includes("id: 'gallery' as ViewMode") && toolbar.includes("label: 'Class Photos'"));
+  assert.ok(gallery.includes('ApiService.getGallery()') && gallery.includes('Upload Activity Photo'));
 });
 
 // -----------------------------------------------------------------------------
@@ -7607,8 +7628,8 @@ console.log('========================================================\\n');
     name: "CNE Read Performance Regression",
     originalFilename: "verify-cne-read-performance.cjs",
     mode: "commonjs",
-    expectedChecks: 27,
-    sha256: "0a11cb058cd10fc65793a9cf74088544326c1862a9cdc225b46157090c452a04",
+    expectedChecks: 40,
+    sha256: "cdac716f97671cfd7fcf501e3c18c7354a70272d4e2ae9dbc17be1fdc08153ce",
     source: `/**
  * CNE Read Performance & Bounded Query Regression Verification Suite
  *
@@ -8952,6 +8973,209 @@ runTest('Ambiguous same-name external registrations cannot be assigned to one at
   assert.strictEqual(attempted.success,false);
   assert.strictEqual(attempted.errorCode,'AMBIGUOUS_EXTERNAL_PARTICIPANT');
   assert.strictEqual(env.responsesSheet.getLastRow(),before,'No attendance row may be added');
+});
+
+// AI Question Generation reliability tests: expand existing performance suite only.
+runTest('AI generation uses exactly one quota-commit persistence path, not a second save', () => {
+  const start = codeGsSource.indexOf('function handleGenerateCNEQuestions(');
+  const end = codeGsSource.indexOf('function normalizeCneId(', start);
+  const generation = codeGsSource.substring(start, end);
+  assert.ok(generation.includes('handleCommitAiQuota({'));
+  assert.ok(!generation.includes('handleSaveCNEQuestions({'), 'Duplicate independent save must not return');
+  assert.ok(generation.includes('if (!commitRes || !commitRes.success)'));
+  assert.ok(codeGsSource.includes("isFinalized: 'NO'"), 'AI questions must remain Draft');
+});
+
+runTest('BLS relevance requires the question stem to test paediatric resuscitation', () => {
+  const env = createFreshTestEnvironment();
+  const topic = 'Paediatric Basic Life Support';
+  assert.strictEqual(env.sandbox.cneAiTopicMismatch_(topic,{question:'When preparing a paediatric child for IV cannulation?',explanation:'Follow child CPR clinical guidelines.'}),true,'CPR word in rationale must not rescue IV cannulation');
+  assert.strictEqual(env.sandbox.cneAiTopicMismatch_(topic,{question:'What topical anaesthetic is used for IV insertion in a child after CPR?',explanation:'Good child CPR care.'}),true,'CPR word in stem must not rescue a question testing IV insertion');
+  assert.strictEqual(env.sandbox.cneAiTopicMismatch_(topic,{question:'Managing grief for a child after CPR during the end-of-life phase?',explanation:'Palliative care.'}),true);
+  assert.strictEqual(env.sandbox.cneAiTopicMismatch_(topic,{question:'Which IV cannula should the nurse select for paediatric vascular access?',explanation:'Paediatric resuscitation includes CPR.'}),true);
+  assert.strictEqual(env.sandbox.cneAiTopicMismatch_(topic,{question:'What should the nurse do for a paediatric patient?',explanation:'Provide rescue breaths and CPR.'}),true,'A generic age-only stem must fail');
+  assert.strictEqual(env.sandbox.cneAiTopicMismatch_(topic,{question:'What is the child CPR chest compression procedure?',explanation:'Follow resuscitation response.'}),false);
+  assert.strictEqual(env.sandbox.cneAiTopicMismatch_(topic,{question:'An unresponsive 4-year-old is not breathing. What immediate resuscitation step is indicated?',explanation:'Check breathing and prepare CPR.'}),false);
+  assert.strictEqual(env.sandbox.cneAiTopicMismatch_('Wound Dressing',{question:'How should peripheral IV cannulation be performed?',explanation:'Wound dressing reduces infection.'}),true,'Rationale must not rescue an unrelated non-BLS question');
+  assert.strictEqual(env.sandbox.cneAiTopicMismatch_('Wound Dressing',{question:'When should a wound dressing be changed?',explanation:'Follow asepsis.'}),false);
+});
+
+runTest('AI source excerpt must exist in the cited section and support the clinical answer', () => {
+  const env = createFreshTestEnvironment();
+  const check = env.sandbox.cneAiEvidenceSupported_;
+  const topic = 'Paediatric Basic Life Support';
+  const section = 'Infant Resuscitation';
+  const title = 'Local Paediatric BLS Handbook';
+  const excerpt = 'For an infant in cardiac arrest, begin chest compressions immediately and ensure effective rescue breathing.';
+  const chunks = [{resourceTitle:title,sectionHeading:section,chunkText:'Section 3. '+excerpt+' Call the emergency team.'}, {resourceTitle:title,sectionHeading:'Vascular Access',chunkText:'Peripheral intravenous cannulation uses topical anaesthetics and a correctly fitted tourniquet.'}];
+  assert.strictEqual(check(topic,title+' - '+section,excerpt,'Begin chest compressions','Infant cardiac arrest requires chest compressions.', '',chunks),true,'Exact quote in cited BLS section supports the answer');
+  assert.strictEqual(check(topic,title+' - '+section,'CPR should be done correctly and successfully when preparing for emergencies.','Begin chest compressions','Infant cardiac arrest requires chest compressions.','',chunks),false,'Fabricated quotation rejected');
+  assert.strictEqual(check(topic,title+' - Vascular Access',excerpt,'Begin chest compressions','Infant cardiac arrest requires chest compressions.','',chunks),false,'Correct quote under wrong claimed section rejected');
+  assert.strictEqual(check(topic,title,excerpt,'Begin chest compressions','Infant cardiac arrest requires chest compressions.','',chunks),false,'Section-less source attribution rejected');
+  assert.strictEqual(check(topic,title+' - '+section,excerpt,'Apply topical anaesthetic','Lidocaine cream before IV cannulation.', '',chunks),false,'BLS excerpt cannot support an IV answer merely through a real citation');
+  assert.strictEqual(check(topic,'Verified CNE Session: '+topic,excerpt,'Begin chest compressions','Perform infant chest compressions.','Intro '+excerpt+' End of session notes.',[]),true,'Actual uploaded CNE material may support a quote');
+  assert.strictEqual(check(topic,'Unverified Guideline / Verified CNE Session: '+topic,excerpt,'Begin chest compressions','Perform infant chest compressions.','Intro '+excerpt+' End of session notes.',[]),false,'Fake guideline prefixed to session citation is rejected');
+  assert.strictEqual(check(topic,'Verified CNE Session: '+topic,'Unrelated quoted passage describing intravenous cannulation and topical anaesthesia.','Begin chest compressions','Infant chest compressions.','Intro '+excerpt+' End of session notes.',[]),false,'CNE-title citation alone is insufficient');
+});
+
+runTest('Clinical contradiction gate rejects answer instructions that reverse cited evidence', () => {
+  const env = createFreshTestEnvironment();
+  const check = env.sandbox.cneAiEvidenceSupported_;
+  const topic = 'Paediatric Basic Life Support';
+  const section = 'Child CPR';
+  const title = 'Local Paediatric BLS Handbook';
+  const citation = title + ' - ' + section;
+  const passage = 'For a child in cardiac arrest, begin CPR immediately and provide chest compressions without delay.';
+  const snippets = [{resourceTitle:title,sectionHeading:section,chunkText:passage}];
+  assert.strictEqual(check(topic,citation,passage,'Begin CPR immediately','Cardiac arrest requires CPR and prompt chest compressions.','',snippets),true);
+  assert.strictEqual(check(topic,citation,passage,'Do not begin CPR even during cardiac arrest','Cardiac arrest does not need chest compressions.','',snippets),false,'Direct reversal must fail despite overlapping CPR vocabulary');
+  assert.strictEqual(check(topic,citation,passage,'Begin CPR immediately','Do not begin CPR in a child with cardiac arrest.','',snippets),false,'Contradiction in rationale must also fail');
+  const suctionQuote = 'For terminal secretions, do not perform routine deep endotracheal suctioning because it may cause distress.';
+  const suctionEvidence = [{resourceTitle:'Palliative Nursing Manual',sectionHeading:'Terminal Secretions',chunkText:suctionQuote}];
+  assert.strictEqual(check('Terminal Secretions','Palliative Nursing Manual - Terminal Secretions',suctionQuote,'Perform routine deep endotracheal suctioning','The guideline says suctioning may be used.','',suctionEvidence),false,'Reversal of explicit suction prohibition must fail');
+  assert.strictEqual(check('Terminal Secretions','Palliative Nursing Manual - Terminal Secretions',suctionQuote,'Do not perform routine deep endotracheal suctioning','Deep suctioning may cause distress.','',suctionEvidence),true,'A correctly worded prohibition remains valid');
+});
+
+runTest('Clinical polarity keeps do-not-delay CPR positive and screens conflicting compression ratios', () => {
+  const env = createFreshTestEnvironment();
+  const check = env.sandbox.cneAiEvidenceSupported_;
+  const topic = 'Paediatric Basic Life Support';
+  const citation = 'Verified CNE Session: ' + topic;
+  const passage = 'Do not delay CPR when a child is in cardiac arrest; initiate chest compressions immediately.';
+  const material = 'Section: Resuscitation. ' + passage + ' End of topic.';
+  assert.strictEqual(check(topic,citation,passage,'Begin CPR immediately','Resuscitation requires immediate CPR and chest compressions.',material,[]),true,'Do not delay CPR is a positive resuscitation instruction');
+  assert.strictEqual(check(topic,citation,passage,'Do not begin CPR','CPR should be withheld in arrest.',material,[]),false,'Double-negation instructions cannot be reversed');
+  const otherAction = 'Do not delay activating the emergency response team, begin CPR immediately for the unresponsive child.';
+  const otherMaterial = 'Resuscitation teaching excerpt. ' + otherAction + ' End.';
+  assert.strictEqual(check(topic,citation,otherAction,'Begin CPR immediately','Emergency team activation and CPR must not be delayed.',otherMaterial,[]),true,'Negation of one action must not reverse the distinct CPR instruction');
+  const breathingState = 'For a child who is not breathing, begin CPR immediately and deliver chest compressions.';
+  const breathingMaterial = 'Clinical protocol. ' + breathingState + ' End.';
+  assert.strictEqual(check(topic,citation,breathingState,'Begin CPR immediately','The child is not breathing so CPR and chest compressions are needed.',breathingMaterial,[]),true,'Not breathing describes the clinical state, not a CPR prohibition');
+  const ratioQuote = 'For the single rescuer resuscitation scenario, perform child CPR using a chest compression to ventilation ratio of 30:2.';
+  const ratioMaterial = 'Practice guideline. ' + ratioQuote + ' End.';
+  assert.strictEqual(check(topic,citation,ratioQuote,'Use a 15:2 compression to ventilation ratio','For child CPR use the 15:2 ratio.',ratioMaterial,[]),false,'Contradictory compression ratio must fail');
+  assert.strictEqual(check(topic,citation,ratioQuote,'Use a 30:2 compression to ventilation ratio','For child CPR use a 30:2 ratio.',ratioMaterial,[]),true,'Matching ratio remains valid');
+});
+
+runTest('Clinical quantity evidence rejects mismatched medication, oxygen and compression values', () => {
+  const env = createFreshTestEnvironment();
+  const check = env.sandbox.cneAiEvidenceSupported_;
+  const med = 'Medication Administration';
+  const medSource = 'Verified CNE Session: ' + med;
+  const morphine = 'Administer intravenous morphine 2 mg slowly for postoperative pain as directed by the prescribing physician.';
+  assert.strictEqual(check(med,medSource,morphine,'Administer morphine 2 mg intravenously','Use morphine 2 mg for postoperative pain.',morphine,[]),true);
+  assert.strictEqual(check(med,medSource,morphine,'Administer morphine 20 mg intravenously','Use morphine 20 mg for postoperative pain.',morphine,[]),false,'10-fold overdose cannot pass keyword overlap');
+  assert.strictEqual(check(med,medSource,morphine,'Administer morphine 2 g intravenously','Use morphine 2 g for postoperative pain.',morphine,[]),false,'Same number with different units cannot pass');
+  const oxygen = 'Provide oxygen via nasal cannula at 2 litres per minute and reassess oxygen saturation.';
+  assert.strictEqual(check(med,medSource,oxygen,'Provide oxygen at 20 litres per minute','Reassess oxygen saturation.',oxygen,[]),false,'Unsupported oxygen flow must fail');
+  const bls = 'Paediatric Basic Life Support';
+  const blsSource = 'Verified CNE Session: ' + bls;
+  const compressions = 'Begin child chest compressions at a rate of 100 to 120 per minute during cardiac arrest.';
+  assert.strictEqual(check(bls,blsSource,compressions,'Begin child chest compressions at 40 per minute','Child chest compressions during cardiac arrest.',compressions,[]),false,'Unsupported compression rate must fail');
+  assert.strictEqual(check(bls,blsSource,compressions,'Begin child chest compressions at 120 per minute','Child chest compressions at 120 per minute during cardiac arrest.',compressions,[]),true,'Exact evidenced upper-bound rate allowed');
+});
+
+runTest('Clinical evidence qualifiers reject contrary indications, sequence and speed', () => {
+  const env = createFreshTestEnvironment();
+  const check = env.sandbox.cneAiEvidenceSupported_;
+  const topic = 'Medication Administration';
+  const source = 'Verified CNE Session: ' + topic;
+  const oxygen = 'Administer oxygen only when the patient has confirmed hypoxaemia and assess oxygen saturation frequently.';
+  assert.strictEqual(check(topic,source,oxygen,'Administer oxygen to every patient regardless of oxygen saturation','Provide oxygen and assess saturation.',oxygen,[]),false,'Only when cannot imply regardless of condition');
+  const morphine = 'Administer morphine slowly by intravenous injection after checking the medical order.';
+  assert.strictEqual(check(topic,source,morphine,'Administer morphine rapidly by intravenous injection','Check the medical order.',morphine,[]),false,'Slowly cannot imply rapidly');
+  assert.strictEqual(check(topic,source,morphine,'Administer morphine slowly after checking the medical order','Follow medication administration order.',morphine,[]),true,'Correct administration and sequence supported');
+  assert.strictEqual(check(topic,source,morphine,'Administer morphine without checking the medical order','The medical order can be skipped.',morphine,[]),false,'Source prerequisite cannot be omitted');
+});
+
+runTest('Clinical quantities bind to the correct treatment within mixed-source excerpts', () => {
+  const env = createFreshTestEnvironment();
+  const check = env.sandbox.cneAiEvidenceSupported_;
+  const topic = 'Medication Administration';
+  const source = 'Verified CNE Session: ' + topic;
+  const mixed = 'For postoperative pain, administer morphine 2 mg intravenously and give naloxone 20 mg if prescribed for specific circumstances.';
+  assert.strictEqual(check(topic,source,mixed,'Administer morphine 20 mg intravenously','Morphine 20 mg relieves postoperative pain.',mixed,[]),false,'Naloxone dose must never justify morphine dose');
+  assert.strictEqual(check(topic,source,mixed,'Give naloxone 20 mg','Naloxone 20 mg if specifically prescribed.',mixed,[]),true,'Correctly bound naloxone dose remains supported');
+  assert.strictEqual(check(topic,source,mixed,'Administer morphine 2 mg intravenously','Morphine 2 mg for postoperative pain.',mixed,[]),true,'Correctly bound morphine dose remains supported');
+  const oxygen = 'Provide oxygen at 2 L/min via nasal cannula; give intravenous fluids at 20 L/min in the separate exercise.';
+  assert.strictEqual(check(topic,source,oxygen,'Provide oxygen at 20 L/min','Oxygen delivered by nasal cannula.',oxygen,[]),false,'Unrelated fluid flow must not support oxygen flow');
+});
+
+runTest('Clinical prerequisite sequence reversal is rejected', () => {
+  const env = createFreshTestEnvironment();
+  const check = env.sandbox.cneAiEvidenceSupported_;
+  const topic = 'Medication Administration';
+  const source = 'Verified CNE Session: ' + topic;
+  const excerpt = 'Administer morphine 2 mg only after checking the medical order before providing the medication.';
+  assert.strictEqual(check(topic,source,excerpt,'Administer morphine 2 mg before checking the medical order','Morphine is prescribed for pain.',excerpt,[]),false,'Before-checking recommendation reverses after-checking prerequisite');
+  assert.strictEqual(check(topic,source,excerpt,'Administer morphine 2 mg after checking the medical order','Morphine is administered after checking the order.',excerpt,[]),true,'Supported checking sequence remains acceptable');
+});
+
+runTest('Failed clinical evidence generation releases reservation without saving or committing quota', () => {
+  const env = createFreshTestEnvironment();
+  const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  let commits=0, releases=0, saves=0;
+  env.sandbox.getCNEScheduleRecord = () => ({status:'Scheduled',topic:'Medication Administration'});
+  env.sandbox.checkQuestionManagementAuthorized = () => null;
+  env.sandbox.isCNEQuestionsLocked = () => false;
+  env.sandbox.cneAiHasOwnMaterial_ = () => true;
+  env.sandbox.handleReserveAiQuota = () => ({success:true,data:{reservationToken:'FAILED_EVIDENCE_TOKEN'}});
+  env.sandbox.generateAiQuestionsInternal = () => ({success:false,errorCode:'UNSUPPORTED_SOURCE_EVIDENCE',message:'Unsafe evidence rejected'});
+  env.sandbox.handleCommitAiQuota = () => {commits++;throw new Error('Must never commit an unsupported batch');};
+  env.sandbox.handleSaveCNEQuestions = () => {saves++;throw new Error('Must never save an unsupported batch');};
+  env.sandbox.handleReleaseAiQuota = (params) => {releases++;assert.strictEqual(params.reservationToken,'FAILED_EVIDENCE_TOKEN');return {success:true};};
+  const result = env.sandbox.handleGenerateCNEQuestions({cneId:'CNE-2026-PERF1'},admin);
+  assert.strictEqual(result.success,false);
+  assert.strictEqual(result.errorCode,'UNSUPPORTED_SOURCE_EVIDENCE');
+  assert.strictEqual(commits,0);
+  assert.strictEqual(saves,0);
+  assert.strictEqual(releases,1);
+});
+
+runTest('AI prompt and validation require real source excerpts before any persistence', () => {
+  const source = codeGsSource;
+  const start = source.indexOf('function generateAiQuestionsInternal(');
+  const end = source.indexOf('function cneAiHasOwnMaterial_(', start);
+  const generation = source.slice(start, end);
+  assert.ok(generation.includes('evidenceQuote'), 'Gemini schema must request the source quotation');
+  assert.ok(generation.includes('cneAiEvidenceSupported_('), 'Quotation and correct-answer support must be checked before saving');
+  assert.ok(generation.indexOf('cneAiEvidenceSupported_(') < generation.indexOf('validatedQuestions.push('), 'Evidence check precedes staging question');
+  assert.ok(generation.includes("errorCode:'UNSUPPORTED_SOURCE_EVIDENCE'"));
+});
+
+runTest('No uploaded material requires explicit consent before any reservation', () => {
+  const env = createFreshTestEnvironment();
+  const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  env.sandbox.getCNEScheduleRecord = () => ({status:'Scheduled',topic:'Paediatric Basic Life Support',cneId:'CNE-2026-PERF1'});
+  env.sandbox.checkQuestionManagementAuthorized = () => null;
+  env.sandbox.isCNEQuestionsLocked = () => false;
+  env.sandbox.cneAiHasOwnMaterial_ = () => false;
+  env.sandbox.handleReserveAiQuota = () => {throw new Error('Reservation should NOT happen');};
+  const r = env.sandbox.handleGenerateCNEQuestions({cneId:'CNE-2026-PERF1'},admin);
+  assert.strictEqual(r.success,false);
+  assert.strictEqual(r.errorCode,'LIBRARY_CONSENT_REQUIRED');
+});
+
+runTest('Generation persists through commit once, returns 5 unfinalized questions', () => {
+  const env = createFreshTestEnvironment();
+  const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  const five = Array.from({length:5},(_,i)=>({id:'q_ai_'+i,question:'Which child CPR protocol is indicated for scenario '+i+'?',options:{A:'One',B:'Two',C:'Three',D:'Four'},correctOption:'A',explanation:'Resuscitation protocol',authoritativeSource:'Verified CNE Session: Paediatric Basic Life Support',isFinalized:false}));
+  let commits=0;
+  env.sandbox.getCNEScheduleRecord = () => ({status:'Scheduled',topic:'Paediatric Basic Life Support'});
+  env.sandbox.checkQuestionManagementAuthorized = () => null;
+  env.sandbox.isCNEQuestionsLocked = () => false;
+  env.sandbox.cneAiHasOwnMaterial_ = () => true;
+  env.sandbox.handleReserveAiQuota = () => ({success:true,data:{reservationToken:'ONE_TOKEN'}});
+  env.sandbox.generateAiQuestionsInternal = () => ({success:true,data:five});
+  env.sandbox.handleSaveCNEQuestions = () => {throw new Error('Legacy duplicate save must never be called');};
+  env.sandbox.handleCommitAiQuota = (params) => {commits++; assert.strictEqual(params.questions.length,5); return {success:true};};
+  env.sandbox.handleGetCNEQuestions = () => ({success:true,data:five});
+  env.sandbox.logAuditAction = () => {};
+  const res = env.sandbox.handleGenerateCNEQuestions({cneId:'CNE-2026-PERF1'},admin);
+  assert.strictEqual(res.success,true);
+  assert.strictEqual(res.data.length,5);
+  assert.strictEqual(commits,1);
+  assert.ok(res.data.every(q=>q.isFinalized===false));
 });
 
 // -----------------------------------------------------------------------------

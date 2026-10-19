@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import {
   CNERecord,
+  GalleryItem,
   CoordinatorDeskInfo,
   NewsEventItem,
   ProgramImpactStats,
@@ -26,6 +27,7 @@ import { useToast } from './Toast';
 import { UpcomingClassesWidget } from './home/UpcomingClassesWidget';
 import { InstitutionalImpactWidget } from './home/InstitutionalImpactWidget';
 import { NewsCircularsWidget } from './home/NewsCircularsWidget';
+import { ClassMomentsWidget } from './home/ClassMomentsWidget';
 import { QuickLinksWidget } from './home/QuickLinksWidget';
 import { CnoLeadershipCard } from './home/CnoLeadershipCard';
 
@@ -49,6 +51,9 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   // Never show stale generic Schedule cache / demo classes in today's live preview.
   const [upcomingClasses, setUpcomingClasses] = useState<CNERecord[]>([]);
   const [newsEvents, setNewsEvents] = useState<NewsEventItem[]>(() => ApiService.getCachedData<NewsEventItem[]>('getNewsEvents') || INITIAL_NEWS_EVENTS);
+  const [galleryItems, setGalleryItems] = useState<GalleryItem[]>(() => ApiService.getCachedData<GalleryItem[]>('getGallery') || []);
+  const [galleryLoading, setGalleryLoading] = useState(true);
+  const [galleryLoadFailed, setGalleryLoadFailed] = useState(false);
   const [quickLinks, setQuickLinks] = useState<QuickLinkItem[]>(() => ApiService.getCachedData<QuickLinkItem[]>('getQuickLinks') || INITIAL_QUICK_LINKS);
   const [coordinatorDesk, setCoordinatorDesk] = useState<CoordinatorDeskInfo>(() => ApiService.getCachedData<CoordinatorDeskInfo>('getCoordinatorDesk') || INITIAL_COORDINATOR_DESK);
   const [chairpersonPhotoUrl, setChairpersonPhotoUrl] = useState('');
@@ -90,6 +95,28 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
 
     // Load the Chairperson photo independently because Drive/remote image access can
     // occasionally be slow. A photo delay must never block Schedule/Impact/CMS data.
+    // The public gallery is loaded independently; a slow Drive request must
+    // never delay today's CNE, news or other homepage content.
+    setGalleryLoading(true);
+    setGalleryLoadFailed(false);
+    ApiService.getGallery()
+      .then((res) => {
+        if (!isCurrent()) return;
+        if (res.success && Array.isArray(res.data)) {
+          setGalleryItems(res.data);
+        } else {
+          setGalleryLoadFailed(true);
+        }
+      })
+      .catch((err) => {
+        if (!isCurrent()) return;
+        console.warn('[Home Data] Gallery preview error:', err);
+        setGalleryLoadFailed(true);
+      })
+      .finally(() => {
+        if (isCurrent()) setGalleryLoading(false);
+      });
+
     ApiService.getChairpersonPhoto()
       .then((res) => {
         if (!isCurrent()) return;
@@ -169,6 +196,14 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
 
   return (
     <div className="space-y-8 pb-16">
+      {/* Prominent public gallery preview: visible without opening Admin Content. */}
+      <ClassMomentsWidget
+        items={galleryItems}
+        loading={galleryLoading}
+        loadFailed={galleryLoadFailed}
+        onViewAll={user?.employeeId ? () => onNavigate('gallery') : undefined}
+      />
+
       {/* Responsive homepage: leadership/guidance in main; impact/today's schedule in sidebar. */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Main content (7 columns on desktop): Chairperson, Coordinator Desk, Certification. */}

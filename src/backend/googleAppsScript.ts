@@ -1033,6 +1033,14 @@ function handleRequest(e, method) {
         output = handleGetAiQuota(params, session);
         break;
 
+      case 'getCNEAiMaterialStatus':
+        output = handleGetCNEAiMaterialStatus(params, session);
+        break;
+
+      case 'getCNEAiGenerationProgress':
+        output = handleGetCNEAiGenerationProgress(params, session);
+        break;
+
       case 'generateCNEQuestions':
         output = handleGenerateCNEQuestions(params, session);
         break;
@@ -11443,7 +11451,7 @@ var CLINICAL_PROCEDURAL_TAXONOMY = [
   },
   {
     topicId: 'cpr',
-    matchRegex: /\\b(?:cpr|resuscitat|cardiopulmonary|bls)\\b/i,
+    matchRegex: /(?:\\b(?:cpr|resuscitat|cardiopulmonary|bls)\\b|basic\\s+life\\s+support)/i,
     coreProcedures: [
       'cpr', 'resuscitat', 'chest compression', 'compression', 'rescue breath',
       'defibrillat', 'aed', 'cardiac arrest', 'circulation', 'airway', 'ventilation', 'bls'
@@ -11742,6 +11750,11 @@ function passesClinicalRelevanceGate(queryTopic, candidate) {
       }
       if (!hasMed) return false;
     }
+  }
+
+  if (/(?:basic\\s+life\\s+support|\\bbls\\b|\\bcpr\\b|resuscitat)/.test(normQuery)) {
+    if (!/(?:cpr|resuscitat|chest compression|rescue breath|defibrillat|aed|cardiac arrest|basic life support|bls)/.test(allCandidateText)) return false;
+    if (/(?:paediatric|pediatric|child|infant)/.test(normQuery) && !/(?:paediatric|pediatric|child|infant|baby)/.test(allCandidateText)) return false;
   }
 
   // 2. Exact Multi-Word Query Phrase Match in Heading, Keywords, Topic, or Text
@@ -13252,6 +13265,13 @@ function handleCommitAiQuota(params, session) {
     var rowsToSave = [];
     var validatedQuestionIds = [];
     var seenInBatch = {};
+    var usedQuestionTexts = {};
+    for (var eq = 1; eq < qSheetData.length; eq++) {
+      if (String(qSheetData[eq][qCols.cneId] || '').trim().toUpperCase() === cneId.toUpperCase() &&
+          String(qSheetData[eq][qCols.status] || 'ACTIVE').toUpperCase() === 'ACTIVE') {
+        usedQuestionTexts[cneAiCanonicalQuestion_(qSheetData[eq][qCols.question])] = true;
+      }
+    }
 
     if (batchAlreadyPersisted) {
       // Use the verified IDs already in the sheet for this reservation
@@ -13265,6 +13285,10 @@ function handleCommitAiQuota(params, session) {
         if (qText.length < 8) {
           return { success: false, message: 'Question ' + qNum + ' has insufficient question text (minimum 8 characters).' };
         }
+
+        var canonical = cneAiCanonicalQuestion_(qText);
+        if (!canonical || usedQuestionTexts[canonical]) return {success:false,errorCode:'DUPLICATE_QUESTION',message:'Question ' + qNum + ' duplicates an existing question.'};
+        usedQuestionTexts[canonical] = true;
 
         var opts = qObj.options || {};
         var optA = sanitizeCellInput(opts.A || '').trim();
@@ -13333,7 +13357,7 @@ function handleCommitAiQuota(params, session) {
           optD: optD,
           correctOption: rawCorrect,
           explanation: expl,
-          isFinalized: 'YES',
+          isFinalized: 'NO',
           isLocked: 'NO',
           createdAt: nowIso,
           createdBy: session.employeeId + ' ' + aiBatchTag,
@@ -13649,6 +13673,9 @@ function handleValidateAiQuotaReservation(params, session) {
     ? topicEvidenceResult.evidence
     : [];
 
+  if ((!learningMaterial || learningMaterial.length < 15) && params.allowLibraryOnly !== true) {
+    return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED',message:'Please confirm library-only AI generation first.'};
+  }
   // If direct extracted material is missing or too short, synthesize from retrieved local evidence chunks
   if ((!learningMaterial || learningMaterial.length < 15) && retrievedEvidenceChunks.length > 0) {
     learningMaterial = retrievedEvidenceChunks.map(function(ev) {
@@ -13660,8 +13687,8 @@ function handleValidateAiQuotaReservation(params, session) {
   if (!learningMaterial || learningMaterial.length < 15) {
     return {
       success: false,
-      errorCode: 'INSUFFICIENT_TOPIC_MATERIAL',
-      message: 'No relevant material related to this topic is available on the server. Kindly upload the relevant topic material and try again.'
+      errorCode: 'NO_RELEVANT_LIBRARY_CONTENT',
+      message: 'No sufficiently relevant library content was found. Upload topic material to continue.'
     };
   }
 
@@ -13757,6 +13784,7 @@ function handleValidateAiQuotaReservation(params, session) {
         authoritativeLearningContent: authoritativeExtracted ? authoritativeExtracted.extractedText : (learningMaterial || ''),
         resourcePersonName: authoritativeRpName || '',
         hasLearningResource: hasLearningResource,
+        hasOwnMaterial: Boolean(dFileId || refTxt.length >= 15),
         learningResourceMetadata: authoritativeExtracted || null,
         generationSource: 'MATERIAL',
         retrievedEvidence: retrievedEvidenceChunks
@@ -13806,7 +13834,7 @@ function generateAiQuestionsInternal(params, session) {
   var valData = validation.data || {};
   var authoritativeTopic = valData.topic || '';
   var authoritativeRpName = valData.resourcePersonName || '';
-  var directMaterial = String(valData.authoritativeLearningContent || '').trim();
+  var directMaterial = valData.hasOwnMaterial ? String(valData.authoritativeLearningContent || '').trim() : '';
   var retrievedEvidence = Array.isArray(valData.retrievedEvidence) ? valData.retrievedEvidence : [];
 
   var authoritativeMaterial = directMaterial;
@@ -13824,13 +13852,16 @@ function generateAiQuestionsInternal(params, session) {
     }
   }
 
-  if (!authoritativeMaterial || authoritativeMaterial.length < 15) {
-    return {
-      success: false,
-      errorCode: 'INSUFFICIENT_TOPIC_MATERIAL',
-      message: 'No relevant material related to this topic is available on the server. Kindly upload the relevant topic material and try again.'
-    };
+  if (!directMaterial || directMaterial.length < 15) {
+    if (valData.hasOwnMaterial) return {success:false,errorCode:'NO_EXTRACTABLE_CONTENT',message:'The uploaded CNE material has no readable topic content. Please replace the material and try again.'};
+    if (params.allowLibraryOnly !== true) return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED',message:'Library-only generation requires explicit confirmation.'};
+    var goodEvidence = retrievedEvidence.filter(function(ev) {return passesClinicalRelevanceGate(authoritativeTopic, ev);});
+    if (!goodEvidence.length) return {success:false,errorCode:'NO_RELEVANT_LIBRARY_CONTENT',message:'No sufficiently relevant content is available in the CNE Reference Library. Upload material to continue.'};
+    retrievedEvidence = goodEvidence;
+    authoritativeMaterial = goodEvidence.map(function(ev) {return 'Source: ' + ev.resourceTitle + ' / ' + ev.sectionHeading + '\\n' + ev.chunkText;}).join('\\n\\n');
   }
+  if (!authoritativeMaterial || authoritativeMaterial.length < 15) return {success:false,errorCode:'NO_RELEVANT_LIBRARY_CONTENT',message:'No sufficiently relevant learning material was found. Upload topic material to continue.'};
+  updateCNEAiProgress_(cneId, session, 3, 'Checking evidence against the exact CNE topic.');
 
   // 2. Resolve Gemini API Key from Script Properties
   var props = PropertiesService.getScriptProperties();
@@ -13871,6 +13902,7 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
     };
   }
 
+  updateCNEAiProgress_(cneId, session, 4, 'Gemini is generating five clinical MCQs.');
   // 3. Construct clinical prompt
   var prompt = 'You are a Senior Clinical Nursing Education Specialist and Examiner at AIIMS (All India Institute of Medical Sciences).\\n' +
     'Your task is to generate EXACTLY 5 high-quality Multiple Choice Questions (MCQs) for a Clinical Nursing Education (CNE) session post-test evaluation.\\n\\n' +
@@ -13889,7 +13921,13 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
     '5. CORRECT ANSWER: Exactly one option must be the correct answer ("A", "B", "C", or "D").\\n' +
     '6. CLINICAL RATIONALE: Provide an evidence-based clinical rationale/explanation for why the correct option is the standard of care based strictly on the provided local material.\\n' +
     '7. AUTHORITATIVE SOURCE: Every single question MUST provide the "authoritativeSource" field reflecting genuine grounding as specified above.\\n' +
-    '8. Output MUST strictly conform to the requested JSON schema with an array of exactly 5 question objects.';
+    '8. Output MUST strictly conform to the requested JSON schema with an array of exactly 5 question objects.\\n' +
+    '9. Every question must directly test the exact CNE TOPIC, not merely the patient age, ward, or shared terminology. For Paediatric Basic Life Support use child/infant CPR, arrest recognition, rescue breathing, compression, or AED content; NEVER IV cannulation, spirituality or palliative care.\\n' +
+    '10. authoritativeSource must reproduce the actual provided source title AND section. Do not invent named guidelines or source documents.\\n' +
+    '11. Each questionText must directly examine the named CNE clinical objective. Do not place relevant words only in a rationale or distractor. For Paediatric BLS, a question about IV insertion is OFF TOPIC even if its rationale mentions CPR.\\n' +
+    '12. Supply evidenceQuote: copy an exact passage of at least seven words from the specific cited local section that supports the correct answer and rationale. Use clinically meaningful terms in the correct option and rationale that can be checked against that quoted passage. Do not paraphrase the evidenceQuote, fabricate sources, or cite a different section. If no direct supporting quote exists, do not create that question.\\n' +
+    '13. MEANING MUST MATCH THE EVIDENCE: NEVER reverse an instruction by adding or dropping not/never/avoid/withhold, and never invent a different CPR compression-to-ventilation ratio. A sentence stating do not delay CPR supports starting CPR promptly, NOT withholding CPR. If the supplied source cannot support the correct option and rationale without contradictory meaning, do not output that question.\\n' +
+    '14. CLINICAL QUANTITIES AND CONDITIONS: Every medication dose, concentration, flow rate, timing, frequency, resuscitation rate, unit and clinical indication in the chosen answer must be directly supported by the supplied excerpt. Do not guess conversions or change only-if, before/after, speed, maximum/minimum or allergy restrictions. If the local evidence is unclear, generate a different fully evidenced question.';
 
   var geminiPayload = {
     contents: [
@@ -13914,9 +13952,10 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
                 optionD: { type: 'STRING' },
                 correctOption: { type: 'STRING' },
                 explanation: { type: 'STRING' },
-                authoritativeSource: { type: 'STRING' }
+                authoritativeSource: { type: 'STRING' },
+                evidenceQuote: { type: 'STRING' }
               },
-              required: ['questionText', 'optionA', 'optionB', 'optionC', 'optionD', 'correctOption', 'explanation', 'authoritativeSource']
+              required: ['questionText', 'optionA', 'optionB', 'optionC', 'optionD', 'correctOption', 'explanation', 'authoritativeSource', 'evidenceQuote']
             }
           }
         },
@@ -14009,6 +14048,7 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
     };
   }
 
+  updateCNEAiProgress_(cneId, session, 5, 'Validating topic relevance, evidence, and duplicate questions.');
   var validatedQuestions = [];
   var seenQuestions = {};
 
@@ -14019,7 +14059,8 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
       return { success: false, errorCode: 'INVALID_QUESTION_TEXT', message: 'Question ' + (qIdx + 1) + ' is too short or missing question text.' };
     }
 
-    var qKey = qText.toLowerCase();
+    if (cneAiTopicMismatch_(authoritativeTopic, rawQ)) return {success:false,errorCode:'OFF_TOPIC_QUESTION',message:'Generated question ' + (qIdx + 1) + ' does not match CNE topic: ' + authoritativeTopic + '. No questions were saved.'};
+    var qKey = cneAiCanonicalQuestion_(qText);
     if (seenQuestions[qKey]) {
       return { success: false, errorCode: 'DUPLICATE_QUESTION', message: 'Duplicate question generated in batch at position ' + (qIdx + 1) };
     }
@@ -14054,8 +14095,11 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
     }
 
     var authSource = String(rawQ.authoritativeSource || rawQ.source || rawQ.reference || '').trim();
-    if (!authSource || authSource.length < 3) {
-      authSource = 'Verified CNE Session: ' + authoritativeTopic;
+    if (!authSource || authSource.length < 3) return {success:false,errorCode:'MISSING_SOURCE',message:'Question ' + (qIdx + 1) + ' has no verifiable source.'};
+    var evidenceQuote = String(rawQ.evidenceQuote || '').trim();
+    var selectedAnswer = {A: optA, B: optB, C: optC, D: optD}[rawCorrect];
+    if (!cneAiEvidenceSupported_(authoritativeTopic, authSource, evidenceQuote, selectedAnswer, explanation, directMaterial, retrievedEvidence)) {
+      return {success:false,errorCode:'UNSUPPORTED_SOURCE_EVIDENCE',message:'Question ' + (qIdx + 1) + ' has no verifiable excerpt supporting its answer in the cited CNE material/section. No questions were saved.'};
     }
 
     // Informal source check
@@ -14063,9 +14107,7 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
       return { success: false, errorCode: 'INFORMAL_SOURCE_PROHIBITED', message: 'Question ' + (qIdx + 1) + ' cites an informal source (' + authSource + ').' };
     }
 
-    if (/^https?:\\/\\//i.test(authSource) || /live online verified/i.test(authSource)) {
-      authSource = 'Verified CNE Material (Topic: ' + authoritativeTopic + ') - ' + (authSource.replace(/^https?:\\/\\/[^\\/]+\\/?/i, '') || 'Clinical Standard');
-    }
+    if (/^https?:\\/\\//i.test(authSource) || /live online verified/i.test(authSource)) return {success:false,errorCode:'UNVERIFIED_SOURCE',message:'Question cites an unverified online source.'};
 
     validatedQuestions.push({
       id: 'q_ai_' + Date.now() + '_' + (qIdx + 1),
@@ -14085,8 +14127,8 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
       correctOption: rawCorrect,
       explanation: explanation,
       authoritativeSource: authSource,
-      status: 'Active',
-      isFinalized: true
+      status: 'ACTIVE',
+      isFinalized: false
     });
   }
 
@@ -14100,6 +14142,373 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
     source: configuredModel
   };
 }
+
+/**
+ * AI generation safety: never use a general reference library without the operator's
+ * affirmative, CNE-specific consent. These endpoints never return the resource text.
+ */
+function cneAiHasOwnMaterial_(cneId) {
+  var ref = getSpreadsheet('CNE').getSheetByName('CNE_Reference');
+  if (!ref || ref.getLastRow() < 2) return false;
+  var columns = getHeaderMap(ref);
+  var idCol = columns['cneid'] !== undefined ? columns['cneid'] : 0;
+  var textCol = columns['referencetextclinicalguides'] !== undefined ? columns['referencetextclinicalguides'] : (columns['referencetext'] !== undefined ? columns['referencetext'] : 2);
+  var fileCol = columns['drivefileid'];
+  var row = findExactRowInColumn_(ref, idCol, String(cneId).trim(), 2);
+  if (row < 2) return false;
+  var cells = ref.getRange(row, 1, 1, ref.getLastColumn()).getValues()[0];
+  return String(cells[textCol] || '').trim().length >= 15 || (fileCol !== undefined && !!String(cells[fileCol] || '').trim());
+}
+function handleGetCNEAiMaterialStatus(params, session) {
+  var cneId = sanitizeCellInput(params.cneId);
+  if (!session || !session.employeeId) return {success:false,errorCode:'UNAUTHORIZED',message:'Sign in required.'};
+  var record = cneId ? getCNEScheduleRecord(cneId) : null;
+  if (!record) return {success:false,errorCode:'CNE_NOT_FOUND',message:'CNE not found.'};
+  var auth = checkQuestionManagementAuthorized(session, record);
+  if (auth) return auth;
+  var state = normalizeCNEStatus(record.status);
+  if (state === 'Completed' || state === 'Canceled' || isCNEQuestionsLocked(cneId)) return {success:false,errorCode:'CNE_CLOSED',message:'Question generation is not available for this CNE.'};
+  return {success:true,data:{cneId:cneId,hasOwnMaterial:cneAiHasOwnMaterial_(cneId)}};
+}
+function cneAiProgressKey_(cneId, employeeId) {
+  var safe = String(cneId || '').toUpperCase() + ':' + String(employeeId || '').toUpperCase();
+  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, safe);
+  return 'cne_ai_prog_' + Utilities.base64EncodeWebSafe(digest).replace(/=+$/, '').substring(0,42);
+}
+function updateCNEAiProgress_(cneId, session, stage, message) {
+  if (!session || !session.employeeId) return;
+  try { CacheService.getScriptCache().put(cneAiProgressKey_(cneId,session.employeeId), JSON.stringify({stage:stage,message:message,updatedAt:Date.now()}), 600); }
+  catch (e) { console.warn('AI progress display unavailable: ' + e); }
+}
+function handleGetCNEAiGenerationProgress(params, session) {
+  var cneId = sanitizeCellInput(params.cneId);
+  if (!session || !session.employeeId) return {success:false,errorCode:'UNAUTHORIZED',message:'Sign in required.'};
+  var record = cneId ? getCNEScheduleRecord(cneId) : null;
+  if (!record) return {success:false,errorCode:'CNE_NOT_FOUND',message:'CNE not found.'};
+  var auth = checkQuestionManagementAuthorized(session, record);
+  if (auth) return auth;
+  var item = null;
+  try { var raw = CacheService.getScriptCache().get(cneAiProgressKey_(cneId,session.employeeId)); item = raw ? JSON.parse(raw) : null; } catch (e) {}
+  return {success:true,data:item || {stage:0,message:'Awaiting generation start.'}};
+}
+/**
+ * Fail-closed clinical-topic screening of the QUESTION STEM, not the rationale.
+ * Rationale, options and source metadata cannot make an off-topic stem relevant.
+ * This is a conservative pre-save gate, not a substitute for educator review.
+ */
+function cneAiTopicMismatch_(topic, question) {
+  var t = String(topic || '').toLowerCase();
+  var stem = String((question && (question.questionText || question.question)) || '').toLowerCase().trim();
+  if (!t || !stem) return true;
+
+  // BLS questions must actually ASK about resuscitation, not merely mention
+  // CPR in a rationale added to an unrelated IV procedure or palliative topic.
+  if (/(?:\\bbls\\b|\\bpbls\\b|\\bcpr\\b|basic life support|resuscitat|cardiopulmonary)/.test(t)) {
+    var unrelatedProcedure = /(?:\\biv\\s*(?:cannulat|access|line|therapy|insert)|intravenous\\s*(?:cannulat|access|insertion|therapy)|venipunct|tourniquet|topical\\s*an[ae]sth|palliative|terminal secretions?|death rattle|end.of.life|grief|spiritualit|religious ritual|wound dressing|foley catheter)/;
+    if (unrelatedProcedure.test(stem)) return true;
+    var resuscitationFocus = /(?:\\b(?:cpr|bls|pbls|aed)\\b|basic life support|cardiopulmonary|resuscitat|chest compress|compressions?|rescue breath|bag.mask|defibrillat|cardiac arrest|cardiorespiratory arrest|pulseless|no pulse|not breathing|apnoe|apnea|apnoea|unresponsive|unconscious and not breathing|ventilation during arrest)/;
+    if (!resuscitationFocus.test(stem)) return true;
+    if (/(?:paediatric|pediatric|child|infant|baby|school.age|toddler|young patient)/.test(t) &&
+        !/(?:paediatric|pediatric|child|infant|baby|toddler|\\b\\d{1,2}[- ]?year[- ]?old\\b|\\b\\d{1,2}[- ]?month[- ]?old\\b|school.age|\\bpbls\\b)/.test(stem)) return true;
+    return false;
+  }
+
+  // For other topics, generic words such as patient, nursing, care or clinical
+  // must not qualify a question about an unrelated procedure. A rationale that
+  // repeats the CNE title must not rescue an unrelated question stem.
+  var skip = {nursing:1,clinical:1,basic:1,care:1,patient:1,management:1,skills:1,procedure:1,health:1,and:1,the:1,for:1,with:1,education:1,practice:1,topic:1,session:1};
+  var tokens = t.split(/[^a-z0-9]+/).filter(function(x) {return x.length >= 4 && !skip[x];});
+  return tokens.length === 0 || !tokens.some(function(x) {
+    return stem.indexOf(x.substring(0, Math.max(4, x.length - 1))) !== -1;
+  });
+}
+
+/** Normalize an excerpt without introducing fabricated clinical equivalences. */
+function cneAiEvidenceText_(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
+}
+/**
+ * Conservative clinical-polarity gate. Verbatim evidence and overlapping
+ * vocabulary alone cannot establish that an instruction supports its opposite.
+ *
+ * Only explicit, scoped instructions are classified. In particular, "do not
+ * delay CPR" is an instruction to START CPR, not an instruction to withhold it;
+ * "not breathing" describes a patient, not a prohibition against CPR.
+ * This deliberately is NOT general medical entailment or a clinical oracle.
+ */
+function cneAiClinicalPolarity_(text, target) {
+  var raw = String(text || '').replace(/\\b(?:don't|doesn't|didn't|mustn't|shouldn't|can't)\\b/gi, 'do not');
+  // Separate clinical clauses so "do not give oxygen, begin CPR" cannot
+  // accidentally classify CPR as prohibited because of the OTHER action.
+  var clauses = raw.split(/[;,\\n]+/);
+  var matchedClause = '';
+  for (var cl = 0; cl < clauses.length; cl++) {
+    if (target.test(cneAiEvidenceText_(clauses[cl]))) { matchedClause = clauses[cl]; break; }
+  }
+  if (!matchedClause) return 0;
+  var normalized = ' ' + cneAiEvidenceText_(matchedClause) + ' ';
+  var found = normalized.match(target);
+  if (!found) return 0;
+  var before = normalized.substring(Math.max(0, found.index - 115), found.index).trim().split(/\\s+/).slice(-10).join(' ');
+  var after = normalized.substring(found.index + found[0].length).trim().split(/\\s+/).slice(0, 10).join(' ');
+
+  // Passive recommendations or prohibitions following the intervention.
+  if (/\\b(?:should|must|is|are|can|may)\\s+not\\s+be\\s+(?:delayed|withheld|omitted|stopped|deferred|postponed)\\b/.test(after)) return 1;
+  if (/\\b(?:should|must|can|may|is|are)\\s+not\\s+(?:be\\s+)?(?:started|begun|initiated|performed|provided|administered|used|given|applied|done|recommended|indicated|continued|attempted)\\b/.test(after) ||
+      /\\b(?:is|are)\\s+(?:contraindicated|not\\s+(?:recommended|indicated))\\b/.test(after)) return -1;
+  if (/\\b(?:should|must|can|may|is|are)\\s+(?:be\\s+)?(?:started|begun|initiated|performed|provided|administered|used|given|applied|done|recommended|indicated|continued)\\b/.test(after)) return 1;
+
+  // Identify the LAST action operator before this intervention. Negating an
+  // earlier, unrelated operator does not change the meaning of the last one.
+  var operators = /\\b(begin|start|initiate|perform|provide|administer|deliver|apply|use|give|continue|resume|undertake|recommend|ensure|offer|avoid|withhold|omit|skip|delay|defer|postpone|stop|discontinue|refrain)\\b/g;
+  var last = null, hit;
+  while ((hit = operators.exec(before)) !== null) last = {verb:hit[1],index:hit.index};
+  if (!last) return 0;
+  var lead = before.substring(0, last.index).trim().split(/\\s+/).slice(-3).join(' ');
+  var negated = /(?:\\b(?:do|does|did|should|must|can|may)\\s+not|never)\\s*$/.test(lead);
+  if (/^(?:avoid|withhold|omit|skip|delay|defer|postpone|stop|discontinue|refrain)$/.test(last.verb)) return negated ? 1 : -1;
+  return negated ? -1 : 1;
+}
+/**
+ * Reject explicit clinical reversals in a proposed correct answer or its
+ * rationale. All checks are conservative: inconclusive cases remain subject
+ * to an educator's clinical review; keyword overlap is never proof of safety.
+ */
+function cneAiContradictsEvidence_(excerpt, answer, rationale) {
+  var actions = [
+    /\\b(?:cpr|cardiopulmonary resuscitation)\\b/,
+    /\\b(?:chest compressions?|cardiac compressions?)\\b/,
+    /\\b(?:rescue breath(?:s|ing)?|mouth to mouth resuscitation)\\b/,
+    /\\b(?:bag mask ventilation|ventilation|ventilations)\\b/,
+    /\\b(?:aed|defibrillation|defibrillator)\\b/,
+    /\\b(?:deep suctioning|endotracheal suctioning|airway suctioning|suctioning|suction)\\b/,
+    /\\b(?:oxygen therapy|supplemental oxygen|oxygen administration|oxygen)\\b/,
+    /\\b(?:intravenous fluids?|iv fluids?|fluid bolus)\\b/,
+    /\\b(?:antibiotic(?:s)?|antimicrobial(?:s)?)\\b/,
+    /\\b(?:analgesic(?:s)?|opioid(?:s)?|morphine|atropine|scopolamine|epinephrine|adrenaline|naloxone)\\b/
+  ];
+  for (var i = 0; i < actions.length; i++) {
+    var citationPolarity = cneAiClinicalPolarity_(excerpt, actions[i]);
+    if (!citationPolarity) continue;
+    var answerText = [answer, rationale];
+    for (var j = 0; j < answerText.length; j++) {
+      var candidateText = String(answerText[j] || '');
+      if (!actions[i].test(cneAiEvidenceText_(candidateText))) continue;
+      var proposedPolarity = cneAiClinicalPolarity_(candidateText, actions[i]);
+      if (proposedPolarity && proposedPolarity !== citationPolarity) return true;
+      // A prohibition in the excerpt needs a matching prohibition in a
+      // purportedly correct answer; mere mention of the intervention is not enough.
+      if (j === 0 && citationPolarity === -1 && proposedPolarity === 0) return true;
+    }
+  }
+  // Numerical CPR ratios are not interchangeable clinical recommendations.
+  var sourceOriginalRatio = String(excerpt || '').match(/\\b\\d{1,3}\\s*:\\s*\\d{1,3}\\b/);
+  if (sourceOriginalRatio && (String(excerpt || '').match(/\\b\\d{1,3}\\s*:\\s*\\d{1,3}\\b/g) || []).length === 1) {
+    var canonicalSourceRatio = sourceOriginalRatio[0].replace(/\\s/g, '');
+    for (var k = 0; k < 2; k++) {
+      var candidateRatio = String(k === 0 ? answer : rationale || '').match(/\\b\\d{1,3}\\s*:\\s*\\d{1,3}\\b/);
+      if (candidateRatio && candidateRatio[0].replace(/\\s/g, '') !== canonicalSourceRatio) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Verify evidence against the ACTUAL supplied CNE material or the specifically
+ * cited indexed library section, not just a matching document title.
+ * Require Gemini to copy a sufficiently informative verbatim passage so that
+ * a hallucinated source title / unrelated section cannot pass validation.
+ */
+/**
+ * Reject unsupported clinical numbers and quantities BEFORE any weak lexical
+ * support comparison. A quoted "2 mg" must not validate "20 mg" or "2 g";
+ * "100 to 120/min" must not validate "40/min". Deliberately fail closed on
+ * uncertain unit conversion: educators can edit questions rather than allowing
+ * a possibly unsafe implicit conversion. This is not a dosage calculator.
+ */
+function cneAiClinicalQuantities_(value) {
+  var source = String(value || '').toLowerCase()
+    .replace(/(\\d),(?=\\d{3}(?:\\D|$))/g, '$1')
+    .replace(/(^|[^0-9])\\.(\\d+)/g, '$10.$2');
+  var result = [];
+  var numbers = /\\b\\d+(?:\\.\\d+)?(?:\\s*:\\s*\\d+(?:\\.\\d+)?)?\\b/g;
+  var match;
+  while ((match = numbers.exec(source)) !== null) {
+    var rawNumber = match[0].replace(/\\s/g, '');
+    var ratio = rawNumber.indexOf(':') !== -1;
+    var number = ratio ? rawNumber : String(Number(rawNumber));
+    var after = source.substring(match.index + match[0].length);
+    var unitMatch = after.match(/^\\s*(mg|milligrams?|mcg|micrograms?|µg|grams?|g|kg|kilograms?|ml|millilit(?:er|re)s?|lit(?:er|re)s?|l|mmhg|cm|mm|iu|units?|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|breaths?|compressions?|percent|%)(?:\\s*\\/\\s*(kg|ml|l|min|minute|hour|hr|day))?(?=\\b|\\s|$)/i);
+    var unit = '';
+    if (unitMatch && !ratio) {
+      var main = unitMatch[1].toLowerCase();
+      var unitMap = {
+        milligram:'mg',milligrams:'mg',microgram:'mcg',micrograms:'mcg','µg':'mcg',
+        gram:'g',grams:'g',kilogram:'kg',kilograms:'kg',
+        milliliter:'ml',milliliters:'ml',millilitre:'ml',millilitres:'ml',
+        liter:'l',liters:'l',litre:'l',litres:'l',
+        unit:'units',units:'units',second:'sec',seconds:'sec',secs:'sec',
+        minute:'min',minutes:'min',mins:'min',hour:'hr',hours:'hr',hrs:'hr',
+        day:'day',days:'day',breath:'breaths',breaths:'breaths',
+        compression:'compressions',compressions:'compressions',percent:'%',
+        min:'min'
+      };
+      unit = unitMap[main] || main;
+      if (unitMatch[2]) {
+        var denominator = unitMatch[2].toLowerCase();
+        unit += '/' + (denominator === 'minute' ? 'min' : denominator === 'hour' ? 'hr' : denominator);
+      }
+    }
+    result.push({number:number,unit:unit,index:match.index});
+  }
+  return result;
+}
+/**
+ * Bind a clinical quantity to its nearest named intervention, rather than
+ * matching the same numeral anywhere in a multi-treatment excerpt.
+ * Example: morphine 2 mg and naloxone 20 mg does NOT support morphine 20 mg.
+ * When an unambiguous local anchor cannot be found, fail closed.
+ * This local lexical binding is an additional guard, not medical entailment.
+ */
+function cneAiQuantityAnchor_(text, quantity) {
+  var raw = String(text || '').toLowerCase();
+  var before = raw.substring(Math.max(0, quantity.index - 120), quantity.index);
+  var after = raw.substring(quantity.index + String(quantity.number).length, quantity.index + 105);
+  var stop = {
+    administer:1,administered:1,administration:1,give:1,given:1,provide:1,provided:1,
+    start:1,begin:1,initiate:1,perform:1,use:1,using:1,deliver:1,continue:1,
+    dose:1,dosage:1,doses:1,amount:1,rate:1,range:1,minimum:1,maximum:1,
+    intravenously:1,intravenous:1,orally:1,oral:1,injection:1,infusion:1,
+    only:1,when:1,with:1,without:1,from:1,into:1,after:1,before:1,
+    patient:1,patients:1,adult:1,child:1,children:1,clinical:1,care:1,
+    during:1,each:1,every:1,over:1,than:1,then:1,immediately:1,
+    hours:1,hour:1,minutes:1,minute:1,seconds:1,second:1,
+    grams:1,gram:1,milligrams:1,milligram:1,micrograms:1,microgram:1,
+    litres:1,litre:1,liters:1,liter:1,per:1,the:1,and:1,for:1,via:1,
+    with:1,that:1,this:1,which:1,should:1,shall:1,must:1,
+    postoperative:1,pain:1,medical:1,order:1,according:1,prescribed:1,
+    checked:1,checking:1,confirmed:1,confirming:1,reassess:1,assess:1,
+    at:1,to:1,of:1,in:1,by:1,or:1,is:1,are:1,be:1,a:1,an:1
+  };
+  var meaningful = function(segment) {
+    return (segment.match(/[a-z]+/g) || []).filter(function(word) {
+      return word.length >= 3 && !stop[word];
+    });
+  };
+  // A comma/semicolon or a new instruction marks an independent action.
+  // Avoid incorrectly borrowing an earlier drug name for a later dose.
+  before = before.split(/[.;,\\n]|\\band\\s+(?=(?:administer|give|provide|infuse|start|use|increase|decrease)\\b)/).pop();
+  after = after.split(/[.;,\\n]|\\band\\s+(?=(?:administer|give|provide|infuse|start|use|increase|decrease)\\b)/)[0];
+  var previous = meaningful(before);
+  if (previous.length) return previous[previous.length - 1];
+  var following = meaningful(after);
+  return following.length ? following[0] : '';
+}
+function cneAiClinicalQuantitiesSupported_(excerpt, answer, rationale) {
+  var quoted = cneAiClinicalQuantities_(excerpt);
+  var proposalText = String(answer || '') + ' ' + String(rationale || '');
+  var proposed = cneAiClinicalQuantities_(proposalText);
+  for (var i = 0; i < proposed.length; i++) {
+    var claim = proposed[i];
+    var isRatio = claim.number.indexOf(':') !== -1;
+    var claimAnchor = isRatio ? '' : cneAiQuantityAnchor_(proposalText, claim);
+    if (!isRatio && !claimAnchor) return false;
+    var supported = quoted.some(function(q) {
+      if (q.number !== claim.number ||
+          (claim.unit && (!q.unit || q.unit !== claim.unit))) return false;
+      // The independent ratio validator checks an exact cited ratio. Ratios
+      // can precede or follow their clinical noun without changing meaning.
+      return isRatio || cneAiQuantityAnchor_(excerpt, q) === claimAnchor;
+    });
+    if (!supported) return false;
+  }
+  return true;
+}
+/** Fail closed on explicit contradictory qualifiers absent from action-polarity checks. */
+function cneAiClinicalQualifierContradiction_(excerpt, answer, rationale) {
+  var source = ' ' + cneAiEvidenceText_(excerpt) + ' ';
+  var proposal = ' ' + cneAiEvidenceText_(String(answer || '') + ' ' + String(rationale || '')) + ' ';
+  if (/\\bonly (?:when|if|after)\\b/.test(source) &&
+      /\\b(?:regardless of|irrespective of|for every patient|in every patient|in all patients|without (?:checking|confirming|assessing|verifying))\\b/.test(proposal)) return true;
+  if (/\\b(?:before|after) (?:checking|confirming|assessing|verifying)\\b/.test(source) &&
+      /\\bwithout (?:checking|confirming|assessing|verifying)\\b/.test(proposal)) return true;
+  // A necessary prerequisite must not be reordered in the proposed answer.
+  // This checks explicit reversals of the SAME verification verb, not generic
+  // occurrences of the words 'before' and 'after' elsewhere in the sentence.
+  var prerequisite = /\\b(before|after) (checking|confirming|assessing|verifying)\\b/g;
+  var sourcePrerequisites = [], proposalPrerequisites = [], m;
+  while ((m = prerequisite.exec(source)) !== null) sourcePrerequisites.push({order:m[1],action:m[2]});
+  prerequisite.lastIndex = 0;
+  while ((m = prerequisite.exec(proposal)) !== null) proposalPrerequisites.push({order:m[1],action:m[2]});
+  for (var k = 0; k < sourcePrerequisites.length; k++) {
+    for (var j = 0; j < proposalPrerequisites.length; j++) {
+      if (sourcePrerequisites[k].action === proposalPrerequisites[j].action &&
+          sourcePrerequisites[k].order !== proposalPrerequisites[j].order) return true;
+    }
+  }
+  if (/\\b(?:slowly|gradually)\\b/.test(source) && /\\b(?:rapidly|quickly|as fast as possible)\\b/.test(proposal)) return true;
+  if (/\\b(?:rapidly|quickly)\\b/.test(source) && /\\b(?:slowly|gradually)\\b/.test(proposal)) return true;
+  if (/\\b(?:do not exceed|no more than|at most|maximum)\\b/.test(source) &&
+      /\\b(?:at least|minimum|no less than|exceed)\\b/.test(proposal)) return true;
+  if (/\\b(?:at least|minimum|no less than)\\b/.test(source) &&
+      /\\b(?:at most|maximum|no more than)\\b/.test(proposal)) return true;
+  return false;
+}
+
+function cneAiEvidenceSupported_(topic, source, excerpt, answer, rationale, directMaterial, evidence) {
+  var citation = cneAiEvidenceText_(source);
+  var quote = cneAiEvidenceText_(excerpt);
+  if (!citation || quote.length < 35 || quote.split(' ').length < 7) return false;
+
+  var matchesRealSource = false;
+  // Uploaded session material is cited as a verified session, not as a
+  // purported guideline that was never present in the local evidence.
+  var sessionCitation = cneAiEvidenceText_('Verified CNE Session: ' + topic);
+  if (directMaterial && cneAiEvidenceText_(directMaterial).indexOf(quote) !== -1 &&
+      citation.indexOf(sessionCitation) === 0) {
+    matchesRealSource = true;
+  }
+  var chunks = Array.isArray(evidence) ? evidence : [];
+  for (var i = 0; i < chunks.length && !matchesRealSource; i++) {
+    var chunk = chunks[i] || {};
+    var title = cneAiEvidenceText_(chunk.resourceTitle);
+    var heading = cneAiEvidenceText_(chunk.sectionHeading);
+    if (!title || citation.indexOf(title) === -1) continue;
+    if (heading && citation.indexOf(heading) === -1) continue;
+    if (cneAiEvidenceText_(chunk.chunkText).indexOf(quote) !== -1) matchesRealSource = true;
+  }
+  if (!matchesRealSource) return false;
+
+  // Never accept a clinically reversed action merely because the answer uses
+  // the same vocabulary as an authoritative passage. This check must precede
+  // the weaker lexical-support test below.
+  if (cneAiContradictsEvidence_(excerpt, answer, rationale)) return false;
+  if (cneAiClinicalQualifierContradiction_(excerpt, answer, rationale)) return false;
+  if (!cneAiClinicalQuantitiesSupported_(excerpt, answer, rationale)) return false;
+
+  // The quoted evidence should concern the actual question's clinical field.
+  // A citation to a whole nursing textbook or to an unrelated section alone
+  // does not establish support for the proposed correct answer.
+  if (/(?:\\bbls\\b|\\bpbls\\b|\\bcpr\\b|basic life support|resuscitat|cardiopulmonary)/i.test(topic) &&
+      !/(?:\\b(?:cpr|bls|pbls|aed)\\b|resuscitat|cardiopulmonary|chest compress|rescue breath|ventilat|defibrillat|cardiac arrest|pulseless|no pulse|not breathing|apnoe|apnea|unresponsive)/.test(quote)) return false;
+
+  var stop = {the:1,and:1,that:1,with:1,from:1,this:1,should:1,which:1,what:1,when:1,they:1,their:1,these:1,those:1,patient:1,child:1,infant:1,paediatric:1,pediatric:1,care:1,nursing:1,answer:1,correct:1,option:1,because:1,according:1,appropriate:1,recommended:1};
+  var quoteContains = function(text) {
+    var ratio = String(text || '').match(/\\b\\d{1,3}\\s*:\\s*\\d{1,3}\\b/);
+    if (ratio && cneAiEvidenceText_(excerpt).indexOf(cneAiEvidenceText_(ratio[0])) !== -1) return true;
+    var terms = cneAiEvidenceText_(text).split(' ').filter(function(x) {
+      return (x.length >= 5 || x === 'cpr' || x === 'aed' || x === 'bls') && !stop[x];
+    });
+    return terms.length > 0 && terms.some(function(term) {
+      return quote.indexOf(term.substring(0, Math.max(4, term.length - 1))) !== -1 ||
+        (term.length === 3 && quote.split(' ').indexOf(term) !== -1);
+    });
+  };
+  // The correct ANSWER and rationale must independently connect to the quoted
+  // evidence. Matching only CPR in a rationale cannot validate an IV answer.
+  return quoteContains(answer) && quoteContains(rationale);
+}
+function cneAiCanonicalQuestion_(question) { return String(question || '').toLowerCase().replace(/[^a-z0-9]/g,'').trim(); }
 
 /**
  * Part 1C / 1D: Authoritative End-to-End Gemini MCQ Generation in Google Apps Script
@@ -14165,6 +14574,12 @@ function handleGenerateCNEQuestions(params, session) {
     };
   }
 
+  var hasOwnMaterial = cneAiHasOwnMaterial_(cneId);
+  if (!hasOwnMaterial && params.allowLibraryOnly !== true) {
+    return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED',message:'No CNE material is uploaded. Confirm whether to search the CNE Reference Library.'};
+  }
+  updateCNEAiProgress_(cneId, session, 1, 'Checking CNE permissions and topic.');
+
   // Quota reservation: lock acquired and released within handleReserveAiQuota
   var reservationToken = params.reservationToken ? sanitizeCellInput(params.reservationToken) : '';
   if (!reservationToken) {
@@ -14187,13 +14602,15 @@ function handleGenerateCNEQuestions(params, session) {
     }
   }
 
+  updateCNEAiProgress_(cneId, session, 2, hasOwnMaterial ? 'Reading uploaded CNE learning material.' : 'Searching the approved CNE Reference Library.');
   // Direct Gemini network call and validation (OUTSIDE ScriptLock)
   var genRes = null;
   try {
     genRes = generateAiQuestionsInternal({
       cneId: cneId,
       reservationToken: reservationToken,
-      generationSource: 'MATERIAL'
+      generationSource: 'MATERIAL',
+      allowLibraryOnly: !hasOwnMaterial && params.allowLibraryOnly === true
     }, session);
   } catch (genErr) {
     genRes = {
@@ -14219,42 +14636,32 @@ function handleGenerateCNEQuestions(params, session) {
 
   var validatedQuestions = genRes.data;
 
-  // Persist questions to sheet
-  var saveRes = handleSaveCNEQuestions({
-    cneId: cneId,
-    questions: validatedQuestions
-  }, session);
-
-  if (!saveRes || !saveRes.success) {
-    try {
-      handleReleaseAiQuota({ cneId: cneId, reservationToken: reservationToken }, session);
-    } catch (relErr2) {}
-    return saveRes || {
-      success: false,
-      errorCode: 'SAVE_QUESTIONS_FAILED',
-      message: 'Failed to persist generated MCQs to sheet.'
-    };
-  }
-
-  // Commit quota to USED
+  updateCNEAiProgress_(cneId, session, 6, 'Saving five validated Draft questions once.');
+  // ONLY handleCommitAiQuota persists. Never call handleSaveCNEQuestions here:
+  // that earlier two-write sequence could create 10 rows for one five-question batch.
   var commitRes = handleCommitAiQuota({
-    cneId: cneId,
-    reservationToken: reservationToken,
-    questions: validatedQuestions
+    cneId: cneId, reservationToken: reservationToken, questions: validatedQuestions
   }, session);
-
   if (!commitRes || !commitRes.success) {
-    logAuditAction('AI_QUOTA_COMMIT_WARNING', session.employeeId, 'Questions saved but quota commit returned warning for CNE: ' + cneId, 'WARNING');
+    updateCNEAiProgress_(cneId, session, 0, 'Question save or quota confirmation requires review.');
+    // Do not release a token on uncertain commit: saved rows may already exist.
+    return commitRes || {success:false,errorCode:'COMMIT_FAILED',message:'Unable to verify the saved question batch.'};
   }
+  var saved = handleGetCNEQuestions({cneId:cneId}, session);
+  if (!saved || !saved.success) return {success:false,errorCode:'SAVED_READ_FAILED',message:'Five questions were saved; reload the Question Bank to review them.'};
+  var savedBatch = (saved.data || []).filter(function(q) {
+    return validatedQuestions.some(function(g) {return cneAiCanonicalQuestion_(g.question) === cneAiCanonicalQuestion_(q.question);});
+  });
+  updateCNEAiProgress_(cneId, session, 7, 'Five Draft questions are ready for educator review.');
 
   logAuditAction('AI_QUESTION_GENERATION_SUCCESS', session.employeeId, 'End-to-end AI MCQ generation completed and saved for CNE: ' + cneId, 'SUCCESS');
 
   return {
     success: true,
-    data: validatedQuestions,
+    data: savedBatch,
     cneId: cneId,
     source: genRes.source || 'gemini',
-    message: 'Successfully generated and saved exactly 5 clinical MCQs.'
+    message: 'Five unique Draft questions saved. Review and approve each before Post-Test activation.'
   };
 }
 

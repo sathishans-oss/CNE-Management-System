@@ -28,6 +28,7 @@ interface CNEQuestionsModalProps {
   onClose: () => void;
   onUpdated?: () => void;
   onNavigateToQR?: () => void;
+  onNavigateToMaterial?: () => void;
 }
 
 
@@ -73,7 +74,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   isAuthorized,
   onClose,
   onUpdated,
-  onNavigateToQR
+  onNavigateToQR,
+  onNavigateToMaterial
 }) => {
   const cneId = cne.cneId || cne.classId || '';
   const [questions, setQuestions] = useState<CNEQuestion[]>([]);
@@ -101,6 +103,21 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   // Real-time stage progress state for AI generation
   const [generationStage, setGenerationStage] = useState<{ title: string; subtitle: string } | null>(null);
+  const [generationStep, setGenerationStep] = useState(0);
+  const [materialChoice, setMaterialChoice] = useState<'confirm' | 'missing' | null>(null);
+  const [checkingMaterial, setCheckingMaterial] = useState(false);
+  const [generationElapsedSeconds, setGenerationElapsedSeconds] = useState(0);
+  const progressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const generationSteps = [
+    'Verifying CNE and permissions',
+    'Reading uploaded material / searching library',
+    'Checking topic-relevant evidence',
+    'Generating five clinical MCQs',
+    'Validating questions and sources',
+    'Saving five unique Draft questions',
+    'Questions ready for educator review'
+  ];
+  const stopProgressPolling = () => { if (progressPollRef.current) clearInterval(progressPollRef.current); progressPollRef.current = null; };
 
   // Authoritative AI Quota & Material State
   const [quotaInfo, setQuotaInfo] = useState<CNEAiQuotaInfo | null>(null);
@@ -113,6 +130,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     questionsRequestRef.current += 1;
     quotaRequestRef.current += 1;
     generationRequestRef.current += 1;
+    stopProgressPolling();
     generatingRef.current = false;
     savingRef.current = false;
     setQuestions([]);
@@ -122,6 +140,10 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setEditingIndex(null);
     setShowHistory(false);
     setGenerationStage(null);
+    setGenerationStep(0);
+    setMaterialChoice(null);
+    setCheckingMaterial(false);
+    setGenerationElapsedSeconds(0);
     setIsGenerating(false);
     setIsSaving(false);
     persistedQuestionIdsRef.current = new Set();
@@ -136,6 +158,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       questionsRequestRef.current += 1;
       quotaRequestRef.current += 1;
       generationRequestRef.current += 1;
+      stopProgressPolling();
     };
   }, [cneId]);
 
@@ -204,7 +227,21 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const isPageReady = !loading && quotaInfo !== null;
   const canInteractWithQuestionTools = canModify && isPageReady;
 
-  const handleGenerateAi = async () => {
+  const requestAiGeneration = async () => {
+    if (!canModify || !isPageReady || isGenerating || generatingRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
+    setCheckingMaterial(true);
+    try {
+      const check = await ApiService.getCNEAiMaterialStatus(cneId);
+      if (!check.success || !check.data) { error(check.message || 'Could not verify uploaded material. Please retry.'); return; }
+      setHasMaterial(check.data.hasOwnMaterial);
+      if (!check.data.hasOwnMaterial) { setMaterialChoice('confirm'); return; }
+      await handleGenerateAi(false);
+    } catch (e: any) {
+      error(e?.message || 'Unable to verify CNE material.');
+    } finally { setCheckingMaterial(false); }
+  };
+
+  const handleGenerateAi = async (allowLibraryOnly = false) => {
     if (
       generatingRef.current ||
       isGenerating ||
@@ -225,14 +262,30 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const isCurrent = () => requestId === generationRequestRef.current && requestCneId === currentCneIdRef.current;
 
     generatingRef.current = true;
+    setMaterialChoice(null);
     setIsGenerating(true);
+    setGenerationStep(1);
+    const startedAt = Date.now();
+    setGenerationElapsedSeconds(0);
+    stopProgressPolling();
+    // Every stage comes from the authorized backend progress endpoint, never a fake timer.
+    progressPollRef.current = setInterval(() => {
+      if (isCurrent()) setGenerationElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+      void ApiService.getCNEAiGenerationProgress(requestCneId).then((progress) => {
+        if (isCurrent() && progress.success && progress.data && progress.data.stage >= 1 && progress.data.stage <= 7 &&
+            Number(progress.data.updatedAt || 0) >= startedAt) {
+          setGenerationStep((prev) => Math.max(prev, progress.data!.stage));
+          setGenerationStage({title: generationSteps[progress.data.stage - 1], subtitle: progress.data.message});
+        }
+      }).catch(() => { /* polling is advisory; server execution is authoritative */ });
+    }, 2200);
     setGenerationStage({
       title: 'Generating MCQs',
       subtitle: 'Analyzing the saved CNE learning material and creating 5 clinical MCQs…'
     });
 
     try {
-      const res = await ApiService.generateCNEQuestions(requestCneId);
+      const res = await ApiService.generateCNEQuestions(requestCneId, allowLibraryOnly);
       if (!isCurrent()) return;
 
       if (res && res.success && res.data && Array.isArray(res.data) && res.data.length === 5) {
@@ -244,18 +297,20 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         setQuestions(generated);
         persistedQuestionIdsRef.current = new Set(generated.map((q) => String(q.id || '')).filter(Boolean));
         draftOriginSnapshotRef.current = new Map();
-        setHasMaterial(true);
+        setGenerationStep(7);
         setGenerationStage({
           title: 'Questions Saved',
-          subtitle: '5 clinical MCQs were generated and saved successfully.'
+          subtitle: 'Five Draft questions were saved once and are ready for educator review.'
         });
-        success('Successfully generated and saved 5 clinical MCQs. Review them, then use Save & Next to open QR.');
+        success('Five Draft questions are ready. Review and approve each question before opening QR.');
         await loadQuota(++quotaRequestRef.current, requestCneId);
         if (onUpdated) onUpdated();
       } else {
         const errMsg = res?.message || 'AI question generation failed. No AI generation allowance was consumed.';
-        if (res?.errorCode === 'MATERIAL_REQUIRED' || res?.errorCode === 'NO_EXTRACTABLE_CONTENT' || res?.errorCode === 'INSUFFICIENT_TOPIC_MATERIAL') {
-          setHasMaterial(false);
+        if (res?.errorCode === 'NO_RELEVANT_LIBRARY_CONTENT' || res?.errorCode === 'INSUFFICIENT_TOPIC_MATERIAL' || res?.errorCode === 'NO_EXTRACTABLE_CONTENT') {
+          setMaterialChoice('missing');
+        } else if (res?.errorCode === 'LIBRARY_CONSENT_REQUIRED') {
+          setMaterialChoice('confirm');
         }
         error(errMsg);
         await loadQuota(++quotaRequestRef.current, requestCneId);
@@ -264,6 +319,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       if (isCurrent()) error(e?.message || 'Error occurred during AI question generation.');
     } finally {
       if (isCurrent()) {
+        stopProgressPolling();
         generatingRef.current = false;
         setIsGenerating(false);
         setGenerationStage(null);
@@ -274,6 +330,10 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const handleFinalizeAll = () => {
     if (!canModify) return;
     const active = questions.filter(isActiveQuestion);
+    if (active.some((q) => String(q.id || '').startsWith('q_ai_') && !q.isFinalized)) {
+      error('AI questions must be reviewed and marked Finalized individually.');
+      return;
+    }
     const incomplete = active.filter((q) => !isQuestionComplete(q));
     if (incomplete.length > 0) {
       error(`Complete all active questions before Finalize All. Incomplete: ${incomplete.length}`);
@@ -562,7 +622,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             <div className="flex items-center gap-2">
               <FileWarning className="w-4 h-4 text-amber-600 shrink-0" />
               <span>
-                <strong>Learning Material Missing or Document Unreadable:</strong> Learning material is required before AI questions can be generated. Please upload CNE learning material or enter content in the Reference Material modal.
+                <strong>No CNE material uploaded:</strong> AI can search the CNE Reference Library only with your confirmation, or you can upload topic material.
               </span>
             </div>
           </div>
@@ -600,7 +660,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              {activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && (
+              {activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && !activeQuestions.some((q) => String(q.id || '').startsWith('q_ai_') && !q.isFinalized) && (
                 <button
                   type="button"
                   onClick={handleFinalizeAll}
@@ -616,16 +676,16 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               {/* AI Generate MCQs */}
               <button
                 type="button"
-                onClick={() => handleGenerateAi()}
+                onClick={() => { void requestAiGeneration(); }}
                 disabled={
                   !isPageReady ||
                   isGenerating ||
+                  checkingMaterial ||
                   generatingRef.current ||
                   isSaving ||
                   !canModify ||
                   isAiGenerationUsed ||
-                  isAiGenerationUnavailable ||
-                  hasMaterial === false
+                  isAiGenerationUnavailable
                 }
                 title={
                   !isPageReady
@@ -634,22 +694,20 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                     ? 'AI generation already completed for this CNE (Locked)'
                     : isAiGenerationUnavailable
                     ? 'AI generation is currently unavailable for this CNE'
-                    : hasMaterial === false
-                    ? 'Please enter or upload CNE Class Content first'
+
                     : 'AI Generate MCQs strictly from saved learning material and CNE Library resources'
                 }
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-xs shadow-xs transition-colors ${
                   isAiGenerationUsed
                     ? 'bg-slate-200 text-slate-500 cursor-not-allowed border border-slate-300'
-                    : hasMaterial === false
-                    ? 'bg-purple-100 text-purple-400 cursor-not-allowed border border-purple-200'
+
                     : 'bg-purple-600 hover:bg-purple-700 text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
                 }`}
               >
-                {isGenerating ? (
+                {isGenerating || checkingMaterial ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Generating MCQs...</span>
+                    <span>{checkingMaterial ? 'Checking material...' : 'Generating MCQs...'}</span>
                   </>
                 ) : isAiGenerationUsed ? (
                   <>
@@ -708,18 +766,19 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         <div className="p-6 overflow-y-auto flex-1 bg-slate-50/40 text-xs flex flex-col">
           {/* Prominent Single-Stage Processing Status in Main Content Area */}
           {isGenerating ? (
-            <div className="my-auto py-16 flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-4">
-              <div className="w-14 h-14 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center shadow-xs">
-                <Loader2 className="w-7 h-7 animate-spin text-purple-600" />
+            <div role="status" aria-live="polite" className="mx-auto my-auto max-w-lg w-full rounded-2xl border border-purple-200 bg-purple-50 p-5 space-y-4">
+              <div className="flex items-center gap-3"><Loader2 className="w-6 h-6 animate-spin text-purple-700" />
+                <div><h3 className="text-sm font-bold text-purple-950">Generating 5 Topic-Specific Questions</h3>
+                  <p className="text-xs text-purple-700">{generationStage?.subtitle || 'The server is processing your CNE topic. This may take some time.'}</p>
+                </div>
               </div>
-              <div className="space-y-1.5">
-                <h3 className="text-base font-bold text-slate-900">
-                  {generationStage?.title || 'Generating MCQs'}
-                </h3>
-                <p className="text-xs text-slate-500 max-w-sm leading-relaxed">
-                  {generationStage?.subtitle || 'Analyzing the learning content and CNE Library resources…'}
-                </p>
-              </div>
+              <ol className="space-y-2">{generationSteps.map((name, index) => (
+                <li key={name} className={`flex items-start gap-2 text-xs ${generationStep > index + 1 ? 'text-emerald-700' : generationStep === index + 1 ? 'font-semibold text-purple-950' : 'text-slate-500'}`}>
+                  {generationStep > index + 1 ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : generationStep === index + 1 ? <Loader2 className="w-4 h-4 shrink-0 animate-spin" /> : <span className="w-4 h-4 shrink-0 text-center">○</span>}
+                  {name}
+                </li>
+              ))}</ol>
+              <p className="text-xs text-slate-500">Elapsed: {generationElapsedSeconds}s. Stages reflect server updates; no estimated percentage.</p>
             </div>
           ) : loading ? (
             <div className="my-auto py-20 flex flex-col items-center justify-center gap-2 text-slate-500">
@@ -992,6 +1051,26 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             </div>
           )}
         </div>
+
+        {materialChoice && (
+          <div className="fixed inset-0 z-[90] bg-slate-950/70 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={materialChoice === 'confirm' ? 'No CNE material uploaded' : 'No relevant learning material found'}>
+            <div className="w-full max-w-md bg-white rounded-2xl p-5 shadow-2xl space-y-4">
+              <div className="flex items-center gap-2"><BookOpen className="w-5 h-5 text-amber-600" />
+                <h3 className="text-base font-bold text-slate-900">{materialChoice === 'confirm' ? 'CNE Learning Material Not Uploaded' : 'No Relevant Learning Material Found'}</h3>
+              </div>
+              <p className="text-sm text-slate-700 leading-relaxed">
+                {materialChoice === 'confirm'
+                  ? 'No learning material is uploaded for this CNE. AI can search the CNE Reference Library for relevant content, but this may take additional time. Questions will be generated only if suitable topic evidence is available. Would you like to proceed?'
+                  : 'No sufficiently relevant learning material was found for this CNE topic. Question generation has stopped. No questions were saved and your successful-generation allowance remains available. Please upload the correct topic material.'}
+              </p>
+              <div className="flex flex-wrap gap-2 justify-end">
+                {materialChoice === 'confirm' && <button type="button" onClick={() => { void handleGenerateAi(true); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Proceed to Questions</button>}
+                <button type="button" onClick={() => { setMaterialChoice(null); if (onNavigateToMaterial) onNavigateToMaterial(); else error('Please open Material from the CNE Progress panel.'); }} className="px-3 py-2 rounded-lg border border-purple-400 text-purple-700 font-semibold text-xs">Upload Material</button>
+                <button type="button" onClick={() => setMaterialChoice(null)} className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 font-semibold text-xs">Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Footer: one action only — Save & Next opens QR after 5 valid finalized questions */}
         <div className="px-3 sm:px-6 py-3 border-t border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">

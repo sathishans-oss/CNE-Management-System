@@ -26,9 +26,25 @@ try {
   // .env file is optional in containerized environments where env vars are injected directly
 }
 
-// In Cloud Run and container environments, listen on the port injected by the environment ($PORT).
-// Defaults to 3000 in local development and iframe preview.
-const PORT = Number(process.env.PORT) || 3000;
+// Support CLI --port argument (e.g. npm run dev --port 3000), falling back to process.env.PORT or 3000
+function getPort(): number {
+  const portIndex = process.argv.indexOf('--port');
+  if (portIndex !== -1 && process.argv[portIndex + 1]) {
+    const p = Number(process.argv[portIndex + 1]);
+    if (!isNaN(p) && p > 0) return p;
+  }
+  if (process.env.DEFAULT_APP_PORT) {
+    const p = Number(process.env.DEFAULT_APP_PORT);
+    if (!isNaN(p) && p > 0) return p;
+  }
+  if (process.env.PORT) {
+    const p = Number(process.env.PORT);
+    if (!isNaN(p) && p > 0) return p;
+  }
+  return 3000;
+}
+
+const PORT = getPort();
 
 async function startServer() {
   const app = express();

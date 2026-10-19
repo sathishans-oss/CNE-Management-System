@@ -1,4 +1,4 @@
-import { CNEType, Employee, SessionUser } from './types';
+import { CNEType, Employee, NewsEventItem, SessionUser } from './types';
 
 const MONTH_NAMES = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -474,6 +474,19 @@ export function parseToIsoDateString(val?: string | Date | null): string | null 
   }
 
   return null;
+}
+
+/**
+ * Sort circulars by their published date rather than Google Sheet row position.
+ * Stable sorting leaves the backend's insertion order intact on tied dates.
+ * Invalid dates are last; older date representations use shared parsing rules.
+ */
+export function newestNewsFirst(newsEvents: NewsEventItem[]): NewsEventItem[] {
+  return [...newsEvents].sort((a, b) => {
+    const aDate = parseToIsoDateString(a.date) || parseToIsoDateString(a.createdAt) || '';
+    const bDate = parseToIsoDateString(b.date) || parseToIsoDateString(b.createdAt) || '';
+    return bDate.localeCompare(aDate);
+  });
 }
 
 const MONTH_NAMES_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

@@ -2126,6 +2126,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             setActiveQuestionsCne(null);
           }}
           onUpdated={() => handleChildModalUpdated(activeQuestionsCne.cneId || activeQuestionsCne.classId)}
+          onNavigateToMaterial={() => {
+            const selected = activeQuestionsCne;
+            setActiveQuestionsCne(null);
+            if (selected && canOperateCne(selected) && !isCneClosed(selected)) setActiveReferenceCne(selected);
+          }}
           onNavigateToQR={() => {
             const currentCne = activeQuestionsCne;
             setActiveQuestionsCne(null);

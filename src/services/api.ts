@@ -451,6 +451,8 @@ export class ApiService {
       case 'saveCNEQuestions':
       case 'getCNEQuestions':
       case 'generateCNEQuestions':
+      case 'getCNEAiMaterialStatus':
+      case 'getCNEAiGenerationProgress':
       case 'getAiQuota':
       case 'saveReferenceMaterial':
       case 'uploadLearningResource':
@@ -1322,8 +1324,16 @@ export class ApiService {
    * Invokes Gemini directly inside Google Apps Script using UrlFetchApp.
    * Atomically checks quota, retrieves evidence, generates 5 MCQs, persists them, and commits quota.
    */
-  static async generateCNEQuestions(cneId: string): Promise<ApiResponse<CNEQuestion[]>> {
-    return this.executeAction<CNEQuestion[]>('generateCNEQuestions', { cneId });
+  static async generateCNEQuestions(cneId: string, allowLibraryOnly = false): Promise<ApiResponse<CNEQuestion[]>> {
+    return this.executeAction<CNEQuestion[]>('generateCNEQuestions', { cneId, allowLibraryOnly });
+  }
+
+  static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{cneId: string; hasOwnMaterial: boolean}>> {
+    return this.executeAction('getCNEAiMaterialStatus', { cneId });
+  }
+
+  static async getCNEAiGenerationProgress(cneId: string): Promise<ApiResponse<{stage: number; message: string; updatedAt?: number}>> {
+    return this.executeAction('getCNEAiGenerationProgress', { cneId });
   }
 
   /**

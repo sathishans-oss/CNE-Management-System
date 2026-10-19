@@ -1,4 +1,4 @@
-import { getIndiaTodayIsoDate } from '../utils';
+import { getIndiaTodayIsoDate, newestNewsFirst } from '../utils';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Bell,
@@ -519,7 +519,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
     }
   };
 
-  const filteredNews = newsList.filter((n) => {
+  const filteredNews = newestNewsFirst(newsList).filter((n) => {
     if (!newsSearch.trim()) return true;
     const q = newsSearch.toLowerCase();
     return (
@@ -661,7 +661,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                       <th className="py-3 px-4 w-28">Date</th>
                       <th className="py-3 px-4 w-24">Category</th>
                       <th className="py-3 px-4">Title & Summary</th>
-                      <th className="py-3 px-4 w-24">Attention</th>
+                      <th className="py-3 px-4 w-24">Highlight</th>
                       <th className="py-3 px-4 text-right w-24">Actions</th>
                     </tr>
                   </thead>
@@ -686,7 +686,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                         </td>
                         <td className="py-3 px-4">
                           <div className="flex flex-col gap-1 items-start">
-                            {item.blinkAttention && <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-amber-100 text-amber-800">Attention animation</span>}
+                            {item.blinkAttention && <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-rose-100 text-rose-800">NEW highlight</span>}
                             {!item.blinkAttention && <span className="text-[10px] text-slate-400 font-medium">Standard</span>}
                           </div>
                         </td>
@@ -1142,11 +1142,11 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                 <input type="checkbox" id="chk-blink-attention"
                   checked={newsForm.blinkAttention}
                   onChange={(e) => setNewsForm(prev => ({ ...prev, blinkAttention: e.target.checked }))}
-                  className="mt-0.5 rounded text-amber-600 focus:ring-amber-500" />
+                  className="mt-0.5 rounded text-rose-600 focus:ring-rose-500" />
                 <label htmlFor="chk-blink-attention" className="text-xs font-semibold text-slate-800 cursor-pointer">
-                  Blink ATTENTION text and icon on homepage
+                  Highlight this circular as NEW on the homepage
                   <span className="block text-[11px] font-normal text-slate-500 mt-0.5">
-                    The ATTENTION letters and icon repeatedly pulse while this option is enabled. Users requesting reduced motion see a steady indicator.
+                    Display a prominent red NEW badge with a quick, readable pulse. Reduced-motion settings show a steady red badge.
                   </span>
                 </label>
               </div>

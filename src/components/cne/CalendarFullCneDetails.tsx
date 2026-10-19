@@ -225,6 +225,7 @@ export const CalendarFullCneDetails: React.FC<Props> = ({ initialCne, user, onCl
       {activeActivity === 'questions' && <CNEQuestionsModal
         cne={cne} isAuthorized={canOperateNow}
         onClose={() => setActiveActivity(null)} onUpdated={refreshCurrentCne}
+        onNavigateToMaterial={() => { if (canOperateNow) launchNext('material'); }}
         onNavigateToQR={() => { if (canOperateNow) launchNext('qr'); }}
       />}
       {activeActivity === 'qr' && <CNEQRModal

@@ -10,6 +10,7 @@ import {
   Shield,
   FileText,
   BookOpen,
+  Images,
   ChevronDown,
   SlidersHorizontal,
   FileSpreadsheet
@@ -43,6 +44,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
     },
     { id: 'my-cne-records' as ViewMode, label: 'My CNE Records', icon: Award },
     { id: 'learning-resources' as ViewMode, label: 'Learning Resources', icon: BookOpen },
+    { id: 'gallery' as ViewMode, label: 'Class Photos', icon: Images },
     ...(isAdmin
       ? [
           { id: 'admin-reports' as ViewMode, label: 'Report and Stats', icon: BarChart3 },

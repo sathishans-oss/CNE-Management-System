@@ -36,6 +36,7 @@ export interface NewsEventItem {
   speaker?: string;
   isImportant?: boolean;
   blinkAttention?: boolean;
+  createdAt?: string; // Existing News API response; tie-break/fallback only.
 }
 
 export interface ChairpersonMessageData {

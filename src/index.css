@@ -1,51 +1,41 @@
 @import "tailwindcss";
 
-
-/* News attention: the selected ATTENTION label and icon gently flash on mobile and
-   desktop, while the circular title/summary remain steady and readable. */
-@keyframes cne-news-attention-breathe {
+/* Red NEW treatment for important news: quick but low-amplitude pulses keep the
+   text legible; the background, title and summary never flash on/off. */
+@keyframes cne-news-new-pulse {
   0%, 100% {
-    background-color: #fef3c7;
-    border-color: #f59e0b;
-    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.08);
+    background-color: #be123c;
+    border-color: #9f1239;
+    box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.18);
+    transform: scale(1);
   }
-  50% {
-    background-color: #fde68a;
-    border-color: #d97706;
-    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.16);
+  48% {
+    background-color: #f43f5e;
+    border-color: #be123c;
+    box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.23);
+    transform: scale(1.055);
   }
 }
 
-@keyframes cne-news-attention-text-flash {
-  0%, 24%, 76%, 100% { opacity: 1; }
-  44%, 56% { opacity: 0.15; }
+.cne-news-new-badge {
+  animation: cne-news-new-pulse 1.15s ease-in-out infinite;
+  transform-origin: center;
+  will-change: transform, box-shadow;
 }
 
-@keyframes cne-news-attention-ring {
-  0%, 12% { transform: scale(0.8); opacity: 0.7; }
-  65%, 100% { transform: scale(1.7); opacity: 0; }
+.cne-news-new-row:hover,
+.cne-news-new-row:focus-visible {
+  background-color: #fff1f2;
 }
 
-.cne-news-attention-badge {
-  animation: cne-news-attention-breathe 2.6s ease-in-out infinite;
-}
-
-.cne-news-attention-halo {
-  animation: cne-news-attention-ring 2.6s ease-out infinite;
-}
-
-/* Animate the actual letters and exclamation icon, not only the badge colour. */
-.cne-news-attention-text,
-.cne-news-attention-icon {
-  animation: cne-news-attention-text-flash 2.6s ease-in-out infinite;
-}
-
-/* Respect user accessibility preferences on desktop, iOS and Android. */
+/* The highlighted notice must remain obvious without motion. */
 @media (prefers-reduced-motion: reduce) {
-  .cne-news-attention-badge,
-  .cne-news-attention-halo,
-  .cne-news-attention-text,
-  .cne-news-attention-icon {
+  .cne-news-new-badge {
     animation: none !important;
+    will-change: auto;
+    background-color: #be123c;
+    border-color: #9f1239;
+    box-shadow: none;
+    transform: none;
   }
 }
