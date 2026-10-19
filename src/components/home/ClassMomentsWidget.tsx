@@ -66,7 +66,7 @@ export const ClassMomentsWidget: React.FC<ClassMomentsWidgetProps> = ({
       </div>
 
       {loading && latest.length === 0 ? (
-        <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4" role="status" aria-label="Loading class photos">
+        <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-2" role="status" aria-label="Loading class photos">
           {[0, 1, 2, 3].map((i) => <div key={i} className="h-32 animate-pulse rounded-xl bg-slate-100 sm:h-40" />)}
         </div>
       ) : latest.length === 0 ? (
@@ -77,8 +77,8 @@ export const ClassMomentsWidget: React.FC<ClassMomentsWidgetProps> = ({
             : 'Class photos will appear here after an administrator publishes training moments in Admin Content.'}</p>
         </div>
       ) : (
-        <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto p-4 sm:grid sm:grid-cols-2 sm:overflow-visible lg:grid-cols-4" aria-label="Recent class photos">
-          {latest.map((item, index) => (
+        <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto p-4 sm:grid sm:grid-cols-2 sm:overflow-visible" aria-label="Recent class photos">
+          {latest.map((item) => (
             <button
               type="button"
               key={item.id}
@@ -90,7 +90,7 @@ export const ClassMomentsWidget: React.FC<ClassMomentsWidgetProps> = ({
                 <img
                   src={item.imageUrl}
                   alt={item.title}
-                  loading={index === 0 ? 'eager' : 'lazy'}
+                  loading="lazy"
                   decoding="async"
                   referrerPolicy="no-referrer"
                   className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"

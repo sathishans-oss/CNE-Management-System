@@ -3374,7 +3374,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 25,
-    sha256: "5da8d1499f24379a3acb9d4adb2f6044661666d965e27c87043a5bbccbdf4cc5",
+    sha256: "180ff050285b1e56f7459660602ae4c392ad988b3b9111c7a55eac7edca2802f",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -4784,7 +4784,14 @@ runTest('Homepage previews real published class photos with public image lightbo
   const toolbar = fs.readFileSync('src/components/TopToolbar.tsx', 'utf8');
   const gallery = fs.readFileSync('src/components/Gallery.tsx', 'utf8');
   assert.ok(home.includes('ApiService.getGallery()') && home.includes('ClassMomentsWidget'));
-  assert.ok(home.indexOf('<ClassMomentsWidget') < home.indexOf('<CnoLeadershipCard'));
+  const sidebarStart = home.indexOf('<aside ');
+  const quickLinksStart = home.indexOf('<QuickLinksWidget', sidebarStart);
+  const momentsStart = home.indexOf('<ClassMomentsWidget', sidebarStart);
+  const sidebarEnd = home.indexOf('</aside>', sidebarStart);
+  assert.ok(sidebarStart >= 0 && quickLinksStart > sidebarStart && momentsStart > quickLinksStart && momentsStart < sidebarEnd,
+    'Class Photos & Moments must appear below Quick Links in the right sidebar');
+  assert.strictEqual(home.indexOf('<ClassMomentsWidget'), momentsStart, 'Class photos must no longer appear above the main homepage content');
+  assert.ok(moments.includes('sm:grid-cols-2') && !moments.includes('lg:grid-cols-4'), 'Sidebar gallery should use two columns at desktop widths');
   assert.ok(home.includes("onNavigate('gallery')") && home.includes('user?.employeeId'));
   assert.ok(moments.includes('latestClassMoments(') && moments.includes('parseToIsoDateString('));
   assert.ok(moments.includes('item.isActive !== false') && moments.includes('item.imageUrl'));

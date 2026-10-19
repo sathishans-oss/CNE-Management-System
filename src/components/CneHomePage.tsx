@@ -196,14 +196,6 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
 
   return (
     <div className="space-y-8 pb-16">
-      {/* Prominent public gallery preview: visible without opening Admin Content. */}
-      <ClassMomentsWidget
-        items={galleryItems}
-        loading={galleryLoading}
-        loadFailed={galleryLoadFailed}
-        onViewAll={user?.employeeId ? () => onNavigate('gallery') : undefined}
-      />
-
       {/* Responsive homepage: leadership/guidance in main; impact/today's schedule in sidebar. */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Main content (7 columns on desktop): Chairperson, Coordinator Desk, Certification. */}
@@ -218,7 +210,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
           </Suspense>
         </main>
 
-        {/* Right sidebar (5 columns on desktop): Program Impact, Today's CNE, News, Links. */}
+        {/* Right sidebar (5 columns on desktop): Program Impact, Today's CNE, News, Links, Photos. */}
         <aside className="lg:col-span-5 space-y-6">
           <InstitutionalImpactWidget
             totalCompletedClasses={impactStats?.totalCompletedClasses ?? 0}
@@ -246,6 +238,13 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             quickLinks={quickLinks}
             onQuickLinkClick={handleQuickLinkClick}
             accentColor="teal"
+          />
+          {/* Recent class photos follow Quick Links in the right-hand sidebar. */}
+          <ClassMomentsWidget
+            items={galleryItems}
+            loading={galleryLoading}
+            loadFailed={galleryLoadFailed}
+            onViewAll={user?.employeeId ? () => onNavigate('gallery') : undefined}
           />
         </aside>
       </div>
