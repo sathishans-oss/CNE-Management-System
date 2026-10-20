@@ -9465,6 +9465,152 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if(ctx.cneLibraryIndexJobPermission_('a',{batchJobId:started.data.jobId,batchClaimToken:'stale'}).errorCode!=='LIBRARY_JOB_CLAIM_MISMATCH') throw Error('Accepted invalid claim');
   });
 
+  // Single-table Library Index Management user-experience regression checks.
+  focusCheck('Index health and Reindex actions share one resource table', () => {
+    if ((libraryUi.match(/<table className=/g) || []).length !== 1) throw Error('Expected exactly one index status table');
+    if (libraryUi.includes('Individual PDF Reindex') || libraryUi.includes('Reference PDF list')) throw Error('Second reindex list remains');
+    if (!libraryUi.includes('healthByFile.get(item.driveFileId)') || !libraryUi.includes('setConfirmReindex(item)')) throw Error('Health status and reindex not colocated by PDF');
+  });
+  focusCheck('Unified table retains unregistered PDFs and accurate health states', () => {
+    if (!libraryUi.includes('health?.resources.forEach(record =>') || !libraryUi.includes('byId.set(record.driveFileId')) throw Error('Unregistered PDFs may disappear from table');
+    for (const term of ['Not checked', 'Checking…', 'Healthy', 'Not indexed', 'Needs attention', 'Reindexing…']) {
+      if (!libraryUi.includes(term)) throw Error('Missing honest row status '+term);
+    }
+  });
+  focusCheck('Busy index operations hide actions and block concurrent page interaction', () => {
+    if (!libraryUi.includes("type Operation = 'idle' | 'checking' | 'single' | 'starting' | 'batch' | 'verifying'")) throw Error('Missing explicit operation states');
+    if (!libraryUi.includes('const actionLocked = loading || Boolean(jobError) || showOverlay || batchRunning;')) throw Error('Action lock incomplete');
+    if (!libraryUi.includes('inert={showOverlay}') || !libraryUi.includes('aria-modal="true"')) throw Error('Processing overlay not blocking');
+    if ((libraryUi.match(/!actionLocked &&/g) || []).length < 2 || !libraryUi.includes('busyRef.current')) throw Error('Action handlers/controls not guarded');
+  });
+  focusCheck('Single PDF spinner and successful health refresh replace optimistic success', () => {
+    if (!libraryUi.includes('reindexingId === item.id') || !libraryUi.includes('animate-spin') || !libraryUi.includes("setOperation('verifying')")) throw Error('Missing per-PDF progress');
+    if (!libraryUi.includes('setHealth(null); // Until freshly verified') || !libraryUi.includes('await Promise.all([loadAllResources(), refreshHealth()])')) throw Error('Health status updated without checking backend');
+    if (!libraryUi.includes('setLastFailures(prev => ({ ...prev, [item.driveFileId]: message }))')) throw Error('Failure details lost from table');
+  });
+  focusCheck('Batch progress reports backend counts and never simulates extraction percentages', () => {
+    if (!libraryUi.includes('job.completed * 100 / job.total') || !libraryUi.includes('aria-valuenow={reindexJob.completed}')) throw Error('Progress is not backend-grounded');
+    if (!libraryUi.includes('job.succeeded') || !libraryUi.includes('job.failed')) throw Error('Success/failure totals missing');
+    if (libraryUi.includes('setTimeout(')) throw Error('Simulated progress timer introduced');
+  });
+  focusCheck('Batch overlay keeps only Stop After Current PDF available', () => {
+    const progress = libraryUi.slice(libraryUi.indexOf('{showOverlay && <div'), libraryUi.indexOf('\n    </div>\n  );\n};', libraryUi.indexOf('{showOverlay && <div')));
+    if (!progress.includes('stopBatchReindex()') || !progress.includes('Stop after current PDF')) throw Error('Safe stop unavailable');
+    if ((progress.match(/<button type="button"/g) || []).length !== 1) throw Error('Unexpected extra action in processing overlay');
+    if (!libraryUi.includes('stopRequestedRef.current = true') || !libraryUi.includes('!stopRequestedRef.current')) throw Error('Stop could dispatch another PDF');
+  });
+  focusCheck('Batch progress calculation uses real completed PDF counts', () => {
+    const source = libraryUi.match(/job\.total > 0 \? Math\.min\(100, Math\.max\(0, Math\.round\(job\.completed \* 100 \/ job\.total\)\)\) : 0/);
+    if (!source) throw Error('Progress formula missing');
+    const evaluate = job => vm.runInNewContext(source[0], {job, Math});
+    if (evaluate({completed:3,total:5}) !== 60) throw Error('Partial PDF progress incorrect');
+    if (evaluate({completed:0,total:0}) !== 0) throw Error('Empty batch progress incorrect');
+    if (evaluate({completed:12,total:10}) !== 100) throw Error('Progress may overflow 100%');
+  });
+  focusCheck('Saved batch status resumes safely and health refreshes after stopping', () => {
+    if (!libraryUi.includes('getNursingReferenceReindexJob') || !libraryUi.includes('setReindexJob(response.data || null)')) throw Error('Saved job not restored');
+    if (!libraryUi.includes('Resume Reindex') || !libraryUi.includes('await Promise.all([loadJob(), loadAllResources(), refreshHealth()])')) throw Error('Interrupted/stop refresh missing');
+    if (!libraryUi.includes('13 * 60 * 1000')) throw Error('Stale remote claim has no recovery path');
+  });
+  // Clinical grounding and controlled correction regressions for the IV Cannulation incident.
+  focusCheck('Evidence IDs bind a real quote to the exact indexed section', () => {
+    const ctx = freshLibrarySandbox();
+    const passage = 'Nurses select a peripheral intravenous catheter for cannulation based on the intended therapy and the assessed vessel size before insertion.';
+    const entry = {indexId:'IDX_IV_24',resourceTitle:'OpenRN_Nursing_Advanced_Skills',sectionHeading:'Initiate IV Therapy',chunkText:passage};
+    const citation = entry.resourceTitle + ' - ' + entry.sectionHeading;
+    const test = (id,src,q=passage) => ctx.cneAiEvidenceSupportDiagnostic_('IV Cannulation',src,q,'Select an IV catheter based on vessel size','Catheter selection depends on therapy and vein size.','',[entry],id);
+    if (!test('IDX_IV_24',citation).supported) throw Error('Verified indexed quote rejected');
+    if (test('IDX_IV_25',citation).code !== 'SOURCE_MISMATCH') throw Error('Fabricated evidence ID accepted');
+    if (test('IDX_IV_24',entry.resourceTitle + ' - Paediatric Resuscitation').code !== 'SOURCE_MISMATCH') throw Error('Wrong section accepted');
+    if (test('IDX_IV_24',citation,'The hospital recommends several completely different practices unknown to the original reference passage.').supported) throw Error('Fabricated quote accepted');
+  });
+  focusCheck('PDF apostrophe glyph artefacts normalize only for actual quoted passages', () => {
+    const ctx = freshLibrarySandbox();
+    const stored = 'Nurses must consider the purpose for venous access along with assessment of the client_x0092_s vessel size when selecting a catheter for cannulation.';
+    const corrected = stored.replace('client_x0092_s', "client's");
+    const entry = {indexId:'IDX_IV_FONT',resourceTitle:'OpenRN Nursing Advanced Skills',sectionHeading:'Initiate IV Therapy',chunkText:stored};
+    const test = q => ctx.cneAiEvidenceSupportDiagnostic_('IV Cannulation',entry.resourceTitle + ' - ' + entry.sectionHeading,q,'Select a catheter based on vessel size','The choice of venous access depends on vessel size.','',[entry],'IDX_IV_FONT');
+    if (!test(corrected).supported) throw Error('Safe typographic normalization failed');
+    if (test(corrected.replace('vessel size','medication dose')).supported) throw Error('Altered clinical meaning incorrectly verified');
+  });
+  focusCheck('Synonymous clinical phrasing is permitted only with verified indexed evidence', () => {
+    const ctx = freshLibrarySandbox();
+    const passage = 'Nurses select a peripheral IV catheter according to the purpose of venous access and the vessel size for cannulation.';
+    const entry = {indexId:'IDX_IV_SYN',resourceTitle:'OpenRN',sectionHeading:'IV Therapy',chunkText:passage};
+    const diagnostic = ctx.cneAiEvidenceSupportDiagnostic_('IV Cannulation','OpenRN - IV Therapy',passage,
+      'Choose a cannula based on vein diameter','The catheter is selected for the intended venous therapy.','',[entry],'IDX_IV_SYN');
+    if (!diagnostic.supported) throw Error('Safe IV synonyms rejected: ' + diagnostic.code);
+    if (ctx.cneAiEvidenceSupportDiagnostic_('IV Cannulation','OpenRN - IV Therapy',passage,
+      'Give morphine 20 mg','Morphine is recommended for treatment.','',[entry],'IDX_IV_SYN').supported) throw Error('Irrelevant treatment was accepted');
+  });
+  focusCheck('Clinical contradiction and unsupported doses still fail after source ID matches', () => {
+    const ctx = freshLibrarySandbox();
+    const passage = 'For a child in cardiac arrest, begin CPR immediately and provide chest compressions without delay.';
+    const evidence = [{indexId:'IDX_CPR_1',resourceTitle:'Resuscitation Manual',sectionHeading:'Child CPR',chunkText:passage}];
+    const check = (answer) => ctx.cneAiEvidenceSupportDiagnostic_('Paediatric Basic Life Support','Resuscitation Manual - Child CPR',passage,answer,'Child arrest requires chest compressions.','',evidence,'IDX_CPR_1');
+    if (!check('Begin CPR immediately').supported) throw Error('Evidence-supported CPR rejected');
+    if (check('Do not begin CPR during arrest').code !== 'CLINICAL_CONTRADICTION') throw Error('Contradictory CPR recommendation accepted');
+    const dose='Administer morphine 2 mg intravenously slowly according to the prescribed order.';
+    const med=[{indexId:'IDX_MED_1',resourceTitle:'Medication Handbook',sectionHeading:'Morphine',chunkText:dose}];
+    const result=ctx.cneAiEvidenceSupportDiagnostic_('Medication Administration','Medication Handbook - Morphine',dose,'Administer morphine 20 mg','Follow morphine 20 mg protocol.','',med,'IDX_MED_1');
+    if (result.supported || (result.code !== 'NUMERIC_MISMATCH' && result.code !== 'CLINICAL_CONTRADICTION')) throw Error('Unsafe quantity accepted');
+  });
+  function makeMockGroundingScenario(overrides) {
+    const ctx = freshLibrarySandbox();
+    const passage='Nurses select a peripheral intravenous catheter according to intended therapy and the assessed vessel size before inserting the IV cannula.';
+    const evidence=[{indexId:'IDX_IV_REAL',sourceType:'LOCAL_REFERENCE_LIB',resourceTitle:'OpenRN Nursing Advanced Skills',sectionHeading:'Initiate IV Therapy',chunkText:passage}];
+    const quote=passage;
+    const q=(i,extra={})=>({questionText:'What is the appropriate peripheral IV catheter selection approach in clinical scenario '+i+'?',
+      optionA:'Select the catheter according to vessel size',optionB:'Always choose unrelated dose',optionC:'Never assess the vein',optionD:'Ignore therapy purpose',
+      correctOption:'A',explanation:'Select the catheter for intended therapy and vessel size.',
+      authoritativeSource:'OpenRN Nursing Advanced Skills - Initiate IV Therapy',evidenceQuote:quote,evidenceId:'IDX_IV_REAL',...extra});
+    const initial=[q(1),q(2),q(3),q(4),q(5)];
+    Object.entries(overrides || {}).forEach(([i,extra]) => Object.assign(initial[Number(i)],extra));
+    let calls=0;
+    ctx.handleValidateAiQuotaReservation=()=>({success:true,data:{topic:'IV Cannulation',hasOwnMaterial:false,retrievedEvidence:evidence}});
+    ctx.updateCNEAiProgress_=()=>{};
+    ctx.logAuditAction=()=>{};
+    ctx.PropertiesService={getScriptProperties:()=>({getProperty:k=>k==='GEMINI_API_KEY'?'MOCK_KEY':(k==='GEMINI_MODEL'?'gemini-3.8-flash':'')}),getUserProperties:()=>({getProperty:()=>''})};
+    ctx.UrlFetchApp={fetch:(_url,opts)=>{
+      calls++;
+      const payload=JSON.parse(opts.payload);
+      const qs=calls===1?initial:[q(10+calls)];
+      if (calls>1 && !payload.contents[0].parts[0].text.includes('CORRECTIVE GENERATION')) throw Error('Repair request lacks restrictive context');
+      return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify({questions:qs})}]}}]})};
+    }};
+    return {ctx,getCalls:()=>calls,q};
+  }
+  focusCheck('One rejected IV question is regenerated without discarding other four validated MCQs', () => {
+    const run=makeMockGroundingScenario({0:{evidenceQuote:'A fabricated excerpt from an unrelated source has no verifiable clinical grounding.'}});
+    const out=run.ctx.generateAiQuestionsInternal({cneId:'CNE_IV_TEST',reservationToken:'TEST_TOKEN',allowLibraryOnly:true},{employeeId:'ADM_TEST'});
+    if (!out.success || out.data.length!==5 || run.getCalls()!==2) throw Error('Bounded single-question correction did not succeed: '+JSON.stringify(out));
+    if (out.data.some(item=>item.isFinalized)) throw Error('Generated questions bypassed Draft-first review');
+    if (new Set(out.data.map(item=>item.questionText)).size!==5) throw Error('Duplicate question survived corrective generation');
+  });
+  focusCheck('Correction is bounded; unsupported generated questions cannot create a partial batch', () => {
+    const run=makeMockGroundingScenario({0:{evidenceQuote:'Fabricated unrelated clinical evidence with no matching words or real citation.'},1:{evidenceId:'IDX_FAKE'}});
+    // Deliberately make all model responses invalid, including the correction.
+    const originalFetch=run.ctx.UrlFetchApp.fetch;
+    run.ctx.UrlFetchApp.fetch=(url,opts)=>{
+      const res=originalFetch(url,opts);
+      const result=JSON.parse(res.getContentText());
+      if (opts.payload.includes('CORRECTIVE GENERATION')) {
+        const single=JSON.parse(result.candidates[0].content.parts[0].text);
+        single.questions[0].evidenceId='IDX_FAKE';
+        return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(single)}]}}]})};
+      }
+      return res;
+    };
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'CNE_IV_TEST',reservationToken:'TEST_TOKEN',allowLibraryOnly:true},{employeeId:'ADM_TEST'});
+    if (result.success || result.errorCode!=='UNSUPPORTED_SOURCE_EVIDENCE' || result.validationReason!=='SOURCE_MISMATCH' || result.data) throw Error('Unverified question batch escaped validation');
+    if (run.getCalls()!==3) throw Error('Exceeded maximum two correction calls');
+  });
+  focusCheck('Evidence prompt anchors citations to IDs without invented guideline titles', () => {
+    const gen=gas.slice(gas.indexOf('function generateAiQuestionsInternal('),gas.indexOf('function cneAiHasOwnMaterial_('));
+    if (!gen.includes("'[Evidence ID: '") || !gen.includes("evidenceId: { type: 'STRING' }") || !gen.includes('CLINICAL QUANTITIES AND CONDITIONS')) throw Error('Prompt missing strict grounding and evidence IDs');
+    if (gen.includes('e.g., "AIIMS Clinical Nursing Protocols", "WHO Guidelines"')) throw Error('Prompt encourages uncited guidelines');
+    if (!gen.includes('MAX_CORRECTIONS = 2') || !gen.includes('CORRECTIVE GENERATION')) throw Error('Bounded failed-question regeneration not enforced');
+  });
   console.log('\n>>> Focused AI indexing, retrieval and UI regression');
   for (const check of focusedChecks) {
     try {

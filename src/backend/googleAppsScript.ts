@@ -10298,25 +10298,66 @@ function cneAiIvCannulationStem_(stem) {
 }
 
 /** Reduce irrelevant/context-heavy evidence while retaining documented source IDs. */
-function cneAiSelectTopicEvidence_(evidence, hasOwnMaterial) {
+function cneAiSelectTopicEvidence_(evidence, hasOwnMaterial, topic) {
   var rows = Array.isArray(evidence) ? evidence : [];
-  var selected = [];
-  var seen = {};
+  var selected = [], seen = {};
   var uploaded = 0, library = 0;
   var maxUploaded = hasOwnMaterial ? 6 : 0;
   var maxLibrary = hasOwnMaterial ? 6 : 12;
-  for (var i = 0; i < rows.length; i++) {
-    var item = rows[i] || {};
-    if (item.sourceType !== 'UPLOADED_CNE' && !cneReferenceChunkReadable_(item.chunkText)) continue;
+  var isIv = /\\b(?:iv|intravenous|peripheral venous)\\s*cannulat/i.test(String(topic || ''));
+  // Prefer readable prose over barely readable font-mapping tables when two
+  // otherwise relevant passages cover the same clinical subtopic.
+  var ranked = rows;
+  if (isIv) {
+    ranked = rows.slice().sort(function(a,b) {
+      var quality = function(item) {
+        var text = String(item.chunkText || '');
+        var artefacts = (text.match(/_x00[0-9a-f]{2}_/gi) || []).length;
+        var heavyTable = (text.match(/\\b\\d+(?:\\.\\d+)?\\b/g) || []).length > 25 ? 15 : 0;
+        return (Number(item.relevanceScore) || 0) - Math.min(90,artefacts * 4) - heavyTable;
+      };
+      return quality(b) - quality(a);
+    });
+  }
+  var clinicalGroups = [
+    /(?:site selection|vein selection|select.{0,20}vein|vessel size|vein assessment|venous access)/i,
+    /(?:catheter selection|catheter size|catheter gauge|choose.{0,20}catheter|cannula size)/i,
+    /(?:initiat.{0,12}iv|insert.{0,20}catheter|insertion|cannulat|flashback|tourniquet)/i,
+    /(?:aseptic|hand hygiene|infection prevention|sterile technique|skin antisepsis)/i,
+    /(?:infiltrat|extravasat|phlebitis|complication)/i,
+    /(?:secure.{0,20}catheter|dressing|monitor.{0,18}site|document.{0,15}iv)/i
+  ];
+  var groups = {}, selectedKeys = {};
+  function add(item) {
+    if (!item || (item.sourceType !== 'UPLOADED_CNE' && !cneReferenceChunkReadable_(item.chunkText))) return false;
     var isOwn = item.sourceType === 'UPLOADED_CNE';
-    if (isOwn ? uploaded >= maxUploaded : library >= maxLibrary) continue;
-    var key = String(item.chunkText || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-    if (seen[key]) continue;
+    if (isOwn ? uploaded >= maxUploaded : library >= maxLibrary) return false;
+    var key = cneAiCitationText_(item.chunkText);
+    if (!key || seen[key]) return false;
     seen[key] = true;
     selected.push(item);
     if (isOwn) uploaded++; else library++;
-    if (selected.length >= 12) break;
+    return true;
   }
+  // Uploaded CNE evidence always takes priority.
+  for (var i = 0; i < rows.length && selected.length < maxUploaded; i++) {
+    if (rows[i] && rows[i].sourceType === 'UPLOADED_CNE') add(rows[i]);
+  }
+  // IV-specific balanced procedural coverage prevents one introductory section
+  // from occupying all 12 slots. Only already-relevance-screened rows enter.
+  if (isIv) {
+    for (var category = 0; category < clinicalGroups.length; category++) {
+      var picked = 0;
+      for (var j = 0; j < ranked.length && picked < 2 && selected.length < 12; j++) {
+        var item = ranked[j] || {};
+        if (item.sourceType !== 'LOCAL_REFERENCE_LIB') continue;
+        var text = String(item.sectionHeading || '') + ' ' + String(item.chunkText || '');
+        if (clinicalGroups[category].test(text) && add(item)) picked++;
+      }
+    }
+  }
+  // Preserve prior relevance ranking as fallback for uncovered slots/topics.
+  for (var k = 0; k < ranked.length && selected.length < 12; k++) add(ranked[k]);
   return selected;
 }
 
@@ -12445,7 +12486,7 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
   });
 
   // Source ordering: relevant UPLOADED_CNE chunks first, followed by relevant LOCAL_REFERENCE_LIB chunks
-  var totalEvidence = cneAiSelectTopicEvidence_(scoredUploaded.concat(scoredLibrary), scoredUploaded.length > 0);
+  var totalEvidence = cneAiSelectTopicEvidence_(scoredUploaded.concat(scoredLibrary), scoredUploaded.length > 0, cleanTopic);
 
   if (totalEvidence.length === 0) {
     return {
@@ -14285,7 +14326,7 @@ function generateAiQuestionsInternal(params, session) {
   var authoritativeMaterial = directMaterial;
   if (retrievedEvidence.length > 0) {
     var formattedChunks = retrievedEvidence.map(function(ev, idx) {
-      return '[Reference Evidence Chunk ' + (idx + 1) + ']\\n' +
+      return '[Evidence ID: ' + String(ev.indexId || ('UNIDENTIFIED_' + idx)) + ']\\n' +
         'Source: ' + (ev.resourceTitle || 'Authoritative Clinical Guide') + (ev.sectionHeading ? ' - ' + ev.sectionHeading : '') + '\\n' +
         ev.chunkText;
     }).join('\\n\\n---\\n\\n');
@@ -14303,7 +14344,7 @@ function generateAiQuestionsInternal(params, session) {
     var goodEvidence = retrievedEvidence.filter(function(ev) {return passesClinicalRelevanceGate(authoritativeTopic, ev);});
     if (!goodEvidence.length) return {success:false,errorCode:'NO_RELEVANT_LIBRARY_CONTENT',message:'No sufficiently relevant content is available in the CNE Reference Library. Upload material to continue.'};
     retrievedEvidence = goodEvidence;
-    authoritativeMaterial = goodEvidence.map(function(ev) {return 'Source: ' + ev.resourceTitle + ' / ' + ev.sectionHeading + '\\n' + ev.chunkText;}).join('\\n\\n');
+    authoritativeMaterial = goodEvidence.map(function(ev) {return '[Evidence ID: ' + ev.indexId + ']\\nSource: ' + ev.resourceTitle + ' - ' + ev.sectionHeading + '\\n' + ev.chunkText;}).join('\\n\\n');
   }
   if (!authoritativeMaterial || authoritativeMaterial.length < 15) return {success:false,errorCode:'NO_RELEVANT_LIBRARY_CONTENT',message:'No sufficiently relevant learning material was found. Upload topic material to continue.'};
   updateCNEAiProgress_(cneId, session, 3, 'Checking evidence against the exact CNE topic.');
@@ -14358,7 +14399,7 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
     'GROUNDING AND SOURCE VERIFICATION REQUIREMENTS (STRICT):\\n' +
     '1. PRIMARY GROUNDING SOURCE: Use the local CNE session content and clinical material above as your SOLE grounding source. All 5 questions, correct answers, and distractors must be strictly grounded in and directly verifiable from this supplied local clinical material.\\n' +
     '2. EVIDENCE & SOURCE ATTRIBUTION:\\n' +
-    '   - For each question, extract and cite the specific authoritative clinical guideline, protocol, or standard cited in or directly supporting the session (e.g., "AIIMS Clinical Nursing Protocols", "WHO Guidelines", "Ministry of Health and Family Welfare / INC Standards", "Indian Nursing Council Standards", "CDC Clinical Guidelines", or local clinical literature).\\n' +
+    '   - For each question, cite ONLY the exact source title and section provided in the evidence block. Do not add any organization or guideline title not present in that block.\\n' +
     '   - DO NOT fabricate online verification, DO NOT invent fake URLs, and DO NOT cite unretrieved online sources. Instead, cite authoritative references contained in the supplied local material or clearly designate the source as derived from the verified CNE session (e.g., "Verified CNE Session: [Topic/Section/Protocol]").\\n' +
     '   - Absolutely DO NOT cite random blogs, forums, social media, commercial SEO articles, or unverified websites.\\n' +
     '3. CLINICAL RIGOR: Focus on clinical nursing practice, patient assessment, pharmacological safety, emergency escalation, infection control protocols, and nursing care standards.\\n' +
@@ -14372,7 +14413,9 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
     '11. Each questionText must directly examine the named CNE clinical objective. Do not place relevant words only in a rationale or distractor. For Paediatric BLS, a question about IV insertion is OFF TOPIC even if its rationale mentions CPR.\\n' +
     '12. Supply evidenceQuote: copy an exact passage of at least seven words from the specific cited local section that supports the correct answer and rationale. Use clinically meaningful terms in the correct option and rationale that can be checked against that quoted passage. Do not paraphrase the evidenceQuote, fabricate sources, or cite a different section. If no direct supporting quote exists, do not create that question.\\n' +
     '13. MEANING MUST MATCH THE EVIDENCE: NEVER reverse an instruction by adding or dropping not/never/avoid/withhold, and never invent a different CPR compression-to-ventilation ratio. A sentence stating do not delay CPR supports starting CPR promptly, NOT withholding CPR. If the supplied source cannot support the correct option and rationale without contradictory meaning, do not output that question.\\n' +
-    '14. CLINICAL QUANTITIES AND CONDITIONS: Every medication dose, concentration, flow rate, timing, frequency, resuscitation rate, unit and clinical indication in the chosen answer must be directly supported by the supplied excerpt. Do not guess conversions or change only-if, before/after, speed, maximum/minimum or allergy restrictions. If the local evidence is unclear, generate a different fully evidenced question.';
+    '14. CLINICAL QUANTITIES AND CONDITIONS: Every medication dose, concentration, flow rate, timing, frequency, resuscitation rate, unit and clinical indication in the chosen answer must be directly supported by the supplied excerpt. Do not guess conversions or change only-if, before/after, speed, maximum/minimum or allergy restrictions. If the local evidence is unclear, generate a different fully evidenced question.\\n' +
+    '15. EVIDENCE ID: Each indexed passage has an Evidence ID. Return that exact ID in evidenceId. Set authoritativeSource to the Source title AND section shown beside the ID. Copy evidenceQuote from that SAME passage. For a quote taken directly from session learning material (not a numbered chunk), use evidenceId SESSION_CNE and authoritativeSource Verified CNE Session: ' + authoritativeTopic + '. Do not combine two passages or quote from a source that was not supplied.\\n' +
+    '16. If a passage has damaged text, do not fix its wording in evidenceQuote or invent missing medical information. Select another readable passage instead. Questions must cover varied clinical aspects of the named procedure when multiple verified passages exist.';
 
   var geminiPayload = {
     contents: [
@@ -14398,9 +14441,10 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
                 correctOption: { type: 'STRING' },
                 explanation: { type: 'STRING' },
                 authoritativeSource: { type: 'STRING' },
-                evidenceQuote: { type: 'STRING' }
+                evidenceQuote: { type: 'STRING' },
+                evidenceId: { type: 'STRING' }
               },
-              required: ['questionText', 'optionA', 'optionB', 'optionC', 'optionD', 'correctOption', 'explanation', 'authoritativeSource', 'evidenceQuote']
+              required: ['questionText', 'optionA', 'optionB', 'optionC', 'optionD', 'correctOption', 'explanation', 'authoritativeSource', 'evidenceQuote', 'evidenceId']
             }
           }
         },
@@ -14465,116 +14509,138 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
     };
   }
 
-  // 4. Parse and sanitize JSON output
-  var cleaned = generatedText.trim();
-  if (cleaned.indexOf('\`\`\`json') === 0) {
-    cleaned = cleaned.replace(/^\`\`\`json\\s*/, '').replace(/\\s*\`\`\`$/, '');
-  } else if (cleaned.indexOf('\`\`\`') === 0) {
-    cleaned = cleaned.replace(/^\`\`\`\\s*/, '').replace(/\\s*\`\`\`$/, '');
+  // 4. Parse Gemini's structured response. A correction call may contain ONE
+  // replacement, but the initial request must still contain exactly five.
+  function parseCandidates(text) {
+    var cleaned = String(text || '').trim().replace(/^\`\`\`(?:json)?\\s*/i, '').replace(/\\s*\`\`\`$/, '');
+    try {
+      var obj = JSON.parse(cleaned);
+      return Array.isArray(obj) ? obj : (Array.isArray(obj.questions) ? obj.questions : []);
+    } catch (parseErr) { return null; }
+  }
+  var rawQuestionsList = parseCandidates(generatedText);
+  if (!rawQuestionsList) return {success:false,errorCode:'JSON_PARSE_ERROR',message:'Gemini returned invalid question JSON. No questions were saved.'};
+  if (rawQuestionsList.length !== 5) {
+    return {success:false,errorCode:'INSUFFICIENT_QUESTIONS',message:'Gemini returned ' + rawQuestionsList.length + ' questions. Exactly five are required. No questions were saved.'};
   }
 
-  var rawQuestionsList = [];
-  try {
-    var jsonParsed = JSON.parse(cleaned);
-    rawQuestionsList = Array.isArray(jsonParsed) ? jsonParsed : (Array.isArray(jsonParsed.questions) ? jsonParsed.questions : []);
-  } catch (jsonErr) {
-    return {
-      success: false,
-      errorCode: 'JSON_PARSE_ERROR',
-      message: 'Failed to parse AI question output as structured JSON: ' + jsonErr.message
-    };
-  }
-
-  if (!rawQuestionsList || rawQuestionsList.length !== 5) {
-    return {
-      success: false,
-      errorCode: 'INSUFFICIENT_QUESTIONS',
-      message: 'AI generation returned ' + (rawQuestionsList ? rawQuestionsList.length : 0) + ' questions. Exactly 5 questions are required.'
-    };
-  }
-
-  updateCNEAiProgress_(cneId, session, 5, 'Validating topic relevance, evidence, and duplicate questions.');
+  updateCNEAiProgress_(cneId, session, 5, 'Validating topic relevance, question answers, and cited passages.');
   var validatedQuestions = [];
   var seenQuestions = {};
-
-  for (var qIdx = 0; qIdx < rawQuestionsList.length; qIdx++) {
-    var rawQ = rawQuestionsList[qIdx] || {};
+  var correctionCount = 0;
+  var MAX_CORRECTIONS = 2; // Total per batch, not unlimited per question.
+  var allQuestionStems = [];
+  function validateCandidate(rawQ, position) {
+    rawQ = rawQ || {};
     var qText = String(rawQ.questionText || rawQ.question || '').trim();
-    if (!qText || qText.length < 10) {
-      return { success: false, errorCode: 'INVALID_QUESTION_TEXT', message: 'Question ' + (qIdx + 1) + ' is too short or missing question text.' };
-    }
-
-    if (cneAiTopicMismatch_(authoritativeTopic, rawQ)) return {success:false,errorCode:'OFF_TOPIC_QUESTION',message:'Generated question ' + (qIdx + 1) + ' does not match CNE topic: ' + authoritativeTopic + '. No questions were saved.'};
+    function fail(code, details) { return {success:false,errorCode:code,validationReason:details || code,position:position}; }
+    if (qText.length < 10) return fail('INVALID_QUESTION_TEXT');
+    if (cneAiTopicMismatch_(authoritativeTopic, rawQ)) return fail('OFF_TOPIC_QUESTION');
     var qKey = cneAiCanonicalQuestion_(qText);
-    if (seenQuestions[qKey]) {
-      return { success: false, errorCode: 'DUPLICATE_QUESTION', message: 'Duplicate question generated in batch at position ' + (qIdx + 1) };
-    }
-    seenQuestions[qKey] = true;
-
+    if (seenQuestions[qKey]) return fail('DUPLICATE_QUESTION');
     var optA = String(rawQ.optionA || (rawQ.options && rawQ.options.A) || '').trim();
     var optB = String(rawQ.optionB || (rawQ.options && rawQ.options.B) || '').trim();
     var optC = String(rawQ.optionC || (rawQ.options && rawQ.options.C) || '').trim();
     var optD = String(rawQ.optionD || (rawQ.options && rawQ.options.D) || '').trim();
-
-    if (!optA || !optB || !optC || !optD) {
-      return { success: false, errorCode: 'MISSING_OPTIONS', message: 'Question ' + (qIdx + 1) + ' is missing one or more of options A, B, C, D.' };
-    }
-
-    var distinctCheck = {};
-    distinctCheck[optA.toLowerCase()] = true;
-    distinctCheck[optB.toLowerCase()] = true;
-    distinctCheck[optC.toLowerCase()] = true;
-    distinctCheck[optD.toLowerCase()] = true;
-    if (Object.keys(distinctCheck).length < 4) {
-      return { success: false, errorCode: 'DUPLICATE_OPTIONS', message: 'Question ' + (qIdx + 1) + ' has duplicate option values.' };
-    }
-
-    var rawCorrect = String(rawQ.correctOption || rawQ.correctAnswer || '').trim().toUpperCase();
-    if (['A', 'B', 'C', 'D'].indexOf(rawCorrect) === -1) {
-      return { success: false, errorCode: 'INVALID_CORRECT_OPTION', message: 'Question ' + (qIdx + 1) + ' has invalid correct option: ' + rawCorrect };
-    }
-
+    if (!optA || !optB || !optC || !optD) return fail('MISSING_OPTIONS');
+    var distinct = {};
+    [optA,optB,optC,optD].forEach(function(x) {distinct[x.toLowerCase()] = true;});
+    if (Object.keys(distinct).length !== 4) return fail('DUPLICATE_OPTIONS');
+    var correct = String(rawQ.correctOption || rawQ.correctAnswer || '').trim().toUpperCase();
+    if (['A','B','C','D'].indexOf(correct) < 0) return fail('INVALID_CORRECT_OPTION');
     var explanation = String(rawQ.explanation || rawQ.rationale || '').trim();
-    if (!explanation || explanation.length < 5) {
-      return { success: false, errorCode: 'MISSING_EXPLANATION', message: 'Question ' + (qIdx + 1) + ' is missing an evidence-based clinical explanation.' };
-    }
-
+    if (explanation.length < 5) return fail('MISSING_EXPLANATION');
     var authSource = String(rawQ.authoritativeSource || rawQ.source || rawQ.reference || '').trim();
-    if (!authSource || authSource.length < 3) return {success:false,errorCode:'MISSING_SOURCE',message:'Question ' + (qIdx + 1) + ' has no verifiable source.'};
-    var evidenceQuote = String(rawQ.evidenceQuote || '').trim();
-    var selectedAnswer = {A: optA, B: optB, C: optC, D: optD}[rawCorrect];
-    if (!cneAiEvidenceSupported_(authoritativeTopic, authSource, evidenceQuote, selectedAnswer, explanation, directMaterial, retrievedEvidence)) {
-      return {success:false,errorCode:'UNSUPPORTED_SOURCE_EVIDENCE',message:'Question ' + (qIdx + 1) + ' has no verifiable excerpt supporting its answer in the cited CNE material/section. No questions were saved.'};
+    if (authSource.length < 3) return fail('MISSING_SOURCE');
+    if (/\\b(blog|quora|reddit|wordpress|medium\\.com|wikipedia)\\b/i.test(authSource)) return fail('INFORMAL_SOURCE_PROHIBITED');
+    if (/^https?:\\/\\//i.test(authSource) || /live online verified/i.test(authSource)) return fail('UNVERIFIED_SOURCE');
+    var excerpt = String(rawQ.evidenceQuote || '').trim();
+    var evidenceId = String(rawQ.evidenceId || '').trim();
+    if (!evidenceId) return fail('UNSUPPORTED_SOURCE_EVIDENCE','EVIDENCE_ID_MISSING');
+    var selectedAnswer = {A:optA,B:optB,C:optC,D:optD}[correct];
+    // Retain the original pre-save gate and all its contradiction protections.
+    if (!cneAiEvidenceSupported_(authoritativeTopic,authSource,excerpt,selectedAnswer,explanation,directMaterial,retrievedEvidence,evidenceId)) {
+      var diagnostics = cneAiEvidenceSupportDiagnostic_(authoritativeTopic,authSource,excerpt,selectedAnswer,explanation,directMaterial,retrievedEvidence,evidenceId);
+      return fail('UNSUPPORTED_SOURCE_EVIDENCE',diagnostics.code);
     }
+    return {success:true,data:{
+      id:'q_ai_' + Date.now() + '_' + (position + 1), cneId:cneId,
+      question:qText,questionText:qText,
+      options:{A:optA,B:optB,C:optC,D:optD},
+      optionA:optA,optionB:optB,optionC:optC,optionD:optD,
+      correctOption:correct,explanation:explanation,authoritativeSource:authSource,
+      status:'ACTIVE',isFinalized:false
+    },key:qKey};
+  }
+  function correctionMessage(result) {
+    var reason = result.validationReason || result.errorCode;
+    var labels = {
+      SOURCE_MISMATCH:'the evidence ID does not match the cited source and section',
+      EVIDENCE_ID_MISSING:'the evidence ID is missing',
+      QUOTE_NOT_FOUND:'the quotation could not be verified in that source section',
+      QUOTE_TOO_SHORT:'the source quotation is too short to verify',
+      ANSWER_NOT_SUPPORTED:'the citation does not establish the correct answer and rationale',
+      CLINICAL_CONTRADICTION:'the answer conflicts with its cited clinical recommendation',
+      NUMERIC_MISMATCH:'a clinical dose, rate, timing or quantity does not match the evidence',
+      TOPIC_EVIDENCE_MISMATCH:'the cited passage does not cover the clinical topic',
+      OFF_TOPIC_QUESTION:'the question does not test the CNE topic',
+      DUPLICATE_QUESTION:'the question duplicates another question'
+    };
+    return 'Question ' + (result.position + 1) + ' failed validation: ' + (labels[reason] || 'invalid or insufficiently supported content') + '. No questions were saved.';
+  }
+  function repairOneCandidate(failure) {
+    // The same verified evidence and authenticated reservation are used.
+    // No online search, quota commit or persistence happens here.
+    var previous = validatedQuestions.map(function(q) {return q.questionText;}).concat(allQuestionStems);
+    var repairPrompt = prompt + '\\n\\nCORRECTIVE GENERATION: Generate exactly ONE replacement MCQ for position ' + (failure.position + 1) +
+      '. Previous question rejected due to ' + failure.validationReason + '. Use a different verified indexed passage if needed. ' +
+      'Use the exact Evidence ID, Source title and section, and a direct seven-word-or-longer quote from that one source. ' +
+      'Do NOT repeat any of these questions: ' + JSON.stringify(previous) +
+      '. Return JSON with a questions array containing exactly ONE question, following the same schema.';
+    var repairPayload = {contents:[{parts:[{text:repairPrompt}]}],generationConfig:geminiPayload.generationConfig};
+    var repairResponse;
+    try {
+      repairResponse = UrlFetchApp.fetch(endpoint,{
+        method:'post',contentType:'application/json',payload:JSON.stringify(repairPayload),muteHttpExceptions:true
+      });
+    } catch (repairErr) {return null;}
+    if (repairResponse.getResponseCode() !== 200) return null;
+    try {
+      var parsed = JSON.parse(repairResponse.getContentText());
+      var generated = parsed.candidates && parsed.candidates[0] && parsed.candidates[0].content && parsed.candidates[0].content.parts;
+      var found = generated && generated[0] ? parseCandidates(generated[0].text) : null;
+      return found && found.length === 1 ? found[0] : null;
+    } catch (repairParseErr) { return null; }
+  }
 
-    // Informal source check
-    if (/\\b(blog|quora|reddit|wordpress|medium\\.com|wikipedia)\\b/i.test(authSource)) {
-      return { success: false, errorCode: 'INFORMAL_SOURCE_PROHIBITED', message: 'Question ' + (qIdx + 1) + ' cites an informal source (' + authSource + ').' };
+  for (var qIdx = 0; qIdx < 5; qIdx++) {
+    var attemptQuestion = rawQuestionsList[qIdx];
+    var checked = validateCandidate(attemptQuestion,qIdx);
+    while (!checked.success && correctionCount < MAX_CORRECTIONS) {
+      correctionCount++;
+      updateCNEAiProgress_(cneId, session, 5, 'Correcting unsupported question ' + (qIdx + 1) + ' (' + correctionCount + ' of ' + MAX_CORRECTIONS + ' allowed attempts).');
+      try {
+        logAuditAction('AI_QUESTION_EVIDENCE_RETRY',session.employeeId,'CNE ' + cneId + ' question ' + (qIdx + 1) + ' reason: ' + checked.validationReason,'WARNING');
+      } catch (auditErr) {}
+      var corrected = repairOneCandidate(checked);
+      if (!corrected) break;
+      attemptQuestion = corrected;
+      checked = validateCandidate(attemptQuestion,qIdx);
     }
-
-    if (/^https?:\\/\\//i.test(authSource) || /live online verified/i.test(authSource)) return {success:false,errorCode:'UNVERIFIED_SOURCE',message:'Question cites an unverified online source.'};
-
-    validatedQuestions.push({
-      id: 'q_ai_' + Date.now() + '_' + (qIdx + 1),
-      cneId: cneId,
-      question: qText,
-      questionText: qText,
-      options: {
-        A: optA,
-        B: optB,
-        C: optC,
-        D: optD
-      },
-      optionA: optA,
-      optionB: optB,
-      optionC: optC,
-      optionD: optD,
-      correctOption: rawCorrect,
-      explanation: explanation,
-      authoritativeSource: authSource,
-      status: 'ACTIVE',
-      isFinalized: false
-    });
+    if (!checked.success) {
+      try {
+        logAuditAction('AI_QUESTION_VALIDATION_REJECTED',session.employeeId,'CNE ' + cneId + ' question ' + (qIdx + 1) + ' reason: ' + checked.validationReason,'FAILED');
+      } catch (auditErr2) {}
+      if (checked.errorCode === 'UNSUPPORTED_SOURCE_EVIDENCE') {
+        return {success:false,errorCode:'UNSUPPORTED_SOURCE_EVIDENCE',validationReason:checked.validationReason,message:correctionMessage(checked)};
+      }
+      return {success:false,errorCode:checked.errorCode,validationReason:checked.validationReason,
+        message:correctionMessage(checked)};
+    }
+    // Keep already-validated questions only in memory. No partial save.
+    validatedQuestions.push(checked.data);
+    seenQuestions[checked.key] = true;
+    allQuestionStems.push(checked.data.questionText);
   }
 
   logAuditAction('AI_QUESTION_GENERATION_COMPLETED', session.employeeId, 'Generated 5 grounded clinical MCQs for CNE: ' + cneId + ' via Gemini (' + configuredModel + ')', 'SUCCESS');
@@ -14674,8 +14740,29 @@ function cneAiTopicMismatch_(topic, question) {
 }
 
 /** Normalize an excerpt without introducing fabricated clinical equivalences. */
+/** Normalize only known PDF encoding / punctuation artefacts. Never remove clinical negations or numbers. */
+function cneAiCitationText_(value) {
+  return String(value || '')
+    .replace(/_x00(?:91|92|93|94|a0)_/gi, ' ')
+    .replace(/[\\u2018\\u2019\\u201C\\u201D\\u00A0]/g, ' ')
+    .toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
+}
 function cneAiEvidenceText_(value) {
-  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
+  return cneAiCitationText_(value);
+}
+/** Limited, explicit lexical equivalents, used AFTER verifying a real source excerpt. */
+function cneAiSupportTokens_(text) {
+  var synonyms = {
+    iv:'intravenous', cannula:'catheter', cannulas:'catheter', catheters:'catheter',
+    cannulation:'insertion', inserting:'insertion', insert:'insertion', placement:'insertion',
+    vein:'vessel', veins:'vessel', venous:'vessel', vessels:'vessel',
+    choosing:'select', chosen:'select', choice:'select', selection:'select', selecting:'select',
+    diameter:'size', gauge:'size', purpose:'purpose', therapy:'therapy',
+    infusions:'infusion', infusing:'infusion', injected:'injection'
+  };
+  return cneAiEvidenceText_(text).split(' ').filter(Boolean).map(function(token) {
+    return synonyms[token] || token;
+  });
 }
 /**
  * Conservative clinical-polarity gate. Verbatim evidence and overlapping
@@ -14905,59 +14992,72 @@ function cneAiClinicalQualifierContradiction_(excerpt, answer, rationale) {
   return false;
 }
 
-function cneAiEvidenceSupported_(topic, source, excerpt, answer, rationale, directMaterial, evidence) {
-  var citation = cneAiEvidenceText_(source);
-  var quote = cneAiEvidenceText_(excerpt);
-  if (!citation || quote.length < 35 || quote.split(' ').length < 7) return false;
+/** Explain exactly WHY grounding failed without trusting a model-generated citation. */
+function cneAiEvidenceSupportDiagnostic_(topic, source, excerpt, answer, rationale, directMaterial, evidence, evidenceId) {
+  var citation = cneAiCitationText_(source);
+  var quote = cneAiCitationText_(excerpt);
+  if (!citation) return {supported:false,code:'SOURCE_MISSING'};
+  if (quote.length < 35 || quote.split(' ').length < 7) return {supported:false,code:'QUOTE_TOO_SHORT'};
 
-  var matchesRealSource = false;
-  // Uploaded session material is cited as a verified session, not as a
-  // purported guideline that was never present in the local evidence.
-  var sessionCitation = cneAiEvidenceText_('Verified CNE Session: ' + topic);
-  if (directMaterial && cneAiEvidenceText_(directMaterial).indexOf(quote) !== -1 &&
-      citation.indexOf(sessionCitation) === 0) {
-    matchesRealSource = true;
-  }
+  var matched = false;
+  var id = String(evidenceId || '').trim();
   var chunks = Array.isArray(evidence) ? evidence : [];
-  for (var i = 0; i < chunks.length && !matchesRealSource; i++) {
-    var chunk = chunks[i] || {};
-    var title = cneAiEvidenceText_(chunk.resourceTitle);
-    var heading = cneAiEvidenceText_(chunk.sectionHeading);
-    if (!title || citation.indexOf(title) === -1) continue;
-    if (heading && citation.indexOf(heading) === -1) continue;
-    if (cneAiEvidenceText_(chunk.chunkText).indexOf(quote) !== -1) matchesRealSource = true;
+  var sessionCitation = cneAiCitationText_('Verified CNE Session: ' + topic);
+  // A generated source ID must resolve to an evidence chunk actually supplied to
+  // Gemini in THIS request. An ID alone is never authoritative.
+  if (id === 'SESSION_CNE' || !id) {
+    if (directMaterial && citation === sessionCitation &&
+        cneAiCitationText_(directMaterial).indexOf(quote) !== -1) matched = true;
   }
-  if (!matchesRealSource) return false;
+  if (id === 'SESSION_CNE' && !matched) return {supported:false,code:'SOURCE_MISMATCH'};
 
-  // Never accept a clinically reversed action merely because the answer uses
-  // the same vocabulary as an authoritative passage. This check must precede
-  // the weaker lexical-support test below.
-  if (cneAiContradictsEvidence_(excerpt, answer, rationale)) return false;
-  if (cneAiClinicalQualifierContradiction_(excerpt, answer, rationale)) return false;
-  if (!cneAiClinicalQuantitiesSupported_(excerpt, answer, rationale)) return false;
+  var hasId = false, hasSource = false;
+  for (var i = 0; i < chunks.length && !matched; i++) {
+    var chunk = chunks[i] || {};
+    if (id && id !== String(chunk.indexId || '')) continue;
+    hasId = true;
+    var title = cneAiCitationText_(chunk.resourceTitle);
+    var heading = cneAiCitationText_(chunk.sectionHeading);
+    // Exact title AND section. An invented guideline with a real book title
+    // embedded in its name cannot be accepted as an authentic citation.
+    if (!title || citation !== cneAiCitationText_(String(chunk.resourceTitle) + (heading ? ' - ' + chunk.sectionHeading : ''))) continue;
+    hasSource = true;
+    if (cneAiCitationText_(chunk.chunkText).indexOf(quote) !== -1) matched = true;
+  }
+  if (!matched) return {supported:false,code:(id && !hasId) || !hasSource ? 'SOURCE_MISMATCH' : 'QUOTE_NOT_FOUND'};
 
-  // The quoted evidence should concern the actual question's clinical field.
-  // A citation to a whole nursing textbook or to an unrelated section alone
-  // does not establish support for the proposed correct answer.
+  // Never mistake common vocabulary for support when the clinical meaning,
+  // dose, sequence, prohibition, or indication contradicts verified evidence.
+  if (cneAiContradictsEvidence_(excerpt, answer, rationale)) return {supported:false,code:'CLINICAL_CONTRADICTION'};
+  if (cneAiClinicalQualifierContradiction_(excerpt, answer, rationale)) return {supported:false,code:'CLINICAL_CONTRADICTION'};
+  if (!cneAiClinicalQuantitiesSupported_(excerpt, answer, rationale)) return {supported:false,code:'NUMERIC_MISMATCH'};
   if (/(?:\\bbls\\b|\\bpbls\\b|\\bcpr\\b|basic life support|resuscitat|cardiopulmonary)/i.test(topic) &&
-      !/(?:\\b(?:cpr|bls|pbls|aed)\\b|resuscitat|cardiopulmonary|chest compress|rescue breath|ventilat|defibrillat|cardiac arrest|pulseless|no pulse|not breathing|apnoe|apnea|unresponsive)/.test(quote)) return false;
+      !/(?:\\b(?:cpr|bls|pbls|aed)\\b|resuscitat|cardiopulmonary|chest compress|rescue breath|ventilat|defibrillat|cardiac arrest|pulseless|no pulse|not breathing|apnoe|apnea|unresponsive)/.test(quote)) {
+    return {supported:false,code:'TOPIC_EVIDENCE_MISMATCH'};
+  }
 
   var stop = {the:1,and:1,that:1,with:1,from:1,this:1,should:1,which:1,what:1,when:1,they:1,their:1,these:1,those:1,patient:1,child:1,infant:1,paediatric:1,pediatric:1,care:1,nursing:1,answer:1,correct:1,option:1,because:1,according:1,appropriate:1,recommended:1};
+  var tokens = cneAiSupportTokens_(excerpt);
+  var quoted = {};
+  for (var q = 0; q < tokens.length; q++) quoted[tokens[q]] = true;
   var quoteContains = function(text) {
     var ratio = String(text || '').match(/\\b\\d{1,3}\\s*:\\s*\\d{1,3}\\b/);
     if (ratio && cneAiEvidenceText_(excerpt).indexOf(cneAiEvidenceText_(ratio[0])) !== -1) return true;
-    var terms = cneAiEvidenceText_(text).split(' ').filter(function(x) {
-      return (x.length >= 5 || x === 'cpr' || x === 'aed' || x === 'bls') && !stop[x];
-    });
-    return terms.length > 0 && terms.some(function(term) {
-      return quote.indexOf(term.substring(0, Math.max(4, term.length - 1))) !== -1 ||
-        (term.length === 3 && quote.split(' ').indexOf(term) !== -1);
+    return cneAiSupportTokens_(text).some(function(token) {
+      if ((token.length < 5 && token !== 'cpr' && token !== 'aed' && token !== 'bls') || stop[token]) return false;
+      if (quoted[token]) return true;
+      // Existing strictly bounded suffix variant for ordinary inflections.
+      return tokens.some(function(qt) { return qt.indexOf(token.substring(0,Math.max(4,token.length - 1))) === 0; });
     });
   };
-  // The correct ANSWER and rationale must independently connect to the quoted
-  // evidence. Matching only CPR in a rationale cannot validate an IV answer.
-  return quoteContains(answer) && quoteContains(rationale);
+  if (!quoteContains(answer) || !quoteContains(rationale)) return {supported:false,code:'ANSWER_NOT_SUPPORTED'};
+  return {supported:true,code:'SUPPORTED'};
 }
+/** Compatibility function retained for all pre-existing clinical verification suites. */
+function cneAiEvidenceSupported_(topic, source, excerpt, answer, rationale, directMaterial, evidence, evidenceId) {
+  return cneAiEvidenceSupportDiagnostic_(topic, source, excerpt, answer, rationale, directMaterial, evidence, evidenceId).supported;
+}
+
 function cneAiCanonicalQuestion_(question) { return String(question || '').toLowerCase().replace(/[^a-z0-9]/g,'').trim(); }
 
 /**
