@@ -23,7 +23,8 @@ export type ViewMode =
   | 'admin-content'
   | 'admin-reports'
   | 'admin-teaching-modes'
-  | 'admin-departmental-cne-outcome';
+  | 'admin-departmental-cne-outcome'
+  | 'admin-library-index-management';
 
 export interface NewsEventItem {
   id: string;
@@ -293,6 +294,45 @@ export interface CNENursingReferenceIndexStatus {
   message: string;
   indexedAt: string;
   updatedAt: string;
+}
+
+export interface CNENursingLibraryHealthResource {
+  driveFileId: string;
+  fileName: string;
+  resourceTitle: string;
+  active: boolean;
+  chunksCount: number;
+  unreadableChunks: number;
+  failedChunks: number;
+  duplicateChunks: number;
+  indexedAt: string;
+  fileUpdatedAt: string;
+  indexStatus: 'HEALTHY' | 'NEEDS_ATTENTION';
+  issues: string[];
+}
+
+export interface CNENursingLibraryHealth {
+  totalResources: number;
+  healthyResources: number;
+  needsAttention: number;
+  orphanIndexRows: number;
+  resources: CNENursingLibraryHealthResource[];
+}
+
+export interface CNENursingLibraryReindexJob {
+  jobId: string;
+  status: 'RUNNING' | 'COMPLETED' | 'CANCELLED';
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  currentDriveFileId: string;
+  processing: boolean;
+  cancelRequested: boolean;
+  startedAt: string;
+  updatedAt: string;
+  failures: {driveFileId: string;errorCode: string;message: string}[];
 }
 
 export interface CNEAiQuotaInfo {

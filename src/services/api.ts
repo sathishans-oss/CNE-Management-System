@@ -19,6 +19,8 @@ import {
   CNENursingReferenceResource,
   CNENursingReferenceDriveFile,
   CNENursingReferenceIndexStatus,
+  CNENursingLibraryHealth,
+  CNENursingLibraryReindexJob,
   CNEAiQuotaInfo,
   CNEParticipantsSummary,
   CNEActivityProgress,
@@ -458,6 +460,11 @@ export class ApiService {
       case 'uploadLearningResource':
       case 'deleteLearningResource':
       case 'indexNursingReferenceResource':
+      case 'getNursingReferenceLibraryHealth':
+      case 'startNursingReferenceReindexAll':
+      case 'advanceNursingReferenceReindexAll':
+      case 'getNursingReferenceReindexJob':
+      case 'cancelNursingReferenceReindexAll':
       case 'getNursingReferenceIndexStatus':
       case 'uploadNursingReferenceResource':
       case 'deleteNursingReferenceResource':
@@ -1479,6 +1486,25 @@ export class ApiService {
       'getNursingReferenceIndexStatus',
       { driveFileId }
     );
+  }
+
+  /** Read-only admin index quality assessment, including uploaded but unindexed PDFs. */
+  static async getNursingReferenceLibraryHealth(): Promise<ApiResponse<CNENursingLibraryHealth>> {
+    return this.executeAction<CNENursingLibraryHealth>('getNursingReferenceLibraryHealth');
+  }
+
+  /** Admin-only durable sequential reindex job; one PDF processed per request. */
+  static async startNursingReferenceReindexAll(): Promise<ApiResponse<CNENursingLibraryReindexJob>> {
+    return this.executeAction<CNENursingLibraryReindexJob>('startNursingReferenceReindexAll');
+  }
+  static async advanceNursingReferenceReindexAll(jobId: string): Promise<ApiResponse<CNENursingLibraryReindexJob>> {
+    return this.executeAction<CNENursingLibraryReindexJob>('advanceNursingReferenceReindexAll', { jobId });
+  }
+  static async getNursingReferenceReindexJob(): Promise<ApiResponse<CNENursingLibraryReindexJob | null>> {
+    return this.executeAction<CNENursingLibraryReindexJob | null>('getNursingReferenceReindexJob');
+  }
+  static async cancelNursingReferenceReindexAll(): Promise<ApiResponse<CNENursingLibraryReindexJob | null>> {
+    return this.executeAction<CNENursingLibraryReindexJob | null>('cancelNursingReferenceReindexAll');
   }
 
   /**

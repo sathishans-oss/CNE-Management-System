@@ -8,11 +8,10 @@ import {
   Loader2,
   Calendar,
   Building2,
-  RefreshCw,
   X,
   Plus,
   Trash2,
-  Layers
+  Layers,
 } from 'lucide-react';
 import {
   SessionUser,
@@ -72,8 +71,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
 
   // Operation states
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  const [reindexingId, setReindexingId] = useState<string | null>(null);
-
   // Modals
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<UnifiedResourceItem | null>(null);
@@ -377,34 +374,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
     setPreviewItem(null);
   };
 
-  // Admin: Re-Index Nursing Reference Resource
-  const handleReindex = async (item: UnifiedResourceItem) => {
-    if (!isAdmin || item.sourceType !== 'NURSING_REFERENCE_LIB' || !item.driveFileId) return;
-    setReindexingId(item.id);
-
-    try {
-      const res = await ApiService.indexNursingReferenceResource({
-        driveFileId: item.driveFileId,
-        resourceTitle: item.title,
-        authorOrganization: item.authorOrSpeaker,
-        license: item.license,
-        version: item.version,
-        reindex: true
-      });
-
-      if (res.success) {
-        success(`Re-indexed ${res.data?.chunksCount || 0} chunks successfully for "${item.title}".`);
-        loadAllResources();
-      } else {
-        error(res.message || 'Failed to re-index reference textbook.');
-      }
-    } catch (e: any) {
-      error(e?.message || 'Error re-indexing resource.');
-    } finally {
-      setReindexingId(null);
-    }
-  };
-
   // Admin: Delete confirmation and execution
   const handleDeleteConfirm = async () => {
     if (!isAdmin || !itemToDelete) return;
@@ -622,7 +591,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                     (item.fileType || '').toLowerCase().includes('pdf') ||
                     (item.fileName || '').toLowerCase().endsWith('.pdf');
                   const isBusyDownload = downloadingId === item.id;
-                  const isBusyReindex = reindexingId === item.id;
                   const indexingDisplay = getIndexingDisplay(item);
 
                   return (
@@ -747,21 +715,9 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                             <span>Download</span>
                           </button>
 
-                          {/* Admin Specific Operations: Re-index and Delete */}
+                          {/* Admin resource deletion; indexing maintenance lives in Control Center */}
                           {isAdmin && (
                             <>
-                              {item.sourceType === 'NURSING_REFERENCE_LIB' && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleReindex(item)}
-                                  disabled={isBusyReindex}
-                                  className="inline-flex items-center gap-1 p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 rounded-lg text-xs cursor-pointer transition-colors disabled:opacity-50"
-                                  title="Re-index text chunks for AI"
-                                >
-                                  <RefreshCw className={`w-3.5 h-3.5 ${isBusyReindex ? 'animate-spin' : ''}`} />
-                                </button>
-                              )}
-
                               <button
                                 type="button"
                                 onClick={() => setItemToDelete(item)}

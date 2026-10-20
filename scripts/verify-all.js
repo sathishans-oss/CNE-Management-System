@@ -19,6 +19,8 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -2784,7 +2786,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-pdf-resources-and-indexing.js",
     mode: "module",
     expectedChecks: 17,
-    sha256: "7cbea392e94f077dc58c660ac1d63bd210304a6f8452e603a61883c402afb987",
+    sha256: "96d20a4bd4622f1524a73c87cae4d3a133459861294df7bcde7ec1c6d59d0d8a",
     source: `/**
  * PDF Learning Resources, Reference Library & Indexing Verification Suite
  *
@@ -2977,10 +2979,13 @@ runTest('PDF stream text extraction correctly extracts text operands', () => {
 // =============================================================================
 runTest('Nursing Reference Library is strictly Admin-managed and requires PDF format', () => {
   // Reference management is guarded by Admin role in UI and backend
+  const indexPageTs = fs.readFileSync('src/components/cne/LibraryIndexManagementPage.tsx', 'utf8');
   assert.ok(
     learningResPageTs.includes("const isAdmin = user?.role === 'ADMIN';") &&
-    learningResPageTs.includes("if (!isAdmin || item.sourceType !== 'NURSING_REFERENCE_LIB'"),
-    'LearningResourcesPage must restrict Reference library actions to Admin role'
+    learningResPageTs.includes('if (!isAdmin || !itemToDelete) return;') &&
+    indexPageTs.includes("user?.role === 'ADMIN'") &&
+    indexPageTs.includes("if (!isAdmin || item.sourceType !== 'NURSING_REFERENCE_LIB'"),
+    'Learning Resources deletion and dedicated Index Management must each restrict admin actions'
   );
   assert.ok(
     codeGs.includes('getOrCreateNursingRefLibraryFolder'),
@@ -3092,9 +3097,10 @@ runTest('Educational resources are readable by all authenticated employees witho
     'handleDownloadNursingReferenceResource must allow all authenticated employees to download active reference resources'
   );
 
+  const indexManagementTs = fs.readFileSync('src/components/cne/LibraryIndexManagementPage.tsx', 'utf8');
   assert.ok(
-    learningResPageTs.includes('handleReindex') || learningResPageTs.includes('reindex'),
-    'LearningResourcesPage must support Admin re-indexing'
+    indexManagementTs.includes('handleReindex') && !learningResPageTs.includes('setConfirmReindex'),
+    'Admin re-indexing must be available on the separate Library Index Management page, not Learning Resources'
   );
 });
 
@@ -9267,7 +9273,212 @@ for (const s of selected) {
     console.error(`FAILED: ${s.name}: ${error.message}`);
   }
 }
+// Focused tests augment, never modify/replace, the checksum-protected original suites.
+// Run together with the performance suite and in the full consolidated verification.
+let focusedPassed = 0;
+const focusedChecks = [];
+function focusCheck(name, test) { focusedChecks.push({name, test}); }
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const gas = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const ui = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEQuestionsModal.tsx'), 'utf8');
+  const sandbox = {};
+  vm.createContext(sandbox);
+  vm.runInContext(gas, sandbox, {timeout: 12000});
+  const iv = 'IV Cannulation';
+  const good = 'Peripheral IV catheter insertion requires appropriate vein selection, aseptic preparation, and ongoing assessment for phlebitis and infiltration.';
+  const source = ('Evidence-based peripheral IV cannulation and vein access: ' + good + ' ').repeat(2);
+  focusCheck('IV synonym: peripheral intravenous catheter insertion accepted', () => {
+    if (sandbox.cneAiTopicMismatch_(iv, {questionText:'What is the recommended method for peripheral intravenous catheter insertion?'}) !== false) throw Error('Valid IV equivalent rejected');
+  });
+  focusCheck('IV synonym: venous access, vein selection and catheter gauge accepted', () => {
+    for (const stem of ['Which vein selection should be preferred for peripheral IV access?', 'How is a catheter gauge chosen for a peripheral intravenous catheter?']) {
+      if (sandbox.cneAiTopicMismatch_(iv,{question:stem}) !== false) throw Error('Valid IV stem rejected: ' + stem);
+    }
+  });
+  focusCheck('IV unrelated question rejected despite relevant rationale', () => {
+    if (sandbox.cneAiTopicMismatch_(iv,{question:'Which intervention best supports a grieving family?',explanation:'IV cannulation is in the clinical rationale.'}) !== true) throw Error('Unrelated question accepted');
+  });
+  focusCheck('Existing BLS question-stem specificity preserved', () => {
+    if (sandbox.cneAiTopicMismatch_('Paediatric Basic Life Support',{question:'Which catheter should be selected for IV cannulation in a child?',explanation:'CPR'}) !== true) throw Error('BLS cross-topic question accepted');
+  });
+  focusCheck('Index readability accepts clinical text and refuses noise', () => {
+    if (sandbox.cneReferenceChunkReadable_(source) !== true) throw Error('Clinical reference rejected');
+    if (sandbox.cneReferenceChunkReadable_('xref endobj stream /FlateDecode _x001f_e') !== false) throw Error('PDF noise accepted');
+  });
+  focusCheck('Readable OpenRN passage with isolated PDF artefacts stays eligible', () => {
+    const partial = source.replace('peripheral IV cannulation', 'peripheral IV _x001f_cannulation');
+    if (!sandbox.cneReferenceChunkReadable_(partial)) throw Error('Minor PDF artefacts should not exclude readable clinical evidence');
+  });
+  focusCheck('Index keywords must derive from actual passage only', () => {
+    const keywords = sandbox.cneReferenceClinicalKeywords_(source);
+    if (!keywords.includes('peripheral IV catheter') || !keywords.includes('phlebitis')) throw Error('Missing grounded clinical keywords');
+    if (keywords.includes('CPR') || keywords.includes('blood transfusion')) throw Error('Invented clinical keywords');
+  });
+  focusCheck('Bounded evidence selection preserves primary-source ordering', () => {
+    const records = Array.from({length: 45},(_,i)=>({sourceType: i < 8 ? 'UPLOADED_CNE' : 'LOCAL_REFERENCE_LIB', chunkText: source+' Passage '+i, indexId:'IDX-'+i, resourceTitle:'OpenRN'}));
+    const chosen = sandbox.cneAiSelectTopicEvidence_(records,true);
+    if (chosen.length !== 12 || chosen.filter(x=>x.sourceType==='UPLOADED_CNE').length !== 6 || chosen[0].indexId !== 'IDX-0') throw Error('Evidence budget/priority failure');
+  });
+  focusCheck('Old damaged SUCCESS chunks excluded from retrieval before AI', () => {
+    if (!gas.includes("status !== 'SUCCESS' || (String(idxData[r][srcTypeCol]")) throw Error('Old corrupt index rows not filtered');
+    if (!gas.includes('cneAiSelectTopicEvidence_(scoredUploaded.concat(scoredLibrary)')) throw Error('Retrieval is not bounded');
+  });
+  focusCheck('Reference reindex verifies replacement and refuses false SUCCESS', () => {
+    if (!gas.includes('INDEX_REPLACEMENT_INCOMPLETE') || !gas.includes('verifiedCount !== rowsToInsert.length')) throw Error('Index replacement does not verify counts');
+  });
+  focusCheck('Question page checks material on opening independently', () => {
+    if (!ui.includes('void loadMaterialStatus(++materialRequestRef.current, cneId)')) throw Error('Initial material check missing');
+    if (!ui.includes('setMaterialStatusError(status.message')) throw Error('Failed status not distinguished');
+  });
+  focusCheck('Manual question is blocked during material checking and generation', () => {
+    const handler = ui.substring(ui.indexOf('const handleAddManualQuestion'),ui.indexOf('const handleReplaceQuestion'));
+    if (!handler.includes('materialCheckRef.current') || !ui.includes('checkingMaterial ||\n                  materialCheckRef.current')) throw Error('Missing manual busy guards');
+  });
+  focusCheck('Loading failure, contextual popup and uncertain-outcome recovery exist', () => {
+    if (!ui.includes('Unable to Load Questions') || !ui.includes('reconcileUncertainGeneration') || !ui.includes('AI Questions Did Not Pass Validation') || !ui.includes('Refresh Questions & Quota')) throw Error('Failure UI/recovery missing');
+  });
+  // Library maintenance regressions, kept in the existing consolidated runner.
+  const libraryUi = readFileSync(join(ROOT_DIR,'src/components/cne/LibraryIndexManagementPage.tsx'),'utf8');
+  const learningUi = readFileSync(join(ROOT_DIR,'src/components/cne/LearningResourcesPage.tsx'),'utf8');
+  const toolbarUi = readFileSync(join(ROOT_DIR,'src/components/TopToolbar.tsx'),'utf8');
+  const appUi = readFileSync(join(ROOT_DIR,'src/App.tsx'),'utf8');
+  const routeUi = readFileSync(join(ROOT_DIR,'src/services/routePrefetch.ts'),'utf8');
+  const libraryApi = readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+  const libraryTypes = readFileSync(join(ROOT_DIR,'src/types.ts'),'utf8');
+  function freshLibrarySandbox() {
+    const ctx = {};
+    vm.createContext(ctx);
+    vm.runInContext(gas,ctx,{timeout:12000});
+    return ctx;
+  }
+  focusCheck('Index health detects unreadable, duplicate, missing and orphan index rows', () => {
+    const ctx = freshLibrarySandbox();
+    const readable = ('The peripheral intravenous cannula should be inserted using aseptic preparation and a suitable vein. ').repeat(3);
+    const files=[{driveFileId:'a',fileName:'Clinical.pdf',lastUpdated:'2026-01-01T00:00:00Z'},
+      {driveFileId:'b',fileName:'Pending.pdf',lastUpdated:'2026-01-01T00:00:00Z'}];
+    const registry=[{driveFileId:'a',active:true,resourceTitle:'Clinical',indexedAt:'2026-01-02T00:00:00Z'}];
+    const rows=[{sourceType:'LOCAL_REFERENCE_LIB',driveFileId:'a',chunkIndex:1,chunkText:readable,extractionStatus:'SUCCESS'},
+      {sourceType:'LOCAL_REFERENCE_LIB',driveFileId:'a',chunkIndex:1,chunkText:'endobj xref _x001f_e',extractionStatus:'SUCCESS'},
+      {sourceType:'LOCAL_REFERENCE_LIB',driveFileId:'removed',chunkIndex:1,chunkText:readable,extractionStatus:'SUCCESS'},
+      {sourceType:'UPLOADED_CNE',driveFileId:'a',chunkIndex:2,chunkText:'noise',extractionStatus:'FAILED'}];
+    const health=ctx.cneLibraryIndexHealthSummary_(files,registry,rows);
+    if (health.totalResources!==2 || health.needsAttention!==2 || health.orphanIndexRows!==1) throw Error('Health summary counts incorrect');
+    if (!health.resources[0].issues.includes('UNREADABLE_CHUNKS') || !health.resources[0].issues.includes('DUPLICATE_CHUNKS')) throw Error('Corruption undetected');
+    if (!health.resources[1].issues.includes('NOT_INDEXED')) throw Error('Missing index undetected');
+  });
+  focusCheck('Read-only health reports healthy indexed PDF correctly', () => {
+    const ctx=freshLibrarySandbox();
+    const readable=('Peripheral intravenous catheter insertion requires aseptic preparation and careful vein selection. ').repeat(4);
+    const h=ctx.cneLibraryIndexHealthSummary_([{driveFileId:'a',fileName:'A.pdf',lastUpdated:'2025-01-01'}],
+      [{driveFileId:'a',active:true,indexedAt:'2025-01-02'}],
+      [{sourceType:'LOCAL_REFERENCE_LIB',driveFileId:'a',chunkIndex:1,chunkText:readable,extractionStatus:'SUCCESS'}]);
+    if (h.healthyResources !== 1 || h.needsAttention !== 0) throw Error('Healthy index flagged as damaged');
+  });
+  focusCheck('Backend routes and frontend hide mutation controls from non-admin users', () => {
+    for(const action of ['getNursingReferenceLibraryHealth','startNursingReferenceReindexAll','advanceNursingReferenceReindexAll','getNursingReferenceReindexJob','cancelNursingReferenceReindexAll']) {
+      if (!gas.includes("case '"+action+"':") || !libraryApi.includes("'"+action+"'")) throw Error('Missing secured backend/API action: '+action);
+    }
+    if (!libraryUi.includes('if (!isAdmin) return') || !libraryUi.includes('Library Index Management') || !libraryUi.includes('setConfirmReindex')) throw Error('Admin maintenance controls missing from dedicated page');
+    if (!libraryTypes.includes('CNENursingLibraryHealth') || !libraryTypes.includes('CNENursingLibraryReindexJob')) throw Error('API response types missing');
+  });
+  // Navigation-only relocation tests, without changing the existing backend and clinical checks.
+  focusCheck('Library Index Management is a separate lazy-loaded Admin route', () => {
+    if (!appUi.includes("activeView === 'admin-library-index-management' && user?.role === 'ADMIN'")) throw Error('Route lacks Admin guard');
+    if (!appUi.includes('<LibraryIndexManagementPage user={user} />')) throw Error('Dedicated page not rendered');
+    if (!libraryTypes.includes("| 'admin-library-index-management'")) throw Error('ViewMode missing');
+    if (!routeUi.includes("'admin-library-index-management': () => import('../components/cne/LibraryIndexManagementPage')")) throw Error('Admin-only prefetch not configured');
+    if (!appUi.includes("'admin-departmental-cne-outcome', 'admin-library-index-management'].includes(view)")) throw Error('Login guard missing');
+  });
+  focusCheck('Library index maintenance is removed entirely from Learning Resources', () => {
+    for (const forbidden of ['setConfirmReindex', 'checkIndexHealth', 'resumeBatchJob', 'startBatchReindex', 'Administrator Library Index Management']) {
+      if (learningUi.includes(forbidden)) throw Error('Learning Resources still contains maintenance: '+forbidden);
+    }
+    if (!learningUi.includes('handleDownload') || !learningUi.includes('handleDeleteConfirm') || !learningUi.includes('<AddResourceModal')) throw Error('Original Learning Resources functions lost');
+  });
+  focusCheck('Only Control Center navigates to Library Index Management', () => {
+    const staff = toolbarUi.slice(toolbarUi.indexOf('const staffTabs ='), toolbarUi.indexOf('// Control Center state'));
+    const center = toolbarUi.slice(toolbarUi.indexOf('const controlCenterItems ='), toolbarUi.indexOf('const updateDropdownPos'));
+    if (staff.includes('admin-library-index-management')) throw Error('Index Management incorrectly added to top menu');
+    if (!center.includes("id: 'admin-library-index-management'")) throw Error('Missing Control Center link');
+    if (!toolbarUi.includes("'admin-library-index-management'] as ViewMode[]")) throw Error('Control Center active state missing');
+    if (!toolbarUi.includes('{isAdmin && (')) throw Error('Control Center not restricted to Admin');
+  });
+  focusCheck('Departmental CNE Outcome remains in Control Center but not top menu', () => {
+    const staff = toolbarUi.slice(toolbarUi.indexOf('const staffTabs ='), toolbarUi.indexOf('// Control Center state'));
+    const center = toolbarUi.slice(toolbarUi.indexOf('const controlCenterItems ='), toolbarUi.indexOf('const updateDropdownPos'));
+    if (staff.includes("id: 'admin-departmental-cne-outcome'")) throw Error('Duplicate outcome top-menu tab remains');
+    if (!center.includes("id: 'admin-departmental-cne-outcome'")) throw Error('Outcome Control Center item removed');
+    if (!appUi.includes("activeView === 'admin-departmental-cne-outcome' && user?.role === 'ADMIN'")) throw Error('Outcome page guard lost');
+  });
+  focusCheck('Dedicated library page retains every approved maintenance action', () => {
+    for (const required of ['getNursingReferenceLibraryHealth', 'indexNursingReferenceResource', 'startNursingReferenceReindexAll', 'advanceNursingReferenceReindexAll', 'cancelNursingReferenceReindexAll', 'getNursingReferenceReindexJob', 'Check Index Health', 'Reindex All', 'Resume Reindex', 'Stop after current PDF', 'Confirm Reindex']) {
+      if (!libraryUi.includes(required)) throw Error('Index Management function missing: '+required);
+    }
+    if (!libraryUi.includes('activeRef.current = false') || !libraryUi.includes('sessionKeyRef.current')) throw Error('Background batch handling not safe on page exit');
+  });
+  function makeJobSandbox() {
+    const ctx=freshLibrarySandbox();
+    let stored=null,uid=0;
+    ctx.PropertiesService={getScriptProperties:()=>({getProperty:()=>stored,setProperty:(_k,v)=>{stored=v;}})};
+    ctx.LockService={getScriptLock:()=>({waitLock:()=>{},releaseLock:()=>{}})};
+    ctx.Utilities={getUuid:()=>`uuid_${++uid}`};
+    ctx.requireFreshAdminMutation=(s)=>s && s.role==='ADMIN'?{success:true,session:s}:{success:false,errorCode:'FORBIDDEN'};
+    ctx.logAuditAction=()=>{};
+    ctx.getNursingReferenceLibraryHealth=()=>({success:true,data:{totalResources:2,resources:[{driveFileId:'a'},{driveFileId:'b'}]}});
+    ctx.cneLibraryBatchMetadata_=(id)=>({resourceTitle:'Existing '+id,authorOrganization:'Original Author',license:'CC BY 4.0',version:'1'});
+    ctx.indexReferenceLibraryResource=(id,meta)=>{
+      if(meta.resourceTitle!==('Existing '+id) || meta.authorOrganization!=='Original Author') throw Error('Batch metadata overwritten');
+      if(ctx.cneLibraryIndexJobPermission_(id,meta)) throw Error('Valid claim blocked');
+      return id==='a'?{success:true}:{success:false,errorCode:'DAMAGED_PDF',message:'Unusable source PDF'};
+    };
+    return ctx;
+  }
+  focusCheck('Batch creation is admin-only and duplicate start resumes existing job', () => {
+    const ctx=makeJobSandbox();
+    if(ctx.startNursingReferenceReindexAll({}, {employeeId:'X',role:'EMPLOYEE'}).errorCode!=='FORBIDDEN') throw Error('Non-admin started batch');
+    const first=ctx.startNursingReferenceReindexAll({}, {employeeId:'A',role:'ADMIN'});
+    const repeat=ctx.startNursingReferenceReindexAll({}, {employeeId:'A',role:'ADMIN'});
+    if(!first.success || first.data.total!==2 || first.data.jobId!==repeat.data.jobId) throw Error('Duplicate job created');
+    if(ctx.cneLibraryIndexJobPermission_('a',{}).errorCode!=='LIBRARY_JOB_ACTIVE') throw Error('Single reindex not guarded');
+  });
+  focusCheck('One-PDF-per-request job survives failures and preserves source metadata', () => {
+    const ctx=makeJobSandbox();
+    const admin={employeeId:'ADMIN',role:'ADMIN'};
+    const first=ctx.startNursingReferenceReindexAll({},admin);
+    const firstStep=ctx.advanceNursingReferenceReindexAll({jobId:first.data.jobId},admin);
+    if(!firstStep.success || firstStep.data.completed!==1 || firstStep.data.succeeded!==1 || firstStep.data.processing) throw Error('First step status not committed');
+    const result=ctx.advanceNursingReferenceReindexAll({jobId:first.data.jobId},admin);
+    if(!result.success || result.data.status!=='COMPLETED' || result.data.completed!==2 || result.data.failed!==1 || result.data.failures[0].errorCode!=='DAMAGED_PDF') throw Error('Failed PDF not recorded');
+    if(ctx.getNursingReferenceReindexJob({},admin).data.completed!==2) throw Error('Job progress not persisted');
+  });
+  focusCheck('Batch cancellation safely stops remaining PDFs', () => {
+    const ctx=makeJobSandbox();const admin={employeeId:'ADMIN',role:'ADMIN'};
+    const started=ctx.startNursingReferenceReindexAll({},admin);
+    const result=ctx.cancelNursingReferenceReindexAll({},admin);
+    if(!result.success || result.data.status!=='CANCELLED' || result.data.completed!==0) throw Error('Cancellation not persisted');
+    if(ctx.advanceNursingReferenceReindexAll({jobId:started.data.jobId},admin).data.status!=='CANCELLED') throw Error('Cancelled job processed PDF');
+  });
+  focusCheck('Reindex job rejects stale claims and stale client job IDs', () => {
+    const ctx=makeJobSandbox();const admin={employeeId:'ADMIN',role:'ADMIN'};
+    const started=ctx.startNursingReferenceReindexAll({},admin);
+    if(ctx.advanceNursingReferenceReindexAll({jobId:'old-token'},admin).errorCode!=='JOB_NOT_FOUND') throw Error('Accepted wrong job');
+    if(ctx.cneLibraryIndexJobPermission_('a',{batchJobId:started.data.jobId,batchClaimToken:'stale'}).errorCode!=='LIBRARY_JOB_CLAIM_MISMATCH') throw Error('Accepted invalid claim');
+  });
+
+  console.log('\n>>> Focused AI indexing, retrieval and UI regression');
+  for (const check of focusedChecks) {
+    try {
+      check.test();
+      focusedPassed++;
+      console.log('✓ ' + check.name);
+    } catch (e) {
+      console.error('✗ ' + check.name + ': ' + e.message);
+    }
+  }
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');
-if (passed !== selected.length) process.exit(1);
+if (focusedChecks.length) console.log(`Focused AI checks: ${focusedPassed}/${focusedChecks.length} passed`);
+if (passed !== selected.length || focusedPassed !== focusedChecks.length) process.exit(1);

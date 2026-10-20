@@ -13,7 +13,8 @@ import {
   Images,
   ChevronDown,
   SlidersHorizontal,
-  FileSpreadsheet
+  FileSpreadsheet,
+  LibraryBig
 } from 'lucide-react';
 import { SessionUser, ViewMode } from '../types';
 import { prefetchRoute } from '../services/routePrefetch';
@@ -46,10 +47,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
     { id: 'learning-resources' as ViewMode, label: 'Learning Resources', icon: BookOpen },
     { id: 'gallery' as ViewMode, label: 'Class Photos', icon: Images },
     ...(isAdmin
-      ? [
-          { id: 'admin-reports' as ViewMode, label: 'Report and Stats', icon: BarChart3 },
-          { id: 'admin-departmental-cne-outcome' as ViewMode, label: 'Departmental CNE Outcome', icon: FileSpreadsheet }
-        ]
+      ? [{ id: 'admin-reports' as ViewMode, label: 'Report and Stats', icon: BarChart3 }]
       : [])
   ];
 
@@ -59,14 +57,15 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   const controlCenterBtnRef = useRef<HTMLButtonElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
 
-  const isControlCenterActive = (['admin-content', 'admin-roles', 'admin-areas', 'admin-teaching-modes', 'admin-departmental-cne-outcome'] as ViewMode[]).includes(activeView);
+  const isControlCenterActive = (['admin-content', 'admin-roles', 'admin-areas', 'admin-teaching-modes', 'admin-departmental-cne-outcome', 'admin-library-index-management'] as ViewMode[]).includes(activeView);
 
   const controlCenterItems = [
     { id: 'admin-content' as ViewMode, label: 'Admin Content', icon: FileText, desc: 'Circulars, Desk, Quick Links, Photos' },
     { id: 'admin-roles' as ViewMode, label: 'Role', icon: ShieldCheck, desc: 'Staff roles & permissions' },
     { id: 'admin-areas' as ViewMode, label: 'Ward List', icon: MapPin, desc: 'Clinical wards & areas' },
     { id: 'admin-teaching-modes' as ViewMode, label: 'Teaching Modes', icon: BookOpen, desc: 'CNE teaching method master' },
-    { id: 'admin-departmental-cne-outcome' as ViewMode, label: 'Departmental CNE Outcome', icon: FileSpreadsheet, desc: 'Staff coverage & outcome metrics' }
+    { id: 'admin-departmental-cne-outcome' as ViewMode, label: 'Departmental CNE Outcome', icon: FileSpreadsheet, desc: 'Staff coverage & outcome metrics' },
+    { id: 'admin-library-index-management' as ViewMode, label: 'Library Index Management', icon: LibraryBig, desc: 'Admin-only PDF index health and reindex' }
   ];
 
   const updateDropdownPos = () => {

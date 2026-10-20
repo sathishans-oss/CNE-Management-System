@@ -15,6 +15,7 @@ const CNEPostTestModal = lazy(() => import('./components/cne/CNEPostTestModal').
 const MyCNERecords = lazy(() => import('./components/MyCNERecords').then((m) => ({ default: m.MyCNERecords })));
 const CNECalendar = lazy(() => import('./components/CNECalendar').then((m) => ({ default: m.CNECalendar })));
 const CNESchedule = lazy(() => import('./components/CNESchedule').then((m) => ({ default: m.CNESchedule })));
+const LibraryIndexManagementPage = lazy(() => import('./components/cne/LibraryIndexManagementPage').then((m) => ({ default: m.LibraryIndexManagementPage })));
 const LearningResourcesPage = lazy(() => import('./components/cne/LearningResourcesPage').then((m) => ({ default: m.LearningResourcesPage })));
 const Gallery = lazy(() => import('./components/Gallery').then((m) => ({ default: m.Gallery })));
 const AdminAreas = lazy(() => import('./components/AdminAreas').then((m) => ({ default: m.AdminAreas })));
@@ -90,7 +91,7 @@ const AppContent: React.FC = () => {
   const handleNavigate = (view: ViewMode) => {
     // If not logged in and attempting to access staff/admin protected views, prompt login
     if (!user || !user.employeeId) {
-      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports', 'admin-departmental-cne-outcome'].includes(view)) {
+      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports', 'admin-departmental-cne-outcome', 'admin-library-index-management'].includes(view)) {
         info('Please log in with your Employee ID to access this section.', 'Authentication Required');
         setIsLoginOpen(true);
         return;
@@ -185,6 +186,10 @@ const AppContent: React.FC = () => {
 
           {activeView === 'admin-reports' && user?.role === 'ADMIN' && (
             <AdminReports user={user} />
+          )}
+
+          {activeView === 'admin-library-index-management' && user?.role === 'ADMIN' && (
+            <LibraryIndexManagementPage user={user} />
           )}
 
           {activeView === 'admin-departmental-cne-outcome' && user?.role === 'ADMIN' && (

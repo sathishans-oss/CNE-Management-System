@@ -80,6 +80,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const cneId = cne.cneId || cne.classId || '';
   const [questions, setQuestions] = useState<CNEQuestion[]>([]);
   const [loading, setLoading] = useState(true);
+  const [questionLoadError, setQuestionLoadError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const generatingRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -106,6 +107,12 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [generationStep, setGenerationStep] = useState(0);
   const [materialChoice, setMaterialChoice] = useState<'confirm' | 'missing' | null>(null);
   const [checkingMaterial, setCheckingMaterial] = useState(false);
+  const materialRequestRef = useRef(0);
+  const materialCheckRef = useRef(false);
+  const [materialStatusError, setMaterialStatusError] = useState<string | null>(null);
+  const [failureDialog, setFailureDialog] = useState<{
+    title: string; message: string; type: 'material' | 'validation' | 'technical'; retrySafe: boolean;
+  } | null>(null);
   const [generationElapsedSeconds, setGenerationElapsedSeconds] = useState(0);
   const progressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const generationSteps = [
@@ -129,6 +136,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     // Reset all CNE-specific UI immediately so data from the previous CNE cannot flash or leak.
     questionsRequestRef.current += 1;
     quotaRequestRef.current += 1;
+    materialRequestRef.current += 1;
+    materialCheckRef.current = false;
     generationRequestRef.current += 1;
     stopProgressPolling();
     generatingRef.current = false;
@@ -136,6 +145,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setQuestions([]);
     setQuotaInfo(null);
     setHasMaterial(null);
+    setQuestionLoadError(null);
+    setMaterialStatusError(null);
+    setFailureDialog(null);
     setIsLocked(false);
     setEditingIndex(null);
     setShowHistory(false);
@@ -153,10 +165,12 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const quotaRequestId = ++quotaRequestRef.current;
     void loadQuestions(questionRequestId, cneId);
     void loadQuota(quotaRequestId, cneId);
+    void loadMaterialStatus(++materialRequestRef.current, cneId);
 
     return () => {
       questionsRequestRef.current += 1;
       quotaRequestRef.current += 1;
+      materialRequestRef.current += 1;
       generationRequestRef.current += 1;
       stopProgressPolling();
     };
@@ -164,6 +178,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   const loadQuestions = async (requestId = ++questionsRequestRef.current, targetCneId = cneId) => {
     setLoading(true);
+    setQuestionLoadError(null);
     try {
       const res = await ApiService.getCNEQuestions(targetCneId);
       const isCurrent = requestId === questionsRequestRef.current && targetCneId === currentCneIdRef.current;
@@ -179,16 +194,14 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         persistedQuestionIdsRef.current = new Set(normalized.map((q) => String(q.id || '')).filter(Boolean));
         draftOriginSnapshotRef.current = new Map();
         setIsLocked(normalized.some((q) => Boolean(q.isLocked)));
+        setQuestionLoadError(null);
       } else {
-        setQuestions([]);
-        persistedQuestionIdsRef.current = new Set();
-        setIsLocked(false);
+        setQuestionLoadError(res.message || 'Question list could not be loaded.');
       }
     } catch (e: any) {
       if (requestId === questionsRequestRef.current && targetCneId === currentCneIdRef.current) {
         console.warn('Failed to load CNE questions:', e);
-        setQuestions([]);
-        persistedQuestionIdsRef.current = new Set();
+        setQuestionLoadError(e?.message || 'Question list could not be loaded.');
       }
     } finally {
       if (requestId === questionsRequestRef.current && targetCneId === currentCneIdRef.current) {
@@ -211,6 +224,63 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     }
   };
 
+  // Lightweight status only: leave heavy PDF extraction/evidence retrieval to generation.
+  const loadMaterialStatus = async (requestId = ++materialRequestRef.current, targetCneId = cneId) => {
+    materialCheckRef.current = true;
+    setCheckingMaterial(true);
+    setMaterialStatusError(null);
+    try {
+      const status = await ApiService.getCNEAiMaterialStatus(targetCneId);
+      if (requestId !== materialRequestRef.current || targetCneId !== currentCneIdRef.current) return null;
+      if (!status.success || !status.data) {
+        setHasMaterial(null);
+        setMaterialStatusError(status.message || 'Material status is unavailable.');
+        return null;
+      }
+      setHasMaterial(status.data.hasOwnMaterial);
+      return status.data.hasOwnMaterial;
+    } catch (e: any) {
+      if (requestId === materialRequestRef.current && targetCneId === currentCneIdRef.current) {
+        setHasMaterial(null);
+        setMaterialStatusError(e?.message || 'Unable to check CNE material.');
+      }
+      return null;
+    } finally {
+      if (requestId === materialRequestRef.current && targetCneId === currentCneIdRef.current) {
+        setCheckingMaterial(false);
+        materialCheckRef.current = false;
+      }
+    }
+  };
+
+  // A lost response is not proof of failure: look for a committed batch and quota.
+  // Do not claim success unless both authoritative readings are consistent.
+  const reconcileUncertainGeneration = async (targetCneId: string, isCurrent: () => boolean) => {
+    const [storedResult, quotaResult] = await Promise.allSettled([
+      ApiService.getCNEQuestions(targetCneId), ApiService.getAiQuota(targetCneId)
+    ]);
+    if (!isCurrent()) return { completed: false, safeToRetry: false };
+    const stored = storedResult.status === 'fulfilled' ? storedResult.value : null;
+    const freshQuota = quotaResult.status === 'fulfilled' ? quotaResult.value : null;
+    if (freshQuota?.success && freshQuota.data) setQuotaInfo(freshQuota.data);
+    const used = Boolean(freshQuota?.success && freshQuota.data &&
+      (freshQuota.data.status === 'USED' || freshQuota.data.status === 'GENERATED' || freshQuota.data.attemptsUsed >= 1));
+    if (used && stored?.success && Array.isArray(stored.data) && stored.data.filter(q => String(q.id || '').startsWith('q_ai_')).length >= 5) {
+      const fresh = stored.data.map(q => ({ ...q, options: { ...q.options }, status: normalizeQuestionStatus(q.status) as CNEQuestion['status'] }));
+      setQuestions(fresh);
+      persistedQuestionIdsRef.current = new Set(fresh.map(q => String(q.id || '')).filter(Boolean));
+      setQuestionLoadError(null);
+      if (onUpdated) onUpdated();
+      return { completed: true, safeToRetry: false };
+    }
+    // Only offer another attempt after both fresh reads confirm no committed AI batch.
+    return {
+      completed: false,
+      safeToRetry: Boolean(freshQuota?.success && freshQuota.data?.canGenerate && stored?.success &&
+        Array.isArray(stored.data) && !stored.data.some(q => String(q.id || '').startsWith('q_ai_')))
+    };
+  };
+
   // Is the one-time initial AI generation already completed?
   const isAiGenerationUsed = Boolean(
     quotaInfo && (quotaInfo.status === 'USED' || quotaInfo.status === 'GENERATED' || quotaInfo.attemptsUsed >= 1)
@@ -224,21 +294,17 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   // and authoritative AI quota have both finished loading for the currently open CNE.
   // quotaInfo remains null while the quota request is still pending or if it fails,
   // so the question tools fail closed rather than becoming clickable prematurely.
-  const isPageReady = !loading && quotaInfo !== null;
-  const canInteractWithQuestionTools = canModify && isPageReady;
+  const isPageReady = !loading && !questionLoadError && quotaInfo !== null;
+  const canInteractWithQuestionTools = canModify && isPageReady && !checkingMaterial && !materialCheckRef.current && !isGenerating && !generatingRef.current && !isSaving;
 
   const requestAiGeneration = async () => {
-    if (!canModify || !isPageReady || isGenerating || generatingRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
-    setCheckingMaterial(true);
-    try {
-      const check = await ApiService.getCNEAiMaterialStatus(cneId);
-      if (!check.success || !check.data) { error(check.message || 'Could not verify uploaded material. Please retry.'); return; }
-      setHasMaterial(check.data.hasOwnMaterial);
-      if (!check.data.hasOwnMaterial) { setMaterialChoice('confirm'); return; }
-      await handleGenerateAi(false);
-    } catch (e: any) {
-      error(e?.message || 'Unable to verify CNE material.');
-    } finally { setCheckingMaterial(false); }
+    if (!canInteractWithQuestionTools || materialCheckRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
+    // Reconfirm fresh material state in case it was uploaded after opening.
+    materialCheckRef.current = true;
+    const own = await loadMaterialStatus(++materialRequestRef.current, cneId);
+    if (own === null || currentCneIdRef.current !== cneId) return;
+    if (!own) { setMaterialChoice('confirm'); return; }
+    await handleGenerateAi(false);
   };
 
   const handleGenerateAi = async (allowLibraryOnly = false) => {
@@ -262,6 +328,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const isCurrent = () => requestId === generationRequestRef.current && requestCneId === currentCneIdRef.current;
 
     generatingRef.current = true;
+    setFailureDialog(null);
     setMaterialChoice(null);
     setIsGenerating(true);
     setGenerationStep(1);
@@ -306,17 +373,38 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         await loadQuota(++quotaRequestRef.current, requestCneId);
         if (onUpdated) onUpdated();
       } else {
-        const errMsg = res?.message || 'AI question generation failed. No AI generation allowance was consumed.';
-        if (res?.errorCode === 'NO_RELEVANT_LIBRARY_CONTENT' || res?.errorCode === 'INSUFFICIENT_TOPIC_MATERIAL' || res?.errorCode === 'NO_EXTRACTABLE_CONTENT') {
-          setMaterialChoice('missing');
-        } else if (res?.errorCode === 'LIBRARY_CONSENT_REQUIRED') {
+        const code = res?.errorCode || 'UNKNOWN_GENERATION_FAILURE';
+        const msg = res?.message || 'AI question generation could not be completed.';
+        const missing = ['NO_RELEVANT_LIBRARY_CONTENT', 'INSUFFICIENT_TOPIC_MATERIAL', 'NO_EXTRACTABLE_CONTENT'].includes(code);
+        if (code === 'LIBRARY_CONSENT_REQUIRED') {
           setMaterialChoice('confirm');
+        } else if (missing) {
+          setFailureDialog({title: 'Learning Material Required', message: msg, type: 'material', retrySafe: false});
+        } else if (['OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION', 'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION', 'MISSING_SOURCE'].includes(code)) {
+          setFailureDialog({title: 'AI Questions Did Not Pass Validation', message: `${msg} No question batch was accepted. You may retry with the current library or upload clearer topic material.`, type: 'validation', retrySafe: true});
+        } else {
+          const recovered = await reconcileUncertainGeneration(requestCneId, isCurrent);
+          if (!isCurrent()) return;
+          if (recovered.completed) {
+            success('The server saved five Draft questions. They have been recovered for review.');
+          } else {
+            setFailureDialog({title: 'AI Generation Could Not Be Confirmed', message: `${msg} The system checked saved questions and AI quota. ${recovered.safeToRetry ? 'No completed AI batch was found; retry is available.' : 'A safe retry cannot yet be confirmed. Please refresh the question bank before another attempt.'}`, type: 'technical', retrySafe: recovered.safeToRetry});
+          }
         }
-        error(errMsg);
-        await loadQuota(++quotaRequestRef.current, requestCneId);
+        if (missing || code === 'LIBRARY_CONSENT_REQUIRED' || ['OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION', 'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION', 'MISSING_SOURCE'].includes(code)) {
+          await loadQuota(++quotaRequestRef.current, requestCneId);
+        }
       }
     } catch (e: any) {
-      if (isCurrent()) error(e?.message || 'Error occurred during AI question generation.');
+      if (isCurrent()) {
+        const recovered = await reconcileUncertainGeneration(requestCneId, isCurrent);
+        if (!isCurrent()) return;
+        if (recovered.completed) {
+          success('The server saved five Draft questions. They have been recovered for review.');
+        } else {
+          setFailureDialog({title: 'Unable to Confirm AI Generation', message: `${e?.message || 'Network or server communication failed.'} ${recovered.safeToRetry ? 'No saved AI batch was found and quota remains available.' : 'The outcome cannot yet be confirmed. Refresh the question bank before retrying.'}`, type: 'technical', retrySafe: recovered.safeToRetry});
+        }
+      }
     } finally {
       if (isCurrent()) {
         stopProgressPolling();
@@ -400,7 +488,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   };
 
   const handleAddManualQuestion = () => {
-    if (!canInteractWithQuestionTools) return;
+    if (!canInteractWithQuestionTools || materialCheckRef.current || generatingRef.current) return;
     const newQ: CNEQuestion = {
       id: `q_manual_${Date.now()}_${versionSequenceRef.current++}`,
       question: '',
@@ -628,6 +716,13 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           </div>
         )}
 
+        {materialStatusError && canModify && !checkingMaterial && (
+          <div role="alert" className="px-6 py-2 border-b border-amber-200 bg-amber-50 text-xs text-amber-900 flex gap-2 items-center justify-between">
+            <span>Material status could not be checked: {materialStatusError}</span>
+            <button type="button" onClick={() => { if (!materialCheckRef.current) void loadMaterialStatus(); }} className="font-semibold underline">Retry material check</button>
+          </div>
+        )}
+
         {/* AI & Manual Action Bar */}
         {canModify && (
           <div className="px-6 py-3 bg-purple-50/60 border-b border-purple-100 flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
@@ -681,6 +776,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                   !isPageReady ||
                   isGenerating ||
                   checkingMaterial ||
+                  materialCheckRef.current ||
                   generatingRef.current ||
                   isSaving ||
                   !canModify ||
@@ -729,6 +825,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 disabled={
                   !isPageReady ||
                   isGenerating ||
+                  checkingMaterial ||
+                  materialCheckRef.current ||
+                  generatingRef.current ||
                   isSaving ||
                   !canModify
                 }
@@ -785,10 +884,17 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <Loader2 className="w-6 h-6 animate-spin text-purple-600" />
               <span>Loading questions...</span>
             </div>
+          ) : questionLoadError ? (
+            <div role="alert" className="my-auto py-12 text-center space-y-3 bg-white border border-rose-200 rounded-xl">
+              <AlertTriangle className="w-9 h-9 mx-auto text-rose-600" />
+              <h4 className="text-sm font-bold text-rose-900">Unable to Load Questions</h4>
+              <p className="text-xs text-slate-600">{questionLoadError}</p>
+              <button type="button" onClick={() => { void loadQuestions(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white text-xs font-bold">Retry Loading</button>
+            </div>
           ) : activeQuestions.length === 0 && replacedQuestions.length === 0 ? (
             <div className="my-auto py-16 text-center p-8 bg-white rounded-2xl border border-dashed border-slate-300 space-y-3 max-w-xl mx-auto">
               <HelpCircle className="w-10 h-10 text-slate-300 mx-auto" />
-              <h4 className="text-sm font-bold text-slate-800">No AI-generated MCQs yet</h4>
+              <h4 className="text-sm font-bold text-slate-800">No Questions Created Yet</h4>
               <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
                 AI analyzes the learning material along with relevant CNE Library resources to generate meaningful, content-based MCQs for review.
               </p>
@@ -1051,6 +1157,25 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             </div>
           )}
         </div>
+
+        {failureDialog && (
+          <div className="fixed inset-0 z-[95] bg-slate-950/70 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={failureDialog.title}>
+            <div className="w-full max-w-md bg-white rounded-2xl p-5 shadow-2xl space-y-4">
+              <div className="flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-rose-600" />
+                <h3 className="text-base font-bold text-slate-900">{failureDialog.title}</h3>
+              </div>
+              <p className="text-sm text-slate-700 leading-relaxed">{failureDialog.message}</p>
+              <div className="flex gap-2 justify-end flex-wrap">
+                {failureDialog.type === 'material' || failureDialog.type === 'validation' ? (
+                  <button type="button" onClick={() => { setFailureDialog(null); if (onNavigateToMaterial) onNavigateToMaterial(); else error('Please open Material from the CNE Progress panel.'); }} className="px-3 py-2 rounded-lg border border-purple-400 text-purple-700 font-semibold text-xs">Upload Material</button>
+                ) : null}
+                {failureDialog.retrySafe && <button type="button" onClick={() => { setFailureDialog(null); void requestAiGeneration(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Retry AI Generation</button>}
+                {failureDialog.type === 'technical' && !failureDialog.retrySafe && <button type="button" onClick={() => { setFailureDialog(null); void loadQuestions(); void loadQuota(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Refresh Questions & Quota</button>}
+                <button type="button" onClick={() => setFailureDialog(null)} className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 font-semibold text-xs">Close</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {materialChoice && (
           <div className="fixed inset-0 z-[90] bg-slate-950/70 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={materialChoice === 'confirm' ? 'No CNE material uploaded' : 'No relevant learning material found'}>

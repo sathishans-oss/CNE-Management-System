@@ -1009,6 +1009,26 @@ function handleRequest(e, method) {
         output = handleGetNursingReferenceIndexStatus(params, session);
         break;
 
+      case 'getNursingReferenceLibraryHealth':
+        output = getNursingReferenceLibraryHealth(params, session);
+        break;
+
+      case 'startNursingReferenceReindexAll':
+        output = startNursingReferenceReindexAll(params, session);
+        break;
+
+      case 'advanceNursingReferenceReindexAll':
+        output = advanceNursingReferenceReindexAll(params, session);
+        break;
+
+      case 'getNursingReferenceReindexJob':
+        output = getNursingReferenceReindexJob(params, session);
+        break;
+
+      case 'cancelNursingReferenceReindexAll':
+        output = cancelNursingReferenceReindexAll(params, session);
+        break;
+
       case 'uploadNursingReferenceResource':
         output = handleUploadNursingReferenceResource(params, session);
         break;
@@ -10224,6 +10244,82 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
  * Target chunk size: ~1,200 chars (1,000 - 1,500 chars).
  * Never invents clinical topics; retains structural hierarchy.
  */
+/** Conservative PDF index-quality gate. Never replace an unknown glyph with guessed clinical text. */
+function cneReferenceChunkReadable_(value) {
+  var text = String(value || '').trim();
+  if (text.length < 90) return false;
+  var words = text.match(/[a-zA-Z]{3,}/g) || [];
+  if (words.length < 16 || words.join('').length < text.length * 0.28) return false;
+  if (/\\b(?:endstream|startxref|flatedecode|endobj)\\b/i.test(text)) return false;
+  var corrupt = text.match(/_x00[0-9a-f]{2}_|\\uFFFD|[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]/gi) || [];
+  // Reject markedly damaged PDF font-mapping output; small isolated artefacts
+  // cannot be repaired reliably without inspecting the original source.
+  if (corrupt.length > Math.max(12, Math.floor(text.length / 55))) return false;
+  return true;
+}
+
+/** Keywords may describe only vocabulary actually present in the extracted passage. */
+function cneReferenceClinicalKeywords_(value) {
+  var passage = String(value || '').toLowerCase();
+  var glossary = [
+    ['IV cannulation', /\\b(?:iv cannulat\\w*|intravenous cannulat\\w*|peripheral venous cannulat\\w*)\\b/],
+    ['peripheral IV catheter', /\\b(?:peripheral\\s+(?:iv|intravenous)\\s+catheter|peripheral\\s+venous\\s+catheter)\\b/],
+    ['venous access', /\\b(?:venous access|peripheral intravenous access|peripheral iv access)\\b/],
+    ['venipuncture', /\\bvenipunctur\\w*\\b/],
+    ['catheter insertion', /\\b(?:catheter insertion|insert(?:ing)?\\s+(?:an?\\s+)?(?:iv\\s+)?catheter)\\b/],
+    ['tourniquet', /\\btourniquet\\b/],
+    ['phlebitis', /\\bphlebitis\\b/],
+    ['infiltration', /\\binfiltrat\\w*\\b/],
+    ['extravasation', /\\bextravasat\\w*\\b/],
+    ['catheter gauge', /\\b(?:catheter gauge|gauge of (?:the )?catheter|\\d{2}\\s*(?:g|gauge)\\s+catheter)\\b/],
+    ['aseptic technique', /\\b(?:aseptic technique|aseptic non.touch|sterile technique)\\b/],
+    ['hand hygiene', /\\bhand hygiene\\b/],
+    ['infection prevention', /\\b(?:infection prevention|prevent infection|infection control)\\b/],
+    ['wound dressing', /\\b(?:wound dressing|dressing change|wound care)\\b/],
+    ['CPR', /\\b(?:cpr|cardiopulmonary resuscitation)\\b/],
+    ['chest compressions', /\\bchest compressions?\\b/],
+    ['AED', /\\b(?:aed|automated external defibrillator)\\b/],
+    ['medication administration', /\\b(?:medication administration|drug administration)\\b/],
+    ['dosage', /\\b(?:dosage|medication dose)\\b/],
+    ['foley catheter', /\\b(?:foley catheter|urinary catheter)\\b/],
+    ['blood transfusion', /\\b(?:blood transfusion|packed red blood cells)\\b/]
+  ];
+  var found = [];
+  for (var k = 0; k < glossary.length && found.length < 12; k++) {
+    if (glossary[k][1].test(passage)) found.push(glossary[k][0]);
+  }
+  return found.join(', ');
+}
+
+/** The topic title is a prompt; exact-equivalent clinical practice terms are also valid. */
+function cneAiIvCannulationStem_(stem) {
+  var s = String(stem || '').toLowerCase();
+  return /(?:\\b(?:iv|intravenous|peripheral venous|peripheral vein)\\s+cannulat\\w*\\b|\\bvenipunctur\\w*\\b|\\b(?:peripheral\\s+)?(?:iv|intravenous|venous)\\s+(?:catheter|cannula|access|line)\\b|\\b(?:cannula|catheter)\\s+(?:insertion|placement|gauge|selection|advancement|size)\\b|\\b(?:vein|venous)\\s+(?:selection|assessment|site|access)\\b|\\b(?:tourniquet|flashback|phlebitis|infiltration|extravasation)\\b)/.test(s);
+}
+
+/** Reduce irrelevant/context-heavy evidence while retaining documented source IDs. */
+function cneAiSelectTopicEvidence_(evidence, hasOwnMaterial) {
+  var rows = Array.isArray(evidence) ? evidence : [];
+  var selected = [];
+  var seen = {};
+  var uploaded = 0, library = 0;
+  var maxUploaded = hasOwnMaterial ? 6 : 0;
+  var maxLibrary = hasOwnMaterial ? 6 : 12;
+  for (var i = 0; i < rows.length; i++) {
+    var item = rows[i] || {};
+    if (item.sourceType !== 'UPLOADED_CNE' && !cneReferenceChunkReadable_(item.chunkText)) continue;
+    var isOwn = item.sourceType === 'UPLOADED_CNE';
+    if (isOwn ? uploaded >= maxUploaded : library >= maxLibrary) continue;
+    var key = String(item.chunkText || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    if (seen[key]) continue;
+    seen[key] = true;
+    selected.push(item);
+    if (isOwn) uploaded++; else library++;
+    if (selected.length >= 12) break;
+  }
+  return selected;
+}
+
 function chunkReferenceLibraryContent(text, fileType, defaultTitle) {
   if (!text || typeof text !== 'string') return [];
   var clean = text.trim();
@@ -10475,6 +10571,8 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
   var license = String(meta.license || 'CC BY 4.0').trim();
   var version = String(meta.version || 'Latest').trim();
   var isReindex = Boolean(meta.reindex);
+  var jobPermission = cneLibraryIndexJobPermission_(cleanDriveFileId, meta);
+  if (jobPermission) return jobPermission;
 
   // 7. CONTENT EXTRACTION & CHUNKING OUTSIDE SCRIPTLOCK
   var extResult = null;
@@ -10507,6 +10605,15 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
 
   if (isSuccess) {
     var chunks = chunkReferenceLibraryContent(extResult.extractedText, ext, resourceTitle);
+    var originalCharacters = chunks.reduce(function(sum, part) {return sum + String(part.text || '').length;}, 0);
+    chunks = chunks.filter(function(part) {return cneReferenceChunkReadable_(part.text);});
+    var readableCharacters = chunks.reduce(function(sum, part) {return sum + String(part.text || '').length;}, 0);
+    if (originalCharacters > 0 && readableCharacters / originalCharacters < 0.65) {
+      // Preserve any earlier good index on failed reindex; never mark noisy PDF as SUCCESS.
+      chunks = [];
+      extResult = {success:false,errorCode:'LOW_QUALITY_PDF_EXTRACTION',message:'Too much text was unreadable or damaged. Upload a searchable text-based PDF and reindex.'};
+      isSuccess = false;
+    }
     if (chunks.length > 0) {
       for (var c = 0; c < chunks.length; c++) {
         var chunkIndexId = 'IDX_LIB_' + cleanDriveFileId.substring(0, 8) + '_C' + (c + 1);
@@ -10517,17 +10624,17 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
           cleanDriveFileId,
           resourceTitle,
           chunks[c].topic || resourceTitle,
-          chunks[c].sectionHeading || 'General Content',
+          /^(?:[0-9]+|general content)$/i.test(String(chunks[c].sectionHeading || '').trim()) ? 'General Content' : chunks[c].sectionHeading,
           (c + 1),
           chunks[c].text,
-          '', // Clinical Keywords left empty for Phase 4B
+          cneReferenceClinicalKeywords_(chunks[c].text),
           'SUCCESS',
           nowIso
         ]);
       }
     } else {
       isSuccess = false;
-      extResult = {
+      extResult = extResult && extResult.errorCode === 'LOW_QUALITY_PDF_EXTRACTION' ? extResult : {
         success: false,
         errorCode: 'NO_EXTRACTABLE_CONTENT',
         message: 'This PDF does not contain usable text. Please upload a text-based PDF.'
@@ -10589,6 +10696,8 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
   var resourceId = 'LIB_OPENRN_' + cleanDriveFileId.substring(0, 10);
 
   try {
+    var liveJobPermission = cneLibraryIndexJobPermission_(cleanDriveFileId, meta);
+    if (liveJobPermission) return liveJobPermission;
     var freshIndexAdmin = requireFreshAdminMutation(session);
     if (!freshIndexAdmin.success) return freshIndexAdmin;
     session = freshIndexAdmin.session;
@@ -10684,8 +10793,14 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
               'Warning deleting old index rows during reindex: ' + (delErr && delErr.message ? delErr.message : String(delErr)),
               'WARNING'
             );
+            return {success:false,errorCode:'INDEX_REPLACEMENT_INCOMPLETE',message:'New index chunks were written but the old rows could not be removed. Reindex again after resolving the sheet error; no successful replacement is reported.'};
           }
         }
+        // The replacement must contain exactly the new indexed rows for this file.
+        var verifyIds = indexSheet.getRange(2, driveColIdx + 1, Math.max(0, indexSheet.getLastRow() - 1), 1).getValues();
+        var verifiedCount = 0;
+        for (var vc = 0; vc < verifyIds.length; vc++) if (String(verifyIds[vc][0] || '').trim() === cleanDriveFileId) verifiedCount++;
+        if (verifiedCount !== rowsToInsert.length) return {success:false,errorCode:'INDEX_REPLACEMENT_INCOMPLETE',message:'Reference index replacement verification failed. Check and safely reindex this resource.'};
       }
 
       // 8E. Update metadata registry in CNE_Reference_Library
@@ -11278,6 +11393,336 @@ function uploadNursingReferenceResource(params, session) {
       ? 'Reference file uploaded successfully. Indexing is pending. ' + registryWarning
       : 'Reference file uploaded successfully. Indexing is pending.'
   };
+}
+
+/**
+ * Admin-only Nursing Reference Library index maintenance.
+ * No Google Sheets schema changes. Health is read-only; a resumable batch job
+ * processes one Drive PDF per request to avoid Apps Script execution limits.
+ */
+var CNE_LIBRARY_REINDEX_JOB_KEY_ = 'CNE_LIBRARY_REINDEX_JOB_V1';
+
+function cneLibraryIndexHealthSummary_(driveFiles, registry, indexEntries) {
+  var registered = {};
+  var registryCount = {};
+  var scanned = {};
+  var records = [];
+  var orphanCount = 0;
+  (registry || []).forEach(function(rec) {
+    var id = String(rec.driveFileId || '').trim();
+    if (id) {registered[id] = rec;registryCount[id]=(registryCount[id] || 0)+1;}
+  });
+  var byDrive = {};
+  (indexEntries || []).forEach(function(row) {
+    if (String(row.sourceType || '').trim().toUpperCase() !== 'LOCAL_REFERENCE_LIB') return;
+    var id = String(row.driveFileId || '').trim();
+    if (!id) return;
+    if (!byDrive[id]) byDrive[id] = [];
+    byDrive[id].push(row);
+  });
+  (driveFiles || []).forEach(function(file) {
+    var id = String(file.driveFileId || '').trim();
+    if (!id || scanned[id]) return;
+    scanned[id] = true;
+    var ref = registered[id];
+    var rows = byDrive[id] || [];
+    var good = 0, bad = 0, failed = 0, duplicate = 0;
+    var seenChunk = {}, latest = '';
+    var issues = [];
+    rows.forEach(function(row) {
+      var stat = String(row.extractionStatus || '').trim().toUpperCase();
+      var updated = String(row.updatedAt || '').trim();
+      if (updated && updated > latest) latest = updated;
+      if (stat === 'SUCCESS') {
+        good++;
+        if (!cneReferenceChunkReadable_(row.chunkText)) bad++;
+        var chunkKey = String(row.chunkIndex || '').trim();
+        if (seenChunk[chunkKey]) duplicate++;
+        seenChunk[chunkKey] = true;
+      } else if (stat === 'FAILED') failed++;
+    });
+    if (!ref) issues.push('NOT_REGISTERED');
+    if (registryCount[id] > 1) issues.push('DUPLICATE_REGISTRY');
+    if (ref && !ref.active) issues.push('INACTIVE');
+    if (!good) issues.push(failed ? 'EXTRACTION_FAILED' : 'NOT_INDEXED');
+    if (bad) issues.push('UNREADABLE_CHUNKS');
+    if (duplicate) issues.push('DUPLICATE_CHUNKS');
+    if (failed && good) issues.push('MIXED_INDEX_STATUS');
+    if (ref && ref.active && !rows.length) issues.push('MISSING_INDEX_ROWS');
+    var indexedMs = Date.parse(String(ref && ref.indexedAt || latest || ''));
+    var fileMs = Date.parse(String(file.lastUpdated || ''));
+    if (good && Number.isFinite(indexedMs) && Number.isFinite(fileMs) && fileMs > indexedMs + 1000) {
+      issues.push('SOURCE_CHANGED_AFTER_INDEX');
+    }
+    records.push({
+      driveFileId: id,
+      fileName: String(file.fileName || ''),
+      resourceTitle: String((ref && ref.resourceTitle) || file.resourceTitle || file.fileName || ''),
+      active: Boolean(ref && ref.active),
+      chunksCount: good,
+      unreadableChunks: bad,
+      failedChunks: failed,
+      duplicateChunks: duplicate,
+      indexedAt: String((ref && ref.indexedAt) || latest || ''),
+      fileUpdatedAt: String(file.lastUpdated || ''),
+      indexStatus: issues.length ? 'NEEDS_ATTENTION' : 'HEALTHY',
+      issues: issues
+    });
+  });
+  Object.keys(byDrive).forEach(function(id) { if (!scanned[id]) orphanCount += byDrive[id].length; });
+  records.sort(function(a,b) { return a.resourceTitle.localeCompare(b.resourceTitle); });
+  return {
+    totalResources: records.length,
+    healthyResources: records.filter(function(r) {return r.indexStatus === 'HEALTHY';}).length,
+    needsAttention: records.filter(function(r) {return r.indexStatus !== 'HEALTHY';}).length,
+    orphanIndexRows: orphanCount,
+    resources: records
+  };
+}
+
+/** Folder inspection does not create missing Drive folders. */
+function cneLibraryFindFolderForHealth_() {
+  try {
+    var rootId = PropertiesService.getScriptProperties().getProperty('LEARNING_RESOURCES_ROOT_FOLDER_ID');
+    var current = rootId ? DriveApp.getFolderById(rootId) : DriveApp.getRootFolder();
+    var names = ['CNE Learning Resources','Nursing Reference Library','Open RN'];
+    for (var n=0;n<names.length;n++) {
+      var folders = current.getFoldersByName(names[n]);
+      if (!folders.hasNext()) return {success:true,folder:null};
+      current = folders.next();
+    }
+    return {success:true,folder:current};
+  } catch(e) {return {success:false,message:'Could not inspect reference-library folder: '+(e && e.message ? e.message : String(e))};}
+}
+
+function getNursingReferenceLibraryHealth(params, session) {
+  var fresh = requireFreshAdminMutation(session);
+  if (!fresh.success) return fresh;
+  var folderResult = cneLibraryFindFolderForHealth_();
+  if (!folderResult.success) return {success:false,errorCode:'FOLDER_RESOLUTION_FAILED',message:folderResult.message || 'Reference Library folder unavailable.'};
+  var driveFiles = [];
+  try {
+    if (folderResult.folder) {
+      var it = folderResult.folder.getFiles();
+      while (it.hasNext()) {
+        var f = it.next();
+        if (getFileExtension(f.getName()).toLowerCase() !== 'pdf') continue;
+        driveFiles.push({driveFileId:f.getId(),fileName:f.getName(),resourceTitle:f.getName().replace(/\\.pdf$/i,''),lastUpdated:f.getLastUpdated().toISOString()});
+      }
+    }
+    var ss = getSpreadsheet('CNE');
+    var registry = [];
+    var libSheet = ss.getSheetByName('CNE_Reference_Library');
+    if (libSheet && libSheet.getLastRow() > 1) {
+      var lm = getHeaderMap(libSheet);
+      var values = libSheet.getDataRange().getValues();
+      for (var l=1;l<values.length;l++) {
+        if (String(values[l][lm['sourcetype'] === undefined ? 1 : lm['sourcetype']] || '').trim().toUpperCase() !== 'LOCAL_REFERENCE_LIB') continue;
+        registry.push({driveFileId:String(values[l][lm['drivefileid'] === undefined ? 3 : lm['drivefileid']] || '').trim(),
+          resourceTitle:String(values[l][lm['resourcetitle'] === undefined ? 2 : lm['resourcetitle']] || '').trim(),
+          indexedAt:String(values[l][lm['indexedat'] === undefined ? 9 : lm['indexedat']] || '').trim(),
+          active:String(values[l][lm['active'] === undefined ? 8 : lm['active']] || '').trim().toUpperCase() === 'TRUE'});
+      }
+    }
+    var entries = [];
+    var idx = ss.getSheetByName('CNE_Reference_Index');
+    if (idx && idx.getLastRow() > 1) {
+      var im = getHeaderMap(idx);
+      var all = idx.getDataRange().getValues();
+      for (var i=1;i<all.length;i++) {
+        var row = all[i];
+        if (String(row[im['sourcetype'] === undefined ? 1 : im['sourcetype']] || '').trim().toUpperCase() !== 'LOCAL_REFERENCE_LIB') continue;
+        entries.push({sourceType:'LOCAL_REFERENCE_LIB',driveFileId:row[im['drivefileid'] === undefined ? 3 : im['drivefileid']],
+          chunkIndex:row[im['chunkindex'] === undefined ? 7 : im['chunkindex']],
+          chunkText:row[im['chunktext'] === undefined ? 8 : im['chunktext']],
+          extractionStatus:row[im['extractionstatus'] === undefined ? 10 : im['extractionstatus']],
+          updatedAt:row[im['updatedat'] === undefined ? 11 : im['updatedat']]});
+      }
+    }
+    return {success:true,data:cneLibraryIndexHealthSummary_(driveFiles,registry,entries)};
+  } catch (err) {
+    return {success:false,errorCode:'INDEX_HEALTH_READ_FAILED',message:'Unable to inspect Nursing Reference Library: '+(err && err.message ? err.message : String(err))};
+  }
+}
+
+function cneLibraryLoadJob_() {
+  var text = PropertiesService.getScriptProperties().getProperty(CNE_LIBRARY_REINDEX_JOB_KEY_);
+  if (!text) return null;
+  try {return JSON.parse(text);} catch(e) {return null;}
+}
+function cneLibrarySaveJob_(job) {
+  var json = JSON.stringify(job);
+  if (json.length > 8500) throw new Error('Library job state exceeds Script Properties storage limit.');
+  PropertiesService.getScriptProperties().setProperty(CNE_LIBRARY_REINDEX_JOB_KEY_,json);
+}
+function cneLibraryJobPublic_(job) {
+  if (!job) return null;
+  return {jobId:job.jobId,status:job.status,total:job.ids.length,completed:job.next,
+    succeeded:job.succeeded,failed:job.failed,skipped:job.skipped,
+    currentDriveFileId:job.processing ? job.ids[job.next] : '',
+    processing:Boolean(job.processing),cancelRequested:Boolean(job.cancelRequested),
+    startedAt:job.startedAt,updatedAt:job.updatedAt,failures:(job.failures || []).slice(-15)};
+}
+function cneLibraryLock_() {
+  var lock = LockService.getScriptLock();
+  try {lock.waitLock(15000);return lock;} catch(e) {return null;}
+}
+function cneLibraryIndexJobPermission_(driveFileId, meta) {
+  var job = cneLibraryLoadJob_();
+  var jobId = String(meta && meta.batchJobId || '');
+  var claimToken = String(meta && meta.batchClaimToken || '');
+  if (!job || job.status !== 'RUNNING') return jobId
+    ? {success:false,errorCode:'LIBRARY_JOB_NOT_ACTIVE',message:'Library batch reindex is no longer active.'} : null;
+  if (!jobId) return {success:false,errorCode:'LIBRARY_JOB_ACTIVE',message:'Library-wide reindex is running. Retry individual indexing after it finishes.'};
+  if (job.jobId !== jobId || !job.processing || job.ids[job.next] !== driveFileId || job.claimToken !== claimToken)
+    return {success:false,errorCode:'LIBRARY_JOB_CLAIM_MISMATCH',message:'The batch reindex claim is no longer valid.'};
+  return null;
+}
+
+function startNursingReferenceReindexAll(params, session) {
+  var fresh = requireFreshAdminMutation(session);
+  if (!fresh.success) return fresh;
+  var health = getNursingReferenceLibraryHealth({},fresh.session);
+  if (!health.success) return health;
+  if (!health.data.totalResources) return {success:false,errorCode:'EMPTY_LIBRARY',message:'There are no library PDFs to reindex.'};
+  // Script Properties stores one job in a maximum 9 KB value; bound its workload.
+  if (health.data.totalResources > 75) return {success:false,errorCode:'BATCH_TOO_LARGE',message:'More than 75 library PDFs found. Reindex individual files or divide the library into batches.'};
+  var lock = cneLibraryLock_();
+  if (!lock) return {success:false,errorCode:'SERVER_BUSY',message:'Server is busy. Please retry.'};
+  try {
+    var live = requireFreshAdminMutation(fresh.session);
+    if (!live.success) return live;
+    var prev = cneLibraryLoadJob_();
+    if (prev && prev.status === 'RUNNING') return {success:true,data:cneLibraryJobPublic_(prev),message:'Resuming existing reindex job; duplicate job not created.'};
+    var now = new Date().toISOString();
+    var job = {jobId:'LIBJOB_'+Utilities.getUuid(),status:'RUNNING',ids:health.data.resources.map(function(r){return r.driveFileId;}),
+      next:0,succeeded:0,failed:0,skipped:0,failures:[],processing:false,claimAt:0,
+      cancelRequested:false,startedAt:now,updatedAt:now};
+    cneLibrarySaveJob_(job);
+    logAuditAction('REFERENCE_LIBRARY_REINDEX_ALL_STARTED',live.session.employeeId,'Started batch with '+job.ids.length+' PDF resources.','SUCCESS');
+    return {success:true,data:cneLibraryJobPublic_(job)};
+  } finally {lock.releaseLock();}
+}
+
+function getNursingReferenceReindexJob(params, session) {
+  var fresh = requireFreshAdminMutation(session);
+  if (!fresh.success) return fresh;
+  return {success:true,data:cneLibraryJobPublic_(cneLibraryLoadJob_())};
+}
+
+function cancelNursingReferenceReindexAll(params, session) {
+  var fresh = requireFreshAdminMutation(session);
+  if (!fresh.success) return fresh;
+  var lock = cneLibraryLock_();
+  if (!lock) return {success:false,errorCode:'SERVER_BUSY',message:'Server is busy. Please retry.'};
+  try {
+    var live = requireFreshAdminMutation(fresh.session);
+    if (!live.success) return live;
+    var job = cneLibraryLoadJob_();
+    if (!job || job.status !== 'RUNNING') return {success:true,data:cneLibraryJobPublic_(job)};
+    job.cancelRequested = true;
+    // A step still inside its six-minute Apps Script execution must finish normally.
+    // An abandoned claim older than twelve minutes can safely be cancelled.
+    if (job.processing && Date.now() - Number(job.claimAt || 0) >= 12*60*1000) {
+      job.processing=false;job.claimAt=0;job.claimToken='';
+    }
+    if (!job.processing) job.status = 'CANCELLED';
+    job.updatedAt = new Date().toISOString();
+    cneLibrarySaveJob_(job);
+    logAuditAction('REFERENCE_LIBRARY_REINDEX_ALL_CANCEL',live.session.employeeId,'Cancellation requested for '+job.jobId+'.','SUCCESS');
+    return {success:true,data:cneLibraryJobPublic_(job)};
+  } finally {lock.releaseLock();}
+}
+
+// Retain the original library title, author, licence and version on batch reindex.
+function cneLibraryBatchMetadata_(driveFileId) {
+  var sheet = getSpreadsheet('CNE').getSheetByName('CNE_Reference_Library');
+  if (!sheet || sheet.getLastRow() < 2) return {};
+  var map = getHeaderMap(sheet);
+  var rows = sheet.getDataRange().getValues();
+  for (var i=1;i<rows.length;i++) {
+    if (String(rows[i][map['drivefileid'] === undefined ? 3 : map['drivefileid']] || '').trim() !== driveFileId) continue;
+    return {
+      resourceTitle:String(rows[i][map['resourcetitle'] === undefined ? 2 : map['resourcetitle']] || '').trim(),
+      authorOrganization:String(rows[i][map['authororganization'] === undefined ? 4 : map['authororganization']] || '').trim(),
+      license:String(rows[i][map['license'] === undefined ? 5 : map['license']] || '').trim(),
+      version:String(rows[i][map['version'] === undefined ? 6 : map['version']] || '').trim()
+    };
+  }
+  return {};
+}
+
+function advanceNursingReferenceReindexAll(params, session) {
+  var fresh = requireFreshAdminMutation(session);
+  if (!fresh.success) return fresh;
+  var jobId = String(params && params.jobId || '').trim();
+  if (!jobId) return {success:false,errorCode:'INVALID_PARAMS',message:'Library job ID is required.'};
+  var lock = cneLibraryLock_();
+  if (!lock) return {success:false,errorCode:'SERVER_BUSY',message:'Server is busy. Please retry.'};
+  var claimedId = '', claimedIndex = -1, claimedToken = '';
+  try {
+    var live = requireFreshAdminMutation(fresh.session);
+    if (!live.success) return live;
+    var job = cneLibraryLoadJob_();
+    if (!job || job.jobId !== jobId) return {success:false,errorCode:'JOB_NOT_FOUND',message:'No matching library job is active.'};
+    if (job.status !== 'RUNNING') return {success:true,data:cneLibraryJobPublic_(job)};
+    if (job.cancelRequested) {
+      if (!job.processing || Date.now() - Number(job.claimAt || 0) >= 12*60*1000) {
+        job.status='CANCELLED';job.processing=false;job.claimAt=0;job.claimToken='';job.updatedAt=new Date().toISOString();cneLibrarySaveJob_(job);
+        return {success:true,data:cneLibraryJobPublic_(job)};
+      }
+      return {success:false,errorCode:'JOB_STEP_IN_PROGRESS',message:'Cancellation will complete when the current PDF finishes.',data:cneLibraryJobPublic_(job)};
+    }
+    if (job.processing && Date.now() - Number(job.claimAt || 0) < 12*60*1000)
+      return {success:false,errorCode:'JOB_STEP_IN_PROGRESS',message:'A library PDF is already being processed. Check job status before retrying.',data:cneLibraryJobPublic_(job)};
+    if (job.next >= job.ids.length) {
+      job.status='COMPLETED';job.processing=false;job.updatedAt=new Date().toISOString();cneLibrarySaveJob_(job);
+      return {success:true,data:cneLibraryJobPublic_(job)};
+    }
+    job.processing = true;
+    job.claimAt = Date.now();
+    job.claimToken = Utilities.getUuid();
+    job.updatedAt = new Date().toISOString();
+    claimedId=job.ids[job.next];claimedIndex=job.next;claimedToken=job.claimToken;
+    cneLibrarySaveJob_(job);
+  } finally {lock.releaseLock();}
+
+  var result;
+  try {
+    // Existing code rechecks folder membership, PDF privacy, read quality,
+    // current admin permission and the file version before committing.
+    var existingMetadata = cneLibraryBatchMetadata_(claimedId);
+    existingMetadata.reindex = true;
+    existingMetadata.batchJobId = jobId;
+    existingMetadata.batchClaimToken = claimedToken;
+    result = indexReferenceLibraryResource(claimedId,existingMetadata,fresh.session);
+  } catch(e) {
+    result={success:false,errorCode:'INDEX_EXCEPTION',message:e && e.message ? e.message : String(e)};
+  }
+  lock=cneLibraryLock_();
+  if (!lock) return {success:false,errorCode:'JOB_PROGRESS_SAVE_BUSY',message:'Indexing attempt completed, but job progress could not be updated. Check status and resume after server contention clears.'};
+  try {
+    var jobDone = cneLibraryLoadJob_();
+    if (!jobDone || jobDone.jobId !== jobId || jobDone.next !== claimedIndex || jobDone.claimToken !== claimedToken)
+      return {success:false,errorCode:'JOB_PROGRESS_CONFLICT',message:'Batch job changed before result could be committed. Inspect index health before retrying.'};
+    jobDone.next++;
+    jobDone.processing=false;
+    jobDone.claimAt=0;
+    jobDone.claimToken='';
+    if (result && result.success) jobDone.succeeded++;
+    else {
+      jobDone.failed++;
+      if (jobDone.failures.length < 12) jobDone.failures.push({driveFileId:claimedId,errorCode:String(result && result.errorCode || 'INDEX_FAILED'),message:String(result && result.message || 'Indexing failed.').substring(0,150)});
+    }
+    if (jobDone.cancelRequested) jobDone.status='CANCELLED';
+    else if (jobDone.next >= jobDone.ids.length) jobDone.status='COMPLETED';
+    jobDone.updatedAt=new Date().toISOString();
+    cneLibrarySaveJob_(jobDone);
+    logAuditAction('REFERENCE_LIBRARY_REINDEX_ALL_STEP',fresh.session.employeeId,'Resource '+claimedId+' '+(result && result.success?'indexed':'failed')+' in '+jobId, result && result.success?'SUCCESS':'FAILED');
+    if (jobDone.status !== 'RUNNING') logAuditAction('REFERENCE_LIBRARY_REINDEX_ALL_FINISHED',fresh.session.employeeId,
+      jobId+': '+jobDone.succeeded+' success, '+jobDone.failed+' failed, '+jobDone.next+'/'+jobDone.ids.length+' processed.',jobDone.failed?'WARNING':'SUCCESS');
+    return {success:true,data:cneLibraryJobPublic_(jobDone)};
+  } finally {lock.releaseLock();}
 }
 
 // Action Dispatch Handlers for Phase 4B
@@ -11940,7 +12385,7 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
 
   for (var r = 1; r < idxData.length; r++) {
     var status = String(idxData[r][statusCol] || '').trim().toUpperCase();
-    if (status !== 'SUCCESS') continue;
+    if (status !== 'SUCCESS' || (String(idxData[r][srcTypeCol] || '').trim().toUpperCase() === 'LOCAL_REFERENCE_LIB' && !cneReferenceChunkReadable_(idxData[r][textCol]))) continue;
 
     var srcType = String(idxData[r][srcTypeCol] || '').trim().toUpperCase();
     var rowCneId = String(idxData[r][cneIdCol] || '').trim().toUpperCase();
@@ -12000,7 +12445,7 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
   });
 
   // Source ordering: relevant UPLOADED_CNE chunks first, followed by relevant LOCAL_REFERENCE_LIB chunks
-  var totalEvidence = scoredUploaded.concat(scoredLibrary);
+  var totalEvidence = cneAiSelectTopicEvidence_(scoredUploaded.concat(scoredLibrary), scoredUploaded.length > 0);
 
   if (totalEvidence.length === 0) {
     return {
@@ -14211,6 +14656,11 @@ function cneAiTopicMismatch_(topic, question) {
     if (/(?:paediatric|pediatric|child|infant|baby|school.age|toddler|young patient)/.test(t) &&
         !/(?:paediatric|pediatric|child|infant|baby|toddler|\\b\\d{1,2}[- ]?year[- ]?old\\b|\\b\\d{1,2}[- ]?month[- ]?old\\b|school.age|\\bpbls\\b)/.test(stem)) return true;
     return false;
+  }
+
+  if (/\\b(?:iv|intravenous|peripheral venous)\\s*cannulat\\w*\\b/.test(t)) {
+    if (/(?:palliative|grief|spiritualit|death rattle|foley catheter|wound dressing|resuscitat|\\bcpr\\b)/.test(stem)) return true;
+    return !cneAiIvCannulationStem_(stem);
   }
 
   // For other topics, generic words such as patient, nursing, care or clinical
