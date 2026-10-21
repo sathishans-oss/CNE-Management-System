@@ -9330,6 +9330,76 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if (!ui.includes('void loadMaterialStatus(++materialRequestRef.current, cneId)')) throw Error('Initial material check missing');
     if (!ui.includes('setMaterialStatusError(status.message')) throw Error('Failed status not distinguished');
   });
+  // Exercise the real, extracted click handler rather than relying only on textual checks.
+  // Each scenario runs isolated with mocked UI state; no API or Google Sheet writes.
+  function exerciseMaterialClick(scenario) {
+    const begin = ui.indexOf('  const requestAiGeneration = async () => {');
+    const end = ui.indexOf('\n  const handleGenerateAi = async', begin);
+    if (begin < 0 || end < 0) throw Error('AI generation click handler missing');
+    const handler = ui.slice(begin, end);
+    const harness = `
+      const vm = require('node:vm');
+      const scenario = ${JSON.stringify(scenario)};
+      const events = {check: 0, generate: [], popup: []};
+      const cneId = 'CNE-ONE';
+      const ctx = {
+        canInteractWithQuestionTools: scenario.canInteract !== false,
+        materialCheckRef: {current: scenario.checking === true},
+        isAiGenerationUsed: false,
+        isAiGenerationUnavailable: false,
+        hasMaterial: scenario.cachedMaterial,
+        materialStatusCneIdRef: {current: scenario.cachedCneId || cneId},
+        materialStatusCheckedAtRef: {current: Date.now() - scenario.ageMs},
+        MATERIAL_STATUS_CACHE_MS: 120000,
+        cneId,
+        materialRequestRef: {current: 1},
+        currentCneIdRef: {current: cneId},
+        loadMaterialStatus: async () => {events.check += 1; return scenario.serverMaterial;},
+        setMaterialChoice: (choice) => {events.popup.push(choice);},
+        handleGenerateAi: async (allowed) => {events.generate.push(allowed);}
+      };
+      (async () => {
+        const fn = vm.runInNewContext(${JSON.stringify(handler + '\nrequestAiGeneration')}, ctx);
+        await fn();
+        process.stdout.write(JSON.stringify(events));
+      })().catch(e => {console.error(e);process.exitCode = 1;});
+    `;
+    return JSON.parse(execFileSync(process.execPath, ['-e', harness], {
+      cwd: ROOT_DIR, encoding: 'utf8', timeout: 10000
+    }));
+  }
+  focusCheck('Material cache: recent uploaded CNE material starts AI with no second frontend lookup', () => {
+    const events = exerciseMaterialClick({cachedMaterial: true, serverMaterial: false, ageMs: 1000});
+    if (events.check !== 0 || JSON.stringify(events.generate) !== '[false]' || events.popup.length !== 0) throw Error('Healthy material cache is not reused');
+  });
+  focusCheck('Material cache: recent missing CNE material opens library-consent dialog without lookup', () => {
+    const events = exerciseMaterialClick({cachedMaterial: false, serverMaterial: true, ageMs: 1000});
+    if (events.check !== 0 || events.generate.length !== 0 || JSON.stringify(events.popup) !== '["confirm"]') throw Error('Cached library consent path changed');
+  });
+  focusCheck('Material cache: expired result causes a fresh status check before generation', () => {
+    const events = exerciseMaterialClick({cachedMaterial: false, serverMaterial: true, ageMs: 150000});
+    if (events.check !== 1 || JSON.stringify(events.generate) !== '[false]' || events.popup.length !== 0) throw Error('Expired result not refreshed');
+  });
+  focusCheck('Material cache: unknown or previous-CNE results are never reused', () => {
+    const unknown = exerciseMaterialClick({cachedMaterial: null, serverMaterial: false, ageMs: 10});
+    const oldCne = exerciseMaterialClick({cachedMaterial: true, cachedCneId: 'OTHER-CNE', serverMaterial: false, ageMs: 10});
+    if (unknown.check !== 1 || JSON.stringify(unknown.popup) !== '["confirm"]' || oldCne.check !== 1 || JSON.stringify(oldCne.popup) !== '["confirm"]') throw Error('Unknown or wrong-CNE status reused');
+  });
+  focusCheck('Material cache: failure and active material check do not start generation', () => {
+    const failed = exerciseMaterialClick({cachedMaterial: null, serverMaterial: null, ageMs: 100});
+    const locked = exerciseMaterialClick({cachedMaterial: true, serverMaterial: true, ageMs: 100, checking: true});
+    if (failed.check !== 1 || failed.generate.length || failed.popup.length || locked.check || locked.generate.length || locked.popup.length) throw Error('Fail-closed material guard lost');
+  });
+  focusCheck('Material cache: opening/returning from upload checks afresh; backend consent remains authoritative', () => {
+    const schedulePage = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
+    const calendarPage = readFileSync(join(ROOT_DIR, 'src/components/cne/CalendarFullCneDetails.tsx'), 'utf8');
+    if (!ui.includes('void loadMaterialStatus(++materialRequestRef.current, cneId)') ||
+        !ui.includes('materialStatusCheckedAtRef.current = 0') ||
+        !ui.includes("if (code === 'LIBRARY_CONSENT_REQUIRED')") ||
+        !schedulePage.includes('setActiveQuestionsCne(null)') || !calendarPage.includes("activeActivity === 'questions'")) {
+      throw Error('Material refresh/remount or backend consent recovery missing');
+    }
+  });
   focusCheck('Manual question is blocked during material checking and generation', () => {
     const handler = ui.substring(ui.indexOf('const handleAddManualQuestion'),ui.indexOf('const handleReplaceQuestion'));
     if (!handler.includes('materialCheckRef.current') || !ui.includes('checkingMaterial ||\n                  materialCheckRef.current')) throw Error('Missing manual busy guards');

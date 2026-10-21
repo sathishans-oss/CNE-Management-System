@@ -39,6 +39,9 @@ const normalizeQuestionStatus = (status?: string) => {
 
 const isActiveQuestion = (q: CNEQuestion) => normalizeQuestionStatus(q.status) === 'ACTIVE';
 
+// A short-lived UI hint only; the backend always rechecks authoritative material and consent.
+const MATERIAL_STATUS_CACHE_MS = 2 * 60 * 1000;
+
 const isQuestionComplete = (q: CNEQuestion) => {
   const options = q.options || ({} as CNEQuestion['options']);
   return Boolean(
@@ -109,6 +112,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [checkingMaterial, setCheckingMaterial] = useState(false);
   const materialRequestRef = useRef(0);
   const materialCheckRef = useRef(false);
+  const materialStatusCheckedAtRef = useRef(0);
+  const materialStatusCneIdRef = useRef<string | null>(null);
   const [materialStatusError, setMaterialStatusError] = useState<string | null>(null);
   const [failureDialog, setFailureDialog] = useState<{
     title: string; message: string; type: 'material' | 'validation' | 'technical'; retrySafe: boolean;
@@ -138,6 +143,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     quotaRequestRef.current += 1;
     materialRequestRef.current += 1;
     materialCheckRef.current = false;
+    materialStatusCheckedAtRef.current = 0;
+    materialStatusCneIdRef.current = null;
     generationRequestRef.current += 1;
     stopProgressPolling();
     generatingRef.current = false;
@@ -233,14 +240,20 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       const status = await ApiService.getCNEAiMaterialStatus(targetCneId);
       if (requestId !== materialRequestRef.current || targetCneId !== currentCneIdRef.current) return null;
       if (!status.success || !status.data) {
+        materialStatusCheckedAtRef.current = 0;
+        materialStatusCneIdRef.current = null;
         setHasMaterial(null);
         setMaterialStatusError(status.message || 'Material status is unavailable.');
         return null;
       }
+      materialStatusCheckedAtRef.current = Date.now();
+      materialStatusCneIdRef.current = targetCneId;
       setHasMaterial(status.data.hasOwnMaterial);
       return status.data.hasOwnMaterial;
     } catch (e: any) {
       if (requestId === materialRequestRef.current && targetCneId === currentCneIdRef.current) {
+        materialStatusCheckedAtRef.current = 0;
+        materialStatusCneIdRef.current = null;
         setHasMaterial(null);
         setMaterialStatusError(e?.message || 'Unable to check CNE material.');
       }
@@ -299,9 +312,18 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   const requestAiGeneration = async () => {
     if (!canInteractWithQuestionTools || materialCheckRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
-    // Reconfirm fresh material state in case it was uploaded after opening.
-    materialCheckRef.current = true;
-    const own = await loadMaterialStatus(++materialRequestRef.current, cneId);
+    // Use the status already loaded when the modal opened. Do not repeat the same
+    // frontend request on every Generate click. Refresh only an unknown or expired
+    // status; returning from the material-upload page remounts this modal and
+    // performs a fresh initial check. The backend independently verifies the
+    // current CNE material and enforces library-only consent before generating.
+    const cacheIsCurrent = hasMaterial !== null &&
+      materialStatusCneIdRef.current === cneId &&
+      materialStatusCheckedAtRef.current > 0 &&
+      (Date.now() - materialStatusCheckedAtRef.current) < MATERIAL_STATUS_CACHE_MS;
+    const own = cacheIsCurrent
+      ? hasMaterial
+      : await loadMaterialStatus(++materialRequestRef.current, cneId);
     if (own === null || currentCneIdRef.current !== cneId) return;
     if (!own) { setMaterialChoice('confirm'); return; }
     await handleGenerateAi(false);
