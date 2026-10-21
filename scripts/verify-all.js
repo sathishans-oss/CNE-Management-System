@@ -9691,6 +9691,85 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     const schema=ctx.cneAiBlueprintSchema_();
     if(!schema.properties.objectives.items.required.includes('evidenceId')) throw Error('Evidence binding not required');
   });
+  focusCheck('Gemini correctOption enum constrains all four accepted answer keys',()=>{
+    const ctx=freshLibrarySandbox();
+    const schema=ctx.cneAiQuestionSchema_(false).properties.questions.items.properties.correctOption;
+    const one=ctx.cneAiQuestionSchema_(true).properties.correctOption;
+    if(JSON.stringify(schema.enum)!=='["A","B","C","D"]'||JSON.stringify(one.enum)!=='["A","B","C","D"]') throw Error('Model schema does not constrain A-D selection');
+  });
+  focusCheck('Correct-option formatting is normalized only when unambiguous',()=>{
+    const ctx=freshLibrarySandbox();
+    const opts={A:'Hand hygiene before insertion',B:'Observe the IV site',C:'Use sterile equipment',D:'Document the findings'};
+    const test=(v)=>ctx.cneAiNormalizeCorrectOption_(v,opts);
+    for(const [v,expected] of [['b','B'],['Option B','B'],['(B)','B'],['B)','B'],['B. Observe the IV site','B'],['Observe the IV site','B'],['Option B: Observe the IV site','B']]){
+      if(test(v)!==expected) throw Error('Safe answer format rejected '+v);
+    }
+    for(const v of ['Option Z','Option B: Unrelated intervention','Incorrect answer','A and B','B. Use sterile equipment','']){
+      if(test(v)!=='') throw Error('Ambiguous or conflicting answer was accepted '+v);
+    }
+  });
+  focusCheck('Authoritative library citation can use indexed title alone, but not a false title/section',()=>{
+    const ctx=freshLibrarySandbox();
+    const ev={indexId:'EV12',resourceTitle:'OpenRN Nursing Advanced Skills',sectionHeading:'Initiate IV Therapy',chunkText:'Clinical text'};
+    const map={EV12:ev};
+    const canonical='OpenRN Nursing Advanced Skills - Initiate IV Therapy';
+    for(const v of ['',ev.resourceTitle,canonical,'OpenRN Nursing Advanced Skills: Initiate IV Therapy']) {
+      const r=ctx.cneAiBoundSource_(v,'EV12',map,'IV Cannulation','');
+      if(!r.success || r.source!==canonical) throw Error('Verifiable source falsely rejected '+v);
+    }
+    for(const v of ['OpenRN Nursing Advanced Skills - CPR','Fake Clinical Guide - Initiate IV Therapy','https://fiction.example/source','Wikipedia']){
+      const r=ctx.cneAiBoundSource_(v,'EV12',map,'IV Cannulation','');
+      if(r.success) throw Error('False or informal source falsely accepted '+v);
+    }
+    if(ctx.cneAiBoundSource_(ev.resourceTitle,'MADE_UP',map,'IV Cannulation','').success) throw Error('Invented evidence ID accepted');
+  });
+  focusCheck('Formatting-only answer correction and title-only source succeed without a Gemini repair',()=>{
+    const run=mockBlueprintScenario({mutateInitial:qs=>{
+      qs[0].correctOption='Option A';qs[0].authoritativeSource='OpenRN Nursing Advanced Skills';
+    }});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(!result.success || run.calls.length!==2 || result.data[0].correctOption!=='A') throw Error('Pure formatting discrepancy triggered regeneration '+JSON.stringify(result));
+    if(result.data[0].authoritativeSource!=='OpenRN Nursing Advanced Skills - IV Care 1') throw Error('Indexed citation not persisted');
+  });
+  focusCheck('Latest audit sequence: fabricated source rejected and corrected answer letter accepted',()=>{
+    const run=mockBlueprintScenario({
+      mutateInitial:qs=>{qs[0].authoritativeSource='Fabricated External Source - IV Care 1';},
+      makeRepair:(i,q)=>q(i,{authoritativeSource:'OpenRN Nursing Advanced Skills',correctOption:'Option A'})
+    });
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(!result.success || run.calls.length!==3 || result.data[0].correctOption!=='A') throw Error('Source/selector repair failed '+JSON.stringify(result));
+    if(!run.calls[2].prompt.includes('REQUIRED FIX:') || !run.calls[2].prompt.includes('source label')) throw Error('No source-specific repair guidance');
+  });
+  focusCheck('Invalid correctOption remains rejected after two bad fixes and saves no partial batch',()=>{
+    const run=mockBlueprintScenario({
+      mutateInitial:qs=>{qs[0].correctOption='B or A';},
+      makeRepair:(i,q)=>q(i,{correctOption:'Option Q'})
+    });
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(result.success || result.errorCode!=='INVALID_CORRECT_OPTION'||result.data||run.calls.length!==4) throw Error('Invalid answer was committed or retry unbounded '+JSON.stringify(result));
+    if(!result.message.includes('unambiguous A, B, C or D')) throw Error('Missing precise user diagnostic');
+  });
+  focusCheck('Backend repair guidance is issue-specific for all five logged failure codes',()=>{
+    const ctx=freshLibrarySandbox();
+    const reasons=['SOURCE_MISMATCH','INVALID_CORRECT_OPTION','NUMERIC_MISMATCH','OFF_TOPIC_QUESTION','DUPLICATE_QUESTION'];
+    const advice=reasons.map(reason=>ctx.cneAiRepairGuidance_(reason));
+    if(new Set(advice).size!==5 || advice.some(x=>!x||x.length<30)) throw Error('Missing targeted correction');
+    if(!advice[2].includes('supported quantities')||!advice[3].includes('CNE topic')) throw Error('Clinical guard repair weakened');
+  });
+  focusCheck('Unsupported clinical quantities and fabricated quotations still fail closed',()=>{
+    const ctx=freshLibrarySandbox();
+    const quote='During peripheral IV insertion nurses clean the site using skin antisepsis and allow the skin to dry.';
+    const entry={indexId:'IVSAFE',resourceTitle:'OpenRN Nursing Advanced Skills',sectionHeading:'Insertion',chunkText:quote};
+    const source='OpenRN Nursing Advanced Skills - Insertion';
+    const mismatch=ctx.cneAiEvidenceSupportDiagnostic_('IV Cannulation',source,quote,'Administer 200 mg of medication','The correct action is to administer 200 mg intravenously.','',[entry],'IVSAFE');
+    if(mismatch.supported) throw Error('Unsupported medication quantity accepted');
+    if(ctx.cneAiEvidenceSupported_('IV Cannulation',source,'Made up passage falsely asserting medical safety precautions which did not appear', 'Skin antisepsis', 'Use aseptic technique','',[entry],'IVSAFE')) throw Error('Fabricated quote accepted');
+  });
+  focusCheck('UI displays specific validation errors without repeatedly telling users to upload material',()=>{
+    const page=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+    if(!page.includes('validationFailure')||!page.includes('UNVERIFIED_SOURCE')||!page.includes('`${msg} [${code}] ${materialAdvice}`')) throw Error('Missing specific validation error context');
+    if(page.includes('`${msg} No question batch was accepted.')) throw Error('Duplicated generic failure message remains');
+  });
   console.log('\n>>> Focused AI indexing, retrieval and UI regression');
   for (const check of focusedChecks) {
     try {

@@ -376,12 +376,25 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         const code = res?.errorCode || 'UNKNOWN_GENERATION_FAILURE';
         const msg = res?.message || 'AI question generation could not be completed.';
         const missing = ['NO_RELEVANT_LIBRARY_CONTENT', 'INSUFFICIENT_TOPIC_MATERIAL', 'NO_EXTRACTABLE_CONTENT'].includes(code);
+        const validationCodes = [
+          'OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION',
+          'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION',
+          'MISSING_SOURCE', 'UNVERIFIED_SOURCE', 'INFORMAL_SOURCE_PROHIBITED',
+          'MISSING_EXPLANATION', 'AI_BLUEPRINT_FAILED', 'BLUEPRINT_MISMATCH',
+          'MISSING_OPTIONS', 'DUPLICATE_OPTIONS'
+        ];
+        const validationFailure = validationCodes.includes(code);
         if (code === 'LIBRARY_CONSENT_REQUIRED') {
           setMaterialChoice('confirm');
         } else if (missing) {
           setFailureDialog({title: 'Learning Material Required', message: msg, type: 'material', retrySafe: false});
-        } else if (['OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION', 'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION', 'MISSING_SOURCE', 'AI_BLUEPRINT_FAILED', 'BLUEPRINT_MISMATCH', 'MISSING_OPTIONS', 'DUPLICATE_OPTIONS'].includes(code)) {
-          setFailureDialog({title: 'AI Questions Did Not Pass Validation', message: `${msg} No question batch was accepted. You may retry with the verified library. Upload more topic material only if relevant evidence is insufficient.`, type: 'validation', retrySafe: true});
+        } else if (validationFailure) {
+          // Keep the exact server diagnostic; avoid duplicating the 'no questions saved' text.
+          // Only suggest more material for insufficient evidence, not formatting failures.
+          const materialAdvice = code === 'UNSUPPORTED_SOURCE_EVIDENCE'
+            ? 'If the source passage is insufficient, you may upload additional relevant material.'
+            : 'The library does not need reindexing solely because a generated answer failed formatting or quality validation.';
+          setFailureDialog({title: 'AI Questions Did Not Pass Validation', message: `${msg} [${code}] ${materialAdvice}`, type: 'validation', retrySafe: true});
         } else {
           const recovered = await reconcileUncertainGeneration(requestCneId, isCurrent);
           if (!isCurrent()) return;
@@ -391,7 +404,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             setFailureDialog({title: 'AI Generation Could Not Be Confirmed', message: `${msg} The system checked saved questions and AI quota. ${recovered.safeToRetry ? 'No completed AI batch was found; retry is available.' : 'A safe retry cannot yet be confirmed. Please refresh the question bank before another attempt.'}`, type: 'technical', retrySafe: recovered.safeToRetry});
           }
         }
-        if (missing || code === 'LIBRARY_CONSENT_REQUIRED' || ['OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION', 'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION', 'MISSING_SOURCE', 'AI_BLUEPRINT_FAILED', 'BLUEPRINT_MISMATCH', 'MISSING_OPTIONS', 'DUPLICATE_OPTIONS'].includes(code)) {
+        if (missing || code === 'LIBRARY_CONSENT_REQUIRED' || validationFailure) {
           await loadQuota(++quotaRequestRef.current, requestCneId);
         }
       }
