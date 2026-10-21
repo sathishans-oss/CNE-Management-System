@@ -9555,61 +9555,141 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     const result=ctx.cneAiEvidenceSupportDiagnostic_('Medication Administration','Medication Handbook - Morphine',dose,'Administer morphine 20 mg','Follow morphine 20 mg protocol.','',med,'IDX_MED_1');
     if (result.supported || (result.code !== 'NUMERIC_MISMATCH' && result.code !== 'CLINICAL_CONTRADICTION')) throw Error('Unsafe quantity accepted');
   });
-  function makeMockGroundingScenario(overrides) {
-    const ctx = freshLibrarySandbox();
-    const passage='Nurses select a peripheral intravenous catheter according to intended therapy and the assessed vessel size before inserting the IV cannula.';
-    const evidence=[{indexId:'IDX_IV_REAL',sourceType:'LOCAL_REFERENCE_LIB',resourceTitle:'OpenRN Nursing Advanced Skills',sectionHeading:'Initiate IV Therapy',chunkText:passage}];
-    const quote=passage;
-    const q=(i,extra={})=>({questionText:'What is the appropriate peripheral IV catheter selection approach in clinical scenario '+i+'?',
-      optionA:'Select the catheter according to vessel size',optionB:'Always choose unrelated dose',optionC:'Never assess the vein',optionD:'Ignore therapy purpose',
-      correctOption:'A',explanation:'Select the catheter for intended therapy and vessel size.',
-      authoritativeSource:'OpenRN Nursing Advanced Skills - Initiate IV Therapy',evidenceQuote:quote,evidenceId:'IDX_IV_REAL',...extra});
-    const initial=[q(1),q(2),q(3),q(4),q(5)];
-    Object.entries(overrides || {}).forEach(([i,extra]) => Object.assign(initial[Number(i)],extra));
-    let calls=0;
-    ctx.handleValidateAiQuotaReservation=()=>({success:true,data:{topic:'IV Cannulation',hasOwnMaterial:false,retrievedEvidence:evidence}});
-    ctx.updateCNEAiProgress_=()=>{};
-    ctx.logAuditAction=()=>{};
-    ctx.PropertiesService={getScriptProperties:()=>({getProperty:k=>k==='GEMINI_API_KEY'?'MOCK_KEY':(k==='GEMINI_MODEL'?'gemini-3.8-flash':'')}),getUserProperties:()=>({getProperty:()=>''})};
-    ctx.UrlFetchApp={fetch:(_url,opts)=>{
-      calls++;
-      const payload=JSON.parse(opts.payload);
-      const qs=calls===1?initial:[q(10+calls)];
-      if (calls>1 && !payload.contents[0].parts[0].text.includes('CORRECTIVE GENERATION')) throw Error('Repair request lacks restrictive context');
-      return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify({questions:qs})}]}}]})};
-    }};
-    return {ctx,getCalls:()=>calls,q};
-  }
-  focusCheck('One rejected IV question is regenerated without discarding other four validated MCQs', () => {
-    const run=makeMockGroundingScenario({0:{evidenceQuote:'A fabricated excerpt from an unrelated source has no verifiable clinical grounding.'}});
-    const out=run.ctx.generateAiQuestionsInternal({cneId:'CNE_IV_TEST',reservationToken:'TEST_TOKEN',allowLibraryOnly:true},{employeeId:'ADM_TEST'});
-    if (!out.success || out.data.length!==5 || run.getCalls()!==2) throw Error('Bounded single-question correction did not succeed: '+JSON.stringify(out));
-    if (out.data.some(item=>item.isFinalized)) throw Error('Generated questions bypassed Draft-first review');
-    if (new Set(out.data.map(item=>item.questionText)).size!==5) throw Error('Duplicate question survived corrective generation');
-  });
-  focusCheck('Correction is bounded; unsupported generated questions cannot create a partial batch', () => {
-    const run=makeMockGroundingScenario({0:{evidenceQuote:'Fabricated unrelated clinical evidence with no matching words or real citation.'},1:{evidenceId:'IDX_FAKE'}});
-    // Deliberately make all model responses invalid, including the correction.
-    const originalFetch=run.ctx.UrlFetchApp.fetch;
-    run.ctx.UrlFetchApp.fetch=(url,opts)=>{
-      const res=originalFetch(url,opts);
-      const result=JSON.parse(res.getContentText());
-      if (opts.payload.includes('CORRECTIVE GENERATION')) {
-        const single=JSON.parse(result.candidates[0].content.parts[0].text);
-        single.questions[0].evidenceId='IDX_FAKE';
-        return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(single)}]}}]})};
+  // Blueprint-guided evidence-first generation: behavioral mock-Gemini regressions.
+  function mockBlueprintScenario(config={}) {
+    const ctx=freshLibrarySandbox();
+    const chunks=[
+      'For peripheral intravenous cannulation nurses select the catheter according to the intended therapy and the assessed vessel size.',
+      'During peripheral IV cannulation hand hygiene and skin antisepsis reduce the risk of infection before inserting a catheter.',
+      'After peripheral IV catheter insertion nurses assess for swelling and coolness near the site as signs of infiltration.',
+      'Phlebitis associated with a peripheral IV catheter can present with pain redness and warmth along the cannulated vein.',
+      'A transparent dressing can secure a peripheral IV catheter while permitting ongoing assessment of the insertion site.'
+    ];
+    const evidence=chunks.map((chunkText,i)=>({indexId:'IV_EVID_'+(i+1),sourceType:'LOCAL_REFERENCE_LIB',resourceTitle:'OpenRN Nursing Advanced Skills',sectionHeading:'IV Care '+(i+1),chunkText}));
+    const names=[
+      'Assess peripheral intravenous catheter selection based on intended therapy and vessel size',
+      'Apply aseptic hand hygiene and skin antisepsis for peripheral intravenous cannulation',
+      'Identify swelling and coolness suggesting peripheral intravenous catheter infiltration',
+      'Recognize pain redness and warmth indicating peripheral IV related phlebitis',
+      'Secure the peripheral IV catheter using a transparent assessment-friendly dressing'
+    ];
+    const plan={objectives:names.map((objective,i)=>({objectiveId:'OBJ_'+(i+1),objective,evidenceId:config.ownMaterial?'SESSION_CNE':evidence[i].indexId}))};
+    const stems=[
+      'Which factors guide selection of a peripheral IV catheter before cannulation?',
+      'Which aseptic measures reduce infection during peripheral IV cannulation?',
+      'Which clinical signs suggest infiltration around a peripheral IV catheter?',
+      'Which clinical findings suggest phlebitis near a peripheral IV cannula?',
+      'Which dressing permits assessment of a peripheral IV catheter site?'
+    ];
+    const answers=[
+      'Select catheter by intended therapy and vessel size',
+      'Use hand hygiene and skin antisepsis',
+      'Assess swelling and coolness for infiltration',
+      'Look for pain redness and warmth from phlebitis',
+      'Apply a transparent dressing allowing site assessment'
+    ];
+    const question=(i,overrides={})=>({
+      objectiveId:'OBJ_'+(i+1),questionText:stems[i],optionA:answers[i],
+      optionB:'Ignore the intended clinical precautions',optionC:'Do not assess the site',optionD:'Choose an unrelated nursing action',
+      correctOption:'A',explanation:chunks[i],
+      authoritativeSource:config.ownMaterial?'Verified CNE Session: IV Cannulation':'OpenRN Nursing Advanced Skills - IV Care '+(i+1),
+      evidenceQuote:chunks[i],evidenceId:config.ownMaterial?'SESSION_CNE':evidence[i].indexId,...overrides
+    });
+    const generated=[0,1,2,3,4].map(i=>question(i));
+    if(config.mutateInitial) config.mutateInitial(generated,question);
+    if(config.mutatePlan) config.mutatePlan(plan);
+    let calls=[];
+    ctx.handleValidateAiQuotaReservation=()=>({success:true,data:{topic:'IV Cannulation',hasOwnMaterial:!!config.ownMaterial,
+      authoritativeLearningContent:config.ownMaterial?chunks.join('\n\n'):'',retrievedEvidence:config.ownMaterial?[]:evidence}});
+    ctx.updateCNEAiProgress_=()=>{};ctx.logAuditAction=()=>{};
+    ctx.PropertiesService={getScriptProperties:()=>({getProperty:k=>k==='GEMINI_API_KEY'?'MOCK_KEY':k==='GEMINI_MODEL'?'gemini-3.8-flash':''}),getUserProperties:()=>({getProperty:()=>''})};
+    ctx.UrlFetchApp={fetch:(_endpoint,options)=>{
+      const req=JSON.parse(options.payload); const prompt=req.contents[0].parts[0].text;
+      const schema=req.generationConfig.responseSchema;
+      const role=schema.properties?.objectives?'plan':schema.properties?.questions?'generate':'repair';
+      calls.push({role,prompt,schema});
+      if(config.transportError && config.transportError(role)) return {getResponseCode:()=>503,getContentText:()=>JSON.stringify({error:{message:'Service temporarily unavailable'}})};
+      let result;
+      if(role==='plan') result=plan;
+      else if(role==='generate') result={questions:generated};
+      else {
+        const match=prompt.match(/Objective ID: OBJ_(\d+)/);
+        const idx=match ? Number(match[1])-1 : 0;
+        result=config.makeRepair ? config.makeRepair(idx,question,generated,calls) : question(idx);
       }
-      return res;
-    };
-    const result=run.ctx.generateAiQuestionsInternal({cneId:'CNE_IV_TEST',reservationToken:'TEST_TOKEN',allowLibraryOnly:true},{employeeId:'ADM_TEST'});
-    if (result.success || result.errorCode!=='UNSUPPORTED_SOURCE_EVIDENCE' || result.validationReason!=='SOURCE_MISMATCH' || result.data) throw Error('Unverified question batch escaped validation');
-    if (run.getCalls()!==3) throw Error('Exceeded maximum two correction calls');
+      return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}]})};
+    }};
+    return {ctx, calls, plan, evidence, question};
+  }
+  focusCheck('Five-objective plan is source-bound and reserves an evidence ID for every clinical objective',()=>{
+    const run=mockBlueprintScenario();
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(!result.success || result.data.length!==5) throw Error('Five-objective generation failed '+JSON.stringify(result));
+    if(run.calls.length!==2 || run.calls.map(c=>c.role).join(',')!=='plan,generate') throw Error('Planner and question-writing stages not distinct');
+    if(result.data.some(q=>q.isFinalized!==false || q.status!=='ACTIVE')) throw Error('Individual educator review bypassed');
+    if(!run.calls[1].prompt.includes('OBJ_5') || !run.calls[1].prompt.includes('IV_EVID_5')) throw Error('Blueprint was not sent to writer');
   });
-  focusCheck('Evidence prompt anchors citations to IDs without invented guideline titles', () => {
-    const gen=gas.slice(gas.indexOf('function generateAiQuestionsInternal('),gas.indexOf('function cneAiHasOwnMaterial_('));
-    if (!gen.includes("'[Evidence ID: '") || !gen.includes("evidenceId: { type: 'STRING' }") || !gen.includes('CLINICAL QUANTITIES AND CONDITIONS')) throw Error('Prompt missing strict grounding and evidence IDs');
-    if (gen.includes('e.g., "AIIMS Clinical Nursing Protocols", "WHO Guidelines"')) throw Error('Prompt encourages uncited guidelines');
-    if (!gen.includes('MAX_CORRECTIONS = 2') || !gen.includes('CORRECTIVE GENERATION')) throw Error('Bounded failed-question regeneration not enforced');
+  focusCheck('Uploaded CNE teaching material remains a valid priority path without library consent',()=>{
+    const run=mockBlueprintScenario({ownMaterial:true});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:false},{employeeId:'ADM'});
+    if(!result.success || result.data.length!==5 || run.calls.length!==2) throw Error('Own teaching-material generation regressed '+JSON.stringify(result));
+    if(!run.calls[0].prompt.includes('SESSION_CNE') || !run.calls[1].prompt.includes('Verified CNE Session')) throw Error('Uploaded session content not used');
+  });
+  focusCheck('Exact duplicate question is repaired with one-question schema, not another five-question prompt',()=>{
+    const run=mockBlueprintScenario({mutateInitial:qs=>{qs[1].questionText=qs[0].questionText;}});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(!result.success || result.data.length!==5 || run.calls.length!==3) throw Error('Duplicate not repaired '+JSON.stringify(result));
+    if(run.calls[2].role!=='repair'||!run.calls[2].prompt.includes('CORRECTIVE GENERATION')||run.calls[2].prompt.includes('Generate exactly FIVE questions')) throw Error('Repair reused five-question prompt');
+    if(new Set(result.data.map(q=>q.questionText)).size!==5) throw Error('Duplicate accepted');
+  });
+  focusCheck('Wrong evidence quotation is replaced without saving an unsupported question',()=>{
+    const run=mockBlueprintScenario({mutateInitial:qs=>{qs[0].evidenceQuote='A fabricated unrelated clinical passage with no verified evidence';}});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(!result.success || run.calls.length!==3) throw Error('Citation repair failed '+JSON.stringify(result));
+  });
+  focusCheck('Repair never accepts incorrect objective-to-source binding',()=>{
+    const run=mockBlueprintScenario({mutateInitial:qs=>{qs[2].evidenceId='IV_EVID_1';}});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(!result.success || run.calls.length!==3) throw Error('Incorrect source binding was not repaired');
+  });
+  focusCheck('Nonexistent blueprint evidence ID prevents all generation and persistence',()=>{
+    const run=mockBlueprintScenario({mutatePlan:plan=>{plan.objectives[2].evidenceId='FABRICATED_INDEX';}});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(result.success || result.errorCode!=='AI_BLUEPRINT_FAILED'||run.calls.length!==1 || result.data) throw Error('Fabricated blueprint was accepted');
+  });
+  focusCheck('Duplicated learning objectives are rejected before any MCQ generation',()=>{
+    const run=mockBlueprintScenario({mutatePlan:plan=>{plan.objectives[1].objective=plan.objectives[0].objective;}});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(result.success||result.errorCode!=='AI_BLUEPRINT_FAILED'||run.calls.length!==1) throw Error('Duplicate clinical blueprint accepted');
+  });
+  focusCheck('Repeated unsupported evidence exhausts bounded corrections and saves no partial batch',()=>{
+    const run=mockBlueprintScenario({mutateInitial:qs=>{qs[0].evidenceQuote='Fabricated clinical quote that never appeared in teaching material';},makeRepair:(i,q)=>q(i,{evidenceQuote:'Another invented passage that was never supplied by the library'})});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(result.success||result.errorCode!=='UNSUPPORTED_SOURCE_EVIDENCE'||result.data||run.calls.length!==4) throw Error('Unsafe question batch was accepted or retry unbounded '+JSON.stringify(result));
+  });
+  focusCheck('Clinical contradiction and unsupported quantities still fail against actual cited passage',()=>{
+    const ctx=freshLibrarySandbox();
+    const source='For a child in cardiac arrest, begin CPR immediately and provide chest compressions without delay.';
+    const entry={indexId:'BLS_1',resourceTitle:'Nursing CPR',sectionHeading:'Child CPR',chunkText:source};
+    if(ctx.cneAiEvidenceSupported_('Paediatric Basic Life Support','Nursing CPR - Child CPR',source,'Do not begin CPR during cardiac arrest','Avoid chest compressions entirely.','',[entry],'BLS_1')) throw Error('Contradiction accepted');
+  });
+  focusCheck('New generation honors explicit library consent and existing reservation/commit design',()=>{
+    const source=gas.slice(gas.indexOf('function generateAiQuestionsInternal('),gas.indexOf('function cneAiHasOwnMaterial_('));
+    if(!source.includes('params.allowLibraryOnly !== true') || !source.includes('handleValidateAiQuotaReservation(') || !source.includes('cneAiEvidenceSupported_(')) throw Error('Consent or evidence validation weakened');
+    const commit=gas.slice(gas.indexOf('function handleGenerateCNEQuestions('),gas.indexOf('function normalizeCneId('));
+    if(!commit.includes('handleCommitAiQuota(')||!commit.includes('ONLY handleCommitAiQuota persists')) throw Error('Authoritative save-path safeguard altered');
+  });
+  focusCheck('Short paraphrases of an IV question are rejected, but distinct complications remain separate',()=>{
+    const ctx=freshLibrarySandbox();
+    if(!ctx.cneAiNearDuplicate_('What is the best site for IV cannulation?', 'Which site is best for IV cannulation?')) throw Error('Rephrased duplicate missed');
+    if(ctx.cneAiNearDuplicate_('Which signs indicate peripheral IV infiltration?', 'Which signs indicate peripheral IV phlebitis?')) throw Error('Different complications collapsed');
+  });
+  focusCheck('New structured output uses objective binding and a separate one-question repair schema',()=>{
+    const ctx=freshLibrarySandbox();
+    const all=ctx.cneAiQuestionSchema_(false), one=ctx.cneAiQuestionSchema_(true);
+    if(!all.properties.questions || !one.properties.objectiveId || one.properties.questions) throw Error('Repair JSON schema not independent');
+    const schema=ctx.cneAiBlueprintSchema_();
+    if(!schema.properties.objectives.items.required.includes('evidenceId')) throw Error('Evidence binding not required');
   });
   console.log('\n>>> Focused AI indexing, retrieval and UI regression');
   for (const check of focusedChecks) {

@@ -380,8 +380,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           setMaterialChoice('confirm');
         } else if (missing) {
           setFailureDialog({title: 'Learning Material Required', message: msg, type: 'material', retrySafe: false});
-        } else if (['OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION', 'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION', 'MISSING_SOURCE'].includes(code)) {
-          setFailureDialog({title: 'AI Questions Did Not Pass Validation', message: `${msg} No question batch was accepted. You may retry with the current library or upload clearer topic material.`, type: 'validation', retrySafe: true});
+        } else if (['OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION', 'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION', 'MISSING_SOURCE', 'AI_BLUEPRINT_FAILED', 'BLUEPRINT_MISMATCH', 'MISSING_OPTIONS', 'DUPLICATE_OPTIONS'].includes(code)) {
+          setFailureDialog({title: 'AI Questions Did Not Pass Validation', message: `${msg} No question batch was accepted. You may retry with the verified library. Upload more topic material only if relevant evidence is insufficient.`, type: 'validation', retrySafe: true});
         } else {
           const recovered = await reconcileUncertainGeneration(requestCneId, isCurrent);
           if (!isCurrent()) return;
@@ -391,7 +391,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             setFailureDialog({title: 'AI Generation Could Not Be Confirmed', message: `${msg} The system checked saved questions and AI quota. ${recovered.safeToRetry ? 'No completed AI batch was found; retry is available.' : 'A safe retry cannot yet be confirmed. Please refresh the question bank before another attempt.'}`, type: 'technical', retrySafe: recovered.safeToRetry});
           }
         }
-        if (missing || code === 'LIBRARY_CONSENT_REQUIRED' || ['OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION', 'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION', 'MISSING_SOURCE'].includes(code)) {
+        if (missing || code === 'LIBRARY_CONSENT_REQUIRED' || ['OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION', 'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION', 'MISSING_SOURCE', 'AI_BLUEPRINT_FAILED', 'BLUEPRINT_MISMATCH', 'MISSING_OPTIONS', 'DUPLICATE_OPTIONS'].includes(code)) {
           await loadQuota(++quotaRequestRef.current, requestCneId);
         }
       }
