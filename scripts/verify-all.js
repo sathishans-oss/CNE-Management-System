@@ -3380,7 +3380,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 25,
-    sha256: "180ff050285b1e56f7459660602ae4c392ad988b3b9111c7a55eac7edca2802f",
+    sha256: "41150cab9b50697847fd90d0707bdc3bae828657e4683d300e277472f409bc74",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -4268,13 +4268,15 @@ runTest('QR Post-Test root routing, Internal/External email OTP verification, an
     "External participant registration must not be persisted before OTP ownership is verified"
   );
 
-  // 9. OTP challenge is bound to CNE + participant identity and duplicate submissions are blocked before sending.
+  // 9. OTP challenge remains bound to CNE + participant; previous submitters may verify
+  //    for READ-ONLY result review, but duplicate submission itself remains prohibited.
   assert.ok(
     codeGs.includes('function buildPostTestOtpPrincipal(') &&
     codeGs.includes("return cne && id ? (cne + '#' + id) : ''") &&
     requestOtpSection.includes('findExistingPostTestSubmission(cneId, participantId)') &&
-    requestOtpSection.includes("errorCode: 'ALREADY_SUBMITTED'"),
-    "Post-Test OTP must be CNE-bound and reject participants who already submitted"
+    !requestOtpSection.includes("errorCode: 'ALREADY_SUBMITTED'") &&
+    codeGs.includes("errorCode: 'ALREADY_SUBMITTED', message: 'You have already submitted the post-test for this CNE.'"),
+    "Post-Test OTP must remain CNE-bound; verified result recovery must not permit duplicate submission"
   );
 
   // 10. Verification validates the challenge binding, persists external registration only after success,
@@ -9840,6 +9842,108 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if(!page.includes('validationFailure')||!page.includes('UNVERIFIED_SOURCE')||!page.includes('`${msg} [${code}] ${materialAdvice}`')) throw Error('Missing specific validation error context');
     if(page.includes('`${msg} No question batch was accepted.')) throw Error('Duplicated generic failure message remains');
   });
+  // Gemini HTTP resilience and answer-key-only correction: live incident regressions.
+  function mockGeminiTransport(sequence) {
+    const ctx = freshLibrarySandbox();
+    const waits=[], log=[], requests=[];
+    let pointer=0;
+    ctx.Utilities={sleep:ms=>waits.push(ms)};
+    ctx.logAuditAction=(action,employeeId,detail,severity)=>log.push({action,employeeId,detail,severity});
+    ctx.UrlFetchApp={fetch:(endpoint,request)=>{
+      requests.push(JSON.parse(request.payload));
+      const item = sequence[Math.min(pointer++,sequence.length-1)];
+      if (item.throw) throw Error('Temporary network transport error');
+      const code=item.status===undefined?200:item.status;
+      const response=item.body===undefined ? {candidates:[{content:{parts:[{text:JSON.stringify(item.data||{ok:true})}]}}]} : item.body;
+      return {getResponseCode:()=>code,getContentText:()=>JSON.stringify(response),
+        getAllHeaders:()=>item.headers||{}};
+    }};
+    const send=(attempts=4)=>ctx.cneAiGeminiStructured_('mock:gemini','test prompt',
+      {type:'OBJECT',properties:{ok:{type:'BOOLEAN'}},required:['ok']},attempts,
+      {cneId:'TEST_CNE',employeeId:'ADMIN',stage:'BLUEPRINT',deadlineMs:Date.now()+100000});
+    return {ctx,waits,log,requests,send};
+  }
+  focusCheck('Gemini 503 overload recovers after bounded exponential backoff without reissuing saved questions',()=>{
+    const run=mockGeminiTransport([{status:503,body:{error:{message:'Model overloaded'}}},
+      {status:503,body:{error:{message:'Model overloaded'}}},{data:{ok:true}}]);
+    const result=run.send();
+    if(!result.success||run.requests.length!==3||run.waits.join(',')!=='1000,2000') throw Error('503 retry sequencing failed '+JSON.stringify(result));
+    if(run.log.filter(x=>x.action==='AI_QUESTION_GEMINI_RETRY').length!==2) throw Error('Retry audit missing');
+    if(run.log.some(x=>x.detail.includes('mock:gemini'))) throw Error('Endpoint logged');
+  });
+  focusCheck('Gemini 429 respects bounded Retry-After and correctly identifies rate limit',()=>{
+    const run=mockGeminiTransport([{status:429,headers:{'Retry-After':'3'},body:{error:{message:'Rate limit exceeded'}}},{data:{ok:true}}]);
+    if(!run.send().success || run.waits[0]!==3000) throw Error('429 Retry-After ignored');
+    if(run.ctx.cneAiGeminiFailureType_(429,'Rate limit exceeded')!=='AI_RATE_LIMITED') throw Error('429 misclassified');
+  });
+  focusCheck('Gemini daily quota exhaustion does not waste retry attempts',()=>{
+    const run=mockGeminiTransport([{status:429,body:{error:{message:'Free tier quota exceeded, daily limit reached'}}}]);
+    const result=run.send();
+    if(result.success||result.errorCode!=='AI_QUOTA_LIMITED'||run.requests.length!==1||run.waits.length) throw Error('Daily quota unnecessarily retried');
+  });
+  focusCheck('Persistent 503 failure stops after four attempts with a clear overload code',()=>{
+    const run=mockGeminiTransport([{status:503,body:{error:{message:'Model currently overloaded'}}}]);
+    const result=run.send();
+    if(result.success||result.errorCode!=='AI_TEMPORARILY_UNAVAILABLE'||run.requests.length!==4||run.waits.join(',')!=='1000,2000,4000') throw Error('503 exhaustion not bounded');
+    if(run.log.filter(x=>x.action==='AI_QUESTION_GEMINI_FAILED').length!==1) throw Error('Final overload audit missing');
+  });
+  focusCheck('Invalid Gemini API request fails immediately; network interruption can recover',()=>{
+    const invalid=mockGeminiTransport([{status:400,body:{error:{message:'Invalid schema'}}}]);
+    const bad=invalid.send();
+    if(bad.success||bad.errorCode!=='AI_REQUEST_REJECTED'||invalid.requests.length!==1||invalid.waits.length) throw Error('Permanent request error was retried');
+    const net=mockGeminiTransport([{throw:true},{data:{ok:true}}]);
+    if(!net.send().success||net.requests.length!==2||net.waits.length!==1) throw Error('Transient network error not retried');
+  });
+  focusCheck('Malformed structured response is retried but never accepted without JSON',()=>{
+    const run=mockGeminiTransport([{body:{candidates:[{content:{parts:[{text:'not JSON'}]}}]}},
+      {data:{ok:true}}]);
+    if(!run.send().success || run.requests.length!==2) throw Error('Malformed JSON erroneously accepted');
+  });
+  focusCheck('Answer-key-only Gemini schema has no writable clinical stem or source fields',()=>{
+    const ctx=freshLibrarySandbox();
+    const schema=ctx.cneAiAnswerKeySchema_();
+    if(schema.type!=='OBJECT'||Object.keys(schema.properties).join(',')!=='correctOption'||
+       schema.properties.correctOption.enum.join(',')!=='A,B,C,D') throw Error('Key-only repair schema not limited to A-D');
+    const prompt=ctx.cneAiAnswerKeyRepairPrompt_('IV Cannulation','Select venous access',{questionText:'Question',optionA:'Correct',optionB:'Wrong',optionC:'Wronger',optionD:'Worst',explanation:'Rationale'},'Source','Verified evidence text');
+    if(!prompt.includes('NOT rewrite')||!prompt.includes('Verified source text')) throw Error('Answer repair prompt can rewrite evidence');
+  });
+  focusCheck('Safe answer-field normalization accepts labels but never guesses ambiguous answers',()=>{
+    const ctx=freshLibrarySandbox(), o={A:'Select vein',B:'Assess site',C:'Stop',D:'Document'};
+    for (const value of ['Correct answer: B','Answer is B','Choice B','B) Assess site'])
+      if(ctx.cneAiNormalizeCorrectOption_(value,o)!=='B') throw Error('Unambiguous label rejected: '+value);
+    for (const value of ['B or C','Either A/B','Any of the above','B) Wrong clinical text','B and D'])
+      if(ctx.cneAiNormalizeCorrectOption_(value,o)) throw Error('Ambiguous/wrong answer guessed: '+value);
+  });
+  focusCheck('Invalid answer-key is repaired without modifying question, options, rationale or source',()=>{
+    let original;
+    const run=mockBlueprintScenario({mutateInitial:qs=>{
+      qs[0].correctOption='A or B';original={...qs[0]};
+    },makeRepair:()=>({correctOption:'A'})});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(!result.success||result.data.length!==5||run.calls.length!==3) throw Error('Key-only repair failed '+JSON.stringify(result));
+    const schema=run.calls[2].schema;
+    if(schema.properties.questionText||!schema.properties.correctOption||!run.calls[2].prompt.includes('ANSWER-KEY FORMAT REPAIR ONLY')) throw Error('Full rewrite schema used for key repair');
+    const q=result.data[0];
+    if(q.questionText!==original.questionText||q.optionA!==original.optionA||q.explanation!==original.explanation||q.correctOption!=='A') throw Error('Unrelated clinical fields changed');
+  });
+  focusCheck('Answer-key-only repair cannot force acceptance of a clinically unsupported letter',()=>{
+    const run=mockBlueprintScenario({mutateInitial:qs=>{qs[0].correctOption='A or B';},makeRepair:()=>({correctOption:'D'})});
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(result.success||result.data) throw Error('Unsupported answer key was accepted');
+    if(run.calls.length>4) throw Error('Repair exceeded per-question limit');
+  });
+  focusCheck('Gemini overload during a question repair preserves the technical error code',()=>{
+    const run=mockBlueprintScenario({mutateInitial:qs=>{qs[0].correctOption='A or B';},transportError:role=>role==='repair'});
+    run.ctx.Utilities={sleep:()=>{}};
+    const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
+    if(result.success||result.errorCode!=='AI_TEMPORARILY_UNAVAILABLE'||result.data||run.calls.length!==4) throw Error('Repair overload incorrectly reported as invalid answer '+JSON.stringify(result));
+  });
+  focusCheck('UI distinguishes Gemini overload, quota exhaustion and configuration problems',()=>{
+    const ui=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+    if(!ui.includes('Gemini Is Temporarily Busy')||!ui.includes('Gemini API Quota Limit Reached')||
+      !ui.includes('Gemini Configuration Needs Attention')||!ui.includes('reconcileUncertainGeneration')) throw Error('Gemini technical error UI missing');
+    if(!ui.includes('recovered.safeToRetry && !apiQuota && !configurationError')) throw Error('Unsafe quota retry offered');
+  });
   console.log('\n>>> Focused AI indexing, retrieval and UI regression');
   for (const check of focusedChecks) {
     try {
@@ -9849,6 +9953,96 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     } catch (e) {
       console.error('✗ ' + check.name + ': ' + e.message);
     }
+  }
+}
+
+// Post-Test result recovery regression (separate from protected baseline suite).
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const recoveryGas = readFileSync(join(ROOT_DIR, 'Code.gs'),'utf8');
+  const recoveryUI = readFileSync(join(ROOT_DIR,'src/components/cne/CNEPostTestModal.tsx'),'utf8');
+  const recoveryApi = readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+  function postTestSandbox() {
+    const ctx = {};
+    vm.createContext(ctx);
+    vm.runInContext(recoveryGas,ctx,{timeout:12000});
+    const saved = {responseId:'RESP-1',participantName:'Test Person',score:1,totalQuestions:5,percentage:20,
+      submittedAt:'2026-10-21T10:00:00Z',status:'NEEDS_IMPROVEMENT',answersJson:JSON.stringify({Q1:'A',Q2:'B',Q3:'A',Q4:'A',Q5:'A'})};
+    const keys=[1,2,3,4,5].map(n=>({id:'Q'+n,question:'Test question '+n,correctOption:n===1?'A':'C',explanation:'Verified teaching explanation '+n}));
+    ctx.findExistingPostTestSubmission=()=>saved;
+    ctx.getPostTestAnswerSnapshot_=()=>({answerKeys:keys});
+    return {ctx,saved,keys};
+  }
+  focusCheck('Recover original stored score, answers and five explanations without rewriting a submission',()=>{
+    const {ctx,saved}=postTestSandbox();
+    const r=ctx.postTestRecoveredResult_('CNE-1','STAFF-1','INTERNAL');
+    if(!r.success||!r.data.recovered||r.data.score!==1||r.data.review.length!==5||
+       r.data.review[0].userAnswer!=='A'||r.data.review[0].explanation!=='Verified teaching explanation 1'||
+       r.data.participantId!==saved.responseId) throw Error('Stored results not reconstructed');
+  });
+  focusCheck('Saved score disagreement or changed question bank fails closed; no regrading',()=>{
+    const {ctx,saved,keys}=postTestSandbox();
+    saved.score=5;
+    let r=ctx.postTestRecoveredResult_('CNE-1','STAFF-1','INTERNAL');
+    if(r.success||r.errorCode!=='POST_TEST_REVIEW_UNAVAILABLE') throw Error('Score mismatch returned altered review');
+    saved.score=1;keys.pop();
+    r=ctx.postTestRecoveredResult_('CNE-1','STAFF-1','INTERNAL');
+    if(r.success||r.errorCode!=='POST_TEST_REVIEW_UNAVAILABLE') throw Error('Incomplete locked bank returned review');
+  });
+  focusCheck('Missing, corrupt or invalid saved JSON never exposes answer keys',()=>{
+    const {ctx,saved}=postTestSandbox();
+    ctx.findExistingPostTestSubmission=()=>null;
+    if(ctx.postTestRecoveredResult_('CNE-1','STAFF-1','INTERNAL').errorCode!=='POST_TEST_NOT_SUBMITTED') throw Error('Missing result accepted');
+    ctx.findExistingPostTestSubmission=()=>saved;
+    saved.answersJson='{not-json';
+    if(ctx.postTestRecoveredResult_('CNE-1','STAFF-1','INTERNAL').success) throw Error('Corrupt answer record accepted');
+  });
+  focusCheck('Result read requires signed participant verification; an ID alone never authorizes review',()=>{
+    const {ctx}=postTestSandbox();
+    ctx.resolveActiveQrToken=()=>({cneId:'CNE-1'});
+    ctx.verifyPostTestParticipantVerificationToken=()=>null;
+    const r=ctx.handleGetPostTestSubmissionResult({qrToken:'QR',participantId:'STAFF-1'},null);
+    if(r.success||r.errorCode!=='PARTICIPANT_VERIFICATION_REQUIRED') throw Error('Unverified QR leaked answers');
+    ctx.verifyPostTestParticipantVerificationToken=()=>({participantId:'STAFF-1',participantType:'INTERNAL'});
+    const ok=ctx.handleGetPostTestSubmissionResult({qrToken:'QR',participantId:'OTHER'},null);
+    if(!ok.success||!ok.data.recovered) throw Error('Valid verified review denied');
+  });
+  focusCheck('Authenticated direct result read uses session employee only, never caller employeeId',()=>{
+    const {ctx}=postTestSandbox();
+    ctx.resolveActiveQrToken=()=>null;
+    ctx.sanitizeCellInput=s=>s;
+    ctx.getCNEScheduleRecord=()=>({id:'CNE-1'});
+    ctx.refreshMutationSession=()=>({success:true,session:{employeeId:'STAFF-1'}});
+    ctx.checkCNEActionAuthorized=()=>null;
+    ctx.normalizeEmpId=s=>s;
+    let requested='';
+    ctx.findExistingPostTestSubmission=(cne,id)=>{requested=id; return {responseId:'RESP-1',score:1,totalQuestions:5,percentage:20,answersJson:JSON.stringify({Q1:'A'}),status:'PASSED'};};
+    ctx.scorePostTestAnswers_=()=>({score:1,percentage:20,detailedReview:Array(5).fill({question:'Q'})});
+    const r=ctx.handleGetPostTestSubmissionResult({cneId:'CNE-1',employeeId:'VICTIM'},null);
+    if(!r.success||requested!=='STAFF-1') throw Error('Cross-employee recovery attempted');
+  });
+  focusCheck('Client recovers duplicate or ambiguous submit without resubmitting',()=>{
+    if(!recoveryUI.includes("res.errorCode === 'ALREADY_SUBMITTED'")||
+      !recoveryUI.includes('recoverSavedPostTest()')||
+      !recoveryUI.includes("'POST_TEST_NOT_SUBMITTED'")||
+      !recoveryUI.includes('submissionUncertain')||
+      !recoveryUI.includes('Check Submission Status')||
+      !recoveryUI.includes('setSubmissionResult(res.data.recoveredResult || null)')) throw Error('Automatic recovery state is missing');
+  });
+  focusCheck('Recovery action is routed, protected from browser caching and uses participant binding',()=>{
+    if(!recoveryGas.includes("case 'getPostTestSubmissionResult':")||
+      !recoveryGas.includes('verifyPostTestParticipantVerificationToken(params.participantVerificationToken, cneId)')||
+      !recoveryApi.includes("executeAction<PostTestSubmissionResult>('getPostTestSubmissionResult'")||
+      !recoveryApi.includes("'getPostTestSubmissionResult',")) throw Error('Protected recovery endpoint not fully wired');
+  });
+  focusCheck('Only top-right X closes Post-Test; it stays disabled while checking',()=>{
+    if((recoveryUI.match(/onClick=\{onClose\}/g)||[]).length!==1||
+      recoveryUI.includes('Close Window')||
+      !recoveryUI.includes('disabled={isSubmitting || checkingSavedSubmission}')) throw Error('Redundant close controls or unsafe active close');
+  });
+  console.log('\n>>> Post-Test automatic result recovery regression');
+  for (const check of focusedChecks.slice(-8)) {
+    try { check.test(); focusedPassed++; console.log('✓ '+check.name); }
+    catch(e) {console.error('✗ '+check.name+': '+e.message);}
   }
 }
 

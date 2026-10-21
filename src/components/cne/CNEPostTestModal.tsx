@@ -89,6 +89,8 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionResult, setSubmissionResult] = useState<PostTestSubmissionResult | null>(null);
+  const [checkingSavedSubmission, setCheckingSavedSubmission] = useState(false);
+  const [submissionUncertain, setSubmissionUncertain] = useState(false);
 
   const submittingRef = useRef(false);
   const flowRequestRef = useRef(0);
@@ -116,6 +118,8 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
     setAlreadySubmitted(false);
     setPriorSubmission(null);
     setSubmissionResult(null);
+    setSubmissionUncertain(false);
+    setCheckingSavedSubmission(false);
   };
 
   const resetOtpChallenge = () => {
@@ -178,10 +182,14 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
 
       if (res.success && res.data) {
         setResolvedCneId(res.data.cneId);
-        setAlreadySubmitted(Boolean(res.data.alreadySubmitted));
+        // An existing verified submission goes straight to the SAME result/review UI.
+        setAlreadySubmitted(Boolean(res.data.alreadySubmitted && !res.data.recoveredResult));
         setPriorSubmission(res.data.submission || null);
+        setSubmissionResult(res.data.recoveredResult || null);
+        setSubmissionUncertain(false);
         setQuestions(res.data.alreadySubmitted ? [] : (res.data.questions || []));
         setAnswers({});
+        if (res.data.recoveredResult) scrollContentToTop();
 
         if (participant) {
           setVerifiedParticipant(participant);
@@ -416,9 +424,61 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
     setAnswers((prev) => ({ ...prev, [questionId]: optionKey }));
   };
 
+  /** Reconcile an uncertain response without submitting answers twice. */
+  const recoverSavedPostTest = async (): Promise<'recovered' | 'not_found' | 'uncertain'> => {
+    setCheckingSavedSubmission(true);
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
+        let res;
+        try {
+          res = await ApiService.getPostTestSubmissionResult({
+            cneId: isPublicQrFlow ? undefined : resolvedCneId,
+            qrToken,
+            participantVerificationToken: isPublicQrFlow ? participantVerificationToken : undefined
+          });
+        } catch (_err) {
+          // Do not turn a network exception into permission to resubmit.
+          setSubmissionUncertain(true);
+          return 'uncertain';
+        }
+        if (res.success && res.data) {
+          setSubmissionResult(res.data);
+          setAlreadySubmitted(false);
+          setSubmissionUncertain(false);
+          scrollContentToTop();
+          return 'recovered';
+        }
+        if (res.errorCode !== 'POST_TEST_NOT_SUBMITTED') {
+          setSubmissionUncertain(true);
+          warning(res.message || 'Your saved result cannot be confirmed right now. Please check the submission status again.');
+          return 'uncertain';
+        }
+      }
+      // The authenticated server twice confirmed no saved submission.
+      setSubmissionUncertain(false);
+      return 'not_found';
+    } finally {
+      setCheckingSavedSubmission(false);
+    }
+  };
+
+  const handleCheckSubmissionStatus = async () => {
+    if (submittingRef.current || checkingSavedSubmission) return;
+    submittingRef.current = true;
+    setFlowError('');
+    const status = await recoverSavedPostTest();
+    if (status === 'not_found') {
+      warning('No completed submission was found. Your answers are still available. You may submit again.');
+    } else if (status === 'uncertain') {
+      warning('The server could not confirm your submission. Please use Check Submission Status.');
+    }
+    submittingRef.current = false;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submittingRef.current || isSubmitting || submissionResult) return;
+    if (submittingRef.current || isSubmitting || submissionResult || submissionUncertain || checkingSavedSubmission) return;
 
     const directEmployeeId = isDirectAuthenticatedFlow ? normalizeEmployeeId(user?.employeeId || '') : '';
     const verifiedInternalEmployeeId = verifiedParticipant?.participantType === 'INTERNAL'
@@ -469,6 +529,11 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
         }
         scrollContentToTop();
         if (onSubmitted) onSubmitted();
+      } else if (res.errorCode === 'ALREADY_SUBMITTED') {
+        const status = await recoverSavedPostTest();
+        if (status === 'recovered') success('Your previously saved Post-Test result has been retrieved.');
+        else if (status === 'not_found') warning('The saved result was not found. Please check your answers before retrying.');
+        else error('Submission status cannot be confirmed. Please check it again before resubmitting.');
       } else if (res.errorCode === 'PARTICIPANT_VERIFICATION_REQUIRED') {
         setParticipantVerificationToken('');
         setVerifiedParticipant(null);
@@ -481,10 +546,17 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
         setFlowError(res.message || 'This CNE has been finalized or canceled. The post-test is closed.');
         scrollContentToTop();
       } else {
-        error(res.message || 'Failed to submit post-test.');
+        // An unclassified server rejection may follow a committed write. Read first.
+        const status = await recoverSavedPostTest();
+        if (status === 'recovered') success('Your saved Post-Test result has been recovered.');
+        else if (status === 'not_found') error(res.message || 'No completed submission was found. Please try again.');
+        else error('Could not confirm your submission. Please check its status before resubmitting.');
       }
     } catch (e: any) {
-      error(e?.message || 'Error occurred while submitting evaluation.');
+      const status = await recoverSavedPostTest();
+      if (status === 'recovered') success('Your saved Post-Test result has been recovered.');
+      else if (status === 'not_found') error('No saved submission was found after checking. You may retry your Post-Test.');
+      else error('Connection interrupted. Submission status is uncertain; do not resubmit yet.');
     } finally {
       submittingRef.current = false;
       setIsSubmitting(false);
@@ -515,7 +587,8 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            disabled={isSubmitting}
+            disabled={isSubmitting || checkingSavedSubmission}
+            aria-label="Close Post-Test"
             className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 cursor-pointer disabled:opacity-40 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -524,6 +597,15 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
 
         {/* Content Body */}
         <div ref={contentRef} className="p-6 overflow-y-auto flex-1 bg-slate-50/40 text-xs">
+          {(checkingSavedSubmission || submissionUncertain) && !submissionResult && (
+            <div className="mb-4 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 flex flex-wrap items-center gap-3" role="status">
+              {checkingSavedSubmission ? <Loader2 className="w-5 h-5 animate-spin shrink-0" /> : <AlertTriangle className="w-5 h-5 shrink-0" />}
+              <span className="text-xs flex-1">{checkingSavedSubmission ? 'Checking whether your Post-Test was saved. Please do not submit again…' : 'Submission status is uncertain. Do not resubmit until we confirm the saved record.'}</span>
+              {submissionUncertain && !checkingSavedSubmission && (
+                <button type="button" onClick={handleCheckSubmissionStatus} className="px-3 py-2 rounded-lg bg-amber-900 text-white font-semibold text-xs">Check Submission Status</button>
+              )}
+            </div>
+          )}
           {flowError ? (
             <div className="py-14 max-w-lg mx-auto text-center space-y-4">
               <div className="w-14 h-14 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center mx-auto border border-rose-200">
@@ -533,13 +615,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                 <h4 className="text-base font-bold text-slate-900">Post-Test Unavailable</h4>
                 <p className="text-xs text-rose-700 mt-2 leading-relaxed bg-rose-50 border border-rose-200 rounded-xl p-3">{flowError}</p>
               </div>
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-6 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors"
-              >
-                Close Window
-              </button>
+
             </div>
           ) : isPublicQrFlow && !verifiedParticipant && !loading ? (
             /* Public QR participant email-OTP verification */
@@ -825,17 +901,16 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                 );
               })()}
 
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-6 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors"
-              >
-                Close Window
-              </button>
+
             </div>
           ) : submissionResult ? (
             /* Post-Submission Results & Review View */
             <div className="space-y-6">
+              {submissionResult.recovered && (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 font-semibold text-xs flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4" /> Your previously saved Post-Test result has been retrieved. No new attempt was created.
+                </div>
+              )}
               {(() => {
                 const isPassed = Boolean(submissionResult.passed ?? ((submissionResult.percentage || 0) >= 60));
                 return (
@@ -1003,7 +1078,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                 <span className="text-xs text-slate-500">Answered <strong>{answeredCount}</strong> of <strong>{questions.length}</strong> questions</span>
                 <button
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || submissionUncertain || checkingSavedSubmission}
                   className="flex items-center justify-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-md disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
                 >
                   {isSubmitting ? (
@@ -1017,16 +1092,6 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
           )}
         </div>
 
-        <div className="px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-end shrink-0">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isSubmitting}
-            className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer disabled:opacity-50 transition-colors"
-          >
-            Close
-          </button>
-        </div>
       </div>
     </div>
   );

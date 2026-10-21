@@ -423,7 +423,20 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           if (recovered.completed) {
             success('The server saved five Draft questions. They have been recovered for review.');
           } else {
-            setFailureDialog({title: 'AI Generation Could Not Be Confirmed', message: `${msg} The system checked saved questions and AI quota. ${recovered.safeToRetry ? 'No completed AI batch was found; retry is available.' : 'A safe retry cannot yet be confirmed. Please refresh the question bank before another attempt.'}`, type: 'technical', retrySafe: recovered.safeToRetry});
+            const overloaded = ['AI_TEMPORARILY_UNAVAILABLE', 'AI_RATE_LIMITED'].includes(code);
+            const apiQuota = code === 'AI_QUOTA_LIMITED';
+            const configurationError = ['AI_CONFIGURATION_ERROR', 'AI_MODEL_NOT_FOUND', 'AI_REQUEST_REJECTED'].includes(code);
+            const retrySafe = recovered.safeToRetry && !apiQuota && !configurationError;
+            const title = apiQuota ? 'Gemini API Quota Limit Reached'
+              : configurationError ? 'Gemini Configuration Needs Attention'
+              : overloaded ? 'Gemini Is Temporarily Busy'
+              : code === 'AI_INVALID_RESPONSE' ? 'Gemini Returned an Invalid Response'
+              : 'AI Generation Could Not Be Confirmed';
+            const advice = apiQuota ? 'Ask the administrator to check Gemini API quota and usage limits.'
+              : configurationError ? 'Ask the administrator to review the Gemini API configuration.'
+              : retrySafe ? 'The system found no completed AI batch and the application quota is available. You can retry later.'
+              : 'A safe retry cannot yet be confirmed. Refresh the question bank and quota before another attempt.';
+            setFailureDialog({title, message: `${msg} ${advice}`, type: 'technical', retrySafe});
           }
         }
         if (missing || code === 'LIBRARY_CONSENT_REQUIRED' || validationFailure) {

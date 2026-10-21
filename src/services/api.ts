@@ -186,6 +186,7 @@ function clearMasterMemoryCache(actionOrKey?: string): void {
 const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getCNEQuestions',
   'getPostTestQuestions',
+  'getPostTestSubmissionResult',
   'requestPostTestOtp',
   'verifyPostTestOtp',
   'requestPasswordOtp',
@@ -446,6 +447,7 @@ export class ApiService {
       case 'addManualParticipants':
       case 'getCNEParticipants':
       case 'submitPostTest':
+      case 'getPostTestSubmissionResult':
       case 'getPostTestQuestions':
       case 'requestPostTestOtp':
       case 'verifyPostTestOtp':
@@ -1647,6 +1649,7 @@ export class ApiService {
   }): Promise<ApiResponse<{
     alreadySubmitted: boolean;
     submission?: any;
+    recoveredResult?: PostTestSubmissionResult;
     cneId: string;
     topic: string;
     area: string;
@@ -1655,6 +1658,15 @@ export class ApiService {
     questions?: CNEQuestion[];
   }>> {
     return this.executeAction('getPostTestQuestions', params);
+  }
+
+  /** Read-only: result for the OTP-verified or authenticated participant only. */
+  static async getPostTestSubmissionResult(params: {
+    cneId?: string;
+    qrToken?: string;
+    participantVerificationToken?: string;
+  }): Promise<ApiResponse<PostTestSubmissionResult>> {
+    return this.executeAction<PostTestSubmissionResult>('getPostTestSubmissionResult', params);
   }
 
   static async submitPostTest(params: {
