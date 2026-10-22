@@ -9328,12 +9328,17 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   focusCheck('Reference reindex verifies replacement and refuses false SUCCESS', () => {
     if (!gas.includes('INDEX_REPLACEMENT_INCOMPLETE') || !gas.includes('verifiedCount !== rowsToInsert.length')) throw Error('Index replacement does not verify counts');
   });
-  focusCheck('Question page checks material on opening independently', () => {
-    if (!ui.includes('void loadMaterialStatus(++materialRequestRef.current, cneId)')) throw Error('Initial material check missing');
-    if (!ui.includes('setMaterialStatusError(status.message')) throw Error('Failed status not distinguished');
+  focusCheck('Material is checked on AI Generate, not on Question Bank opening', () => {
+    const init = ui.slice(ui.indexOf('  useEffect(() => {'), ui.indexOf('  const loadQuestions = async'));
+    if (init.includes('void loadMaterialStatus(') || !init.includes('void loadQuestions(') || !init.includes('void loadQuota(')) {
+      throw Error('Page opening should load questions and quota, but not CNE material status');
+    }
+    if (!ui.includes('const own = await loadMaterialStatus(++materialRequestRef.current, cneId)')) {
+      throw Error('Material availability is not checked on the Generate action');
+    }
   });
-  // Exercise the real, extracted click handler rather than relying only on textual checks.
-  // Each scenario runs isolated with mocked UI state; no API or Google Sheet writes.
+  // Run the real Generate click handler in an isolated sandbox. Backend APIs are
+  // stubbed; this verifies frontend requests, consent and failure behavior only.
   function exerciseMaterialClick(scenario) {
     const begin = ui.indexOf('  const requestAiGeneration = async () => {');
     const end = ui.indexOf('\n  const handleGenerateAi = async', begin);
@@ -9342,20 +9347,17 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     const harness = `
       const vm = require('node:vm');
       const scenario = ${JSON.stringify(scenario)};
-      const events = {check: 0, generate: [], popup: []};
+      const events = {check: 0, generate: [], popup: [], clear: 0};
       const cneId = 'CNE-ONE';
       const ctx = {
         canInteractWithQuestionTools: scenario.canInteract !== false,
         materialCheckRef: {current: scenario.checking === true},
-        isAiGenerationUsed: false,
-        isAiGenerationUnavailable: false,
-        hasMaterial: scenario.cachedMaterial,
-        materialStatusCneIdRef: {current: scenario.cachedCneId || cneId},
-        materialStatusCheckedAtRef: {current: Date.now() - scenario.ageMs},
-        MATERIAL_STATUS_CACHE_MS: 120000,
+        isAiGenerationUsed: scenario.used === true,
+        isAiGenerationUnavailable: scenario.unavailable === true,
         cneId,
         materialRequestRef: {current: 1},
-        currentCneIdRef: {current: cneId},
+        currentCneIdRef: {current: scenario.wrongCne ? 'OTHER-CNE' : cneId},
+        setFailureDialog: (v) => {if(v === null) events.clear++;},
         loadMaterialStatus: async () => {events.check += 1; return scenario.serverMaterial;},
         setMaterialChoice: (choice) => {events.popup.push(choice);},
         handleGenerateAi: async (allowed) => {events.generate.push(allowed);}
@@ -9370,37 +9372,44 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       cwd: ROOT_DIR, encoding: 'utf8', timeout: 10000
     }));
   }
-  focusCheck('Material cache: recent uploaded CNE material starts AI with no second frontend lookup', () => {
-    const events = exerciseMaterialClick({cachedMaterial: true, serverMaterial: false, ageMs: 1000});
-    if (events.check !== 0 || JSON.stringify(events.generate) !== '[false]' || events.popup.length !== 0) throw Error('Healthy material cache is not reused');
+  focusCheck('Generate with own CNE material checks once and starts without library consent', () => {
+    const events = exerciseMaterialClick({serverMaterial: true});
+    if (events.check !== 1 || JSON.stringify(events.generate) !== '[false]' || events.popup.length) throw Error('Own material generation path incorrect');
   });
-  focusCheck('Material cache: recent missing CNE material opens library-consent dialog without lookup', () => {
-    const events = exerciseMaterialClick({cachedMaterial: false, serverMaterial: true, ageMs: 1000});
-    if (events.check !== 0 || events.generate.length !== 0 || JSON.stringify(events.popup) !== '["confirm"]') throw Error('Cached library consent path changed');
+  focusCheck('Generate with no uploaded material checks once and requires library consent', () => {
+    const events = exerciseMaterialClick({serverMaterial: false});
+    if (events.check !== 1 || events.generate.length || JSON.stringify(events.popup) !== '["confirm"]') throw Error('Library consent was bypassed');
   });
-  focusCheck('Material cache: expired result causes a fresh status check before generation', () => {
-    const events = exerciseMaterialClick({cachedMaterial: false, serverMaterial: true, ageMs: 150000});
-    if (events.check !== 1 || JSON.stringify(events.generate) !== '[false]' || events.popup.length !== 0) throw Error('Expired result not refreshed');
+  focusCheck('Unknown material status blocks generation and does not assume library consent', () => {
+    const events = exerciseMaterialClick({serverMaterial: null});
+    if (events.check !== 1 || events.generate.length || events.popup.length) throw Error('Failed material lookup was used as consent');
+    if (!ui.includes("title: 'Unable to Check Learning Material'") || !ui.includes("type: 'technical'")) throw Error('Missing explicit material check error recovery');
   });
-  focusCheck('Material cache: unknown or previous-CNE results are never reused', () => {
-    const unknown = exerciseMaterialClick({cachedMaterial: null, serverMaterial: false, ageMs: 10});
-    const oldCne = exerciseMaterialClick({cachedMaterial: true, cachedCneId: 'OTHER-CNE', serverMaterial: false, ageMs: 10});
-    if (unknown.check !== 1 || JSON.stringify(unknown.popup) !== '["confirm"]' || oldCne.check !== 1 || JSON.stringify(oldCne.popup) !== '["confirm"]') throw Error('Unknown or wrong-CNE status reused');
-  });
-  focusCheck('Material cache: failure and active material check do not start generation', () => {
-    const failed = exerciseMaterialClick({cachedMaterial: null, serverMaterial: null, ageMs: 100});
-    const locked = exerciseMaterialClick({cachedMaterial: true, serverMaterial: true, ageMs: 100, checking: true});
-    if (failed.check !== 1 || failed.generate.length || failed.popup.length || locked.check || locked.generate.length || locked.popup.length) throw Error('Fail-closed material guard lost');
-  });
-  focusCheck('Material cache: opening/returning from upload checks afresh; backend consent remains authoritative', () => {
-    const schedulePage = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
-    const calendarPage = readFileSync(join(ROOT_DIR, 'src/components/cne/CalendarFullCneDetails.tsx'), 'utf8');
-    if (!ui.includes('void loadMaterialStatus(++materialRequestRef.current, cneId)') ||
-        !ui.includes('materialStatusCheckedAtRef.current = 0') ||
-        !ui.includes("if (code === 'LIBRARY_CONSENT_REQUIRED')") ||
-        !schedulePage.includes('setActiveQuestionsCne(null)') || !calendarPage.includes("activeActivity === 'questions'")) {
-      throw Error('Material refresh/remount or backend consent recovery missing');
+  focusCheck('Repeated Generation click is blocked during busy state and for exhausted quota', () => {
+    for (const scenario of [{checking:true},{canInteract:false},{used:true},{unavailable:true}]) {
+      const events=exerciseMaterialClick({...scenario,serverMaterial:true});
+      if (events.check || events.generate.length || events.popup.length) throw Error('Generation proceeded during a guarded state '+JSON.stringify(scenario));
     }
+  });
+  focusCheck('Old material cache and initial material warning UI are removed', () => {
+    for (const old of ['MATERIAL_STATUS_CACHE_MS','materialStatusCheckedAtRef','materialStatusCneIdRef','hasMaterial === false','No CNE material uploaded:</strong>','materialStatusError &&']) {
+      if (ui.includes(old)) throw Error('Stale page-opening material state remains: '+old);
+    }
+  });
+  focusCheck('Required header Valid & Finalized count badge remains dynamic, including locked sessions', () => {
+    const header=ui.slice(ui.indexOf('{/* Header */}'),ui.indexOf('{/* AI & Manual Action Bar */}'));
+    if (!header.includes('{validFinalizedCount} of {activeQuestions.length} Valid & Finalized (Min 5)') || !header.includes('Locked (Submissions Received)')) throw Error('Count or locked status was removed');
+    if (!ui.includes('validFinalizedCount < 5 || incompleteActiveCount > 0')) throw Error('QR eligibility disabled guard was weakened');
+  });
+  focusCheck('Redundant AI badges, quota label and QR footer warning are removed', () => {
+    const obsolete=['AI: Generating','1 AI generation allowed per CNE','Need 5 valid finalized questions before QR. Ready:','Synthesize exactly 5 clinical MCQs grounded strictly'];
+    for(const phrase of obsolete) if(ui.includes(phrase)) throw Error('Redundant UI text remains: '+phrase);
+    if(!ui.includes('<span>Generating MCQs...</span>') && !ui.includes("'Generating MCQs...'")) throw Error('Useful busy progress disappeared');
+    if(!ui.includes('aria-label={materialChoice ===') || !ui.includes("if (code === 'LIBRARY_CONSENT_REQUIRED')")) throw Error('Consent popup or backend consent recovery removed');
+  });
+  focusCheck('Generation quota and backend material/evidence validation remain mandatory', () => {
+    if(!ui.includes('isAiGenerationUsed') || !ui.includes('isAiGenerationUnavailable') || !ui.includes('quotaInfo') ||
+       !gas.includes('cneAiHasOwnMaterial_(') || !gas.includes('LIBRARY_CONSENT_REQUIRED')) throw Error('Quota or backend material safeguards lost');
   });
   focusCheck('Manual question is blocked during material checking and generation', () => {
     const handler = ui.substring(ui.indexOf('const handleAddManualQuestion'),ui.indexOf('const handleReplaceQuestion'));
@@ -10043,6 +10052,128 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   for (const check of focusedChecks.slice(-8)) {
     try { check.test(); focusedPassed++; console.log('✓ '+check.name); }
     catch(e) {console.error('✗ '+check.name+': '+e.message);}
+  }
+}
+
+
+// -----------------------------------------------------------------------------
+// Restored coverage supplement: checks retained from the newer 43-test runner.
+// These are additional checks, not substitutes for the 267 baseline or the
+// 86 previous focused regression checks. No application source is changed.
+// -----------------------------------------------------------------------------
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const gas = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const api = readFileSync(join(ROOT_DIR, 'src/services/api.ts'), 'utf8');
+  const server = readFileSync(join(ROOT_DIR, 'server.ts'), 'utf8');
+  const pdf = readFileSync(join(ROOT_DIR, 'src/services/pdfGenerator.ts'), 'utf8');
+  const interest = readFileSync(join(ROOT_DIR, 'src/components/cne/InterestedParticipantsModal.tsx'), 'utf8');
+  const interestActions = readFileSync(join(ROOT_DIR, 'src/components/cne/CalendarInterestControls.tsx'), 'utf8');
+  const route = readFileSync(join(ROOT_DIR, 'src/services/routePrefetch.ts'), 'utf8');
+  const postTest = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEPostTestModal.tsx'), 'utf8');
+  const deletion = readFileSync(join(ROOT_DIR, 'src/components/cne/DeleteCneModal.tsx'), 'utf8');
+  const ui = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEQuestionsModal.tsx'), 'utf8');
+
+  const extra = [];
+  function retainCheck(name, test) { extra.push({name, test}); }
+  retainCheck('Restored 43-runner parity: protected result and OTP APIs cannot be cached', () => {
+    if (!api.includes('const NEVER_CACHEABLE_PROTECTED_ACTIONS')) throw Error('Protected action registry missing');
+    for (const action of ['getCNEQuestions','getPostTestQuestions','getPostTestSubmissionResult',
+      'requestPostTestOtp','verifyPostTestOtp','requestPasswordOtp','verifyPasswordOtp','setPasswordWithOtp']) {
+      if (!api.includes("'" + action + "'")) throw Error('Protected API action missing: ' + action);
+    }
+  });
+  retainCheck('Restored 43-runner parity: all critical Apps Script action cases remain registered', () => {
+    for (const action of ['login','changePassword','getCNERecords','getCNESchedulePage',
+      'getCNEScheduleById','createCNE','updateCNE','finalizeCNE','deleteCNE','saveCNEQuestions',
+      'getCNEQuestions','getPostTestQuestions','submitPostTest','getPostTestSubmissionResult',
+      'requestPostTestOtp','verifyPostTestOtp','getQRToken','generateCNEQuestions',
+      'registerCneInterest','withdrawCneInterest','getCneInterestedParticipants']) {
+      if (!gas.includes("case '" + action + "':") && !gas.includes('case "' + action + '":'))
+        throw Error('Missing backend action: ' + action);
+    }
+  });
+  retainCheck('Restored 43-runner parity: API methods match backend actions', () => {
+    for (const name of ['login','getCNESchedule','saveCNE','finalizeCNE','deleteCNE',
+      'saveCNEQuestions','getCNEQuestions','getPostTestQuestions','submitPostTest',
+      'getPostTestSubmissionResult','registerCneInterest','withdrawCneInterest',
+      'getCneInterestedParticipants']) {
+      if (!api.includes('static async ' + name)) throw Error('Missing client API method: ' + name);
+    }
+  });
+  retainCheck('Restored 43-runner parity: server health routes and CORS safeguards', () => {
+    for (const token of ["app.get('/health'", "app.get('/api/health'",
+      'Access-Control-Allow-Origin','Invalid JSON payload']) {
+      if (!server.includes(token)) throw Error('Server functionality missing: ' + token);
+    }
+  });
+  retainCheck('Restored 43-runner parity: PDF exports and defensive person-ID helpers', () => {
+    for (const token of ['export function generateCNERecordsPdf',
+      'export function generateCNESessionPdf','normalizeEmployeeId','splitEmployeeIds']) {
+      if (!pdf.includes(token)) throw Error('PDF module functionality missing: ' + token);
+    }
+  });
+  retainCheck('Restored 43-runner parity: PDF uses centralized time formatting', () => {
+    for (const token of ['formatCneDateRangeDisplay','formatCneDateTimeDisplay',
+      'formatSecondsToDuration']) if (!pdf.includes(token)) throw Error('PDF date/time helper missing: ' + token);
+  });
+  retainCheck('Restored 43-runner parity: PDF tables and missing-score presentation', () => {
+    for (const token of ['headStyles','theme:','avgScoreDisplay','Not Available','postTestParticipants']) {
+      if (!pdf.includes(token)) throw Error('PDF score/table field missing: ' + token);
+    }
+    if (!pdf.includes('autoTable(') && !pdf.includes('autoTable(doc,')) throw Error('PDF table renderer missing');
+  });
+  retainCheck('Restored 43-runner parity: deletion archives before removal and fails safely', () => {
+    for (const token of ['function handleDeleteCNE(params, session)','CNE Deleted Archive',
+      'getOrCreateDeletedArchiveSheet_','function inspectStorageStateSafely_',
+      'DELETE_COMPLETION_UNCERTAIN','DELETE_CNE_UNCERTAIN','DELETE_CNE_PARTIAL']) {
+      if (!gas.includes(token)) throw Error('Deletion recovery safeguard missing: ' + token);
+    }
+    for (const token of ['confirmId === targetId','Boolean(reason.trim())',"user?.role === 'ADMIN'"])
+      if (!deletion.includes(token)) throw Error('Deletion confirmation safeguard missing: ' + token);
+  });
+  retainCheck('Restored 43-runner parity: sheet cell formula injection and employee IDs', () => {
+    for (const token of ['function sanitizeCellInput(val)','function normalizeEmpId(id)',
+      'String(id).trim().toUpperCase()']) if (!gas.includes(token)) throw Error('Sheet safety helper missing: ' + token);
+    if (!gas.includes('/^[=+\\-@\\t\\r]/.test(str)')) throw Error('Formula injection protection missing');
+    if (gas.includes('password === enteredPassword')) throw Error('Plaintext password comparison detected');
+  });
+  retainCheck('Restored 43-runner parity: CNE lifecycle and QR entry restrictions', () => {
+    for (const token of ['function normalizeCNEType(typeStr)','function normalizeCNEStatus(statusStr)',
+      'function isCNEQuestionsLocked(cneId)','QUESTIONS_LOCKED','function handleSaveCNEQuestions(params, session)']) {
+      if (!gas.includes(token)) throw Error('CNE lifecycle safeguard missing: ' + token);
+    }
+    if (!gas.includes('return null;')) throw Error('CNE type fail-closed path missing');
+  });
+  retainCheck('Restored 43-runner parity: interest APIs and UI integration', () => {
+    for (const token of ['function handleRegisterCneInterest(params, session)',
+      'function handleWithdrawCneInterest(params, session)',
+      'function handleGetCneInterestedParticipants(params, session)'])
+      if (!gas.includes(token)) throw Error('Interest operation missing: ' + token);
+    if (!interest.includes('ApiService.getCneInterestedParticipants') ||
+        !interestActions.includes('ApiService.registerCneInterest') ||
+        !interestActions.includes('ApiService.withdrawCneInterest')) throw Error('Interest UI miswired');
+  });
+  retainCheck('Restored 43-runner parity: execution caches and route prefetching', () => {
+    for (const token of ['var _inMemoryRoleCache = {};','var _executionSpreadsheetCache = {};',
+      'var _executionCredentialCache = {};','function logPerf(tag, startedAt, extra)'])
+      if (!gas.includes(token)) throw Error('Execution performance protection missing: ' + token);
+    for (const token of ['export function prefetchRoute','export function scheduleIdlePrefetch','PREFETCH_MAP'])
+      if (!route.includes(token)) throw Error('Route optimization missing: ' + token);
+  });
+  retainCheck('Restored 43-runner parity: UI recovery and on-demand material checks', () => {
+    for (const token of ['submissionUncertain','recoveredResult','formatPostTestTimestamp'])
+      if (!postTest.includes(token)) throw Error('Post-Test recovery state missing: ' + token);
+    for (const token of ['const own = await loadMaterialStatus(++materialRequestRef.current, cneId);',
+      'reconcileUncertainGeneration','ApiService.getAiQuota'])
+      if (!ui.includes(token)) throw Error('On-demand material or AI recovery logic missing: ' + token);
+    if (ui.includes('void loadMaterialStatus(')) throw Error('Material status loads unnecessarily on page opening');
+  });
+
+  console.log('\n>>> Additional cross-module checks retained from the 43-test runner');
+  for (const check of extra) {
+    focusedChecks.push(check);
+    try { check.test(); focusedPassed++; console.log('✓ ' + check.name); }
+    catch(e) { console.error('✗ ' + check.name + ': ' + e.message); }
   }
 }
 

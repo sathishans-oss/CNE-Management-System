@@ -10,7 +10,6 @@ import {
   HelpCircle,
   AlertTriangle,
   Edit3,
-  FileWarning,
   CheckCheck,
   BookOpen,
   History,
@@ -38,9 +37,6 @@ const normalizeQuestionStatus = (status?: string) => {
 };
 
 const isActiveQuestion = (q: CNEQuestion) => normalizeQuestionStatus(q.status) === 'ACTIVE';
-
-// A short-lived UI hint only; the backend always rechecks authoritative material and consent.
-const MATERIAL_STATUS_CACHE_MS = 2 * 60 * 1000;
 
 const isQuestionComplete = (q: CNEQuestion) => {
   const options = q.options || ({} as CNEQuestion['options']);
@@ -112,9 +108,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [checkingMaterial, setCheckingMaterial] = useState(false);
   const materialRequestRef = useRef(0);
   const materialCheckRef = useRef(false);
-  const materialStatusCheckedAtRef = useRef(0);
-  const materialStatusCneIdRef = useRef<string | null>(null);
-  const [materialStatusError, setMaterialStatusError] = useState<string | null>(null);
   const [failureDialog, setFailureDialog] = useState<{
     title: string; message: string; type: 'material' | 'validation' | 'technical'; retrySafe: boolean;
   } | null>(null);
@@ -131,9 +124,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   ];
   const stopProgressPolling = () => { if (progressPollRef.current) clearInterval(progressPollRef.current); progressPollRef.current = null; };
 
-  // Authoritative AI Quota & Material State
+  // Authoritative AI generation quota; CNE material is checked on demand.
   const [quotaInfo, setQuotaInfo] = useState<CNEAiQuotaInfo | null>(null);
-  const [hasMaterial, setHasMaterial] = useState<boolean | null>(null);
 
   const { success, error, warning } = useToast();
 
@@ -143,17 +135,13 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     quotaRequestRef.current += 1;
     materialRequestRef.current += 1;
     materialCheckRef.current = false;
-    materialStatusCheckedAtRef.current = 0;
-    materialStatusCneIdRef.current = null;
     generationRequestRef.current += 1;
     stopProgressPolling();
     generatingRef.current = false;
     savingRef.current = false;
     setQuestions([]);
     setQuotaInfo(null);
-    setHasMaterial(null);
     setQuestionLoadError(null);
-    setMaterialStatusError(null);
     setFailureDialog(null);
     setIsLocked(false);
     setEditingIndex(null);
@@ -172,7 +160,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const quotaRequestId = ++quotaRequestRef.current;
     void loadQuestions(questionRequestId, cneId);
     void loadQuota(quotaRequestId, cneId);
-    void loadMaterialStatus(++materialRequestRef.current, cneId);
 
     return () => {
       questionsRequestRef.current += 1;
@@ -231,31 +218,32 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     }
   };
 
-  // Lightweight status only: leave heavy PDF extraction/evidence retrieval to generation.
-  const loadMaterialStatus = async (requestId = ++materialRequestRef.current, targetCneId = cneId) => {
+  // On-demand material-status check. Keep the backend's permission, material and
+  // library-consent checks authoritative; no material request runs on page opening.
+  const loadMaterialStatus = async (requestId = ++materialRequestRef.current, targetCneId = cneId): Promise<boolean | null> => {
     materialCheckRef.current = true;
     setCheckingMaterial(true);
-    setMaterialStatusError(null);
     try {
       const status = await ApiService.getCNEAiMaterialStatus(targetCneId);
       if (requestId !== materialRequestRef.current || targetCneId !== currentCneIdRef.current) return null;
       if (!status.success || !status.data) {
-        materialStatusCheckedAtRef.current = 0;
-        materialStatusCneIdRef.current = null;
-        setHasMaterial(null);
-        setMaterialStatusError(status.message || 'Material status is unavailable.');
+        setFailureDialog({
+          title: 'Unable to Check Learning Material',
+          message: status.message || 'The CNE material status is unavailable. Please try again.',
+          type: 'technical',
+          retrySafe: true
+        });
         return null;
       }
-      materialStatusCheckedAtRef.current = Date.now();
-      materialStatusCneIdRef.current = targetCneId;
-      setHasMaterial(status.data.hasOwnMaterial);
-      return status.data.hasOwnMaterial;
+      return Boolean(status.data.hasOwnMaterial);
     } catch (e: any) {
       if (requestId === materialRequestRef.current && targetCneId === currentCneIdRef.current) {
-        materialStatusCheckedAtRef.current = 0;
-        materialStatusCneIdRef.current = null;
-        setHasMaterial(null);
-        setMaterialStatusError(e?.message || 'Unable to check CNE material.');
+        setFailureDialog({
+          title: 'Unable to Check Learning Material',
+          message: e?.message || 'The material check could not be completed. Please try again.',
+          type: 'technical',
+          retrySafe: true
+        });
       }
       return null;
     } finally {
@@ -312,18 +300,11 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   const requestAiGeneration = async () => {
     if (!canInteractWithQuestionTools || materialCheckRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
-    // Use the status already loaded when the modal opened. Do not repeat the same
-    // frontend request on every Generate click. Refresh only an unknown or expired
-    // status; returning from the material-upload page remounts this modal and
-    // performs a fresh initial check. The backend independently verifies the
-    // current CNE material and enforces library-only consent before generating.
-    const cacheIsCurrent = hasMaterial !== null &&
-      materialStatusCneIdRef.current === cneId &&
-      materialStatusCheckedAtRef.current > 0 &&
-      (Date.now() - materialStatusCheckedAtRef.current) < MATERIAL_STATUS_CACHE_MS;
-    const own = cacheIsCurrent
-      ? hasMaterial
-      : await loadMaterialStatus(++materialRequestRef.current, cneId);
+    // Check material only when Generate is clicked; its state may have changed
+    // since the page opened. Never interpret a failed check as permission to
+    // search the library. Server-side permission and consent checks remain mandatory.
+    setFailureDialog(null);
+    const own = await loadMaterialStatus(++materialRequestRef.current, cneId);
     if (own === null || currentCneIdRef.current !== cneId) return;
     if (!own) { setMaterialChoice('confirm'); return; }
     await handleGenerateAi(false);
@@ -725,17 +706,16 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                     <Lock className="w-2.5 h-2.5" />
                     Locked (Submissions Received)
                   </span>
-                ) : (
-                  <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                      validFinalizedCount >= 5
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : 'bg-amber-100 text-amber-800'
-                    }`}
-                  >
-                    {validFinalizedCount} of {activeQuestions.length} Valid & Finalized (Min 5)
-                  </span>
-                )}
+                ) : null}
+                <span
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    validFinalizedCount >= 5
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  {validFinalizedCount} of {activeQuestions.length} Valid & Finalized (Min 5)
+                </span>
               </div>
               <h3 className="text-sm sm:text-base font-bold text-slate-900 mt-0.5 truncate max-w-2xl">
                 {cne.topic}
@@ -752,25 +732,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           </button>
         </div>
 
-        {/* Missing Material Inline Alert */}
-        {hasMaterial === false && canModify && (
-          <div className="px-6 py-2 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-3 text-xs text-amber-900 shrink-0">
-            <div className="flex items-center gap-2">
-              <FileWarning className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>
-                <strong>No CNE material uploaded:</strong> AI can search the CNE Reference Library only with your confirmation, or you can upload topic material.
-              </span>
-            </div>
-          </div>
-        )}
-
-        {materialStatusError && canModify && !checkingMaterial && (
-          <div role="alert" className="px-6 py-2 border-b border-amber-200 bg-amber-50 text-xs text-amber-900 flex gap-2 items-center justify-between">
-            <span>Material status could not be checked: {materialStatusError}</span>
-            <button type="button" onClick={() => { if (!materialCheckRef.current) void loadMaterialStatus(); }} className="font-semibold underline">Retry material check</button>
-          </div>
-        )}
-
         {/* AI & Manual Action Bar */}
         {canModify && (
           <div className="px-6 py-3 bg-purple-50/60 border-b border-purple-100 flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
@@ -778,28 +739,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <div className="flex items-center gap-2 text-xs text-purple-950 font-bold">
                 <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
                 <span>AI Question Synthesizer</span>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-200/80 text-purple-900 border border-purple-300">
-                  1 AI generation allowed per CNE
-                </span>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                  isGenerating
-                    ? 'bg-indigo-100 text-indigo-800 border-indigo-200'
-                    : isAiGenerationUsed
-                    ? 'bg-slate-200 text-slate-700 border-slate-300'
-                    : isAiGenerationUnavailable
-                    ? 'bg-amber-100 text-amber-800 border-amber-200'
-                    : quotaInfo
-                    ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
-                    : 'bg-slate-100 text-slate-500 border-slate-200'
-                }`}>
-                  {isGenerating ? 'AI: Generating' : isAiGenerationUsed ? 'AI: Used' : isAiGenerationUnavailable ? 'AI: Unavailable' : quotaInfo ? 'AI: Available' : 'AI: Checking'}
-                </span>
               </div>
-              <p className="text-slate-600 text-[11px]">
-                {isAiGenerationUsed
-                  ? 'The single AI generation allowance has already been completed for this CNE. Use manual question tools to adjust questions.'
-                  : 'Synthesize exactly 5 clinical MCQs grounded strictly in CNE learning material. Consumes this CNE’s single AI allowance.'}
-              </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -1246,28 +1186,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         )}
 
         {/* Footer: one action only — Save & Next opens QR after 5 valid finalized questions */}
-        <div className="px-3 sm:px-6 py-3 border-t border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-          <div className="text-xs text-slate-500">
-            {sessionClosed ? (
-              <span className="text-slate-500 font-semibold">
-                This CNE is closed. Question modification and QR activation are disabled.
-              </span>
-            ) : validFinalizedCount < 5 ? (
-              <span className="text-rose-600 font-semibold">
-                ⚠ Need 5 valid finalized questions before QR. Ready: {validFinalizedCount}/5
-                {incompleteActiveCount > 0 ? ` • Incomplete active: ${incompleteActiveCount}` : ''}
-              </span>
-            ) : incompleteActiveCount > 0 ? (
-              <span className="text-amber-600 font-semibold">
-                ⚠ {incompleteActiveCount} incomplete active question(s) must be completed or removed before saving.
-              </span>
-            ) : (
-              <span className="text-emerald-700 font-medium">
-                ✓ Ready for QR: <strong>{validFinalizedCount}</strong> valid finalized question{validFinalizedCount === 1 ? '' : 's'}
-              </span>
-            )}
-          </div>
-
+        <div className="px-3 sm:px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-end gap-2 shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
             {canModify && (
               <button
