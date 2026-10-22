@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, CalendarDays, Download, Printer, RefreshCcw, Search } from 'lucide-react';
+import { BarChart3, Download, Printer, Search } from 'lucide-react';
 import type { CNEAnalytics, SessionUser } from '../types';
 import { ApiService } from '../services/api';
 import { getIndiaTodayIsoDate } from '../utils';
@@ -122,7 +122,6 @@ export const AdminReports:React.FC<{user:SessionUser}> = ({user}) => {
     setError('');const next={...draft,search:draft.search.trim()};
     if(JSON.stringify(next)===JSON.stringify(applied))setReload(v=>v+1);else setApplied(next);
   };
-  const reset = ()=>{const p=currentYear();setDraft(p);setApplied(p);setReload(v=>v+1);};
   const k=data?.kpis;
   const [rankSearch,setRankSearch] = useState('');
   const filteredEmployees=useMemo(()=>data?.employeeRows.filter(e=>`${e.employeeId} ${e.name} ${e.department}`.toLowerCase().includes(rankSearch.toLowerCase()))||[],[data?.employeeRows,rankSearch]);
@@ -133,20 +132,22 @@ export const AdminReports:React.FC<{user:SessionUser}> = ({user}) => {
     const url=URL.createObjectURL(new Blob(['\ufeff',csv],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=`CNE_Training_Register_${applied.fromDate}_${applied.toDate}.csv`;link.click();URL.revokeObjectURL(url);
   };
   return <div className="space-y-5 pb-12">
-    <header className="bg-white rounded-2xl border border-slate-200 p-5">
-      <h1 className="font-extrabold text-xl text-slate-900">CNE Reports & Statistics</h1>
-      <p className="text-xs text-slate-500 mt-1">Nursing Services · Admin-only planning, participation and post-test analytics</p>
-      <div className="flex flex-wrap gap-2 items-center mt-4 print:hidden">
-        <label className="sr-only" htmlFor="cne-report-from">From Date</label>
-        <input id="cne-report-from" aria-label="From Date" type="date" value={draft.fromDate} onChange={e=>setDraft(p=>({...p,fromDate:e.target.value}))} className="border border-slate-300 rounded-lg px-2 py-2 text-sm w-[150px]" />
-        <label className="sr-only" htmlFor="cne-report-to">To Date</label>
-        <input id="cne-report-to" aria-label="To Date" type="date" value={draft.toDate} onChange={e=>setDraft(p=>({...p,toDate:e.target.value}))} className="border border-slate-300 rounded-lg px-2 py-2 text-sm w-[150px]" />
+    <header className="bg-white rounded-2xl border border-slate-200 p-3 sm:p-4 print:border-0 print:p-0">
+      <h1 className="sr-only print:not-sr-only print:font-bold print:text-xl">CNE Reports &amp; Statistics</h1>
+      <div className="flex flex-wrap gap-2 items-center print:hidden">
+        <label className="flex items-center gap-1 text-xs font-medium text-slate-600" htmlFor="cne-report-from">
+          From
+          <input id="cne-report-from" aria-label="From Date" type="date" value={draft.fromDate} onChange={e=>setDraft(p=>({...p,fromDate:e.target.value}))} className="border border-slate-300 rounded-lg px-2 py-2 text-sm w-[150px] text-slate-900" />
+        </label>
+        <label className="flex items-center gap-1 text-xs font-medium text-slate-600" htmlFor="cne-report-to">
+          To
+          <input id="cne-report-to" aria-label="To Date" type="date" value={draft.toDate} onChange={e=>setDraft(p=>({...p,toDate:e.target.value}))} className="border border-slate-300 rounded-lg px-2 py-2 text-sm w-[150px] text-slate-900" />
+        </label>
         <div className="border border-slate-300 rounded-lg flex items-center gap-1 px-2 w-full sm:w-[220px] bg-white"><Search size={15} className="text-slate-500 shrink-0"/><input aria-label="Search CNE topic, ID or area" placeholder="Search CNE, topic, area..." value={draft.search} onChange={e=>setDraft(p=>({...p,search:e.target.value}))} onKeyDown={e=>{if(e.key==='Enter')validateAndApply();}} className="w-full min-w-0 outline-none text-sm py-2"/></div>
         <button onClick={validateAndApply} disabled={busy} className="px-3 py-2 text-xs rounded-lg bg-emerald-700 text-white font-bold flex items-center gap-1 disabled:opacity-50"><BarChart3 size={15}/> Generate Report</button>
-        <button onClick={reset} disabled={busy} className="px-3 py-2 border rounded-lg text-xs flex items-center gap-1"><RefreshCcw size={15}/> Current Year</button>
         <button onClick={()=>window.print()} disabled={busy||!data} className="ml-auto px-3 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50"><Printer size={15}/> Print</button>
       </div>
-      <p className="text-[11px] text-slate-500 mt-2 flex items-center gap-1"><CalendarDays size={12}/> Report period: {applied.fromDate} to {applied.toDate}{applied.search?` · Search: ${applied.search}`:''}. Dates use India calendar day.</p>
+      <p className="hidden print:block text-xs text-slate-600 mt-1">From {applied.fromDate} to {applied.toDate}{applied.search?` · Search: ${applied.search}`:''}</p>
     </header>
     {error && <div role="alert" className="border border-red-200 bg-red-50 text-red-800 rounded-xl p-4 text-sm">{error} <button className="underline ml-2" onClick={()=>setReload(v=>v+1)}>Retry</button></div>}
     {busy && <div className="bg-white border rounded-xl p-9 text-center" role="status"><span className="inline-block animate-spin h-6 w-6 rounded-full border-2 border-emerald-600 border-t-transparent mr-2 align-middle"/> Generating CNE analytics for the selected period...</div>}

@@ -10289,8 +10289,81 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   for(const item of checks){focusedChecks.push({name:item.name,test:item.fn});try{item.fn();focusedPassed++;console.log('✓ '+item.name);}catch(err){console.error('✗ '+item.name+': '+err.message);}}
 }
 
+// -----------------------------------------------------------------------------
+// Admin Reports compact-filter regression checks: keep automatic current-year
+// defaults and report functionality, remove redundant screen-only UI content.
+// These augment all existing core and focused checks without changing them.
+// -----------------------------------------------------------------------------
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const reports = readFileSync(join(ROOT_DIR, 'src/components/AdminReports.tsx'), 'utf8');
+  const checks = [];
+  const check = (name, test) => checks.push({name, test});
+  check('Reports: India-calendar current year populates From and To by default', () => {
+    const match = reports.match(/const currentYear = \(\): Period => \{([\s\S]*?)\n\};/);
+    if (!match) throw Error('Current-year initialization helper missing');
+    const run = (indiaDay) => vm.runInNewContext(`(() => { ${match[1]} })()`, {
+      getIndiaTodayIsoDate: () => indiaDay
+    });
+    for (const [day,year] of [['2026-12-31','2026'],['2027-01-01','2027']]) {
+      const period = run(day);
+      if (period.fromDate !== `${year}-01-01` || period.toDate !== `${year}-12-31` || period.search !== '')
+        throw Error('Wrong default reporting period for India day '+day);
+    }
+  });
+  check('Reports: both draft and applied periods begin in the current year', () => {
+    for (const token of ['useState<Period>(currentYear)',
+      'const [draft,setDraft]', 'const [applied,setApplied]']) {
+      if (!reports.includes(token)) throw Error('Default report period binding missing: '+token);
+    }
+  });
+  check('Reports: Current Year button and reset handler are absent', () => {
+    if (/Current Year|RefreshCcw|const reset\s*=|onClick=\{reset\}/.test(reports))
+      throw Error('Redundant Current Year UI or reset action still exists');
+  });
+  check('Reports: no visible title or admin-planning description occupies header space', () => {
+    if (!reports.includes('className="sr-only print:not-sr-only'))
+      throw Error('Accessible print-only page heading missing');
+    if (/Nursing Services · Admin-only planning|<h1 className="font-extrabold/.test(reports))
+      throw Error('Redundant visible page text remains');
+  });
+  check('Reports: summary period hidden on screen but present for printing', () => {
+    if (!reports.includes('className="hidden print:block') ||
+        !reports.includes('From {applied.fromDate} to {applied.toDate}') ||
+        reports.includes('Dates use India calendar day.'))
+      throw Error('Print-only reporting period not correctly configured');
+  });
+  check('Reports: compact filter controls retain dates, search, generate and print', () => {
+    for (const token of ['p-3 sm:p-4', 'id="cne-report-from"', 'id="cne-report-to"',
+      'value={draft.fromDate}', 'value={draft.toDate}', 'value={draft.search}',
+      'onClick={validateAndApply}', 'Generate Report', 'onClick={()=>window.print()}']) {
+      if (!reports.includes(token)) throw Error('Report filter control missing: '+token);
+    }
+  });
+  check('Reports: manual date validation and automatic analytics load still operate', () => {
+    for (const token of ['draft.fromDate>draft.toDate',
+      'if(JSON.stringify(next)===JSON.stringify(applied))setReload',
+      'ApiService.getCNEAnalytics({...applied,includeEmployees:false})',
+      '},[appliedKey,reload,sessionKey])', "user.role!=='ADMIN'"]) {
+      if (!reports.includes(token)) throw Error('Report lifecycle requirement missing: '+token);
+    }
+  });
+  check('Reports: existing report sections and employee CSV export are retained', () => {
+    for (const token of ['Overview', 'Participation & Outcomes', 'Training Hours',
+      'Planning Insights', 'exportEmployees', 'CNE_Training_Register_',
+      'ApiService.getCNEAnalytics({...applied,includeEmployees:true})']) {
+      if (!reports.includes(token)) throw Error('Report content/export missing: '+token);
+    }
+  });
+  console.log('\n>>> Compact Reports & Statistics regression checks');
+  for (const item of checks) {
+    focusedChecks.push(item);
+    try { item.test(); focusedPassed++; console.log('✓ '+item.name); }
+    catch (err) { console.error('✗ '+item.name+': '+err.message); }
+  }
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');
-if (focusedChecks.length) console.log(`Focused AI checks: ${focusedPassed}/${focusedChecks.length} passed`);
+if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);
 if (passed !== selected.length || focusedPassed !== focusedChecks.length) process.exit(1);
