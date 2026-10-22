@@ -610,11 +610,11 @@ export class ApiService {
       try {
         const controller = new AbortController();
         const timeoutMs = (
-          action === 'generateCNEQuestions' ||
           action === 'uploadLearningResource' ||
           action === 'uploadNursingReferenceResource' ||
           action === 'indexNursingReferenceResource'
-        ) ? 120000 : 45000;
+        ) ? 120000 : action === 'generateCNEQuestions'
+          ? (params?.phase === 'PLAN' ? 150000 : 305000) : 45000;
         timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         const response = await fetch(apiUrl, {
@@ -1335,6 +1335,21 @@ export class ApiService {
    */
   static async generateCNEQuestions(cneId: string, allowLibraryOnly = false): Promise<ApiResponse<CNEQuestion[]>> {
     return this.executeAction<CNEQuestion[]>('generateCNEQuestions', { cneId, allowLibraryOnly });
+  }
+
+  // Planning and final generation are deliberately separate network requests.
+  // The server holds the reservation/blueprint; the client never supplies evidence,
+  // answer keys, or the quota reservation token for a resumed job.
+  static async planCNEAiGeneration(cneId: string, allowLibraryOnly = false): Promise<ApiResponse<{phase: string}>> {
+    return this.executeAction<{phase: string}>('generateCNEQuestions', {cneId, allowLibraryOnly, phase: 'PLAN'});
+  }
+
+  static async finishCNEAiGeneration(cneId: string): Promise<ApiResponse<CNEQuestion[]>> {
+    return this.executeAction<CNEQuestion[]>('generateCNEQuestions', {cneId, phase: 'FINISH'});
+  }
+
+  static async getCNEAiJobStatus(cneId: string): Promise<ApiResponse<{state:string; updatedAt?:number; message?:string; canResume?:boolean}>> {
+    return this.executeAction('getCNEAiJobStatus', {cneId});
   }
 
   static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{cneId: string; hasOwnMaterial: boolean}>> {

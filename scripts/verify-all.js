@@ -10177,6 +10177,118 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   }
 }
 
+
+// -----------------------------------------------------------------------------
+// Short, recoverable Gemini stages + authoritative quote-span regression.
+// These augment, never replace, the 267 core / 99 existing focused checks.
+// -----------------------------------------------------------------------------
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const gas = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const api = readFileSync(join(ROOT_DIR, 'src/services/api.ts'), 'utf8');
+  const ui = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEQuestionsModal.tsx'), 'utf8');
+  const cacheHeaders = readFileSync(join(ROOT_DIR, 'public/_headers'), 'utf8');
+  const ctx = vm.createContext({console});
+  vm.runInContext(gas,ctx,{timeout:15000});
+  const checks=[];
+  const test=(name,fn)=>checks.push({name,fn});
+  const clinical = 'Peripheral intravenous catheter insertion requires appropriate vein selection before the nurse prepares the patient\'s skin and checks for relevant complications and safety measures. '.repeat(11);
+  test('Exact quote IDs resolve only to literal spans in approved evidence',()=>{
+    const spans=ctx.cneAiVerifiedSpans_(clinical,'OBJ_1');
+    if(spans.length<2||spans.length>6) throw Error('Bounded spans missing');
+    for(const span of spans) {
+      if(!clinical.includes(span.quote)||span.quote.split(/\s+/).length<10) throw Error('Non-verbatim or short evidence span');
+    }
+    const selected=ctx.cneAiResolveVerifiedSpan_({quoteId:spans[0].id,evidenceQuote:'FAKE GEMINI QUOTE'}, {objectiveId:'OBJ_1'}, {OBJ_1:spans});
+    if(!selected.success||selected.quote!==spans[0].quote) throw Error('Verified quote ID not authoritative');
+  });
+  test('Fabricated quote IDs fail closed',()=>{
+    const spans=ctx.cneAiVerifiedSpans_(clinical,'OBJ_1');
+    const bad=ctx.cneAiResolveVerifiedSpan_({quoteId:'INVENTED_SPAN',evidenceQuote:clinical},{objectiveId:'OBJ_1'},{OBJ_1:spans});
+    if(bad.success||bad.quote) throw Error('Fabricated quote ID accepted');
+  });
+  test('Existing exact verified quotations remain backward compatible',()=>{
+    const q=ctx.cneAiResolveVerifiedSpan_({evidenceQuote:clinical},{objectiveId:'OBJ_2'},{OBJ_2:[]});
+    if(!q.success||q.quote!==clinical.trim()) throw Error('Real legacy quote blocked');
+  });
+  test('Verified quote must still support the actual clinical answer',()=>{
+    const ev={indexId:'IV1',resourceTitle:'Nursing Advanced Skills',sectionHeading:'Initiate IV Therapy',chunkText:clinical};
+    const span=ctx.cneAiVerifiedSpans_(clinical,'OBJ_1')[0];
+    const citation=ev.resourceTitle+' - '+ev.sectionHeading;
+    const diagnostic=ctx.cneAiEvidenceSupportDiagnostic_('IV Cannulation',citation,span.quote,'Give an unsupported intravenous medication dosage of 900 mg','Give 900 mg intravenously now.','',[ev],'IV1');
+    if(diagnostic.supported||diagnostic.code!=='NUMERIC_MISMATCH') throw Error('Server-owned quote bypassed numeric verification');
+  });
+  test('Two-phase actions wired with independent timeouts and owner-bound status',()=>{
+    for(const code of ["phase: 'PLAN'", "phase: 'FINISH'", "'getCNEAiJobStatus'", "params?.phase === 'PLAN' ? 150000 : 305000"])
+      if(!api.includes(code)) throw Error('Frontend action/timeout missing: '+code);
+    if(!gas.includes("case 'getCNEAiJobStatus':")||!gas.includes("phase==='FINISH'")||!gas.includes("phase==='PLAN'")) throw Error('Backend stage routes missing');
+  });
+  test('No unattended resubmission after uncertain timeout',()=>{
+    if(!ui.includes("ApiService.getCNEAiJobStatus(targetCneId)")||!ui.includes('liveJob &&')||
+       !ui.includes("['NONE','FAILED'].includes(liveJob.state)")) throw Error('Safe retry guard missing');
+    if(!ui.includes('Resume AI Generation')||!ui.includes('handleGenerateAi(false, true)')) throw Error('Safe plan resume not exposed');
+  });
+  test('Planning and generation do not expose blueprint or token in job status',()=>{
+    const statusSource=gas.split('function handleGetCNEAiJobStatus(params,session) {')[1].split('\n}')[0];
+    if(!statusSource.includes("canResume:state==='PLANNED'")||statusSource.includes('reservationToken:job.')||statusSource.includes('objectives:job.')) throw Error('Job status exposes private state');
+  });
+  test('Generation cannot resubmit unfinished plan or claim without ScriptLock',()=>{
+    if(!gas.includes("['PLANNING','PLANNED','GENERATING'].indexOf(savedJob.state)")||
+      !gas.includes('claim.tryLock(8000)')||!gas.includes("current.state!=='PLANNED'")) throw Error('Idempotent stage claim missing');
+  });
+  test('Existing library-only consent is persisted and required for resume',()=>{
+    if(!gas.includes("cneAiReadJob_(cneId,session)||{}).allowLibraryOnly===true")||
+      !gas.includes('allowLibraryOnly:!hasOwnMaterial && params.allowLibraryOnly===true')) throw Error('Library consent not bound to job');
+  });
+  test('Versioned frontend HTML is not cached across Cloudflare deployments',()=>{
+    if(!cacheHeaders.includes('/index.html')||!cacheHeaders.includes('no-store')||!cacheHeaders.includes('/assets/*')) throw Error('Cache-control headers missing');
+  });
+  test('Job state isolated by authorized employee, not other employee IDs',()=>{
+    const store={};
+    ctx.cneAiProgressKey_=(cneId,employeeId)=>'progress_'+cneId+'_'+employeeId;
+    ctx.PropertiesService={getScriptProperties:()=>({getProperty:key=>store[key]||null,setProperty:(key,v)=>{store[key]=v;}})};
+    const first={employeeId:'EDUCATOR_1'};
+    ctx.cneAiWriteJob_('CNE_123',first,{state:'PLANNED',objectives:[{objectiveId:'OBJ_1'}],reservationToken:'secret'});
+    if(ctx.cneAiReadJob_('CNE_123',first).state!=='PLANNED') throw Error('Owner cannot resume plan');
+    if(ctx.cneAiReadJob_('CNE_123',{employeeId:'EDUCATOR_2'})) throw Error('Another user accessed generation plan');
+  });
+  test('Two-stage quota reservation commits once, even after a resume or second finish',()=>{
+    const fresh=vm.createContext({console});vm.runInContext(gas,fresh,{timeout:12000});
+    const store={};let reservations=0,commits=0,releases=0;
+    fresh.sanitizeCellInput=v=>String(v||'');
+    fresh.getCNEScheduleRecord=id=>({cneId:id,topic:'IV Cannulation',status:'Scheduled'});
+    fresh.checkQuestionManagementAuthorized=()=>null;
+    fresh.normalizeCNEStatus=()=> 'Scheduled';
+    fresh.isCNEQuestionsLocked=()=>false;
+    fresh.cneAiHasOwnMaterial_=()=>false;
+    fresh.cneAiProgressKey_=(id,employee)=>id+'-'+employee;
+    fresh.updateCNEAiProgress_=()=>{};
+    fresh.PropertiesService={getScriptProperties:()=>({getProperty:key=>store[key],setProperty:(key,val)=>{store[key]=val;}})};
+    fresh.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
+    fresh.handleReserveAiQuota=()=>{reservations++;return{success:true,data:{reservationToken:'only-one-token'}};};
+    fresh.handleReleaseAiQuota=()=>{releases++;return{success:true};};
+    const questions=Array.from({length:5},(_,i)=>({id:'q_ai_'+i,question:'Distinct clinical question '+i,options:{A:'a',B:'b',C:'c',D:'d'},correctOption:'B'}));
+    fresh.generateAiQuestionsInternal=args=>args.planOnly?
+      {success:true,planned:true,data:{objectives:Array.from({length:5},(_,i)=>({objectiveId:'OBJ_'+(i+1),objective:'Clinical objective number '+i,evidenceId:'E'+i}))}}:
+      (args.preparedBlueprint?.length===5 && args.allowLibraryOnly===true?{success:true,data:questions}:{success:false,errorCode:'MISSING_CONSENT'});
+    fresh.handleCommitAiQuota=()=>{commits++;return{success:true};};
+    fresh.handleGetCNEQuestions=()=>({success:true,data:questions});
+    fresh.logAuditAction=()=>{};
+    const owner={employeeId:'EDUCATOR_1'}, other={employeeId:'EDUCATOR_2'};
+    const consent=fresh.handleGenerateCNEQuestions({cneId:'CNE_123',phase:'PLAN'},owner);
+    if(consent.errorCode!=='LIBRARY_CONSENT_REQUIRED')throw Error('Library consent missing');
+    const plan=fresh.handleGenerateCNEQuestions({cneId:'CNE_123',phase:'PLAN',allowLibraryOnly:true},owner);
+    if(!plan.success||plan.data.phase!=='PLANNED')throw Error('Blueprint plan failed');
+    if(fresh.handleGetCNEAiJobStatus({cneId:'CNE_123'},owner).data.canResume!==true)throw Error('Recoverable status missing');
+    if(fresh.handleGetCNEAiJobStatus({cneId:'CNE_123'},other).data.state!=='NONE')throw Error('Cross-user job disclosure');
+    const finished=fresh.handleGenerateCNEQuestions({cneId:'CNE_123',phase:'FINISH'},owner);
+    if(!finished.success||finished.data.length!==5)throw Error('Finish did not save five questions');
+    if(fresh.handleGenerateCNEQuestions({cneId:'CNE_123',phase:'FINISH'},owner).success)throw Error('Second commit allowed');
+    if(reservations!==1||commits!==1||releases!==0)throw Error('Quota safety regression');
+  });
+  console.log('\n>>> Stage recovery and source-bound quote checks');
+  for(const item of checks){focusedChecks.push({name:item.name,test:item.fn});try{item.fn();focusedPassed++;console.log('✓ '+item.name);}catch(err){console.error('✗ '+item.name+': '+err.message);}}
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');

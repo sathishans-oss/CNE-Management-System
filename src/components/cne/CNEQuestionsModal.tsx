@@ -81,6 +81,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [loading, setLoading] = useState(true);
   const [questionLoadError, setQuestionLoadError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [pendingGenerationJob, setPendingGenerationJob] = useState(false);
   const generatingRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
   const savingRef = useRef(false);
@@ -152,6 +153,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setCheckingMaterial(false);
     setGenerationElapsedSeconds(0);
     setIsGenerating(false);
+    setPendingGenerationJob(false);
     setIsSaving(false);
     persistedQuestionIdsRef.current = new Set();
     draftOriginSnapshotRef.current = new Map();
@@ -160,6 +162,13 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const quotaRequestId = ++quotaRequestRef.current;
     void loadQuestions(questionRequestId, cneId);
     void loadQuota(quotaRequestId, cneId);
+    // A blueprint may have been completed after an earlier browser timeout.
+    // Offer an explicit Resume action; do not re-reserve quota or auto-generate.
+    void ApiService.getCNEAiJobStatus(cneId).then(job => {
+      if (cneId === currentCneIdRef.current && job.success) {
+        setPendingGenerationJob(job.data?.state === 'PLANNED');
+      }
+    }).catch(() => {});
 
     return () => {
       questionsRequestRef.current += 1;
@@ -257,12 +266,15 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   // A lost response is not proof of failure: look for a committed batch and quota.
   // Do not claim success unless both authoritative readings are consistent.
   const reconcileUncertainGeneration = async (targetCneId: string, isCurrent: () => boolean) => {
-    const [storedResult, quotaResult] = await Promise.allSettled([
-      ApiService.getCNEQuestions(targetCneId), ApiService.getAiQuota(targetCneId)
+    const [storedResult, quotaResult, jobResult] = await Promise.allSettled([
+      ApiService.getCNEQuestions(targetCneId), ApiService.getAiQuota(targetCneId),
+      ApiService.getCNEAiJobStatus(targetCneId)
     ]);
     if (!isCurrent()) return { completed: false, safeToRetry: false };
     const stored = storedResult.status === 'fulfilled' ? storedResult.value : null;
     const freshQuota = quotaResult.status === 'fulfilled' ? quotaResult.value : null;
+    const liveJob = jobResult.status === 'fulfilled' && jobResult.value.success ? jobResult.value.data : null;
+    setPendingGenerationJob(liveJob?.state === 'PLANNED');
     if (freshQuota?.success && freshQuota.data) setQuotaInfo(freshQuota.data);
     const used = Boolean(freshQuota?.success && freshQuota.data &&
       (freshQuota.data.status === 'USED' || freshQuota.data.status === 'GENERATED' || freshQuota.data.attemptsUsed >= 1));
@@ -277,7 +289,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     // Only offer another attempt after both fresh reads confirm no committed AI batch.
     return {
       completed: false,
-      safeToRetry: Boolean(freshQuota?.success && freshQuota.data?.canGenerate && stored?.success &&
+      safeToRetry: Boolean(liveJob && ['NONE','FAILED'].includes(liveJob.state) &&
+        freshQuota?.success && freshQuota.data?.canGenerate && stored?.success &&
         Array.isArray(stored.data) && !stored.data.some(q => String(q.id || '').startsWith('q_ai_')))
     };
   };
@@ -310,7 +323,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     await handleGenerateAi(false);
   };
 
-  const handleGenerateAi = async (allowLibraryOnly = false) => {
+  const handleGenerateAi = async (allowLibraryOnly = false, resumePlanned = false) => {
     if (
       generatingRef.current ||
       isGenerating ||
@@ -355,10 +368,23 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     });
 
     try {
-      const res = await ApiService.generateCNEQuestions(requestCneId, allowLibraryOnly);
+      let res;
+      if (!resumePlanned) {
+        const planned = await ApiService.planCNEAiGeneration(requestCneId, allowLibraryOnly);
+        if (!isCurrent()) return;
+        if (!planned.success) {
+          res = planned;
+        } else {
+          setPendingGenerationJob(true);
+          res = await ApiService.finishCNEAiGeneration(requestCneId);
+        }
+      } else {
+        res = await ApiService.finishCNEAiGeneration(requestCneId);
+      }
       if (!isCurrent()) return;
 
       if (res && res.success && res.data && Array.isArray(res.data) && res.data.length === 5) {
+        setPendingGenerationJob(false);
         const generated = res.data.map((q) => ({
           ...q,
           options: { ...q.options },
@@ -769,7 +795,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                   isSaving ||
                   !canModify ||
                   isAiGenerationUsed ||
-                  isAiGenerationUnavailable
+                  isAiGenerationUnavailable ||
+                  pendingGenerationJob
                 }
                 title={
                   !isPageReady
@@ -805,6 +832,17 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                   </>
                 )}
               </button>
+
+              {pendingGenerationJob && !isAiGenerationUsed && (
+                <button
+                  type="button"
+                  onClick={() => { setFailureDialog(null); void handleGenerateAi(false, true); }}
+                  disabled={!isPageReady || !canModify || isGenerating || generatingRef.current || isSaving}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-700 text-white text-xs font-bold disabled:opacity-50"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" /> Resume AI Generation
+                </button>
+              )}
 
               {/* Manual Question */}
               <button
@@ -1158,6 +1196,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                   <button type="button" onClick={() => { setFailureDialog(null); if (onNavigateToMaterial) onNavigateToMaterial(); else error('Please open Material from the CNE Progress panel.'); }} className="px-3 py-2 rounded-lg border border-purple-400 text-purple-700 font-semibold text-xs">Upload Material</button>
                 ) : null}
                 {failureDialog.retrySafe && <button type="button" onClick={() => { setFailureDialog(null); void requestAiGeneration(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Retry AI Generation</button>}
+                {pendingGenerationJob && !isGenerating && <button type="button" onClick={() => { setFailureDialog(null); void handleGenerateAi(false, true); }} className="px-3 py-2 rounded-lg bg-indigo-700 text-white font-semibold text-xs">Resume Generation</button>}
                 {failureDialog.type === 'technical' && !failureDialog.retrySafe && <button type="button" onClick={() => { setFailureDialog(null); void loadQuestions(); void loadQuota(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Refresh Questions & Quota</button>}
                 <button type="button" onClick={() => setFailureDialog(null)} className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 font-semibold text-xs">Close</button>
               </div>
