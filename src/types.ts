@@ -142,7 +142,8 @@ export interface CNERecord {
   staffNames?: string[]; // Populated when authorized
   externalStaffParticipants?: string[]; // Outside staff participants without employee ID
   staffCount?: number;
-  coverageAreasSnapshot?: string;
+  coverageAreasSnapshot?: string; // Ordered selected ward names; Area is reporting ward.
+  participatingWards?: string[]; // Edit/create payload only; not an ownership field.
   totalAllottedStaff?: number | null;
   internalAttendanceCount?: number | null;
   attendancePercentage?: number | null;
@@ -189,6 +190,7 @@ export interface DepartmentalScheduleRow {
   id: string;
   topic: string;
   area: string;
+  participatingWards?: string[];
   date: string; // From Date & Time
   toDate?: string; // To Date & Time
   duration: string; // Duration in HH:MM:SS format

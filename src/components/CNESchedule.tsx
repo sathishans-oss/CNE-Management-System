@@ -45,6 +45,7 @@ import {
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 import { CneDateTimeFields } from './cne/CneDateTimeFields';
 import { SearchInput } from './SearchInput';
+import { WardMultiSelect, WardStaffCounts } from './cne/WardMultiSelect';
 import { loadOfficersSingleFlight, getCachedOfficers } from '../services/officerLoader';
 
 const CNEReferenceModal = lazy(() => import('./cne/CNEReferenceModal').then((m) => ({ default: m.CNEReferenceModal })));
@@ -162,6 +163,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [editCneType, setEditCneType] = useState<CNEType>('CENTRAL');
   const [editTopic, setEditTopic] = useState('');
   const [editArea, setEditArea] = useState('');
+  const [editWards, setEditWards] = useState<string[]>([]);
+  const [editWardChanged, setEditWardChanged] = useState(false);
+  const [wardStaffCounts, setWardStaffCounts] = useState<WardStaffCounts>({});
   const [editDate, setEditDate] = useState('');
   const [editToDate, setEditToDate] = useState('');
   const [editDuration, setEditDuration] = useState('01:30:00');
@@ -177,6 +181,18 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const editSubmittingRef = useRef(false);
 
   const { success, error } = useToast();
+  const isAdmin = user?.role === 'ADMIN';
+  const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
+  const canScheduleCne = isAdmin || isAreaIncharge;
+
+  useEffect(() => {
+    if (!canScheduleCne || (!isDeptScheduleOpen && !editingCne)) return;
+    let alive = true;
+    ApiService.getWardStaffCounts().then((res) => {
+      if (alive && res.success && res.data) setWardStaffCounts(res.data);
+    }).catch(() => { if (alive) setWardStaffCounts({}); });
+    return () => { alive = false; };
+  }, [canScheduleCne, isDeptScheduleOpen, editingCne?.cneId, user?.token]);
   const dataRequestRef = useRef(0);
   const historyPageRef = useRef(1);
   const historyMoreRequestRef = useRef(false);
@@ -186,10 +202,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const sessionKey = `${user?.employeeId || ''}:${user?.role || ''}:${user?.token || ''}`;
   const sessionKeyRef = useRef(sessionKey);
   sessionKeyRef.current = sessionKey;
-
-  const isAdmin = user?.role === 'ADMIN';
-  const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
-  const canScheduleCne = isAdmin || isAreaIncharge;
   const activeTeachingModeNames = useMemo(() =>
     teachingModes
       .filter((mode) => mode.status === 'ACTIVE')
@@ -779,6 +791,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setEditingCne(cls);
     setEditTopic(cls.topic || '');
     setEditArea(cls.area || '');
+    setEditWards(cls.cneType === 'DEPARTMENTAL'
+      ? (cls.participatingWards?.length ? [...cls.participatingWards] : [cls.area].filter(Boolean))
+      : []);
+    setEditWardChanged(false);
     setEditCneType((cls.cneType || 'CENTRAL') as CNEType);
     setEditDate(toDateTimeLocalString(cls.date));
     setEditToDate(toDateTimeLocalString(cls.toDate || cls.date));
@@ -832,6 +848,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     if (!editingCne || editSubmittingRef.current || isEditSubmitting) return;
     if (!canManageLifecycle(editingCne) || isCneClosed(editingCne)) { error('This CNE cannot be edited.'); return; }
 
+    if (editCneType === 'DEPARTMENTAL' && (!editWards.length || !editArea.trim())) {
+      error('Select at least one participating ward and an authorized Primary Ward.');
+      return;
+    }
     if (!editTopic.trim() || !editArea.trim() || !editDate.trim()) {
       error('Please fill in all required fields (Topic, Area, From Date & Time).');
       return;
@@ -892,6 +912,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       const res = await ApiService.updateCNE(targetCneId, {
         topic: editTopic.trim(),
         area: editArea,
+        ...(editCneType === 'DEPARTMENTAL' && editWardChanged ? { participatingWards: editWards } : {}),
         cneType: editCneType,
         date: editDate,
         toDate: editToDate,
@@ -913,6 +934,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           cneId: targetCneId,
           topic: editTopic.trim(),
           area: editArea,
+          ...(editCneType === 'DEPARTMENTAL' && editWardChanged ? {
+            coverageAreasSnapshot: editWards.join(', '),
+            participatingWards: [...editWards],
+            totalAllottedStaff: typeof res.data?.totalAllottedStaff === 'number' ? res.data.totalAllottedStaff : editWards.reduce((sum, ward) => sum + (wardStaffCounts[ward.toUpperCase()] || 0), 0)
+          } : {}),
           cneType: editCneType,
           date: editDate,
           toDate: editToDate,
@@ -1825,7 +1851,22 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                           </span>
                         )}
                       </div>
-                      <select
+                      {editCneType === 'DEPARTMENTAL' ? (
+                        <WardMultiSelect
+                          availableWards={areasList}
+                          eligiblePrimaryWards={isAdmin ? areasList : selectableAssignedAreas}
+                          selected={editWards}
+                          primaryWard={editArea}
+                          staffCounts={wardStaffCounts}
+                          onChange={(wards, primary) => {
+                            setEditWards(wards);
+                            setEditArea(primary);
+                            setEditWardChanged(true);
+                          }}
+                          disabled={isEditSubmitting}
+                        />
+                      ) : (
+                        <select
                         required
                         value={editArea}
                         onChange={(e) => setEditArea(e.target.value)}
@@ -1843,7 +1884,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                             {a}
                           </option>
                         ))}
-                      </select>
+                        </select>
+                      )}
                     </div>
 
                     <div>

@@ -1403,7 +1403,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-workflows.js",
     mode: "module",
     expectedChecks: 75,
-    sha256: "d49570ff2f2a53fff67ee35e636376c37a8e0e7f1ac4fdedc9fce9f1abffe541",
+    sha256: "5e3fca33371e2846ad493a407fdb28db2fdcf35b8713cc901c8d1738f7dc8f44",
     source: `/**
  * CNE Business Workflows & Schema Verification Suite
  *
@@ -1759,21 +1759,24 @@ runTest('Staff-count master lookup is exact, cached, and treats missing/invalid 
   assert.ok(section.includes("CacheService.getScriptCache().put(cacheKey, JSON.stringify(map), 60)"), 'Staff-count master must use a short cache');
 });
 
-runTest('Departmental scheduling snapshots Area Incharge active areas and Admin selected area', () => {
+runTest('Departmental staffing uses selected wards only and preserves a single reporting ward', () => {
   const helper = codeGs.substring(
-    codeGs.indexOf('function buildDepartmentalCoverageSnapshot_'),
+    codeGs.indexOf('function resolveDepartmentalWards_'),
     codeGs.indexOf('function ensureCneScheduleCoverageHeaders_')
   );
-  assert.ok(helper.includes("if (role === 'ADMIN')"), 'Coverage helper must have explicit Admin branch');
-  assert.ok(helper.includes('getStaffCountForArea_(selected, resolvedStaffMap)'), 'Admin denominator must use only selected Area');
-  assert.ok(helper.includes("statusMap[statusKey] !== 'ACTIVE'"), 'Area Incharge snapshot must exclude inactive assigned Areas');
-  assert.ok(helper.includes("activeAssigned.join(', ')"), 'Active assigned Areas must be persisted as the coverage snapshot');
-  assert.ok(helper.includes('total += getStaffCountForArea_(areaName, resolvedStaffMap)'), 'Area Incharge denominator must sum active assigned Area totals');
-
-  const createSection = codeGs.substring(codeGs.indexOf('function handleCreateCNE'), codeGs.indexOf('function handleUpdateCNE'));
-  assert.ok(createSection.includes("cneType === 'DEPARTMENTAL' && !isUnscheduled"), 'Coverage snapshot must apply only to normally scheduled Departmental CNEs');
-  assert.ok(createSection.includes("setCell('coverageareassnapshot'"), 'Scheduling must save Coverage Areas Snapshot');
-  assert.ok(createSection.includes("setCell('totalallottedstaff'"), 'Scheduling must save Total Allotted Staff');
+  assert.ok(helper.includes('!Array.isArray(wardInput)'), 'Must require explicit selected ward names');
+  assert.ok(helper.includes("status[key] !== 'ACTIVE'"), 'Must reject inactive selected wards');
+  assert.ok(helper.includes('checkCNEAuthorized(session, primary'), 'Primary Ward must be authorized independently');
+  assert.ok(helper.includes('total += getStaffCountForArea_(wards[k], staff)'), 'Staff denominator must sum only selected unique wards');
+  assert.ok(!helper.includes('getUserRoleInfo('), 'Creator assigned-ward list must not determine attendance denominator');
+  assert.ok(helper.includes('seen[primary.toUpperCase()]'), 'Reporting ward must be a participating ward');
+  const batch = codeGs.substring(codeGs.indexOf('function handleAddDepartmentalSchedule'));
+  assert.ok(batch.includes('resolveDepartmentalWards_(selection, v.area'), 'Creation must revalidate selection server-side under lock');
+  assert.ok(batch.includes('WARD_SELECTION_MISMATCH'), 'All sessions in one create batch must share one selection');
+  assert.ok(batch.includes("setCell('coverageareassnapshot'"), 'Selected ward names must be stored in existing coverage column');
+  assert.ok(batch.includes("setCell('area', 2, item.area)"), 'One primary ward must remain in Area column');
+  const creation = codeGs.substring(codeGs.indexOf('function handleCreateCNE'), codeGs.indexOf('function handleUpdateCNE'));
+  assert.ok(creation.includes("cneType === 'DEPARTMENTAL' && !isUnscheduled"), 'Central and unscheduled records must retain existing behavior');
 });
 
 runTest('Departmental coverage metrics are calculated only in finalization, not attendance submission paths', () => {
@@ -4828,12 +4831,12 @@ process.exit(0);
     name: "Delete CNE Behavioral Verification",
     originalFilename: "verify-delete-cne-behavior.js",
     mode: "module",
-    expectedChecks: 34,
-    sha256: "71fee67a54ebb774e2b494c09631ec0f291352865d9db7ffcc36e31003037e01",
+    expectedChecks: 38,
+    sha256: "25e7d7be7244f2da5090537c8df830cea424d6802ce7ffd09f35d1d84a02da0b",
     source: `/**
  * ============================================================================
  * EXECUTABLE BEHAVIORAL TEST SUITE: Delete CNE Data Integrity & Concurrency
- * Scope: 16 Realistic Behavioral Tests with Authentic Apps Script Execution
+ * Scope: 38 Realistic Behavioral Tests with Authentic Apps Script Execution
  * ============================================================================
  */
 
@@ -4849,7 +4852,7 @@ const rootDir = path.resolve(__dirname, '..');
 
 console.log('========================================================');
 console.log('Delete CNE Executable Behavioral Verification');
-console.log('Scope: 16 True Behavioral Tests (Data Mutation & Recovery)');
+console.log('Scope: 38 True Behavioral Tests (Data Mutation & Recovery)');
 console.log('========================================================\\n');
 
 let totalTests = 0;
@@ -6177,6 +6180,111 @@ runBehavioralTest('34. Archive readback throws and cleanup read also throws retu
   assert.strictEqual(delRes.success, false);
   assert.strictEqual(delRes.errorCode, 'DELETE_COMPLETION_UNCERTAIN');
   assert.strictEqual(cneSheet.grid.length, 3, 'Active CNE schedule row must be preserved');
+});
+
+// Test 35: transient archive ID lookup throws after append; cleanup must be verified
+runBehavioralTest('35. Transient archive lookup failure cleans up this attempt and preserves active CNE', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+  let threw = false;
+  env.cneSpreadsheet.hooks.onGetSheetByName = (name) => {
+    if (name === 'CNE Deleted Archive' && env.cneSpreadsheet.sheets[name]) {
+      const arch = env.cneSpreadsheet.sheets[name];
+      arch.hooks.onGetRange = (r, c, nr, nc) => {
+        if (!threw && arch.grid.length > 1 && r === 2 && c === 1 && nc === 1) {
+          threw = true;
+          return { getValues: () => { throw new Error('Transient archive lookup read error'); } };
+        }
+        return null;
+      };
+    }
+  };
+  const res = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001', confirmationCneId: 'CLS-2026-001', reason: 'Transient archive lookup'
+  }, env.adminSession);
+  assert.strictEqual(threw, true, 'Must actually fault after archive append');
+  assert.strictEqual(res.errorCode, 'ARCHIVE_VERIFICATION_FAILED');
+  assert.strictEqual(cneSheet.grid.length, 3, 'Active schedule row must remain');
+  const arch = env.cneSpreadsheet.sheets['CNE Deleted Archive'];
+  assert.ok(arch, 'Archive append must have been attempted');
+  assert.strictEqual(arch.grid.slice(1).filter(r => r[0] === 'CLS-2026-001').length, 0,
+    'Attempt-specific archive entry must be removed after recoverable lookup error');
+  assert.strictEqual(env.cneSpreadsheet.sheets['CNE_QR_Tokens'].grid[1][4], 'ACTIVE');
+});
+
+// Test 36: persistent archive lookup fault cannot prove cleanup; fail closed as uncertain
+runBehavioralTest('36. Persistent archive lookup failure preserves data and reports uncertain cleanup', () => {
+  const env = createFreshTestEnvironment();
+  let calls = 0;
+  env.cneSpreadsheet.hooks.onGetSheetByName = (name) => {
+    if (name === 'CNE Deleted Archive' && env.cneSpreadsheet.sheets[name]) {
+      const arch = env.cneSpreadsheet.sheets[name];
+      arch.hooks.onGetRange = (r, c, nr, nc) => {
+        if (arch.grid.length > 1 && r === 2 && c === 1 && nc === 1) {
+          calls++;
+          return { getValues: () => { throw new Error('Persistent archive lookup read error'); } };
+        }
+        return null;
+      };
+    }
+  };
+  const res = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001', confirmationCneId: 'CLS-2026-001', reason: 'Persistent archive lookup'
+  }, env.adminSession);
+  assert.ok(calls > 0, 'Must exercise failed archive lookup');
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.errorCode, 'DELETE_COMPLETION_UNCERTAIN');
+  assert.strictEqual(env.cneSpreadsheet.sheets['CNE Schedule'].grid.length, 3);
+  assert.strictEqual(env.cneSpreadsheet.sheets['CNE Deleted Archive'].grid.length, 2,
+    'Ambiguous archive ownership must not lead to destructive cleanup');
+  assert.strictEqual(env.cneSpreadsheet.sheets['CNE_QR_Tokens'].grid[1][4], 'ACTIVE');
+});
+
+// Test 37: silent schedule deletion no-op must not be mistaken for committed deletion
+runBehavioralTest('37. Silent schedule deleteRow no-op is detected and safely compensated', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+  let deleteAttempted = false;
+  cneSheet.deleteRow = () => { deleteAttempted = true; }; // no throw, no mutation
+  const res = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001', confirmationCneId: 'CLS-2026-001', reason: 'Silent delete no-op'
+  }, env.adminSession);
+  assert.strictEqual(deleteAttempted, true);
+  assert.strictEqual(res.success, false, 'Never report success when schedule ID remains');
+  assert.strictEqual(res.errorCode, 'DELETE_MUTATION_FAILED');
+  assert.strictEqual(cneSheet.grid.length, 3);
+  assert.strictEqual(env.cneSpreadsheet.sheets['CNE Deleted Archive'].grid.length, 1,
+    'Failed deletion must remove only the newly appended archive row');
+  assert.strictEqual(env.cneSpreadsheet.sheets['CNE_QR_Tokens'].grid[1][4], 'ACTIVE',
+    'QR token must be restored for the still-active schedule');
+});
+
+// Test 38: post-deletion readback error means success cannot be proven
+runBehavioralTest('38. Transient final schedule verification failure returns uncertain without rollback of committed deletion', () => {
+  const env = createFreshTestEnvironment();
+  const cneSheet = env.cneSpreadsheet.sheets['CNE Schedule'];
+  const originalDelete = cneSheet.deleteRow.bind(cneSheet);
+  let removed = false;
+  let readFailed = false;
+  cneSheet.deleteRow = (row) => { originalDelete(row); removed = true; };
+  cneSheet.hooks.onGetRange = (r, c, nr, nc) => {
+    if (removed && !readFailed && r === 2 && c === 1 && nc === 1) {
+      readFailed = true;
+      return { getValues: () => { throw new Error('Transient final schedule readback failure'); } };
+    }
+    return null;
+  };
+  const res = env.sandbox.handleDeleteCNE({
+    cneId: 'CLS-2026-001', confirmationCneId: 'CLS-2026-001', reason: 'Readback interrupted'
+  }, env.adminSession);
+  assert.strictEqual(readFailed, true, 'Final readback must be exercised');
+  assert.strictEqual(res.success, false, 'No success response after unverified readback');
+  assert.strictEqual(res.errorCode, 'DELETE_COMPLETION_UNCERTAIN');
+  assert.strictEqual(cneSheet.grid.some(r => r[0] === 'CLS-2026-001'), false);
+  assert.strictEqual(env.cneSpreadsheet.sheets['CNE Deleted Archive'].grid.length, 2,
+    'Committed deletion archive must remain intact');
+  assert.strictEqual(env.cneSpreadsheet.sheets['CNE_QR_Tokens'].grid[1][4], 'INACTIVE',
+    'Deleted CNE QR token must not be reactivated');
 });
 
 console.log('\\n========================================================');
@@ -10359,6 +10467,259 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     focusedChecks.push(item);
     try { item.test(); focusedPassed++; console.log('✓ '+item.name); }
     catch (err) { console.error('✗ '+item.name+': '+err.message); }
+  }
+}
+
+
+// -----------------------------------------------------------------------------
+// Guest Calendar/Schedule login navigation regression tests.
+// Exercise the actual App.tsx navigation and login-success handlers in a VM.
+// This protects the public preview while requiring login for full details.
+// -----------------------------------------------------------------------------
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const app = readFileSync(join(ROOT_DIR, 'src/App.tsx'), 'utf8');
+  const home = readFileSync(join(ROOT_DIR, 'src/components/CneHomePage.tsx'), 'utf8');
+  const widget = readFileSync(join(ROOT_DIR, 'src/components/home/UpcomingClassesWidget.tsx'), 'utf8');
+  const loginModal = readFileSync(join(ROOT_DIR, 'src/components/LoginModal.tsx'), 'utf8');
+  const checks = [];
+  const check = (name, test) => checks.push({name, test});
+  function getHandler(first, last) {
+    const from = app.indexOf(first);
+    const to = app.indexOf(last, from);
+    if (from < 0 || to < 0) throw Error(`App navigation handler missing: ${first}`);
+    return app.slice(from, to).replace(/: SessionUser\b|: ViewMode\b/g, '');
+  }
+  const handlers = [
+    getHandler('  const handleLoginSuccess = (', '  const handleLogout ='),
+    getHandler('  const handleLogout =', '  const handleNavigate ='),
+    getHandler('  const handleNavigate =', '  const openFullCneDetailsFromCalendar =')
+  ].join('\n');
+  function modalAction(marker, after) {
+    const part = app.slice(app.indexOf(marker));
+    const match = part.match(/on(?:Close|OpenForgotPassword|BackToLogin)=\{\(\) => \{([\s\S]*?)\}\}/);
+    if (!match) throw Error(`Login modal callback missing after ${marker}`);
+    return `const ${after} = () => { ${match[1]} };`;
+  }
+  const loginCancel = modalAction('<LoginModal', 'cancelLogin');
+  const forgotAction = app.match(/<LoginModal[\s\S]*?onOpenForgotPassword=\{\(\) => \{([\s\S]*?)\}\}/);
+  const forgotCancel = app.match(/<ForgotPasswordModal[\s\S]*?onClose=\{\(\) => \{([\s\S]*?)\}\}/);
+  const forgotBack = app.match(/<ForgotPasswordModal[\s\S]*?onBackToLogin=\{\(\) => \{([\s\S]*?)\}\}/);
+  if (!forgotAction || !forgotCancel || !forgotBack) throw Error('Forgot-password modal callback wiring missing');
+
+  function scenario(steps) {
+    const ctx = { steps, result: undefined };
+    vm.runInNewContext(`
+      let user = null;
+      let pendingGuestView = null;
+      let activeView = 'dashboard';
+      let isLoginOpen = false;
+      let isForgotPasswordOpen = false;
+      let requestedFullCneId = null;
+      let calendarReturnState = null;
+      const notices = [];
+      const window = {scrollTo: () => {}};
+      const ApiService = {logout: () => {}};
+      const setUser = value => {user = value};
+      const setPendingGuestView = value => {pendingGuestView = value};
+      const setIsLoginOpen = value => {isLoginOpen = value};
+      const setIsForgotPasswordOpen = value => {isForgotPasswordOpen = value};
+      const setActiveView = value => {activeView = value};
+      const setRequestedFullCneId = value => {requestedFullCneId = value};
+      const setCalendarReturnState = value => {calendarReturnState = value};
+      const info = (msg,title) => notices.push({msg,title});
+      const success = (msg,title) => notices.push({msg,title});
+      ${handlers}
+      ${loginCancel}
+      const openForgot = () => { ${forgotAction[1]} };
+      const closeForgot = () => { ${forgotCancel[1]} };
+      const backToLogin = () => { ${forgotBack[1]} };
+      for (const action of steps) {
+        if (action === 'calendar') handleNavigate('calendar');
+        else if (action === 'schedule') handleNavigate('cne-schedule');
+        else if (action === 'records') handleNavigate('my-cne-records');
+        else if (action === 'dashboard') handleNavigate('dashboard');
+        else if (action === 'login') handleLoginSuccess({name:'Staff Nurse',employeeId:'RN001',role:'EMPLOYEE'});
+        else if (action === 'cancel') cancelLogin();
+        else if (action === 'forgot') openForgot();
+        else if (action === 'back') backToLogin();
+        else if (action === 'closeForgot') closeForgot();
+        else if (action === 'logout') handleLogout();
+        else throw Error('Unknown scenario step: ' + action);
+      }
+      result = {activeView,isLoginOpen,isForgotPasswordOpen,pendingGuestView,
+        authenticated: Boolean(user && user.employeeId),notices};
+    `, ctx, {timeout: 4000});
+    return JSON.parse(JSON.stringify(ctx.result));
+  }
+  check('Guest buttons: both home actions route through the guarded App navigator', () => {
+    if (!widget.includes("onClick={() => onNavigate('calendar')}") ||
+        !widget.includes("onClick={() => onNavigate('cne-schedule')}") ||
+        !home.includes('onNavigate={onNavigate}') || !app.includes('onNavigate={handleNavigate}'))
+      throw Error('Today widget action bypasses authenticated navigation');
+  });
+  check('Guest Calendar click: explains login requirement, opens login, keeps homepage', () => {
+    const got = scenario(['calendar']);
+    if (got.activeView !== 'dashboard' || !got.isLoginOpen || got.pendingGuestView !== 'calendar' ||
+        got.notices[0]?.title !== 'Login Required' || !got.notices[0]?.msg.includes('full CNE Calendar and session details'))
+      throw Error('Guest Calendar navigation is silent, loses destination, or exposes protected page');
+  });
+  check('Guest View All click: explains login requirement, opens login, keeps homepage', () => {
+    const got = scenario(['schedule']);
+    if (got.activeView !== 'dashboard' || !got.isLoginOpen || got.pendingGuestView !== 'cne-schedule' ||
+        got.notices[0]?.title !== 'Login Required' || !got.notices[0]?.msg.includes('complete CNE Schedule and session details'))
+      throw Error('Guest Schedule navigation is silent or bypasses login');
+  });
+  check('Successful login resumes Calendar only after authentication', () => {
+    const got = scenario(['calendar','login']);
+    if (got.activeView !== 'calendar' || !got.authenticated || got.isLoginOpen || got.pendingGuestView !== null)
+      throw Error('Post-login Calendar destination was not resumed securely');
+  });
+  check('Successful login resumes View All CNE Schedule only after authentication', () => {
+    const got = scenario(['schedule','login']);
+    if (got.activeView !== 'cne-schedule' || !got.authenticated || got.isLoginOpen || got.pendingGuestView !== null)
+      throw Error('Post-login Schedule destination was not resumed securely');
+  });
+  check('Closing login cancels pending Calendar redirect and preserves homepage', () => {
+    const got = scenario(['calendar','cancel','login']);
+    if (got.activeView !== 'dashboard' || !got.authenticated || got.pendingGuestView !== null)
+      throw Error('Canceled Calendar intent redirected after unrelated login');
+  });
+  check('Closing login cancels pending View All redirect and preserves homepage', () => {
+    const got = scenario(['schedule','cancel','login']);
+    if (got.activeView !== 'dashboard' || got.pendingGuestView !== null)
+      throw Error('Canceled Schedule intent redirected after unrelated login');
+  });
+  check('Password-reset detour preserves destination until canceled', () => {
+    const resumed = scenario(['calendar','forgot','back','login']);
+    const canceled = scenario(['schedule','forgot','closeForgot','login']);
+    if (resumed.activeView !== 'calendar' || canceled.activeView !== 'dashboard' || canceled.pendingGuestView !== null)
+      throw Error('Forgot-password flow mishandles pending protected destination');
+  });
+  check('Ordinary Sign in does not force Calendar or Schedule navigation', () => {
+    const got = scenario(['login']);
+    if (got.activeView !== 'dashboard' || !got.authenticated || got.pendingGuestView !== null)
+      throw Error('Normal sign-in should preserve dashboard destination');
+  });
+  check('Existing guest protected-route guard remains in place without stale redirect', () => {
+    const got = scenario(['records','login']);
+    if (got.activeView !== 'dashboard' || got.notices[0]?.title !== 'Authentication Required' || got.pendingGuestView !== null)
+      throw Error('Original protected-route guard was modified unexpectedly');
+  });
+  check('Logout clears active and pending destinations; login validates actual session', () => {
+    const got = scenario(['calendar','login','logout']);
+    if (got.activeView !== 'dashboard' || got.authenticated || got.pendingGuestView !== null || got.isLoginOpen)
+      throw Error('Logout leaves protected state active');
+    if (!loginModal.includes('hasValidSession && sessionData') || !loginModal.includes('onLoginSuccess(sessionData)'))
+      throw Error('Login success must require verified backend session');
+  });
+  console.log('\n>>> Guest Calendar and Schedule authentication-navigation regression checks');
+  for (const item of checks) {
+    focusedChecks.push(item);
+    try {item.test(); focusedPassed++; console.log('✓ ' + item.name);}
+    catch (err) {console.error('✗ ' + item.name + ': ' + err.message);}
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Selected-ward staffing, single reporting ward, schedule UI, and safe history.
+// Exercise the real GAS helpers under mocks in addition to source contracts.
+// -----------------------------------------------------------------------------
+if (selected.some(item => item.id === 'workflows') && passed === selected.length) {
+  const gs = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const modal = readFileSync(join(ROOT_DIR, 'src/components/cne/DepartmentalScheduleModal.tsx'), 'utf8');
+  const selector = readFileSync(join(ROOT_DIR, 'src/components/cne/WardMultiSelect.tsx'), 'utf8');
+  const schedule = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
+  const desktop = readFileSync(join(ROOT_DIR, 'src/components/cne/ScheduleRow.tsx'), 'utf8');
+  const mobile = readFileSync(join(ROOT_DIR, 'src/components/cne/ScheduleMobileCard.tsx'), 'utf8');
+  const api = readFileSync(join(ROOT_DIR, 'src/services/api.ts'), 'utf8');
+  const checks = [];
+  const check = (name, test) => checks.push({name, test});
+  const coverageCode = gs.slice(gs.indexOf('function resolveDepartmentalWards_'), gs.indexOf('/** Single-ward fallback'));
+  const historyCode = gs.slice(gs.indexOf('function parseParticipatingWards_'), gs.indexOf('function handleAddArea'));
+  const statusMap = {'NICU':'ACTIVE','PICU':'ACTIVE','PAEDIATRIC WARD':'ACTIVE','CLOSED WARD':'INACTIVE'};
+  const staffMap = {'nicu':42,'picu':36,'paediatric ward':28,'closed ward':19};
+  function scenario(wards, primary, role = 'ADMIN', allowed = ['NICU']) {
+    const context = {result:null, wards, primary, session:{role, assignedAreas:allowed}, statusMap, staffMap};
+    vm.runInNewContext(`
+      const sanitizeCellInput = x => String(x||'').trim();
+      const normalizeAreaMatchingKey_ = x => String(x||'').trim().replace(/\s+/g,' ').toLowerCase();
+      const getStaffCountForArea_ = (name,map) => map[normalizeAreaMatchingKey_(name)] ?? 0;
+      const checkCNEAuthorized = (s, area) => s.role === 'ADMIN' || s.assignedAreas.some(w=>w.toUpperCase()===area.toUpperCase()) ? null : {errorCode:'FORBIDDEN'};
+      ${coverageCode}
+      result=resolveDepartmentalWards_(wards,primary,session,staffMap,statusMap);
+    `, context, {timeout:2500});
+    return JSON.parse(JSON.stringify(context.result));
+  }
+  check('Explicit NICU, PICU and Paediatric Ward selection calculates exactly 106 staff', () => {
+    const v = scenario(['NICU','PICU','Paediatric Ward'],'NICU');
+    if (!v.success || v.totalAllottedStaff !== 106 || v.coverageAreasSnapshot !== 'NICU, PICU, Paediatric Ward') throw Error('selected-ward sum is incorrect');
+  });
+  check('Only one participating ward gives the single-ward count', () => {
+    if (scenario(['NICU'],'NICU').totalAllottedStaff !== 42) throw Error('single ward total wrong');
+  });
+  check('Duplicate participating wards are rejected instead of counted twice', () => {
+    if (scenario(['NICU','nicu'],'NICU').errorCode !== 'WARD_SELECTION_INVALID') throw Error('deduplication missing');
+  });
+  check('Inactive or unknown participating wards are rejected', () => {
+    if (scenario(['NICU','Closed Ward'],'NICU').success || scenario(['Unknown Ward'],'Unknown Ward').success) throw Error('inactive/unknown ward accepted');
+  });
+  check('Primary must be selected and within creator authorization', () => {
+    if (scenario(['NICU','PICU'],'ICU').errorCode !== 'WARD_PRIMARY_INVALID') throw Error('unselected primary accepted');
+    if (scenario(['NICU','PICU'],'PICU','AREA_INCHARGE',['NICU']).success) throw Error('non-owned ward became primary');
+    if (scenario(['NICU','PICU'],'NICU','AREA_INCHARGE',['NICU']).totalAllottedStaff !== 78) throw Error('cross-ward participation should be allowed');
+  });
+  check('Missing authoritative staff count fails closed', () => {
+    const v=scenario(['NICU','PICU','Paediatric Ward'],'NICU');
+    if (!v.success) throw Error('test setup wrong');
+    const context={result:null};
+    vm.runInNewContext(`
+      const sanitizeCellInput = x=>String(x||'').trim();
+      const normalizeAreaMatchingKey_ = x=>String(x||'').trim().toLowerCase();
+      const checkCNEAuthorized = ()=>null;
+      const getStaffCountForArea_ = (name,map) => map[name.toLowerCase()]??0;
+      ${coverageCode}
+      result=resolveDepartmentalWards_(['NICU','PICU'],'NICU',{role:'ADMIN'},{nicu:42},{NICU:'ACTIVE',PICU:'ACTIVE'});
+    `,context,{timeout:2500});
+    if(context.result.errorCode!=='WARD_STAFF_UNAVAILABLE')throw Error('missing master count treated as zero');
+  });
+  check('Empty ward selection is rejected and initial popup selection is empty', () => {
+    if(scenario([],'').success || !modal.includes('useState<string[]>([])') || !modal.includes("createInitialRow('', defaultTeachingMode)")) throw Error('auto selection or empty selection allowed');
+  });
+  check('Every session retains its dropdown and all rows share ward selection', () => {
+    if(!modal.includes('<WardMultiSelect') || !modal.includes('prev.map((r) => ({ ...r, area: primary, participatingWards: next }))') || !modal.includes('participatingWards: [...selectedWards]')) throw Error('session synchronization missing');
+  });
+  check('Edit CNE loads saved explicit selections and recalculates only after edit', () => {
+    if(!schedule.includes('cls.participatingWards?.length') || !schedule.includes('setEditWardChanged(true)') || !schedule.includes('editWardChanged ? { participatingWards: editWards }') || !gs.includes('editedCoverage.totalAllottedStaff')) throw Error('CNE edit/recalc path missing');
+  });
+  check('Primary Ward remains the only reporting/permission key', () => {
+    if(!gs.includes("setCell('area', 2, item.area)") || !gs.includes("setCell('participatingwards', 29, JSON.stringify(batchWards.wards))") || !gs.includes("setColVal('area', 2, sanitizeCellInput(params.area))")) throw Error('reporting identity overwritten');
+  });
+  check('Historical snapshots are not mistaken for explicitly selected wards', () => {
+    const ctx={result:null};
+    vm.runInNewContext(`${historyCode} result=parseParticipatingWards_('', 'NICU');`,ctx,{timeout:2500});
+    if(JSON.stringify(Array.from(ctx.result))!==JSON.stringify(['NICU']))throw Error('legacy fallback must be primary only');
+    if(!gs.includes("key: 'participatingwards'") && !gs.includes("getHeaderMap(sheet)['participatingwards']"))throw Error('dedicated selected ward column missing');
+  });
+  check('Schedule desktop and mobile display explicit selected wards only', () => {
+    if(!desktop.includes('cls.participatingWards.join') || !mobile.includes('item.participatingWards.join') || !desktop.includes('cls.area'))throw Error('schedule display incorrect');
+  });
+  check('Ward count API is authenticated and mock fails closed', () => {
+    if(!gs.includes("case 'getWardStaffCounts'") || !gs.includes("errorCode: 'FORBIDDEN', message: 'Only CNE schedulers") || !api.includes("case 'getWardStaffCounts'") || !api.includes("getWardStaffCounts(): Promise")) throw Error('backend/frontend API scoping incorrect');
+    const ctx={result:null};const apiCode=gs.slice(gs.indexOf('function handleGetWardStaffCounts'),gs.indexOf('function ensureCneScheduleCoverageHeaders_'));
+    vm.runInNewContext(`${apiCode} result=handleGetWardStaffCounts({},null);`,ctx,{timeout:2500});
+    if(ctx.result.errorCode!=='FORBIDDEN')throw Error('guest can read counts');
+  });
+  check('Participating ward edits fail closed after recorded attendance', () => {
+    const update=gs.slice(gs.indexOf('function handleUpdateCNE'),gs.indexOf('function parseDurationToSeconds'));
+    for(const token of ['WARD_EDIT_LOCKED',"getSheetByName('CNE Post Test Responses')",'hasAttendance','refreshMutationSession(session)','waitLock(10000)']){
+      if(!update.includes(token))throw Error('edit safeguard missing: '+token);
+    }
+  });
+  console.log('\n>>> Multi-ward creation, editing, counting and reporting regression checks');
+  for (const item of checks) {
+    focusedChecks.push(item);
+    try { item.test(); focusedPassed++; console.log('✓ '+item.name); }
+    catch(err){ console.error('✗ '+item.name+': '+err.message); }
   }
 }
 

@@ -8,6 +8,7 @@ import { getUserAssignedAreas, validateCneDuration,
   parseCneStartTimestamp
 } from '../../utils';
 import { CneDateTimeFields } from './CneDateTimeFields';
+import { WardMultiSelect, WardStaffCounts } from './WardMultiSelect';
 
 function parseDateTimeParts(dateTimeStr?: string, defaultTime: string = '09:00') {
   if (!dateTimeStr) return { date: '', time: defaultTime };
@@ -68,9 +69,23 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
     () => assignedAreas.filter((name) => activeAreaNames.has(String(name || '').trim().toUpperCase())),
     [assignedAreas, activeAreaNames]
   );
-  const defaultArea = isAreaIncharge
-    ? (selectableAssignedAreas[0] || '')
-    : (areasList[0] || '');
+  const [selectedWards, setSelectedWards] = useState<string[]>([]);
+  const [primaryWard, setPrimaryWard] = useState('');
+  const [staffCounts, setStaffCounts] = useState<WardStaffCounts>({});
+  const eligiblePrimaryWards = isAreaIncharge ? selectableAssignedAreas : areasList;
+  const handleWardChange = (next: string[], primary: string) => {
+    setSelectedWards(next);
+    setPrimaryWard(primary);
+    setRows((prev) => prev.map((r) => ({ ...r, area: primary, participatingWards: next })));
+  };
+  React.useEffect(() => {
+    if (!isOpen || !user) return;
+    let alive = true;
+    ApiService.getWardStaffCounts().then((res) => {
+      if (alive && res.success && res.data) setStaffCounts(res.data);
+    }).catch(() => { if (alive) setStaffCounts({}); });
+    return () => { alive = false; };
+  }, [isOpen, user?.employeeId, user?.token]);
   const defaultTeachingMode = useMemo(() => {
     const lecture = teachingModes.find((name) => name.trim().toLowerCase() === 'lecture cum discussion');
     return lecture || teachingModes[0] || '';
@@ -84,7 +99,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
 
   // Initially show exactly 1 blank CNE schedule row
   const [rows, setRows] = useState<DepartmentalScheduleRow[]>([
-    createInitialRow(defaultArea, defaultTeachingMode)
+    createInitialRow('', defaultTeachingMode)
   ]);
   const [internalOfficers, setInternalOfficers] = useState<Employee[]>(() => {
     if (officersList && officersList.length > 0) return officersList;
@@ -165,16 +180,19 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   // Reset to exactly 1 blank schedule row whenever modal is opened
   React.useEffect(() => {
     if (isOpen) {
-      setRows([createInitialRow(defaultArea, defaultTeachingMode)]);
+      setRows([createInitialRow('', defaultTeachingMode)]);
+      setSelectedWards([]);
+      setPrimaryWard('');
+      setStaffCounts({});
       setExtRpInputMap({});
       setRpSearchMap({});
     }
-  }, [isOpen, defaultArea, defaultTeachingMode]);
+  }, [isOpen, defaultTeachingMode]);
 
   if (!isOpen) return null;
 
   const handleAddRow = () => {
-    setRows((prev) => [...prev, createInitialRow(defaultArea, defaultTeachingMode)]);
+    setRows((prev) => [...prev, { ...createInitialRow(primaryWard, defaultTeachingMode), participatingWards: [...selectedWards] }]);
   };
 
   const handleRemoveRow = (index: number) => {
@@ -243,6 +261,10 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
     e.preventDefault();
     if (submittingRef.current || isSubmitting) return;
 
+    if (!selectedWards.length || !primaryWard) {
+      error('Select a Primary Ward from your authorized wards, and at least one participating ward.');
+      return;
+    }
     // Validation. Use the India-local calendar date rather than UTC so the rule is stable before 05:30 IST.
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
@@ -331,7 +353,8 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
 
         return {
           topic: r.topic.trim(),
-          area: r.area.trim(),
+          area: primaryWard,
+          participatingWards: [...selectedWards],
           cneType: 'DEPARTMENTAL',
           date: r.date,
           toDate: r.toDate,
@@ -475,61 +498,15 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                         <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                           Department / Ward <span className="text-rose-500">*</span>
                         </label>
-                        {isAreaIncharge ? (
-                          selectableAssignedAreas.length === 1 ? (
-                            <div className="relative">
-                              <input
-                                type="text"
-                                disabled
-                                value={selectableAssignedAreas[0]}
-                                className="w-full p-2.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg text-xs font-semibold cursor-not-allowed"
-                              />
-                              <span className="absolute right-2.5 top-2.5 text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded">
-                                Locked to Your Ward
-                              </span>
-                            </div>
-                          ) : selectableAssignedAreas.length > 1 ? (
-                            <select
-                              required
-                              value={row.area}
-                              onChange={(e) => handleFieldChange(idx, 'area', e.target.value)}
-                              className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none text-purple-900 font-semibold"
-                            >
-                              <option value="">Select from Your Assigned Wards</option>
-                              {selectableAssignedAreas.map((a, aIdx) => (
-                                <option key={`dept-assigned-area-${a}-${aIdx}`} value={a}>
-                                  {a}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <div className="relative">
-                              <input
-                                type="text"
-                                disabled
-                                value={assignedAreas.length > 0 ? `${assignedAreas[0]} (Inactive)` : (user?.assignedArea || 'No Ward Assigned')}
-                                className="w-full p-2.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg text-xs font-semibold cursor-not-allowed"
-                              />
-                              <span className="absolute right-2.5 top-2.5 text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded">
-                                {assignedAreas.length > 0 ? 'Inactive' : 'Locked'}
-                              </span>
-                            </div>
-                          )
-                        ) : (
-                          <select
-                            required
-                            value={row.area}
-                            onChange={(e) => handleFieldChange(idx, 'area', e.target.value)}
-                            className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
-                          >
-                            <option value="">Select Department / Ward...</option>
-                            {areasList.map((a, aIdx) => (
-                              <option key={`dept-area-${a}-${aIdx}`} value={a}>
-                                {a}
-                              </option>
-                            ))}
-                          </select>
-                        )}
+                        <WardMultiSelect
+                          availableWards={areasList}
+                          eligiblePrimaryWards={eligiblePrimaryWards}
+                          selected={selectedWards}
+                          primaryWard={primaryWard}
+                          staffCounts={staffCounts}
+                          onChange={handleWardChange}
+                          disabled={isSubmitting}
+                        />
                       </div>
 
                       {/* 3. Teaching Mode */}

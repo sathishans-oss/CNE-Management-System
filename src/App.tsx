@@ -50,6 +50,8 @@ const AppContent: React.FC = () => {
 
   // Modals state
   const [isLoginOpen, setIsLoginOpen] = useState(false);
+  // A guest's requested page is resumed only after a successful login.
+  const [pendingGuestView, setPendingGuestView] = useState<'calendar' | 'cne-schedule' | null>(null);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
 
@@ -75,6 +77,15 @@ const AppContent: React.FC = () => {
   const handleLoginSuccess = (loggedInUser: SessionUser) => {
     setUser(loggedInUser);
     setIsLoginOpen(false);
+    // Continue to the Calendar / full Schedule requested before authentication.
+    // A normal Sign in (without a pending destination) retains the current page.
+    if (pendingGuestView) {
+      setActiveView(pendingGuestView);
+      setRequestedFullCneId(null);
+      setCalendarReturnState(null);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    setPendingGuestView(null);
     success(`Welcome, ${loggedInUser.name}`, 'Authentication Successful');
   };
 
@@ -82,6 +93,7 @@ const AppContent: React.FC = () => {
     ApiService.logout();
     setUser(null);
     setIsLoginOpen(false);
+    setPendingGuestView(null);
     setActiveView('dashboard');
     setRequestedFullCneId(null);
     setCalendarReturnState(null);
@@ -89,20 +101,33 @@ const AppContent: React.FC = () => {
   };
 
   const handleNavigate = (view: ViewMode) => {
-    // If not logged in and attempting to access staff/admin protected views, prompt login
-    if (!user || !user.employeeId) {
+    if (!user?.employeeId) {
+      // These two home-page actions must never silently switch to an
+      // authenticated-only view. Explain the requirement, then open login.
+      if (view === 'calendar' || view === 'cne-schedule') {
+        setPendingGuestView(view);
+        info(
+          view === 'calendar'
+            ? 'Please log in with your Employee ID to view the full CNE Calendar and session details.'
+            : 'Please log in with your Employee ID to view the complete CNE Schedule and session details.',
+          'Login Required'
+        );
+        setIsLoginOpen(true);
+        return;
+      }
       if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports', 'admin-departmental-cne-outcome', 'admin-library-index-management'].includes(view)) {
+        setPendingGuestView(null);
         info('Please log in with your Employee ID to access this section.', 'Authentication Required');
         setIsLoginOpen(true);
         return;
       }
     }
+    setPendingGuestView(null);
     setRequestedFullCneId(null);
     setCalendarReturnState(null);
     setActiveView(view);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
-
   const openFullCneDetailsFromCalendar = (cneId: string, context: CalendarViewState) => {
     if (!user?.employeeId) return;
     setCalendarReturnState(context);
@@ -212,7 +237,10 @@ const AppContent: React.FC = () => {
       {isLoginOpen && (
         <LoginModal
           isOpen={isLoginOpen}
-          onClose={() => setIsLoginOpen(false)}
+          onClose={() => {
+            setIsLoginOpen(false);
+            setPendingGuestView(null);
+          }}
           onLoginSuccess={handleLoginSuccess}
           onOpenForgotPassword={() => {
             setIsLoginOpen(false);
@@ -244,7 +272,10 @@ const AppContent: React.FC = () => {
       {isForgotPasswordOpen && (
         <ForgotPasswordModal
           isOpen={isForgotPasswordOpen}
-          onClose={() => setIsForgotPasswordOpen(false)}
+          onClose={() => {
+            setIsForgotPasswordOpen(false);
+            setPendingGuestView(null);
+          }}
           onBackToLogin={() => {
             setIsForgotPasswordOpen(false);
             setIsLoginOpen(true);

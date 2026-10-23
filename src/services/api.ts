@@ -431,6 +431,7 @@ export class ApiService {
         };
 
       // Protected / Security-Sensitive & Mutation Actions — Fail Closed without Google Apps Script
+      case 'getWardStaffCounts':
       case 'getOfficersDropdown':
       case 'getRoles':
       case 'updateRole':
@@ -1191,6 +1192,10 @@ export class ApiService {
   }
 
 
+
+  static async getWardStaffCounts(): Promise<ApiResponse<Record<string, number | null>>> {
+    return this.executeAction<Record<string, number | null>>('getWardStaffCounts');
+  }
 
   static async addDepartmentalSchedule(
     schedules: any[]
