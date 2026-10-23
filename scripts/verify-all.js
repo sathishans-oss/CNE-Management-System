@@ -10845,6 +10845,80 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   }
 }
 
+// -----------------------------------------------------------------------------
+// Focused guards for the Unscheduled multi-select / staff-master error UX.
+// The create-form ward-validation logic is executed with controlled inputs;
+// other checks ensure the existing selected-ward / zero-count contract remains.
+// -----------------------------------------------------------------------------
+if (selected.some(item => item.id === 'workflows') && passed === selected.length) {
+  const unscheduled = readFileSync(join(ROOT_DIR, 'src/components/cne/AddUnscheduledCneModal.tsx'), 'utf8');
+  const selector = readFileSync(join(ROOT_DIR, 'src/components/cne/WardMultiSelect.tsx'), 'utf8');
+  const checks = [];
+  const check = (name, test) => checks.push({name, test});
+
+  check('Unscheduled starts with no primary or participating ward auto-selected', () => {
+    if (!unscheduled.includes("const [area, setArea] = useState('');") ||
+        !unscheduled.includes('const [selectedWards, setSelectedWards] = useState<string[]>([]);') ||
+        unscheduled.includes('setArea(areasList[0])'))
+      throw Error('Unscheduled form reintroduced an implicit default ward');
+  });
+
+  // Extract the real input guard from handleSubmit and exercise it without
+  // requiring React, a DOM, or installed bundler dependencies.
+  const guardStart = unscheduled.indexOf('    if (selectedWards.length === 0) {');
+  const guardEnd = unscheduled.indexOf('    if (!modeOfTeaching.trim()', guardStart);
+  const guardSource = guardStart >= 0 && guardEnd > guardStart
+    ? unscheduled.slice(guardStart, guardEnd).replace('(value: string, name: string): boolean =>', '(value, name) =>')
+    : '';
+  function validateWards(selectedWards, area, areasList) {
+    if (!guardSource) throw Error('Unscheduled selected-ward validation gate missing');
+    const context = { selectedWards, area, areasList, errors: [], result: null };
+    vm.runInNewContext(`
+      const error = (message) => errors.push(message);
+      const validate = () => { ${guardSource} return true; };
+      result = validate();
+    `, context, {timeout: 2500});
+    return {accepted: context.result === true, errors: context.errors};
+  }
+
+  check('Unscheduled refuses an empty selection even if a hidden primary exists', () => {
+    const result = validateWards([], 'NICU', ['NICU', 'PICU']);
+    if (result.accepted || result.errors.length !== 1 ||
+        !result.errors[0].includes('select at least one Department / Ward'))
+      throw Error('Hidden primary can bypass explicit ward selection');
+  });
+  check('Unscheduled refuses an unselected reporting ward', () => {
+    for (const primary of ['', 'PICU']) {
+      const result = validateWards(['NICU'], primary, ['NICU', 'PICU']);
+      if (result.accepted || result.errors.length !== 1 || !result.errors[0].includes('Primary Ward'))
+        throw Error('Unselected or empty primary accepted: ' + primary);
+    }
+  });
+  check('Unscheduled rejects inactive participating wards, accepts multiple valid wards', () => {
+    const inactive = validateWards(['NICU', 'Closed Ward'], 'NICU', ['NICU', 'PICU']);
+    const valid = validateWards(['NICU', 'PICU'], 'NICU', ['NICU', 'PICU']);
+    if (inactive.accepted || inactive.errors.length !== 1 ||
+        !inactive.errors[0].includes('inactive') || !valid.accepted || valid.errors.length !== 0)
+      throw Error('Unscheduled ward activity check or multi-ward validity broken');
+  });
+  check('Staff-master errors display Unavailable, while missing ward counts remain zero', () => {
+    if (!selector.includes("staffCountError ? 'Unavailable' : selectedTotal") ||
+        !selector.includes("staffCountError ? '(staff count unavailable)'") ||
+        !selector.includes('showCounts && staffCountError && (') ||
+        !selector.includes('role="alert"') ||
+        !selector.includes("typeof count === 'number' && Number.isFinite(count) ? count : 0") ||
+        !selector.includes('showCounts = true'))
+      throw Error('Staffing-master errors or per-ward zero fallback incorrectly presented');
+  });
+
+  console.log('\n>>> Unscheduled selection and staffing-master error UI regression checks');
+  for (const item of checks) {
+    focusedChecks.push(item);
+    try { item.test(); focusedPassed++; console.log('✓ '+item.name); }
+    catch (err) { console.error('✗ '+item.name+': '+err.message); }
+  }
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');
