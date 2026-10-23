@@ -53,7 +53,7 @@ export const ScheduleRow: React.FC<ScheduleRowProps> = React.memo(({
       </td>
       <td className="py-3 px-4 whitespace-normal break-words [overflow-wrap:anywhere]">
         <span className="inline-block max-w-[220px] whitespace-normal break-words [overflow-wrap:anywhere] px-2 py-0.5 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-          {cls.cneType === 'DEPARTMENTAL' && cls.participatingWards?.length
+          {cls.participatingWards?.length
             ? cls.participatingWards.join(', ')
             : cls.area}
         </span>

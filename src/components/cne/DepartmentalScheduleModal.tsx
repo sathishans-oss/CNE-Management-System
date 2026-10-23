@@ -72,6 +72,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   const [selectedWards, setSelectedWards] = useState<string[]>([]);
   const [primaryWard, setPrimaryWard] = useState('');
   const [staffCounts, setStaffCounts] = useState<WardStaffCounts>({});
+  const [staffCountError, setStaffCountError] = useState('');
   const eligiblePrimaryWards = isAreaIncharge ? selectableAssignedAreas : areasList;
   const handleWardChange = (next: string[], primary: string) => {
     setSelectedWards(next);
@@ -81,9 +82,12 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   React.useEffect(() => {
     if (!isOpen || !user) return;
     let alive = true;
+    setStaffCountError('');
     ApiService.getWardStaffCounts().then((res) => {
-      if (alive && res.success && res.data) setStaffCounts(res.data);
-    }).catch(() => { if (alive) setStaffCounts({}); });
+      if (!alive) return;
+      if (res.success && res.data) { setStaffCounts(res.data); setStaffCountError(''); }
+      else { setStaffCounts({}); setStaffCountError(res.message || 'Unable to load CNE staff count master.'); }
+    }).catch(() => { if (alive) { setStaffCounts({}); setStaffCountError('Unable to load CNE staff count master.'); } });
     return () => { alive = false; };
   }, [isOpen, user?.employeeId, user?.token]);
   const defaultTeachingMode = useMemo(() => {
@@ -498,15 +502,27 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                         <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                           Department / Ward <span className="text-rose-500">*</span>
                         </label>
-                        <WardMultiSelect
-                          availableWards={areasList}
-                          eligiblePrimaryWards={eligiblePrimaryWards}
-                          selected={selectedWards}
-                          primaryWard={primaryWard}
-                          staffCounts={staffCounts}
-                          onChange={handleWardChange}
-                          disabled={isSubmitting}
-                        />
+                        {idx === 0 ? (
+                          <WardMultiSelect
+                            availableWards={areasList}
+                            eligiblePrimaryWards={eligiblePrimaryWards}
+                            selected={selectedWards}
+                            primaryWard={primaryWard}
+                            staffCounts={staffCounts}
+                            staffCountError={staffCountError}
+                            onChange={handleWardChange}
+                            disabled={isSubmitting}
+                          />
+                        ) : (
+                          <div>
+                            <select disabled aria-label={`Session ${idx + 1} Department / Ward (read-only)`}
+                              value={selectedWards.join(', ')}
+                              className="w-full p-2.5 bg-slate-100 border border-slate-300 rounded-lg text-xs text-slate-700 opacity-100">
+                              <option value={selectedWards.join(', ')}>{selectedWards.join(', ') || 'Select wards in Session 1'}</option>
+                            </select>
+                            <p className="mt-1 text-[10px] text-slate-500">Automatically updated from Session 1 · Read-only</p>
+                          </div>
+                        )}
                       </div>
 
                       {/* 3. Teaching Mode */}

@@ -1403,7 +1403,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-workflows.js",
     mode: "module",
     expectedChecks: 75,
-    sha256: "5e3fca33371e2846ad493a407fdb28db2fdcf35b8713cc901c8d1738f7dc8f44",
+    sha256: "98e6b0777fce034e14f1ced163b0d5ae8ea50ded95a75e5992d8a1b42dd87b0a",
     source: `/**
  * CNE Business Workflows & Schema Verification Suite
  *
@@ -1776,7 +1776,8 @@ runTest('Departmental staffing uses selected wards only and preserves a single r
   assert.ok(batch.includes("setCell('coverageareassnapshot'"), 'Selected ward names must be stored in existing coverage column');
   assert.ok(batch.includes("setCell('area', 2, item.area)"), 'One primary ward must remain in Area column');
   const creation = codeGs.substring(codeGs.indexOf('function handleCreateCNE'), codeGs.indexOf('function handleUpdateCNE'));
-  assert.ok(creation.includes("cneType === 'DEPARTMENTAL' && !isUnscheduled"), 'Central and unscheduled records must retain existing behavior');
+  assert.ok(creation.includes('resolveCneParticipatingWards_('), 'Scheduled Central and unscheduled creation must validate their explicit ward lists');
+  assert.ok(creation.includes("setCell('participatingwards', -1, JSON.stringify(createWards.wards))"), 'Each CNE must persist selected wards without duplicating reporting Area');
 });
 
 runTest('Departmental coverage metrics are calculated only in finalization, not attendance submission paths', () => {
@@ -10668,7 +10669,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     if (scenario(['NICU','PICU'],'PICU','AREA_INCHARGE',['NICU']).success) throw Error('non-owned ward became primary');
     if (scenario(['NICU','PICU'],'NICU','AREA_INCHARGE',['NICU']).totalAllottedStaff !== 78) throw Error('cross-ward participation should be allowed');
   });
-  check('Missing authoritative staff count fails closed', () => {
+  check('Missing individual ward count contributes zero without disabling a valid ward', () => {
     const v=scenario(['NICU','PICU','Paediatric Ward'],'NICU');
     if (!v.success) throw Error('test setup wrong');
     const context={result:null};
@@ -10680,7 +10681,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       ${coverageCode}
       result=resolveDepartmentalWards_(['NICU','PICU'],'NICU',{role:'ADMIN'},{nicu:42},{NICU:'ACTIVE',PICU:'ACTIVE'});
     `,context,{timeout:2500});
-    if(context.result.errorCode!=='WARD_STAFF_UNAVAILABLE')throw Error('missing master count treated as zero');
+    if (!context.result.success || context.result.totalAllottedStaff !== 42) throw Error('missing ward count should contribute zero');
   });
   check('Empty ward selection is rejected and initial popup selection is empty', () => {
     if(scenario([],'').success || !modal.includes('useState<string[]>([])') || !modal.includes("createInitialRow('', defaultTeachingMode)")) throw Error('auto selection or empty selection allowed');
@@ -10720,6 +10721,127 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     focusedChecks.push(item);
     try { item.test(); focusedPassed++; console.log('✓ '+item.name); }
     catch(err){ console.error('✗ '+item.name+': '+err.message); }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Shared selector UX, Central scheduled and Unscheduled retrospective multi-ward.
+// Behaviors tested on the real server-side validator under controlled mocks;
+// cross-module source guards protect the exact create/edit/display contract.
+// -----------------------------------------------------------------------------
+if (selected.some(item => item.id === 'workflows') && passed === selected.length) {
+  const gs = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const selector = readFileSync(join(ROOT_DIR, 'src/components/cne/WardMultiSelect.tsx'), 'utf8');
+  const dept = readFileSync(join(ROOT_DIR, 'src/components/cne/DepartmentalScheduleModal.tsx'), 'utf8');
+  const central = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
+  const unscheduled = readFileSync(join(ROOT_DIR, 'src/components/cne/AddUnscheduledCneModal.tsx'), 'utf8');
+  const row = readFileSync(join(ROOT_DIR, 'src/components/cne/ScheduleRow.tsx'), 'utf8');
+  const card = readFileSync(join(ROOT_DIR, 'src/components/cne/ScheduleMobileCard.tsx'), 'utf8');
+  const checks = [];
+  const check = (name, test) => checks.push({name, test});
+  const validatorCode = gs.slice(gs.indexOf('function resolveDepartmentalWards_'), gs.indexOf('/** Single-ward fallback'));
+  function runWards(wards, primary, countAllotted) {
+    const ctx = {result:null, wards, primary, countAllotted};
+    vm.runInNewContext(`
+      const sanitizeCellInput = x => String(x||'').trim();
+      const normalizeAreaMatchingKey_ = x => String(x||'').trim().replace(/\s+/g,' ').toLowerCase();
+      const getStaffCountForArea_ = (name,map) => map[normalizeAreaMatchingKey_(name)] ?? 0;
+      const checkCNEAuthorized = (session, primary, type) => session.role === 'ADMIN' ? null : {errorCode:'FORBIDDEN'};
+      ${validatorCode}
+      result = resolveCneParticipatingWards_(wards,primary,{role:'ADMIN'}, {nicu:42,picu:null}, {NICU:'ACTIVE',PICU:'ACTIVE'},countAllotted);
+    `, ctx, {timeout:2500});
+    return JSON.parse(JSON.stringify(ctx.result));
+  }
+  check('Central scheduled ward selection sums missing second ward as zero', () => {
+    const result = runWards(['NICU','PICU'],'NICU',true);
+    if (!result.success || result.totalAllottedStaff !== 42 || result.wards.length !== 2)
+      throw Error('Central ward resolver failed zero-count policy');
+  });
+  check('Unscheduled multi-ward selection never records an allotted staff denominator', () => {
+    const result = runWards(['NICU','PICU'],'NICU',false);
+    if (!result.success || result.totalAllottedStaff !== null || result.coverageAreasSnapshot !== '' || result.wards.length !== 2)
+      throw Error('Unscheduled erroneously calculates allotment');
+  });
+  check('Broken entire staffing master fails closed while missing ward count remains zero', () => {
+    const ctx={result:null};
+    vm.runInNewContext(`
+      const sanitizeCellInput = x => String(x||'').trim();
+      const normalizeAreaMatchingKey_ = x => String(x||'').trim().toLowerCase();
+      const getStaffCountForArea_ = () => 0;
+      const checkCNEAuthorized = () => null;
+      ${validatorCode}
+      result=resolveDepartmentalWards_(['NICU'],'NICU',{role:'ADMIN'},{__staff_master_unavailable__:true},{NICU:'ACTIVE'});
+    `,ctx,{timeout:2500});
+    if (ctx.result.errorCode !== 'WARD_STAFF_MASTER_UNAVAILABLE' || !gs.includes("if (!sheet) throw new Error('CNE staff count master sheet is inaccessible')"))
+      throw Error('Master access error silently converted to zero');
+  });
+  check('Central staff-count query starts when Central creation modal opens', () => {
+    if (!central.includes('!isAddClassOpen && !editingCne') || !central.includes('setWardCountError(') ||
+        !central.includes('staffCountError={wardCountError}'))
+      throw Error('Central creation does not fetch or show staffing master errors');
+  });
+  check('New shared ward resolver rejects inactive and duplicate wards in every CNE type', () => {
+    if (runWards(['NICU','PICU','nicu'],'NICU',false).errorCode !== 'WARD_SELECTION_INVALID')
+      throw Error('Duplicate wards accepted');
+    if (runWards(['NICU','Closed Ward'],'NICU',false).errorCode !== 'WARD_SELECTION_INVALID')
+      throw Error('Inactive wards accepted');
+  });
+  check('New shared ward resolver enforces one selected reporting ward', () => {
+    if (runWards(['NICU','PICU'],'Other Ward',false).errorCode !== 'WARD_PRIMARY_INVALID')
+      throw Error('Unselected reporting ward accepted');
+  });
+  check('Ward multi-select has Done, click-outside, Escape and disabled closing', () => {
+    for (const token of ['>Done</button>', "document.addEventListener('mousedown'", "document.addEventListener('touchstart'", "event.key === 'Escape'", 'if (disabled) setExpanded(false)'])
+      if (!selector.includes(token)) throw Error('Missing dropdown close pathway: '+token);
+  });
+  check('Selector handles unknown per-ward count as 0 and omits staff on Unscheduled', () => {
+    if (!selector.includes('showCounts = true') || !selector.includes('showCounts ?') || !selector.includes(' : 0} staff)'))
+      throw Error('Missing zero-count / hide-count presentation');
+    if (selector.includes('Count unavailable')) throw Error('Old missing-staff warning remains');
+  });
+  check('Departmental Session 1 is editable and later sessions retain read-only dropdown', () => {
+    if (!dept.includes('idx === 0 ? (') || !dept.includes('<WardMultiSelect') || !dept.includes('<select disabled aria-label') || !dept.includes('Automatically updated from Session 1'))
+      throw Error('Departmental session permissions or presentation incorrect');
+  });
+  check('Central creator selects multiple wards and sends them with a primary to backend', () => {
+    if (!central.includes('setNewWards(wards); setNewArea(primary)') || !central.includes('participatingWards: newWards') || !central.includes("cneType: 'CENTRAL'"))
+      throw Error('Central create payload not connected to selection');
+  });
+  check('Central edit shows existing wards, allows editing, and recalculates saved totals', () => {
+    if (!central.includes("cls.cneType === 'CENTRAL'") || !central.includes("editCneType === 'CENTRAL'") || !central.includes('editWardChanged') || !gs.includes("['DEPARTMENTAL', 'CENTRAL'].indexOf"))
+      throw Error('Central update not wired to shared participating wards');
+  });
+  check('Unscheduled uses the shared selector but hides staffing totals', () => {
+    if (!unscheduled.includes('showCounts={false}') || !unscheduled.includes('participatingWards: selectedWards') || !unscheduled.includes('setSelectedWards(wards); setArea(primary)'))
+      throw Error('Unscheduled multi-ward selection/count suppression incomplete');
+  });
+  check('Unscheduled continues requiring actual attendees, never equates allotted with attendance', () => {
+    if (!unscheduled.includes('selectedStaffIds.length === 0 && externalStaffList.length === 0') ||
+        !gs.includes('if (isUnscheduled && totalStaffCount < 1)') || !gs.includes("if (!isUnscheduled) {\n      setCell('coverageareassnapshot'"))
+      throw Error('Unscheduled actual attendee validation or coverage suppression changed');
+  });
+  check('Backend saves all selected wards once under one primary for each CNE type', () => {
+    const creation = gs.slice(gs.indexOf('function handleCreateCNE'),gs.indexOf('function handleUpdateCNE'));
+    if (!creation.includes("setCell('area', 2, area)") || !creation.includes("setCell('participatingwards', -1, JSON.stringify(createWards.wards))"))
+      throw Error('Backend ward persistence/reporting invalid');
+  });
+  check('Backend calculates staffed totals for scheduled Central and Departmental but not Unscheduled', () => {
+    const creation = gs.slice(gs.indexOf('function handleCreateCNE'),gs.indexOf('function handleUpdateCNE'));
+    if (!creation.includes("cneType === 'DEPARTMENTAL' || cneType === 'CENTRAL'") || !creation.includes('!isUnscheduled);') ||
+        !creation.includes("if (!isUnscheduled) {\n      setCell('coverageareassnapshot'"))
+      throw Error('Backend CNE-type count policy changed');
+  });
+  check('Desktop and mobile schedule display all explicitly selected wards for all CNE types', () => {
+    if (!row.includes('cls.participatingWards?.length') || !card.includes('item.participatingWards?.length') ||
+        row.includes("cls.cneType === 'DEPARTMENTAL' && cls.participatingWards") ||
+        card.includes("item.cneType === 'DEPARTMENTAL' && item.participatingWards"))
+      throw Error('Scheduled ward display still restricted to Departmental');
+  });
+  console.log('\n>>> Central/Unscheduled shared ward selection and selector UX regression checks');
+  for (const item of checks) {
+    focusedChecks.push(item);
+    try { item.test(); focusedPassed++; console.log('✓ '+item.name); }
+    catch (err) { console.error('✗ '+item.name+': '+err.message); }
   }
 }
 

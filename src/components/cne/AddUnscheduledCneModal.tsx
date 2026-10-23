@@ -15,6 +15,7 @@ import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { getCachedOfficers, loadOfficersSingleFlight } from '../../services/officerLoader';
 import { CneDateTimeFields } from './CneDateTimeFields';
+import { WardMultiSelect } from './WardMultiSelect';
 import { getCneTypeLabel, validateCneDuration,
   parseCneStartTimestamp
 } from '../../utils';
@@ -55,6 +56,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   const [cneType, setCneType] = useState<CNEType>('CENTRAL');
   const [topic, setTopic] = useState('');
   const [area, setArea] = useState('');
+  const [selectedWards, setSelectedWards] = useState<string[]>([]);
   const [fromDate, setFromDate] = useState(() => getIndiaToday());
   const [fromTime, setFromTime] = useState('09:00');
   const [toDate, setToDate] = useState(() => getIndiaToday());
@@ -92,12 +94,6 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
     if (!isOpen) {
       setIsOfficersLoading(false);
       return;
-    }
-
-    if (areasList.length > 0 && (!area || !areasList.includes(area))) {
-      setArea(areasList[0]);
-    } else if (areasList.length === 0 && area) {
-      setArea('');
     }
 
     if (officersList && officersList.length > 0) {
@@ -232,12 +228,21 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       error('CNE Topic is required.');
       return;
     }
-    if (!area) {
-      error('Clinical Area is required.');
+    // Ward choice must be explicit. Never use the first master-list ward as a
+    // hidden reporting area when the multi-select is still empty.
+    if (selectedWards.length === 0) {
+      error('Please select at least one Department / Ward.');
       return;
     }
-    if (!areasList.some((a) => String(a || '').trim().toUpperCase() === area.trim().toUpperCase())) {
-      error('This ward/area is currently inactive. Please select an active ward/area.');
+    const matchesWard = (value: string, name: string): boolean =>
+      String(value || '').trim().toUpperCase() === String(name || '').trim().toUpperCase();
+    if (!area || !selectedWards.some((name) => matchesWard(name, area))) {
+      error('Please select a Primary Ward from your selected Department / Wards.');
+      return;
+    }
+    if (!selectedWards.every((name) => areasList.some((active) => matchesWard(name, active))) ||
+        !areasList.some((name) => matchesWard(name, area))) {
+      error('One or more selected wards are currently inactive. Please select active wards.');
       return;
     }
     if (!modeOfTeaching.trim() || !teachingModes.some((mode) => mode.toLowerCase() === modeOfTeaching.trim().toLowerCase())) {
@@ -300,6 +305,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       const res = await ApiService.addUnscheduledCNE({
         topic: topic.trim(),
         area,
+        participatingWards: selectedWards,
         cneType,
         fromDate: fullFromDate,
         toDate: fullToDate,
@@ -431,18 +437,16 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                       ? 'Associated Department / Area *'
                       : 'Clinical Ward / Area *'}
                   </label>
-                  <select
-                    required
-                    id="unscheduled-area"
-                    value={area}
-                    onChange={(e) => setArea(e.target.value)}
-                    className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                  >
-                    <option value="">Select Area...</option>
-                    {areasList.map((a, idx) => (
-                      <option key={`unsched-area-${a}-${idx}`} value={a}>{a}</option>
-                    ))}
-                  </select>
+                  <WardMultiSelect
+                    availableWards={areasList}
+                    eligiblePrimaryWards={areasList}
+                    selected={selectedWards}
+                    primaryWard={area}
+                    staffCounts={{}}
+                    showCounts={false}
+                    onChange={(wards, primary) => { setSelectedWards(wards); setArea(primary); }}
+                    disabled={isSubmitting}
+                  />
                 </div>
 
                 {/* Mode of Teaching */}

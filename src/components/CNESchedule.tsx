@@ -100,6 +100,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [isUnscheduledOpen, setIsUnscheduledOpen] = useState(false);
   const [newTopic, setNewTopic] = useState('');
   const [newArea, setNewArea] = useState('');
+  const [newWards, setNewWards] = useState<string[]>([]);
   const [newDate, setNewDate] = useState('');
   const [newToDate, setNewToDate] = useState('');
   const [scheduleFromDate, setScheduleFromDate] = useState('');
@@ -166,6 +167,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [editWards, setEditWards] = useState<string[]>([]);
   const [editWardChanged, setEditWardChanged] = useState(false);
   const [wardStaffCounts, setWardStaffCounts] = useState<WardStaffCounts>({});
+  const [wardCountError, setWardCountError] = useState('');
   const [editDate, setEditDate] = useState('');
   const [editToDate, setEditToDate] = useState('');
   const [editDuration, setEditDuration] = useState('01:30:00');
@@ -186,13 +188,16 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const canScheduleCne = isAdmin || isAreaIncharge;
 
   useEffect(() => {
-    if (!canScheduleCne || (!isDeptScheduleOpen && !editingCne)) return;
+    if (!canScheduleCne || (!isDeptScheduleOpen && !isAddClassOpen && !editingCne)) return;
     let alive = true;
+    setWardCountError('');
     ApiService.getWardStaffCounts().then((res) => {
-      if (alive && res.success && res.data) setWardStaffCounts(res.data);
-    }).catch(() => { if (alive) setWardStaffCounts({}); });
+      if (!alive) return;
+      if (res.success && res.data) { setWardStaffCounts(res.data); setWardCountError(''); }
+      else { setWardStaffCounts({}); setWardCountError(res.message || 'Unable to load CNE staff count master.'); }
+    }).catch(() => { if (alive) { setWardStaffCounts({}); setWardCountError('Unable to load CNE staff count master.'); } });
     return () => { alive = false; };
-  }, [canScheduleCne, isDeptScheduleOpen, editingCne?.cneId, user?.token]);
+  }, [canScheduleCne, isDeptScheduleOpen, isAddClassOpen, editingCne?.cneId, user?.token]);
   const dataRequestRef = useRef(0);
   const historyPageRef = useRef(1);
   const historyMoreRequestRef = useRef(false);
@@ -647,7 +652,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     e.preventDefault();
     if (submittingRef.current || isSubmitting) return;
 
-    if (!newTopic.trim() || !newArea.trim() || !newDate.trim()) {
+    if (!newTopic.trim() || !newArea.trim() || !newWards.length || !newDate.trim()) {
       error('Please fill in all required fields (Topic, Area, From Date & Time).');
       return;
     }
@@ -710,6 +715,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       const res = await ApiService.createCNE({
         topic: newTopic.trim(),
         area: newArea,
+        participatingWards: newWards,
         cneType: 'CENTRAL',
         date: newDate,
         toDate: newToDate,
@@ -791,7 +797,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setEditingCne(cls);
     setEditTopic(cls.topic || '');
     setEditArea(cls.area || '');
-    setEditWards(cls.cneType === 'DEPARTMENTAL'
+    setEditWards((cls.cneType === 'DEPARTMENTAL' || cls.cneType === 'CENTRAL')
       ? (cls.participatingWards?.length ? [...cls.participatingWards] : [cls.area].filter(Boolean))
       : []);
     setEditWardChanged(false);
@@ -848,7 +854,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     if (!editingCne || editSubmittingRef.current || isEditSubmitting) return;
     if (!canManageLifecycle(editingCne) || isCneClosed(editingCne)) { error('This CNE cannot be edited.'); return; }
 
-    if (editCneType === 'DEPARTMENTAL' && (!editWards.length || !editArea.trim())) {
+    if ((editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && (!editWards.length || !editArea.trim())) {
       error('Select at least one participating ward and an authorized Primary Ward.');
       return;
     }
@@ -912,7 +918,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       const res = await ApiService.updateCNE(targetCneId, {
         topic: editTopic.trim(),
         area: editArea,
-        ...(editCneType === 'DEPARTMENTAL' && editWardChanged ? { participatingWards: editWards } : {}),
+        ...((editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && editWardChanged ? { participatingWards: editWards } : {}),
         cneType: editCneType,
         date: editDate,
         toDate: editToDate,
@@ -934,7 +940,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           cneId: targetCneId,
           topic: editTopic.trim(),
           area: editArea,
-          ...(editCneType === 'DEPARTMENTAL' && editWardChanged ? {
+          ...((editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && editWardChanged ? {
             coverageAreasSnapshot: editWards.join(', '),
             participatingWards: [...editWards],
             totalAllottedStaff: typeof res.data?.totalAllottedStaff === 'number' ? res.data.totalAllottedStaff : editWards.reduce((sum, ward) => sum + (wardStaffCounts[ward.toUpperCase()] || 0), 0)
@@ -1443,17 +1449,16 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                         Clinical Ward / Area *
                       </label>
-                      <select
-                        required
-                        value={newArea}
-                        onChange={(e) => setNewArea(e.target.value)}
-                        className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
-                      >
-                        <option value="">Select Area...</option>
-                        {areasList.map((a, idx) => (
-                          <option key={`area-opt-${a}-${idx}`} value={a}>{a}</option>
-                        ))}
-                      </select>
+                      <WardMultiSelect
+                        availableWards={areasList}
+                        eligiblePrimaryWards={areasList}
+                        selected={newWards}
+                        primaryWard={newArea}
+                        staffCounts={wardStaffCounts}
+                        staffCountError={wardCountError}
+                        onChange={(wards, primary) => { setNewWards(wards); setNewArea(primary); }}
+                        disabled={isSubmitting}
+                      />
                     </div>
 
                     <div>
@@ -1851,13 +1856,14 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                           </span>
                         )}
                       </div>
-                      {editCneType === 'DEPARTMENTAL' ? (
+                      {(editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') ? (
                         <WardMultiSelect
                           availableWards={areasList}
                           eligiblePrimaryWards={isAdmin ? areasList : selectableAssignedAreas}
                           selected={editWards}
                           primaryWard={editArea}
                           staffCounts={wardStaffCounts}
+                          staffCountError={wardCountError}
                           onChange={(wards, primary) => {
                             setEditWards(wards);
                             setEditArea(primary);
@@ -2394,6 +2400,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                 onClick={() => {
                   setIsScheduleChoiceOpen(false);
                   setNewDuration('00:00:00');
+                  setNewArea('');
+                  setNewWards([]);
                   setIsAddClassOpen(true);
                 }}
                 className="w-full flex items-start gap-3.5 p-3.5 rounded-xl border border-slate-200 hover:border-purple-500 hover:bg-purple-50/50 text-left transition-all group cursor-pointer"

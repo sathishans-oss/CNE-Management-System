@@ -84,7 +84,7 @@ export const ScheduleMobileCard: React.FC<ScheduleMobileCardProps> = React.memo(
       <div className="space-y-1.5 text-xs text-slate-600 pt-2 border-t border-slate-100">
         <div className="flex items-center gap-1.5">
           <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-          <span className="font-medium text-slate-800">{item.cneType === 'DEPARTMENTAL' && item.participatingWards?.length ? item.participatingWards.join(', ') : item.area}</span>
+          <span className="font-medium text-slate-800">{item.participatingWards?.length ? item.participatingWards.join(', ') : item.area}</span>
           {isAreaIncharge && isCneAuthorized(user, item.area, item.cneType) && (
             <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
               Your Ward

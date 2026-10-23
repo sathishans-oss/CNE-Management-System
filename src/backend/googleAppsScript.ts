@@ -3181,7 +3181,8 @@ function getCneStaffCountMap_(forceFresh) {
   var map = {};
   try {
     var sheet = getCneStaffCountSheet_();
-    if (sheet && sheet.getLastRow() > 1) {
+    if (!sheet) throw new Error('CNE staff count master sheet is inaccessible');
+    if (sheet.getLastRow() > 1) {
       var data = sheet.getDataRange().getValues();
       if (data.length > 1) {
         var headerRow = data[0];
@@ -3233,6 +3234,8 @@ function getCneStaffCountMap_(forceFresh) {
     }
   } catch (err) {
     console.warn('Error reading CNE staff count: ' + err.message);
+    // Distinguish a broken source from an individual ward without a count.
+    return { __staff_master_unavailable__: true };
   }
 
   try {
@@ -3269,6 +3272,7 @@ function resolveDepartmentalWards_(wardInput, primaryArea, session, staffMap, st
   }
   var status = statusMap || getAreaStatusMap_(true);
   var staff = staffMap || getCneStaffCountMap_(true);
+  if (staff.__staff_master_unavailable__) return {success: false, errorCode: 'WARD_STAFF_MASTER_UNAVAILABLE', message: 'CNE staff count master is unavailable. Please retry or contact Admin.'};
   var wards = [];
   var seen = {};
   for (var i = 0; i < wardInput.length; i++) {
@@ -3288,14 +3292,29 @@ function resolveDepartmentalWards_(wardInput, primaryArea, session, staffMap, st
   var authorized = checkCNEAuthorized(session, primary, 'DEPARTMENTAL');
   if (authorized) return { success: false, errorCode: 'FORBIDDEN', message: 'Primary Ward must be one of your authorized wards.' };
   var total = 0;
+  // Each unique selected ward contributes its valid allotted count or zero.
+  // Allotment is a planning denominator, not an attendance registration.
   for (var k = 0; k < wards.length; k++) {
-    var staffKey = normalizeAreaMatchingKey_(wards[k]);
-    if (!Object.prototype.hasOwnProperty.call(staff, staffKey) || typeof staff[staffKey] !== 'number' || !isFinite(staff[staffKey])) {
-      return { success: false, errorCode: 'WARD_STAFF_UNAVAILABLE', message: 'Staff count is unavailable for ' + wards[k] + '. Please update CNE staff count master.' };
-    }
     total += getStaffCountForArea_(wards[k], staff);
   }
   return { success: true, wards: wards, coverageAreasSnapshot: wards.join(', '), totalAllottedStaff: total };
+}
+
+/**
+ * Common explicit ward validation. Reuses the Departmental resolver's strict
+ * active-ward, deduplication and ownership rules. Only scheduled Central and
+ * Departmental CNEs record an allotted-staff snapshot; completed unscheduled
+ * CNEs only store ward names and the single reporting Area.
+ */
+function resolveCneParticipatingWards_(input, primary, session, staffMap, statusMap, countAllotted) {
+  var result = resolveDepartmentalWards_(input, primary, session,
+    countAllotted ? staffMap : {}, statusMap);
+  if (!result.success) return result;
+  if (!countAllotted) {
+    result.coverageAreasSnapshot = '';
+    result.totalAllottedStaff = null;
+  }
+  return result;
 }
 
 /** Single-ward fallback retained for older callers; never derive counts from creator assignments. */
@@ -3315,11 +3334,12 @@ function handleGetWardStaffCounts(params, session) {
   }
   var names = getAreaStatusMap_(true);
   var counts = getCneStaffCountMap_(true);
+  if (counts.__staff_master_unavailable__) return {success: false, errorCode: 'WARD_STAFF_MASTER_UNAVAILABLE', message: 'CNE staff count master is currently unavailable.'};
   var result = {};
   Object.keys(names).forEach(function(name) {
     if (names[name] === 'ACTIVE') {
       var key = normalizeAreaMatchingKey_(name);
-      result[name] = (typeof counts[key] === 'number' && isFinite(counts[key])) ? counts[key] : null;
+      result[name] = (typeof counts[key] === 'number' && isFinite(counts[key])) ? counts[key] : 0;
     }
   });
   return { success: true, data: result };
@@ -5086,7 +5106,7 @@ function handleCreateCNE(params, session) {
   // the scheduling-time staffing snapshot source; commit-time role/Area authorization is still
   // revalidated under the lock below.
   var schedulingStaffMap = null;
-  if (cneType === 'DEPARTMENTAL' && !isUnscheduled) {
+  if (!isUnscheduled && (cneType === 'DEPARTMENTAL' || cneType === 'CENTRAL')) {
     schedulingStaffMap = getCneStaffCountMap_(true);
   }
 
@@ -5133,6 +5153,10 @@ function handleCreateCNE(params, session) {
     // requireActiveArea_(..., true) refreshes the Area cache, so reuse that authoritative
     // snapshot without another spreadsheet read when building the staffing coverage snapshot.
     var liveAreaStatusMap = getAreaStatusMap_(false);
+    var createWards = resolveCneParticipatingWards_(
+      params.participatingWards !== undefined ? params.participatingWards : [area],
+      area, session, schedulingStaffMap || {}, liveAreaStatusMap, !isUnscheduled);
+    if (!createWards.success) return createWards;
 
     var activeTeachingModeErr = requireActiveTeachingMode_(modeOfTeaching, true);
     if (activeTeachingModeErr) return activeTeachingModeErr;
@@ -5182,15 +5206,9 @@ function handleCreateCNE(params, session) {
 
     var coverageAreasSnapshot = '';
     var totalAllottedStaff = null;
-    if (cneType === 'DEPARTMENTAL' && !isUnscheduled) {
-      var coverageSnapshot = buildDepartmentalCoverageSnapshot_(
-        session,
-        area,
-        schedulingStaffMap || {},
-        liveAreaStatusMap
-      );
-      coverageAreasSnapshot = coverageSnapshot.coverageAreasSnapshot;
-      totalAllottedStaff = coverageSnapshot.totalAllottedStaff;
+    if (!isUnscheduled) {
+      coverageAreasSnapshot = createWards.coverageAreasSnapshot;
+      totalAllottedStaff = createWards.totalAllottedStaff;
     }
 
     setCell('topic', 1, topic);
@@ -5219,10 +5237,12 @@ function handleCreateCNE(params, session) {
       setCell('finalizedby', 22, session.employeeId || '');
     }
 
-    if (cneType === 'DEPARTMENTAL' && !isUnscheduled) {
+    // Every CNE type retains the explicitly selected wards for Schedule display.
+    // Unscheduled records deliberately have no allocated-staff denominator.
+    setCell('participatingwards', -1, JSON.stringify(createWards.wards));
+    if (!isUnscheduled) {
       setCell('coverageareassnapshot', 23, coverageAreasSnapshot);
       setCell('totalallottedstaff', 24, totalAllottedStaff !== null ? totalAllottedStaff : 0);
-      if (cneType === 'DEPARTMENTAL' && !isUnscheduled) setCell('participatingwards', 29, JSON.stringify([area]));
       setCell('internalattendancecount', 25, '');
       setCell('attendancepercentage', 26, '');
       setCell('posttestoutcomepercentage', 27, '');
@@ -5431,8 +5451,8 @@ function handleUpdateCNE(params, session) {
 
     var editedCoverage = null;
     if (params.participatingWards !== undefined) {
-      if (normalizeCNEType(liveUpdateRecord.cneType) !== 'DEPARTMENTAL') {
-        return { success: false, errorCode: 'WARD_SELECTION_INVALID', message: 'Participating wards apply only to Departmental CNEs.' };
+      if (['DEPARTMENTAL', 'CENTRAL'].indexOf(normalizeCNEType(liveUpdateRecord.cneType)) < 0) {
+        return { success: false, errorCode: 'WARD_SELECTION_INVALID', message: 'Participating wards apply only to scheduled internal CNEs.' };
       }
       var targetPrimary = params.area !== undefined ? String(params.area).trim() : liveUpdateRecord.area;
       // Incharge transfer is permitted only between authorized primary wards when the
