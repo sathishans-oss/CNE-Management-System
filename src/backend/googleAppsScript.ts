@@ -920,6 +920,10 @@ function handleRequest(e, method) {
         }
         break;
         
+      case 'getDepartmentalScheduleSubmissionStatus':
+        output = handleGetDepartmentalSubmissionStatus(params, session);
+        break;
+
       case 'addDepartmentalSchedule':
         if (!session) {
           output = { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
@@ -5813,12 +5817,132 @@ function validateCneDuration(durationStr, fromDtStr, toDtStr) {
 }
 
 /**
+ * Departmental scheduling idempotency. A submission ID belongs to one intended
+ * Publish operation, not to a CNE topic/date. Multiple legitimate batches may
+ * therefore share all teaching details without being blocked.
+ *
+ * The receipt lives on the authoritative CNE Schedule rows. The entire batch
+ * is written in one setValues(), so a response lost after that write can be
+ * recovered without allocating more IDs. All receipt reads/writes by the
+ * mutation handler occur under ScriptLock.
+ */
+function ensureDepartmentalSubmissionHeaders_(sheet) {
+  var wanted = [
+    { key: 'departmentalsubmissionid', name: 'Departmental Submission ID' },
+    { key: 'departmentalsubmissiondigest', name: 'Departmental Submission Digest' },
+    { key: 'departmentalsubmissioncount', name: 'Departmental Submission Count' }
+  ];
+  var headers = getHeaderMap(sheet);
+  var missing = wanted.filter(function(c) { return headers[c.key] === undefined; });
+  if (!missing.length) return;
+  var nextCol = sheet.getLastColumn() + 1;
+  var finalCol = nextCol + missing.length - 1;
+  if (sheet.getMaxColumns() < finalCol) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), finalCol - sheet.getMaxColumns());
+  }
+  sheet.getRange(1, nextCol, 1, missing.length).setValues([missing.map(function(c) { return c.name; })]);
+  sheet.getRange(1, nextCol, 1, missing.length).setFontWeight('bold');
+}
+
+function isValidDepartmentalSubmissionId_(raw) {
+  return typeof raw === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw);
+}
+
+function departmentalSubmissionDigest_(validatedList) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, JSON.stringify(validatedList));
+  return bytes.map(function(v) { return ('0' + (v & 255).toString(16)).slice(-2); }).join('');
+}
+
+/** Read all matching rows, fail closed on partial/ambiguous receipts. */
+function readDepartmentalSubmissionReceipt_(sheet, submissionId, employeeId, expectedDigest) {
+  var cols = getHeaderMap(sheet);
+  var needed = ['departmentalsubmissionid', 'departmentalsubmissiondigest', 'departmentalsubmissioncount', 'cneid', 'proposedby'];
+  if (needed.some(function(k) { return cols[k] === undefined; })) {
+    return { success: false, errorCode: 'SUBMISSION_RECEIPT_UNAVAILABLE', message: 'Cannot verify departmental submission columns.' };
+  }
+  var hits = findExactRowsInColumn_(sheet, cols.departmentalsubmissionid, submissionId, 2);
+  if (!hits.length) return { success: true, status: 'NOT_FOUND', data: { status: 'NOT_FOUND' } };
+  var ids = [];
+  var expectedCount = -1;
+  var actualDigest = '';
+  for (var h = 0; h < hits.length; h++) {
+    var values = sheet.getRange(hits[h], 1, 1, sheet.getLastColumn()).getValues()[0];
+    var owner = normalizeEmpId(values[cols.proposedby]);
+    // Never allow one staff member to query or reuse another's submission ID.
+    if (owner !== normalizeEmpId(employeeId)) {
+      return { success: false, errorCode: 'FORBIDDEN', message: 'This scheduling submission belongs to another account.' };
+    }
+    var rowDigest = String(values[cols.departmentalsubmissiondigest] || '').trim();
+    var rowCount = Number(values[cols.departmentalsubmissioncount]);
+    if (!rowDigest || !Number.isInteger(rowCount) || rowCount < 1 || rowCount > 50 ||
+        (expectedCount !== -1 && expectedCount !== rowCount) ||
+        (actualDigest && actualDigest !== rowDigest)) {
+      return { success: false, errorCode: 'SUBMISSION_COMMIT_UNCERTAIN', message: 'An inconsistent scheduling receipt needs administrator review. No additional records were created.' };
+    }
+    expectedCount = rowCount;
+    actualDigest = rowDigest;
+    var id = String(values[cols.cneid] || '').trim();
+    if (!id || ids.indexOf(id) !== -1) {
+      return { success: false, errorCode: 'SUBMISSION_COMMIT_UNCERTAIN', message: 'The scheduling receipt is incomplete or inconsistent. No additional records were created.' };
+    }
+    ids.push(id);
+  }
+  if (expectedDigest && expectedDigest !== actualDigest) {
+    return { success: false, errorCode: 'SUBMISSION_ID_REUSED', message: 'This submission ID was already used for different schedule details. Refresh before publishing a new batch.' };
+  }
+  if (ids.length !== expectedCount) {
+    return { success: false, errorCode: 'SUBMISSION_COMMIT_UNCERTAIN', message: 'Only part of the original scheduling batch could be verified. No additional CNE records were created.' };
+  }
+  return {
+    success: true,
+    status: 'COMMITTED',
+    message: 'This scheduling submission was already saved. No duplicate was created.',
+    data: { status: 'COMMITTED', createdIds: ids, createdClasses: ids, count: ids.length, recovered: true }
+  };
+}
+
+/** Status check has no write side effects and is scoped to the submitting user. */
+function handleGetDepartmentalSubmissionStatus(params, session) {
+  if (!session) return { success: false, errorCode: 'UNAUTHORIZED', message: 'Sign in to check scheduling status.' };
+  var submissionId = String(params.submissionId || '').trim();
+  if (!isValidDepartmentalSubmissionId_(submissionId)) {
+    return { success: false, errorCode: 'INVALID_SUBMISSION_ID', message: 'Invalid scheduling submission ID.' };
+  }
+  var lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(12000)) {
+      return { success: true, data: { status: 'IN_PROGRESS' }, message: 'The original scheduling request may still be running.' };
+    }
+  } catch (e) {
+    return { success: true, data: { status: 'IN_PROGRESS' }, message: 'Scheduling status is temporarily unavailable.' };
+  }
+  try {
+    var sheet = getSpreadsheet('CNE').getSheetByName('CNE Schedule');
+    if (!sheet) return { success: true, data: { status: 'NOT_FOUND' } };
+    var cols = getHeaderMap(sheet);
+    if (cols.departmentalsubmissionid === undefined) {
+      return { success: true, data: { status: 'NOT_FOUND' } };
+    }
+    return readDepartmentalSubmissionReceipt_(sheet, submissionId, session.employeeId, '');
+  } catch (e) {
+    return { success: false, errorCode: 'SUBMISSION_STATUS_UNAVAILABLE', message: 'Cannot verify the original scheduling result. Do not publish a new batch yet.' };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
  * Batch Schedule Departmental CNEs (Admin and Area Incharge)
  * Creates separate, independent records in CNE Schedule for each schedule row.
  */
 function handleAddDepartmentalSchedule(params, session) {
   if (!session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
+  }
+
+  var submissionId = String(params.submissionId || '').trim();
+  if (!isValidDepartmentalSubmissionId_(submissionId)) {
+    return { success: false, errorCode: 'INVALID_SUBMISSION_ID', message: 'A valid scheduling submission ID is required to prevent duplicate CNE creation.' };
   }
 
   var rawClasses = params.schedules || params.classes;
@@ -6000,6 +6124,13 @@ function handleAddDepartmentalSchedule(params, session) {
     var sheet = getOrCreateSheet('CNE Schedule');
     ensureCneScheduleCoverageHeaders_(sheet);
     ensureParticipatingWardsHeader_(sheet);
+    ensureDepartmentalSubmissionHeaders_(sheet);
+
+    // Recover a successful previous write before allocating any new CNE IDs.
+    var requestDigest = departmentalSubmissionDigest_(validatedList);
+    var previousReceipt = readDepartmentalSubmissionReceipt_(sheet, submissionId, session.employeeId, requestDigest);
+    if (!previousReceipt.success) return previousReceipt;
+    if (previousReceipt.status === 'COMMITTED') return previousReceipt;
 
     var colMap = getHeaderMap(sheet);
     var curYear = new Date().getFullYear();
@@ -6066,6 +6197,9 @@ function handleAddDepartmentalSchedule(params, session) {
       setCell('coverageareassnapshot', 23, rowCoverageSnapshot);
       setCell('totalallottedstaff', 24, rowAllottedStaff !== null ? rowAllottedStaff : 0);
       setCell('participatingwards', 29, JSON.stringify(batchWards.wards));
+      setCell('departmentalsubmissionid', -1, submissionId);
+      setCell('departmentalsubmissiondigest', -1, requestDigest);
+      setCell('departmentalsubmissioncount', -1, validatedList.length);
       setCell('internalattendancecount', 25, '');
       setCell('attendancepercentage', 26, '');
       setCell('posttestoutcomepercentage', 27, '');
@@ -6100,15 +6234,30 @@ function handleAddDepartmentalSchedule(params, session) {
         sheet.insertColumnsAfter(maxCols, numColumns - maxCols);
       }
 
-      sheet.getRange(startRow, 1, numRows, numColumns).setValues(allRows);
+      try {
+        sheet.getRange(startRow, 1, numRows, numColumns).setValues(allRows);
+        SpreadsheetApp.flush();
+      } catch (writeErr) {
+        // A thrown write/flush is NOT proof that no rows were committed.
+        return { success: false, errorCode: 'SUBMISSION_COMMIT_UNCERTAIN', message: 'Scheduling may have been saved but confirmation failed. Check this submission before retrying.' };
+      }
+      var confirmed;
+      try {
+        confirmed = readDepartmentalSubmissionReceipt_(sheet, submissionId, session.employeeId, requestDigest);
+      } catch (readErr) {
+        return { success: false, errorCode: 'SUBMISSION_COMMIT_UNCERTAIN', message: 'Scheduling was sent to the sheet, but its receipt could not be verified. Check status before retrying.' };
+      }
+      if (!confirmed.success || confirmed.status !== 'COMMITTED') {
+        return { success: false, errorCode: 'SUBMISSION_COMMIT_UNCERTAIN', message: 'Scheduling receipt did not verify; no further rows will be created automatically.' };
+      }
     }
 
-    logAuditAction('ADD_DEPARTMENTAL_SCHEDULE', session.employeeId, 'Scheduled ' + createdIds.length + ' departmental CNE(s): ' + createdIds.join(', '), 'SUCCESS');
+    logAuditAction('ADD_DEPARTMENTAL_SCHEDULE', session.employeeId, 'Submission ' + submissionId + ' scheduled ' + createdIds.length + ' departmental CNE(s): ' + createdIds.join(', '), 'SUCCESS');
 
     return {
       success: true,
       message: 'Scheduled ' + createdIds.length + ' Departmental CNE session(s) successfully.',
-      data: { createdClasses: createdIds, count: createdIds.length }
+      data: { createdIds: createdIds, createdClasses: createdIds, count: createdIds.length, status: 'COMMITTED', recovered: false }
     };
   } finally {
     lock.releaseLock();

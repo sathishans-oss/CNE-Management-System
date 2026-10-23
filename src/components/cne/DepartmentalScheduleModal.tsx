@@ -47,6 +47,33 @@ const createInitialRow = (userArea: string = '', teachingMode: string = ''): Dep
   adminRemarks: ''
 });
 
+/**
+ * Keep one client-generated submission identifier for an uncertain publish.
+ * sessionStorage survives modal remounts/reloads in this browser tab. The
+ * fingerprint binds the identifier to the exact selected scheduling payload;
+ * the backend independently binds it to the authenticated creator and SHA-256
+ * digest of its authoritative validated inputs.
+ */
+function newDepartmentalSubmissionId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function departmentalPayloadFingerprint(payload: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function departmentalSubmissionStorageKey(employeeId: string): string {
+  return `cne_pending_departmental_submission_${employeeId.trim().toUpperCase()}`;
+}
+
 export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps> = ({
   isOpen,
   onClose,
@@ -118,6 +145,8 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   onOfficersLoadedRef.current = onOfficersLoaded;
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const pendingSubmissionRef = useRef<{ fingerprint: string; submissionId: string; createdAt?: number } | null>(null);
+
   const [extRpInputMap, setExtRpInputMap] = useState<Record<string, string>>({});
   const [rpSearchMap, setRpSearchMap] = useState<Record<string, string>>({});
 
@@ -183,6 +212,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
 
   // Reset to exactly 1 blank schedule row whenever modal is opened
   React.useEffect(() => {
+    let active = true;
     if (isOpen) {
       setRows([createInitialRow('', defaultTeachingMode)]);
       setSelectedWards([]);
@@ -190,8 +220,30 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
       setStaffCounts({});
       setExtRpInputMap({});
       setRpSearchMap({});
+      pendingSubmissionRef.current = null;
+      // A closed/reopened form must not silently forget a previous uncertain
+      // request. Its ID remains in sessionStorage and is reused if the same
+      // fields are resubmitted. Check status without publishing again.
+      try {
+        const saved = sessionStorage.getItem(departmentalSubmissionStorageKey(user?.employeeId || ''));
+        const parsed = saved ? JSON.parse(saved) : null;
+        if (parsed && typeof parsed.submissionId === 'string' && typeof parsed.fingerprint === 'string') {
+          pendingSubmissionRef.current = parsed;
+          void ApiService.getDepartmentalScheduleSubmissionStatus(parsed.submissionId).then(status => {
+            if (!active) return;
+            if (status.success && status.data?.status === 'COMMITTED') {
+              try { sessionStorage.removeItem(departmentalSubmissionStorageKey(user?.employeeId || '')); } catch (_) {}
+              pendingSubmissionRef.current = null;
+              success('Your previous Departmental CNE submission was saved successfully. No duplicate was created.', 'Schedule Recovered');
+              onSuccess();
+              onClose();
+            }
+          }).catch(() => {});
+        }
+      } catch (_) {}
     }
-  }, [isOpen, defaultTeachingMode]);
+    return () => { active = false; };
+  }, [isOpen, defaultTeachingMode, user?.employeeId]);
 
   if (!isOpen) return null;
 
@@ -375,8 +427,74 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         };
       });
 
-      const res = await ApiService.addDepartmentalSchedule(payload);
+      const fingerprint = await departmentalPayloadFingerprint(payload);
+      const storageKey = departmentalSubmissionStorageKey(user?.employeeId || '');
+      let pending = pendingSubmissionRef.current;
+      let reusedPending = !!pending && pending.fingerprint === fingerprint;
+      try {
+        const saved = sessionStorage.getItem(storageKey);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed && parsed.fingerprint === fingerprint && typeof parsed.submissionId === 'string') {
+            pending = parsed;
+            reusedPending = true;
+          }
+        }
+      } catch (_) { /* in-memory fallback for disabled browser storage */ }
+      if (pending && pending.fingerprint !== fingerprint) {
+        // Do not turn a refreshed/reopened, still-uncertain submission into a
+        // second batch simply because the form fields were re-entered.
+        const previous = await ApiService.getDepartmentalScheduleSubmissionStatus(pending.submissionId);
+        if (previous.success && previous.data?.status === 'COMMITTED') {
+          try { sessionStorage.removeItem(storageKey); } catch (_) {}
+          pendingSubmissionRef.current = null;
+          success('Your previous Departmental CNE was already scheduled. No duplicate was created.', 'Schedule Recovered');
+          onSuccess();
+          onClose();
+          return;
+        }
+        const elapsed = Date.now() - (pending.createdAt || Date.now());
+        if (!previous.success || previous.data?.status !== 'NOT_FOUND' || elapsed < 8 * 60 * 1000) {
+          error('A previous scheduling request is still unconfirmed. Check the CNE Schedule before creating a different batch; your original Submission ID has been preserved.');
+          return;
+        }
+        // Apps Script's maximum run window has elapsed, the server lock is
+        // free and no matching receipt exists. A different batch may begin.
+        pending = null;
+      }
+      if (!pending || pending.fingerprint !== fingerprint) {
+        pending = { fingerprint, submissionId: newDepartmentalSubmissionId(), createdAt: Date.now() };
+      }
+      pendingSubmissionRef.current = pending;
+      try { sessionStorage.setItem(storageKey, JSON.stringify(pending)); } catch (_) {}
+
+      // On repeat Publish after an uncertain response, read the original result
+      // first. This also works if staff-master data later becomes unavailable.
+      let recoveredResult = null;
+      if (reusedPending) {
+        const prior = await ApiService.getDepartmentalScheduleSubmissionStatus(pending.submissionId);
+        if (prior.success && prior.data?.status === 'COMMITTED') {
+          recoveredResult = { success: true, data: { count: prior.data.count || 0, createdIds: prior.data.createdIds || [], recovered: true } };
+        } else if (!prior.success || prior.data?.status === 'IN_PROGRESS') {
+          error('The original scheduling submission cannot yet be confirmed. Please check again; do not create a new batch.');
+          return;
+        }
+      }
+      let res = recoveredResult || await ApiService.addDepartmentalSchedule(payload, pending.submissionId);
+      // The browser timing out does not cancel an Apps Script execution. Check
+      // for the original receipt, never create a fresh request ID on retry.
+      if (!res.success && ['BACKEND_UNAVAILABLE', 'HTTP_ERROR', 'SUBMISSION_COMMIT_UNCERTAIN', 'SERVER_BUSY'].includes(res.errorCode || '')) {
+        const status = await ApiService.getDepartmentalScheduleSubmissionStatus(pending.submissionId);
+        if (status.success && status.data?.status === 'COMMITTED') {
+          res = { success: true, data: { count: status.data.count || 0, createdIds: status.data.createdIds || [], recovered: true }, message: 'Original CNE scheduling request was recovered.' };
+        } else {
+          error('Unable to confirm whether the CNE was saved. Reopen or retry this same form to check the original submission; a fresh CNE ID will not be generated for the same request.');
+          return;
+        }
+      }
       if (res.success) {
+        try { sessionStorage.removeItem(storageKey); } catch (_) {}
+        pendingSubmissionRef.current = null;
         const count = res.data?.count || rows.length;
         success(`Successfully scheduled ${count} departmental CNE workshop${count > 1 ? 's' : ''}.`, 'Batch Scheduled');
         onSuccess();

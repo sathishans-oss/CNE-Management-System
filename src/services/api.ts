@@ -440,6 +440,7 @@ export class ApiService {
       case 'createCNE':
       case 'addUnscheduledCNE':
       case 'addDepartmentalSchedule':
+      case 'getDepartmentalScheduleSubmissionStatus':
       case 'updateCNE':
       case 'finalizeCNE':
       case 'cancelCNE':
@@ -1197,15 +1198,30 @@ export class ApiService {
     return this.executeAction<Record<string, number | null>>('getWardStaffCounts');
   }
 
+  static async getDepartmentalScheduleSubmissionStatus(
+    submissionId: string
+  ): Promise<ApiResponse<{ status: 'COMMITTED' | 'NOT_FOUND' | 'IN_PROGRESS'; count?: number; createdIds?: string[]; recovered?: boolean }>> {
+    const res = await this.executeAction<{ status: 'COMMITTED' | 'NOT_FOUND' | 'IN_PROGRESS'; count?: number; createdIds?: string[]; recovered?: boolean }>('getDepartmentalScheduleSubmissionStatus', { submissionId });
+    if (res.success && res.data?.status === 'COMMITTED') {
+      this.invalidateCache('getCNERecords');
+      this.invalidateCache('getProgramImpact');
+      this.invalidateCache('getDepartmentalCneOutcomeReport');
+    }
+    return res;
+  }
+
   static async addDepartmentalSchedule(
-    schedules: any[]
-  ): Promise<ApiResponse<{ count: number; createdIds: string[] }>> {
-    const res = await this.executeAction<{ count: number; createdIds: string[] }>('addDepartmentalSchedule', {
-      schedules
+    schedules: any[],
+    submissionId: string
+  ): Promise<ApiResponse<{ count: number; createdIds: string[]; createdClasses?: string[]; recovered?: boolean; status?: string }>> {
+    const res = await this.executeAction<{ count: number; createdIds: string[]; createdClasses?: string[]; recovered?: boolean; status?: string }>('addDepartmentalSchedule', {
+      schedules,
+      submissionId
     });
     if (res.success) {
       this.invalidateCache('getCNERecords');
       this.invalidateCache('getProgramImpact');
+      this.invalidateCache('getDepartmentalCneOutcomeReport');
     }
     return res;
   }

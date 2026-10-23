@@ -10919,6 +10919,270 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   }
 }
 
+// -----------------------------------------------------------------------------
+// Departmental publish deduplication — true receipt behavior with mock Sheets.
+// These checks supplement the 436 inherited checks; no legacy checks removed.
+// -----------------------------------------------------------------------------
+if (selected.some(item => item.id === 'workflows') && passed === selected.length) {
+  const gs = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const api = readFileSync(join(ROOT_DIR, 'src/services/api.ts'), 'utf8');
+  const ui = readFileSync(join(ROOT_DIR, 'src/components/cne/DepartmentalScheduleModal.tsx'), 'utf8');
+  const start = gs.indexOf('function ensureDepartmentalSubmissionHeaders_(');
+  const end = gs.indexOf('/**\n * Batch Schedule Departmental CNEs', start);
+  if (start < 0 || end < start) throw Error('Departmental scheduling receipt helper missing');
+  const receiptSource = gs.slice(start, end);
+  const checks = [];
+  const check = (name, test) => checks.push({name,test});
+  const submissionId = 'f63dc158-8dcf-48c7-9b16-09a9c145e9fd';
+  const keys = {
+    departmentalsubmissionid: 0,
+    departmentalsubmissiondigest: 1,
+    departmentalsubmissioncount: 2,
+    cneid: 3,
+    proposedby: 4
+  };
+  function fixture(rows) {
+    const data = rows.map(row => [...row]);
+    const sheet = {
+      data,
+      getLastColumn: () => 5,
+      getLastRow: () => data.length + 1,
+      getMaxColumns: () => 5,
+      getRange: (row, col, count = 1, width = 1) => ({
+        getValues: () => data.slice(row - 2, row - 2 + count).map(x => x.slice(col - 1, col - 1 + width))
+      })
+    };
+    const ctx = {
+      sheet,
+      normalizeEmpId: x => String(x || '').trim().toUpperCase(),
+      getHeaderMap: () => keys,
+      findExactRowsInColumn_: (s,col,id) => s.data.map((row,i)=> String(row[col]||'').toLowerCase() === String(id).toLowerCase() ? i + 2 : -1).filter(x=>x>0),
+      Utilities: { DigestAlgorithm: { SHA_256:'SHA_256' }, computeDigest: (_, text) => Array.from(createHash('sha256').update(text).digest()).map(v => v>127 ? v-256 : v) },
+      LockService: { getScriptLock: () => ({tryLock: () => true, releaseLock:()=>{}}) },
+      getSpreadsheet: () => ({getSheetByName:()=>sheet}),
+      result: null
+    };
+    vm.runInNewContext(receiptSource,ctx,{timeout:2500});
+    return ctx;
+  }
+  const row = (id='CNE-A', digest='digest1', count=1, owner='AIIMSRANS00031', token=submissionId)=>[token,digest,count,id,owner];
+  const invoke = (ctx, digest='digest1', owner='AIIMSRANS00031') =>
+    JSON.parse(JSON.stringify(ctx.readDepartmentalSubmissionReceipt_(ctx.sheet,submissionId,owner,digest)));
+  check('Repeated submission ID returns original CNE ID without requesting any new allocation',()=>{
+    const ctx=fixture([row()]);
+    const receipt=invoke(ctx);
+    if (!receipt.success || receipt.status!=='COMMITTED' || receipt.data.createdIds.join(',')!=='CNE-A' || !receipt.data.recovered)
+      throw Error('Original CNE was not recovered');
+  });
+  check('Intentional multi-session batch returns every existing CNE ID once',()=>{
+    const ctx=fixture([row('CNE-A','digest1',2),row('CNE-B','digest1',2)]);
+    const receipt=invoke(ctx);
+    if (!receipt.success || receipt.data.count!==2 || receipt.data.createdIds.join(',')!=='CNE-A,CNE-B')
+      throw Error('Multiple session receipts lost or duplicated');
+  });
+  check('Partial batch fails closed and cannot silently create additional CNEs',()=>{
+    const ctx=fixture([row('CNE-A','digest1',2)]);
+    const receipt=invoke(ctx);
+    if (receipt.success || receipt.errorCode!=='SUBMISSION_COMMIT_UNCERTAIN') throw Error('Partial write allowed');
+  });
+  check('The same Submission ID cannot be reused with a modified payload',()=>{
+    const ctx=fixture([row()]);
+    if(invoke(ctx,'different').errorCode!=='SUBMISSION_ID_REUSED') throw Error('Payload reuse accepted');
+  });
+  check('Submission receipt is scoped to authenticated submitting employee',()=>{
+    const ctx=fixture([row()]);
+    if(invoke(ctx,'digest1','AIIMSRANS00099').errorCode!=='FORBIDDEN') throw Error('Other user can recover receipt');
+  });
+  check('Missing receipt is distinguishable from successful commit',()=>{
+    const ctx=fixture([]);
+    const receipt=invoke(ctx);
+    if(!receipt.success || receipt.status!=='NOT_FOUND' || receipt.data.status!=='NOT_FOUND') throw Error('Missing receipt incorrectly considered committed');
+  });
+  check('Duplicate IDs and inconsistent receipt digest fail closed',()=>{
+    const dup=invoke(fixture([row('CNE-A','digest1',2),row('CNE-A','digest1',2)]));
+    const mixed=invoke(fixture([row('CNE-A','digest1',2),row('CNE-B','digest2',2)]));
+    if(dup.errorCode!=='SUBMISSION_COMMIT_UNCERTAIN' || mixed.errorCode!=='SUBMISSION_COMMIT_UNCERTAIN')
+      throw Error('Ambiguous receipt accepted');
+  });
+  check('Request ID must be UUID v4; invalid request never begins sheet mutation',()=>{
+    const ctx=fixture([]);
+    if(!ctx.isValidDepartmentalSubmissionId_(submissionId) || ctx.isValidDepartmentalSubmissionId_('hello') ||
+      ctx.isValidDepartmentalSubmissionId_('aaaaaaaa-aaaa-3aaa-aaaa-aaaaaaaaaaaa')) throw Error('Submission ID gate weakened');
+    const fn=gs.slice(gs.indexOf('function handleAddDepartmentalSchedule('),gs.indexOf('/**',gs.indexOf('function handleAddDepartmentalSchedule(')+20));
+    if(fn.indexOf('isValidDepartmentalSubmissionId_')<0 || fn.indexOf('isValidDepartmentalSubmissionId_')>fn.indexOf('getCneStaffCountMap_(true)')) throw Error('Invalid ID guard occurs after sheet work');
+  });
+  check('Backend receipt lookup occurs under ScriptLock before allocating CNE IDs',()=>{
+    const fn=gs.slice(gs.indexOf('function handleAddDepartmentalSchedule('),gs.indexOf('/**',gs.indexOf('function handleAddDepartmentalSchedule(')+20));
+    const locked=fn.indexOf('lock.waitLock(15000)');
+    const receipt=fn.indexOf('readDepartmentalSubmissionReceipt_(sheet, submissionId');
+    const allocate=fn.indexOf('var createdIds = []');
+    if(locked<0 || receipt<locked || allocate<receipt || !fn.includes('SpreadsheetApp.flush()')) throw Error('Server deduplication not locked before write');
+  });
+  check('Network ambiguity checks existing submission, and retry retains identical ID',()=>{
+    for(const phrase of ['departmentalPayloadFingerprint(payload)','sessionStorage.setItem(storageKey',
+      'getDepartmentalScheduleSubmissionStatus(pending.submissionId)', 'ApiService.addDepartmentalSchedule(payload, pending.submissionId)',
+      "status.data?.status === 'COMMITTED'", 'sessionStorage.removeItem(storageKey)'])
+      if(!ui.includes(phrase)) throw Error('Missing client recovery step '+phrase);
+    if(!api.includes("'getDepartmentalScheduleSubmissionStatus'") || !gs.includes("case 'getDepartmentalScheduleSubmissionStatus':"))
+      throw Error('Status endpoint not wired');
+  });
+  check('Executable Departmental Publish creates once, recovers same IDs, and preserves intentional new batches',()=>{
+    const handlerSource=gs.slice(gs.indexOf('function handleAddDepartmentalSchedule('),gs.indexOf('/**',gs.indexOf('function handleAddDepartmentalSchedule(')+30));
+    const f=['cneid','topic','area','fromdate','todate','duration','resourcepersonempid','modeofteaching','description','maxparticipants','status','typeofcne','externalresourcepersons','staffempid','staffcount','externalstaffparticipants','proposedby','adminremarks','remarks','createdat','createdby','coverageareassnapshot','totalallottedstaff','internalattendancecount','attendancepercentage','posttestoutcomepercentage','coveragefinalizedat','participatingwards','departmentalsubmissionid','departmentalsubmissiondigest','departmentalsubmissioncount'];
+    const cm=Object.fromEntries(f.map((key,index)=>[key,index]));
+    let rows=[], writes=0, audits=[];
+    const sheet={
+      getLastColumn:()=>f.length,getLastRow:()=>rows.length+1,getMaxRows:()=>100,getMaxColumns:()=>f.length+5,
+      getRange:(r,c,n=1,m=1)=>({
+        setValues: values=>{if(r>1){values.forEach((v,i)=>{rows[r-2+i]=[...v];});writes++;}},
+        getValues:()=>Array.from({length:n},(_,i)=>(rows[r-2+i]||[]).slice(c-1,c-1+m)),
+        setFontWeight:()=>{}
+      })
+    };
+    const ctx={
+      sanitizeCellInput:x=>String(x||'').trim(), normalizeEmpId:x=>String(x||'').toUpperCase().trim(),
+      getIndiaTodayString:()=> '2026-10-23',parseCneStartTimestamp_:x=>Date.parse(x),getCNECanonicalDay:x=>x.slice(0,10),
+      validateCneDuration:()=>({isValid:true}),requireActiveTeachingMode_:()=>null,checkCNEAuthorized:()=>null,
+      requireActiveArea_:()=>null,findOfficerById:()=>null,getCneStaffCountMap_:()=>({nicu:42}),
+      refreshMutationSession:session=>({success:true,session}),getAreaStatusMap_:()=>({NICU:'ACTIVE'}),
+      getTeachingModeStatusMap_:()=>({'LECTURE CUM DISCUSSION':'ACTIVE'}),
+      getOrCreateSheet:()=>sheet,getSpreadsheet:()=>({getSheetByName:()=>sheet}),getHeaderMap:()=>cm,
+      ensureCneScheduleCoverageHeaders_:()=>{},ensureParticipatingWardsHeader_:()=>{},
+      resolveDepartmentalWards_:selected=>({success:true,wards:selected,coverageAreasSnapshot:'NICU:42',totalAllottedStaff:42}),
+      isCneIdInUse_:()=>false,logAuditAction:(...a)=>audits.push(a),
+      LockService:{getScriptLock:()=>({waitLock:()=>{},tryLock:()=>true,releaseLock:()=>{}})},
+      SpreadsheetApp:{flush:()=>{}},
+      Utilities:{DigestAlgorithm:{SHA_256:'SHA_256'},computeDigest:(_,t)=>Array.from(createHash('sha256').update(t).digest()).map(v=>v>127?v-256:v)},
+      findExactRowsInColumn_:(sh,col,id)=>rows.map((r,i)=>String(r[col]||'').toLowerCase()===id.toLowerCase()?i+2:-1).filter(x=>x>0)
+    };
+    vm.runInNewContext(receiptSource+handlerSource,ctx,{timeout:5000});
+    const admin={role:'ADMIN',employeeId:'AIIMSRANS00031'};
+    const details={topic:'IV Therapy',area:'NICU',participatingWards:['NICU'],date:'2026-10-24T10:00',toDate:'2026-10-24T11:00',duration:'01:00:00',modeOfTeaching:'Lecture Cum Discussion',externalResourcePersons:['Trainer']};
+    const run=(id,schedules=[details])=>JSON.parse(JSON.stringify(ctx.handleAddDepartmentalSchedule({submissionId:id,schedules},admin)));
+    const first=run(submissionId);const second=run(submissionId);
+    const changed=run(submissionId,[{...details,topic:'Changed Topic'}]);
+    const id2='f63dc158-8dcf-48c7-9b16-09a9c145e9fe';
+    const intentional=run(id2);
+    const status=JSON.parse(JSON.stringify(ctx.handleGetDepartmentalSubmissionStatus({submissionId},admin)));
+    // Simulate a backend flush exception AFTER setValues persisted the rows.
+    // A retry must read the authoritative receipt, not add a second record.
+    const id3='f63dc158-8dcf-48c7-9b16-09a9c145e9ff';
+    ctx.SpreadsheetApp.flush=()=>{throw Error('Simulated transient Sheets flush failure');};
+    const uncertain=run(id3);
+    ctx.SpreadsheetApp.flush=()=>{};
+    const afterUncertain=run(id3);
+    if(uncertain.errorCode!=='SUBMISSION_COMMIT_UNCERTAIN' || !afterUncertain.success ||
+      !afterUncertain.data.recovered || writes!==3 || audits.length!==2 || rows.length!==3)
+      throw Error('Lost-after-write response created duplicates on retry');
+    if(!first.success || !second.success || !second.data.recovered ||
+      first.data.createdIds[0]!==second.data.createdIds[0] || changed.errorCode!=='SUBMISSION_ID_REUSED' ||
+      !intentional.success || !status.success || status.data.createdIds[0]!==first.data.createdIds[0] ||
+      writes!==3 || audits.length!==2 || rows.length!==3)
+      throw Error('One-click idempotency, recovery or legitimate second scheduling batch failed');
+  });
+  check('Audit log correlates one request ID with created IDs and API uses createdIds response',()=>{
+    if(!gs.includes("'Submission ' + submissionId + ' scheduled '") ||
+      !gs.includes('data: { createdIds: createdIds, createdClasses: createdIds, count: createdIds.length'))
+      throw Error('Audit/response submission correlation absent');
+  });
+  // Additional regression cases for the Google AI Studio v19 edits.
+  // These are deliberately applied to executable helpers and to the precise
+  // guarded request lifecycle, to prevent 448 passing checks from concealing
+  // a weakened request digest or a lost pending Submission ID.
+  check('Receipt digest binds Resource Persons, capacity, remarks and participating wards',()=>{
+    const ctx=fixture([]);
+    const base={topic:'A',area:'NICU',participatingWards:['NICU'],date:'2026-10-25T09:00',
+      toDate:'2026-10-25T10:00',duration:'01:00:00',rpClean:['AIIMSRANS00031'],extRpClean:['Trainer A'],
+      mode:'Lecture Cum Discussion',description:'Description',maxParticipants:30,adminRemarks:'Initial'};
+    const digest=x=>ctx.departmentalSubmissionDigest_([x]);
+    const original=digest(base);
+    const variants=[
+      {...base,rpClean:['AIIMSRANS00032']},
+      {...base,extRpClean:['Trainer B']},
+      {...base,maxParticipants:60},
+      {...base,adminRemarks:'Changed'},
+      {...base,participatingWards:['NICU','PICU']},
+      {...base,description:'Different description'},
+      {...base,date:'2026-10-26T09:00'}
+    ];
+    if(variants.some(v=>digest(v)===original)) throw Error('Digest ignores an authoritative validated scheduling field');
+  });
+  check('Malformed or absent receipt columns fail closed instead of returning NOT_FOUND',()=>{
+    for(const absent of ['departmentalsubmissionid','departmentalsubmissiondigest',
+      'departmentalsubmissioncount','cneid','proposedby']) {
+      const ctx=fixture([row()]);
+      const columns={...keys}; delete columns[absent];
+      ctx.getHeaderMap=()=>columns;
+      const result=invoke(ctx);
+      if(result.success || result.errorCode!=='SUBMISSION_RECEIPT_UNAVAILABLE')
+        throw Error('Missing '+absent+' header failed open');
+    }
+  });
+  check('Blank digest, invalid batch count and duplicate receipt ID fail closed',()=>{
+    const invalid=[
+      [row('CNE-A','',1)], [row('CNE-A','digest1',0)],
+      [row('CNE-A','digest1',51)], [row('', 'digest1',1)],
+      [row('CNE-A','digest1',2),row('CNE-A','digest1',2)]
+    ];
+    for(const rows of invalid){
+      const out=invoke(fixture(rows));
+      if(out.success || out.errorCode!=='SUBMISSION_COMMIT_UNCERTAIN')
+        throw Error('Corrupt receipt was accepted: '+JSON.stringify(rows));
+    }
+  });
+  check('Status lookup uses ScriptLock and reports IN_PROGRESS while publish is active',()=>{
+    const ctx=fixture([]);
+    let read=false, released=false;
+    ctx.LockService={getScriptLock:()=>({tryLock:()=>false, releaseLock:()=>{released=true;}})};
+    ctx.getSpreadsheet=()=>{read=true;throw Error('Should not read while lock is unavailable');};
+    const result=JSON.parse(JSON.stringify(ctx.handleGetDepartmentalSubmissionStatus({submissionId},
+      {employeeId:'AIIMSRANS00031'})));
+    if(!result.success || result.data?.status!=='IN_PROGRESS' || read || released)
+      throw Error('Concurrent publish was incorrectly reported as NOT_FOUND');
+  });
+  check('Status read failures do not masquerade as uncommitted submissions',()=>{
+    const ctx=fixture([]);
+    ctx.getSpreadsheet=()=>{throw Error('Google Sheets temporarily unavailable');};
+    const result=JSON.parse(JSON.stringify(ctx.handleGetDepartmentalSubmissionStatus({submissionId},
+      {employeeId:'AIIMSRANS00031'})));
+    if(result.success || result.errorCode!=='SUBMISSION_STATUS_UNAVAILABLE')
+      throw Error('Backend status error falsely reported NOT_FOUND');
+  });
+  check('Backend guards uncertain setValues failures and verifies receipt after flush',()=>{
+    const src=gs.slice(gs.indexOf('function handleAddDepartmentalSchedule('));
+    const protectedWrite=/try\s*\{\s*sheet\.getRange\(startRow,\s*1,\s*numRows,\s*numColumns\)\.setValues\(allRows\);\s*SpreadsheetApp\.flush\(\);\s*\}\s*catch\s*\(writeErr\)/;
+    if(!protectedWrite.test(src) ||
+       !src.includes('confirmed = readDepartmentalSubmissionReceipt_(sheet, submissionId, session.employeeId, requestDigest)') ||
+       !src.includes("confirmed.status !== 'COMMITTED'"))
+       throw Error('Write and post-write receipt readback are not fail-closed');
+  });
+  check('Submission ID persists through form remounts and lost status responses',()=>{
+    const expected=[
+      'pendingSubmissionRef.current', 'sessionStorage.getItem(departmentalSubmissionStorageKey(',
+      'sessionStorage.setItem(storageKey', 'pending.createdAt',
+      'reusedPending', 'if (!previous.success || previous.data?.status !== \'NOT_FOUND\'',
+      "prior.data?.status === 'IN_PROGRESS'", 'ApiService.addDepartmentalSchedule(payload, pending.submissionId)',
+      'newDepartmentalSubmissionId()', 'crypto.getRandomValues(bytes)'
+    ];
+    for(const phrase of expected) if(!ui.includes(phrase)) throw Error('Lost safety step: '+phrase);
+    if(ui.includes('} catch (ignored) {}') || ui.includes('Math.random() * 16'))
+      throw Error('Swallowed status errors or weak random Submission ID generator');
+  });
+  check('Frontend SHA-256 fingerprint covers the complete scheduling request',()=>{
+    if(!ui.includes("crypto.subtle.digest('SHA-256', bytes)") ||
+       !ui.includes('JSON.stringify(payload)') ||
+       !ui.includes('resourcePersonEmpIds: rpIds') ||
+       !ui.includes('externalResourcePersons: r.externalResourcePersons || []'))
+       throw Error('Client fingerprint omits scheduling fields or lacks SHA-256');
+  });
+  console.log('\n>>> Departmental CNE exactly-once submission / recovery checks');
+  for(const item of checks) {
+    focusedChecks.push(item);
+    try {item.test(); focusedPassed++; console.log('✓ '+item.name);}
+    catch(e){console.error('✗ '+item.name+': '+e.message);}
+  }
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');
