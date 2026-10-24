@@ -11183,6 +11183,350 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   }
 }
 
+// -----------------------------------------------------------------------------
+// Bounded objective-specific retrieval: behavioral checks against executable GAS
+// helpers, plus PLAN/FINISH and quota invariants. Do not weaken core suites.
+// -----------------------------------------------------------------------------
+if (selected.some(item=>item.id==='performance') && passed===selected.length) {
+  const gas=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const checks=[]; const check=(name,test)=>checks.push({name,test});
+  const start=gas.indexOf('function cneAiObjectiveSearchTokens_(');
+  const end=gas.indexOf('function retrieveCNETopicEvidence(',start);
+  const js=gas.slice(start,end);
+  const fixture=()=>{
+    const env={
+      cneAiCitationText_:x=>String(x||'').replace(/\s+/g,' ').trim().toLowerCase(),
+      cneReferenceChunkReadable_:x=>String(x||'').length>50
+    };
+    vm.runInNewContext(js,env,{timeout:3000});
+    return env;
+  };
+  const text=(topic,detail)=>`Nursing clinical passage about ${topic}. ${detail} is essential for safe nursing care, nursing assessment and therapy. `.repeat(3);
+  const ev=(id,topic,detail,book='Approved Handbook')=>({indexId:id,sourceType:'LOCAL_REFERENCE_LIB',
+    resourceTitle:book,topic,sectionHeading:detail,clinicalKeywords:detail,
+    chunkText:text(topic,detail),relevanceScore:100});
+  const objectives=[
+    {objectiveId:'OBJ_1',objective:'Assess safe peripheral intravenous catheter insertion and catheter selection',evidenceId:'BASE_1'},
+    {objectiveId:'OBJ_2',objective:'Apply aseptic technique for infection prevention during catheter insertion',evidenceId:'BASE_2'},
+    {objectiveId:'OBJ_3',objective:'Identify signs of infiltration and phlebitis at an IV catheter site',evidenceId:'BASE_3'},
+    {objectiveId:'OBJ_4',objective:'Select safe dressing and monitoring for peripheral venous catheter care',evidenceId:'BASE_4'},
+    {objectiveId:'OBJ_5',objective:'Assess vein selection and catheter size for intravenous access',evidenceId:'BASE_5'}
+  ];
+  const base=objectives.map((o,i)=>ev(o.evidenceId,'IV cannulation','Clinical unrelated general text for '+o.objectiveId,'Baseline'))
+    .concat(Array.from({length:7},(_,i)=>ev('BASE_'+(i+6),'IV cannulation','General cannulation overview','Baseline')));
+  check('Initial topic selection is retained as the PLAN evidence set',()=>{
+    if(!gas.includes('cneAiSelectTopicEvidence_(scoredUploaded.concat(scoredLibrary)') ||
+       !gas.includes('if (params.planOnly) return {success:true,data:{objectives:objectives},planned:true}'))
+      throw Error('Initial PLAN evidence flow changed');
+  });
+  check('Objective expansion is capped at ten extra passages, never a whole textbook',()=>{
+    const ctx=fixture();
+    const more=[];
+    for(let i=0;i<5;i++)for(let j=0;j<10;j++)
+      more.push(ev('EXP_'+i+'_'+j,'IV cannulation',objectives[i].objective+' '+(j%2?'site selection':'complication management'),'Book '+(j%3)));
+    const result=ctx.cneAiExpandObjectiveEvidence_(base,more,objectives);
+    if(result.evidence.length>22||result.addedCount>10||result.evidence.length!==base.length+result.addedCount)
+      throw Error('Excessive evidence passed to generation');
+    for(let i=0;i<5;i++)if((result.perObjective['OBJ_'+(i+1)]||[]).length>2)
+      throw Error('Objective exceeds two extra chunks');
+  });
+  check('All twelve initial evidence IDs remain eligible through FINISH',()=>{
+    const ctx=fixture(),extra=objectives.map((o,i)=>ev('X'+i,'IV cannulation',o.objective));
+    const result=ctx.cneAiExpandObjectiveEvidence_(base,extra,objectives);
+    for(const b of base)if(!result.evidence.some(item=>item.indexId===b.indexId))
+      throw Error('A PLAN evidence ID was dropped');
+  });
+  check('Duplicate source IDs and copied source text cannot pad the retrieval budget',()=>{
+    const ctx=fixture(),repeated=Array.from({length:10},(_,i)=>({...ev('DUP'+i,'IV cannulation',objectives[0].objective),
+      chunkText:text('IV cannulation',objectives[0].objective)}));
+    const outcome=ctx.cneAiExpandObjectiveEvidence_(base,repeated,objectives);
+    if(outcome.addedCount>1)throw Error('Same source content added multiple times');
+  });
+  check('Weak one-word lexical overlap does not qualify as objective evidence',()=>{
+    const ctx=fixture(),topic=ev('WEAK','IV cannulation','Peripheral IV catheter hygiene');
+    if(ctx.cneAiObjectiveEvidenceScore_('Assess site',topic)!==0)
+      throw Error('Single word match was accepted');
+  });
+  check('Better objective evidence may be rebound but unknown evidence never is',()=>{
+    const ctx=fixture(),
+      poor={...ev('BASE_1','IV cannulation','Unrelated introduction'),chunkText:text('IV','general')},
+      strong=ev('NEW','IV cannulation',objectives[0].objective),
+      low=ev('WEAK','IV cannulation','General nursing');
+    const chosen=ctx.cneAiChooseObjectiveEvidence_([objectives[0]],[poor,strong,low],{OBJ_1:['NEW','WEAK','FABRICATED']});
+    if(chosen[0].evidenceId!=='NEW')throw Error('Relevant objective source was not selected');
+    const unchanged=ctx.cneAiChooseObjectiveEvidence_([objectives[0]],[poor,strong],{OBJ_1:['FABRICATED']});
+    if(unchanged[0].evidenceId!=='BASE_1')throw Error('Unapproved source replaced original');
+  });
+  check('Source diversity favors a second reference when objective score is comparable',()=>{
+    const ctx=fixture(),o=[objectives[1]];
+    const candidates=[ev('ONE','IV cannulation',o[0].objective,'Baseline'),
+      ev('TWO','IV cannulation',o[0].objective,'New Book')];
+    const chosen=ctx.cneAiExpandObjectiveEvidence_(base,candidates,o);
+    if(chosen.addedCount<1 || !chosen.evidence.some(e=>e.resourceTitle==='New Book'))
+      throw Error('Approved alternate reference ignored');
+  });
+  check('Expansion uses original topic safety gate before objective ranking',()=>{
+    const source=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
+    if(!source.includes('passesClinicalRelevanceGate(cleanTopic, lc)') ||
+       !source.includes('passesClinicalRelevanceGate(cleanTopic, uc)') ||
+       !source.includes('cneAiExpandObjectiveEvidence_(totalEvidence,scoredUploaded.concat(scoredLibrary),options.objectives)'))
+      throw Error('Objective evidence bypasses original topic filtering');
+  });
+  check('Objective search excludes inactive library resources and other CNE uploads',()=>{
+    const source=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
+    if(!source.includes("if (rowCneId === upperCneId)")||!source.includes('activeLibFiles[rowDriveId]')||
+       !source.includes("status !== 'SUCCESS'"))
+      throw Error('Cross-user or inactive documents may enter expansion');
+  });
+  check('PLAN remains 12 chunks; FINISH performs one enhanced index retrieval',()=>{
+    if(!gas.includes('params.preparedBlueprint && Array.isArray(params.preparedBlueprint)')||
+       !gas.includes('retrieveCNETopicEvidence(cneId,record.topic,session,{objectives:params.preparedBlueprint})')||
+       !gas.includes('phase===\'FINISH\'?savedJob.objectives:null'))
+      throw Error('Two-stage bounded expansion is not wired to FINISH');
+  });
+  check('Evidence audit contains Index IDs and source names without storing passages',()=>{
+    const source=gas.slice(gas.indexOf("var audit=valData.evidenceExpansionAudit"),gas.indexOf('var byId={}; retrievedEvidence.forEach',gas.indexOf("var audit=valData.evidenceExpansionAudit")));
+    if(!source.includes("logAuditAction('AI_EVIDENCE_COVERAGE'") || !source.includes('o.evidenceId') ||
+       source.includes('source.chunkText') || source.includes('JSON.stringify(retrievedEvidence)'))
+      throw Error('Evidence coverage audit is unavailable or exposes source text');
+  });
+  check('Evidence-related validation failures may trigger one bounded alternate-source repair',()=>{
+    const start=gas.indexOf('var evidenceRebindUsed={}');
+    const end=gas.indexOf('var errors={INVALID_CORRECT_OPTION',start);
+    const repair=gas.slice(start,end);
+    if(start<0 || !repair.includes('if(needsAlternative && !evidenceRebindUsed[obj.objectiveId])')||
+       !repair.includes('audit.perObjective[obj.objectiveId]') ||
+       !repair.includes('cneAiObjectiveEvidenceScore_(obj.objective,next)<6') ||
+       !repair.includes("cneAiVerifiedSpans_(String(next.chunkText||''),obj.objectiveId)") ||
+       !repair.includes('AI_EVIDENCE_REBIND'))
+      throw Error('Source-related repairs cannot switch once to an approved alternative');
+  });
+  check('Question-repair evidence switch preserves original four-repair budget',()=>{
+    const start=gas.indexOf('function generateAiQuestionsInternal(');
+    const end=gas.indexOf('function cneAiHasOwnMaterial_',start);
+    const src=gas.slice(start,end);
+    if(!src.includes('MAX_CORRECTIONS=4, MAX_CORRECTIONS_PER_QUESTION=2') ||
+       !src.includes('correctionCount<MAX_CORRECTIONS') ||
+       !src.includes('cneAiEvidenceSupported_(') ||
+       !src.includes('validatedQuestions.push(checked.data)'))
+      throw Error('Retry quotas or final clinical check were weakened');
+  });
+  check('Original clinical citation and answer checks still precede question staging',()=>{
+    const src=gas.slice(gas.indexOf('function generateAiQuestionsInternal('),gas.indexOf('function cneAiHasOwnMaterial_('));
+    if(!src.includes('cneAiCheckBlueprint_(')||!src.includes('cneAiResolveVerifiedSpan_(')||
+       !src.includes('cneAiEvidenceSupported_(') ||
+       !(src.indexOf('cneAiEvidenceSupported_(')<src.indexOf('validatedQuestions.push(')))
+      throw Error('Clinical verification was weakened');
+  });
+  check('Quota, draft-first commit and library consent checks are unchanged',()=>{
+    if(!gas.includes("if (params.allowLibraryOnly !== true) return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED'") ||
+       !gas.includes('handleCommitAiQuota({')||!gas.includes('planOnly: phase===\'PLAN\''))
+      throw Error('Existing quota or explicit-consent protections changed');
+  });
+  console.log('\n>>> Objective-specific indexed evidence expansion checks');
+  for(const item of checks){focusedChecks.push(item);try{item.test();focusedPassed++;console.log('✓ '+item.name);}catch(e){console.error('✗ '+item.name+': '+e.message);}}
+}
+
+// -----------------------------------------------------------------------------
+// Clinical semantic chunking and metadata-first, fail-safe index retrieval.
+// These are executable Apps Script helper tests, not string-only declarations.
+// -----------------------------------------------------------------------------
+if (selected.some(item=>item.id==='performance') && passed===selected.length) {
+  const gas=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const checks=[];const check=(name,test)=>checks.push({name,test});
+  const semantic=gas.slice(gas.indexOf('function cneReferenceSemanticWindows_('),gas.indexOf('/**\n * Extract textual content from a reference library document blob.',gas.indexOf('function cneReferenceSemanticWindows_(')));
+  const helper=gas.slice(gas.indexOf('function cneAiReadTopicIndexRows_('),gas.indexOf('function retrieveCNETopicEvidence(',gas.indexOf('function cneAiReadTopicIndexRows_(')));
+  const setup=()=>{
+    const ctx={isProbableHeading:(s)=>/^(?:Chapter \d+|Site Selection|Infection Prevention)$/i.test(s),calculateTopicRelevanceScore:(q,c)=>[c.sectionHeading,c.clinicalKeywords,c.topic,c.resourceTitle].join(' ').toLowerCase().includes(q.toLowerCase())?50:0,
+      cneAiObjectiveEvidenceScore_:()=>0,cneAiObjectiveSearchTokens_:()=>['intravenous','catheter']};
+    vm.runInNewContext(semantic+'\n'+helper,ctx,{timeout:3000});
+    return ctx;
+  };
+  const headers={indexid:0,sourcetype:1,cneid:2,drivefileid:3,resourcetitle:4,topic:5,sectionheading:6,chunkindex:7,chunktext:8,clinicalkeywords:9,extractionstatus:10,updatedat:11};
+  const makeRows=(size=160,matching=20)=>{
+    const result=[['Index ID','Source Type','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At']];
+    for(let i=0;i<size;i++){
+      const special=i<matching;
+      result.push([`IDX-${i}`,'LOCAL_REFERENCE_LIB','','ACTIVE','Approved Handbook',special?'IV cannulation':'Fluid balance',special?'IV cannulation insertion':'Electrolyte monitoring',i+1,
+        special?'Peripheral intravenous catheter preparation and aseptic insertion clinical assessment. '.repeat(5):'Unrelated clinical care fluid electrolyte passage. '.repeat(5),
+        special?'peripheral IV catheter':'fluid electrolyte','SUCCESS','2026-10-24']);
+    }
+    return result;
+  };
+  const sheet=(data)=>{
+    const log={full:0,ranges:[],textRead:0};
+    const sh={getLastRow:()=>data.length,getLastColumn:()=>data[0].length,
+      getDataRange:()=>({getValues:()=>{log.full++;return data;}}),
+      getRange:(row,col,rows,cols)=>({getValues:()=>{
+        log.ranges.push([row,col,rows,cols]);
+        if(col<=9&&col+cols>9)log.textRead+=rows;
+        return data.slice(row-1,row-1+rows).map(r=>r.slice(col-1,col-1+cols));
+      }})};
+    return {sh,log};
+  };
+  check('Metadata-first search reads only selected source-text cells, not 160 full passages',()=>{
+    const ctx=setup(),{sh,log}=sheet(makeRows());
+    const result=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
+    if(result.mode!=='SPARSE'||log.full!==0||log.textRead>=80||result.rows.length!==20)
+      throw Error(`Expected sparse mode / 20 passages, got ${result.mode}, ${result.rows.length} rows, ${log.textRead} text rows`);
+    if(result.rows[0][8].indexOf('intravenous catheter')<0 ||result.rows[0].__sheetRow!==2)
+      throw Error('Sparse row mapping lost the authoritative PDF passage or sheet row');
+  });
+  check('Inactive reference books never enter shortlist and activation is checked anew',()=>{
+    const ctx=setup(),{sh,log}=sheet(makeRows());
+    const disabled=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{},{});
+    const enabled=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
+    if(disabled.rows.length!==0 || enabled.rows.length!==20 ||log.full!==0)
+      throw Error('Stale/inactive library evidence was allowed or live state was not rechecked');
+  });
+  check('Metadata shortlist excludes other CNE uploads and failed extraction rows',()=>{
+    const data=makeRows(160,20);
+    data[1][1]='UPLOADED_CNE';data[1][2]='OTHER';
+    data[2][10]='FAILED';
+    const ctx=setup(),{sh}=sheet(data);
+    const out=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
+    if(out.rows.some(r=>r[0]==='IDX-0'||r[0]==='IDX-1') ||out.rows.length!==18)
+      throw Error('Unauthorized CNE or FAILED evidence entered the shortlist');
+  });
+  check('Weak metadata triggers original authoritative full-sheet recall path',()=>{
+    const data=makeRows(160,2),ctx=setup(),{sh,log}=sheet(data);
+    const out=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
+    if(out.mode!=='FULL_LOW_METADATA_RECALL'||log.full!==1||out.rows.length!==data.length)
+      throw Error('Weak chapter metadata silently hid text-only relevant passages');
+  });
+  check('Scattered topic matches use one full-sheet read rather than excessive sparse RPCs',()=>{
+    const data=makeRows(1400,0);
+    for(let i=0;i<32;i++){
+      const at=2+i*40;data[at][5]='IV cannulation';data[at][6]='Aseptic IV cannulation';
+    }
+    const ctx=setup(),{sh,log}=sheet(data),out=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
+    if(out.mode!=='FULL_SCATTERED'||log.full!==1||log.textRead!==0)
+      throw Error('Scattered matches triggered too many text-column reads');
+  });
+  check('Missing header map invokes safe original read instead of guessing wrong columns',()=>{
+    const ctx=setup(),{sh,log}=sheet(makeRows()),invalid={...headers};delete invalid.chunktext;
+    const out=ctx.cneAiReadTopicIndexRows_(sh,invalid,'IV cannulation','CNE-A',{ACTIVE:true},{});
+    if(out.mode!=='FULL_SMALL_OR_SCHEMA'||log.full!==1)
+      throw Error('Schema drift was silently projected into incorrect clinical passages');
+  });
+  check('Clinical passage scoring prefers actual IV text over duplicated chapter labels',()=>{
+    const ctx=setup(),generic={topic:'IV cannulation',sectionHeading:'IV cannulation',chunkText:'General information about resources and scheduling for professional nursing staff. '.repeat(3)},
+      precise={topic:'IV cannulation',sectionHeading:'Vein selection',chunkText:'Peripheral intravenous catheter placement requires careful vein selection, aseptic technique and monitoring. '.repeat(3)};
+    if(ctx.cneAiClinicalPassageScore_('IV cannulation',precise,100)<=ctx.cneAiClinicalPassageScore_('IV cannulation',generic,100))
+      throw Error('Metadata-only chapter hit incorrectly ranked above a clinical passage match');
+  });
+  check('Semantic splitting prefers complete sentences and respects the 1,450-character cap',()=>{
+    const ctx=setup(),source='The nurse checks IV site integrity and assesses for infiltration. '.repeat(70);
+    const windows=ctx.cneReferenceSemanticWindows_(source);
+    if(windows.length<3 ||windows.some(w=>w.length>1450)||windows.some(w=>!/[.!?]$/.test(w)))
+      throw Error('Long clinical paragraphs were split mid-instruction or exceeded limits');
+  });
+  check('Reference chunker retains real subheadings and paragraph-based clinical concepts',()=>{
+    const ctx=setup();
+    const chunks=ctx.chunkReferenceLibraryContent('Chapter 4\n\nSite Selection\n\n'+
+      'Choose a peripheral vein for intravenous catheter placement and monitor the site. '.repeat(5)+'\n\n'+
+      'Infection Prevention\n\nApply hand hygiene and aseptic technique during IV catheter insertion. '.repeat(5),'PDF','Approved Book');
+    if(!chunks.some(c=>c.sectionHeading==='Site Selection')||!chunks.some(c=>c.sectionHeading==='Infection Prevention'))
+      throw Error('Clinical subheadings were discarded by chunking');
+  });
+  check('PLAN-FINISH expansion and quota checks remain present with full-source verification',()=>{
+    const src=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
+    if(!src.includes('cneAiExpandObjectiveEvidence_(totalEvidence,scoredUploaded.concat(scoredLibrary),options.objectives)')||
+      !src.includes('passesClinicalRelevanceGate(cleanTopic, lc)')||
+      !src.includes('passesClinicalRelevanceGate(cleanTopic, uc)')||
+      !gas.includes('MAX_CORRECTIONS=4, MAX_CORRECTIONS_PER_QUESTION=2')||
+      !gas.includes("if (params.allowLibraryOnly !== true) return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED'"))
+      throw Error('Preserved generation / consent safeguards changed');
+  });
+  check('Live retrieval path selects authorized clinical source text and preserves original Index IDs',()=>{
+    const ctx=setup(),{sh,log}=sheet(makeRows());
+    const lib={isLib:true,getLastRow:()=>2,getDataRange:()=>({getValues:()=>[
+      ['Source ID','Resource Title','Category','Drive File ID','Author','Year','License','Version','Active'],
+      ['REF-A','Approved','Nursing','ACTIVE','','','','',true]]})};
+    ctx.sanitizeCellInput=x=>String(x||'');ctx.getCNEScheduleRecord=()=>({topic:'IV cannulation'});
+    ctx.checkCNEActionAuthorized=()=>null;
+    ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Reference_Index'?sh:lib});
+    ctx.getHeaderMap=x=>x.isLib?{drivefileid:3,active:8}:headers;
+    ctx.cneReferenceChunkReadable_=s=>String(s||'').length>=90;
+    ctx.passesClinicalRelevanceGate=()=>true;
+    ctx.cneAiSelectTopicEvidence_=(arr)=>arr.slice(0,12);
+    ctx.cneAiExpandObjectiveEvidence_=(base)=>({evidence:base,addedCount:0,perObjective:{}});
+    const start=gas.indexOf('function retrieveCNETopicEvidence('),end=gas.indexOf('function extractTextFromPdf(',start);
+    vm.runInNewContext(gas.slice(start,end),ctx,{timeout:3000});
+    const result=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{employeeId:'STAFF-A'},{});
+    if(!result.success||result.indexSearchMode!=='SPARSE'||result.evidence.length!==12||
+       result.evidence[0].indexId!=='IDX-0'||result.evidence.some(e=>e.chunkText.indexOf('intravenous catheter')<0)||
+       log.full!==0)throw Error('Selected reference text, status or ID mapping was corrupted in the real retrieval flow');
+  });
+  check('Live retrieval never grants access to deactivated references or unrelated CNE uploads',()=>{
+    const ctx=setup(),data=makeRows(160,20),{sh}=sheet(data);
+    ctx.sanitizeCellInput=x=>String(x||'');ctx.getCNEScheduleRecord=()=>({topic:'IV cannulation'});
+    ctx.checkCNEActionAuthorized=()=>null;
+    ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Reference_Index'?sh:null});
+    ctx.getHeaderMap=()=>headers;ctx.cneReferenceChunkReadable_=s=>String(s||'').length>90;
+    ctx.passesClinicalRelevanceGate=()=>true;ctx.cneAiSelectTopicEvidence_=a=>a.slice(0,12);
+    ctx.cneAiExpandObjectiveEvidence_=b=>({evidence:b,addedCount:0,perObjective:{}});
+    vm.runInNewContext(gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf(')),ctx,{timeout:3000});
+    const blocked=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{},{});
+    if(blocked.success ||blocked.evidence.length!==0)throw Error('A missing active registry did not block library evidence');
+    for(let i=1;i<10;i++){data[i][1]='UPLOADED_CNE';data[i][2]='OTHER-CNE';}
+    const other=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{},{});
+    if(other.success||other.evidence.length!==0)throw Error('Another CNE\'s private uploads entered the evidence pool');
+  });
+  check('Dense scattered shortlists remain bounded and span approved sources',()=>{
+    const data=makeRows(1400,0);
+    for(let cluster=0;cluster<26;cluster++)for(let j=0;j<4;j++){
+      const at=2+cluster*45+j;
+      data[at][5]='IV cannulation';data[at][6]='IV cannulation clinical steps';
+      data[at][3]=cluster%2?'ACTIVE':'SECOND';
+      data[at][4]=cluster%2?'Handbook A':'Handbook B';
+    }
+    const ctx=setup(),{sh,log}=sheet(data);
+    const out=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true,SECOND:true},{});
+    if(out.mode!=='SPARSE'||out.rows.length<12||log.textRead>=data.length/3||
+      log.ranges.filter(r=>r[1]===9).length>14 ||
+      !out.rows.some(r=>r[3]==='ACTIVE')||!out.rows.some(r=>r[3]==='SECOND'))
+      throw Error('Dense multi-book selection was not bounded, fast to read, and source-diverse');
+  });
+  check('Live retrieval retries authoritative full text when sparse evidence is insufficient',()=>{
+    const ctx=setup(),{sh,log}=sheet(makeRows(160,8));
+    const lib={isLib:true,getLastRow:()=>2,getDataRange:()=>({getValues:()=>[
+      ['Source ID','Title','Category','Drive File ID','Author','Year','License','Version','Active'],
+      ['REF-A','Approved','Nursing','ACTIVE','','','','',true]]})};
+    ctx.sanitizeCellInput=x=>String(x||'');ctx.getCNEScheduleRecord=()=>({topic:'IV cannulation'});
+    ctx.checkCNEActionAuthorized=()=>null;ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Reference_Index'?sh:lib});
+    ctx.getHeaderMap=x=>x.isLib?{drivefileid:3,active:8}:headers;
+    ctx.cneReferenceChunkReadable_=s=>String(s||'').length>=90;
+    ctx.passesClinicalRelevanceGate=()=>true;ctx.cneAiSelectTopicEvidence_=arr=>arr.slice(0,12);
+    ctx.cneAiExpandObjectiveEvidence_=base=>({evidence:base,addedCount:0,perObjective:{}});
+    vm.runInNewContext(gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf(')),ctx,{timeout:3000});
+    const out=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{},{});
+    if(!out.success||out.indexSearchMode!=='FULL_RECALL_FALLBACK'||log.full!==1||out.evidence.length!==8)
+      throw Error('Insufficient shortlist failed to trigger full source recovery');
+  });
+  check('New nursing keywords are derived from actual clinical passage text',()=>{
+    const start=gas.indexOf('function cneReferenceClinicalKeywords_('),end=gas.indexOf('function cneAiIvCannulationStem_(',start);
+    const sandbox={};vm.runInNewContext(gas.slice(start,end),sandbox,{timeout:3000});
+    const found=sandbox.cneReferenceClinicalKeywords_(
+      'The nurse uses supplemental oxygen and pulse oximetry in respiratory assessment, with pressure injury prevention, fluid balance and wound assessment.');
+    for(const expected of ['oxygen therapy','pulse oximetry','respiratory assessment','pressure injuries','fluid balance','wound assessment'])
+      if(!found.includes(expected))throw Error('Omitted grounded nursing keyword: '+expected);
+    if(found.includes('blood transfusion')||found.includes('insulin administration'))
+      throw Error('Clinical keyword was invented without source passage support');
+  });
+  check('Index enhancements do not remove original authorized identity and evidence checks',()=>{
+    const src=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
+    const terms=['checkCNEActionAuthorized(session, record)','activeLibFiles[rowDriveId]',
+      'rowCneId === upperCneId','passesClinicalRelevanceGate(cleanTopic, uc)',
+      'passesClinicalRelevanceGate(cleanTopic, lc)','cneAiSelectTopicEvidence_',
+      'cneAiExpandObjectiveEvidence_','cneAiClinicalPassageScore_',
+      'cneAiReadTopicIndexRows_'];
+    for(const term of terms)if(!src.includes(term))throw Error('Retrieval authorization/verification step missing: '+term);
+  });
+  console.log('\n>>> Metadata-first source retrieval and semantic clinical chunking checks');
+  for(const item of checks){focusedChecks.push(item);try{item.test();focusedPassed++;console.log('✓ '+item.name);}catch(e){console.error('✗ '+item.name+': '+e.message);}}
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');

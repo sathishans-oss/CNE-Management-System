@@ -10577,7 +10577,31 @@ function cneReferenceClinicalKeywords_(value) {
     ['medication administration', /\\b(?:medication administration|drug administration)\\b/],
     ['dosage', /\\b(?:dosage|medication dose)\\b/],
     ['foley catheter', /\\b(?:foley catheter|urinary catheter)\\b/],
-    ['blood transfusion', /\\b(?:blood transfusion|packed red blood cells)\\b/]
+    ['blood transfusion', /\\b(?:blood transfusion|packed red blood cells)\\b/],
+    ['oxygen therapy', /\\b(?:oxygen therapy|supplemental oxygen|oxygen administration)\\b/],
+    ['pulse oximetry', /\\b(?:pulse oximetry|pulse oximeter|spo2)\\b/],
+    ['airway management', /\\b(?:airway management|airway clearance|maintain the airway)\\b/],
+    ['endotracheal suctioning', /\\b(?:endotracheal suction(?:ing)?|tracheal suctioning)\\b/],
+    ['mechanical ventilation', /\\bmechanical ventilation\\b/],
+    ['respiratory assessment', /\\b(?:respiratory assessment|respiratory rate|breath sounds)\\b/],
+    ['vital signs', /\\b(?:vital signs|vital sign monitoring)\\b/],
+    ['fall prevention', /\\b(?:fall prevention|fall risk|prevent falls)\\b/],
+    ['pressure injuries', /\\b(?:pressure injur(?:y|ies)|pressure ulcer(?:s)?)\\b/],
+    ['wound assessment', /\\b(?:wound assessment|wound healing|wound infection)\\b/],
+    ['pain management', /\\b(?:pain management|pain assessment|pain relief)\\b/],
+    ['fluid balance', /\\b(?:fluid balance|fluid intake and output|fluid restriction)\\b/],
+    ['electrolyte imbalance', /\\b(?:electrolyte imbalance|hyponatr(?:e|a)mia|hyperkal(?:e|a)mia)\\b/],
+    ['acid-base balance', /\\b(?:acid.base balance|metabolic acidosis|respiratory alkalosis)\\b/],
+    ['hypoglycemia', /\\b(?:hypoglyc(?:e|a)mia|low blood glucose)\\b/],
+    ['insulin administration', /\\b(?:insulin administration|insulin injection|insulin therapy)\\b/],
+    ['sepsis', /\\b(?:sepsis|septic shock)\\b/],
+    ['cardiac monitoring', /\\b(?:cardiac monitoring|electrocardiogram|ecg monitoring|ekg monitoring)\\b/],
+    ['blood pressure', /\\b(?:blood pressure|hypertension|hypotension)\\b/],
+    ['stroke', /\\b(?:stroke|cerebrovascular accident)\\b/],
+    ['seizure precautions', /\\b(?:seizure precaution|seizure disorder)\\b/],
+    ['enteral feeding', /\\b(?:enteral feeding|nasogastric feeding|tube feeding)\\b/],
+    ['patient education', /\\b(?:patient education|discharge teaching|patient teaching)\\b/],
+    ['postoperative care', /\\b(?:postoperative care|postoperative monitoring|postoperative complication)\\b/]
   ];
   var found = [];
   for (var k = 0; k < glossary.length && found.length < 12; k++) {
@@ -10656,6 +10680,51 @@ function cneAiSelectTopicEvidence_(evidence, hasOwnMaterial, topic) {
   return selected;
 }
 
+/**
+ * Section-aware windowing: prefer paragraph/sentence ends rather than
+ * mid-sentence character cuts. No AI rewriting and no invented source text.
+ * The short overlap is kept inside the same source section for continuity.
+ */
+function cneReferenceSemanticWindows_(text) {
+  var raw=String(text||'').trim(), output=[];
+  if(!raw)return output;
+  var target=1250,max=1450,overlap=110,pos=0;
+  while(pos<raw.length) {
+    var remaining=raw.length-pos;
+    if(remaining<=max){output.push(raw.substring(pos).trim());break;}
+    var floor=pos+Math.floor(target*.72),ceiling=Math.min(raw.length,pos+max);
+    var fragment=raw.substring(floor,ceiling),end=-1;
+    // Whole paragraph first. Keep full adjacent instructions together if they fit.
+    var paragraph=fragment.lastIndexOf('\\n\\n');
+    if(paragraph>=0)end=floor+paragraph+2;
+    if(end<0) {
+      var sentence=/[.!?](?:["'\\)\\]]*)\\s+(?=[A-Z(])/g,match;
+      while((match=sentence.exec(fragment))!==null)end=floor+match.index+match[0].length;
+    }
+    if(end<0){var space=fragment.lastIndexOf(' ');if(space>=0)end=floor+space+1;}
+    if(end<=pos)end=Math.min(pos+target,raw.length);
+    var part=raw.substring(pos,end).trim();if(part)output.push(part);
+    var next=end-overlap;
+    // Aim to begin the next window at a sentence or paragraph boundary. A
+    // duplicate complete sentence is safer than a fragment of a drug dose.
+    var boundaryStart=Math.max(pos+1,end-225),boundary=raw.substring(boundaryStart,end);
+    var foundBoundary=-1, matchBoundary, boundaryRegex=/[.!?]\\s+(?=[A-Z(])/g;
+    while((matchBoundary=boundaryRegex.exec(boundary))!==null){
+      var candidateStart=boundaryStart+matchBoundary.index+matchBoundary[0].length;
+      if(candidateStart<=end-35 && Math.abs(candidateStart-next)<85)foundBoundary=candidateStart;
+    }
+    if(foundBoundary>pos)next=foundBoundary;
+    else {
+      var paraBoundary=raw.lastIndexOf('\\n\\n',end-1);
+      if(paraBoundary>=next-70 && paraBoundary<end-30 && paraBoundary>pos)next=paraBoundary+2;
+      else while(next<end && next>pos && !/\\s/.test(raw.charAt(next-1)))next++;
+    }
+    if(next<=pos||next>=end)next=end;
+    pos=next;
+  }
+  return output;
+}
+
 function chunkReferenceLibraryContent(text, fileType, defaultTitle) {
   if (!text || typeof text !== 'string') return [];
   var clean = text.trim();
@@ -10716,7 +10785,7 @@ function chunkReferenceLibraryContent(text, fileType, defaultTitle) {
         currentAccumulator = para;
       } else {
         var combined = currentAccumulator ? (currentAccumulator + '\\n\\n' + para) : para;
-        var windows = splitTextIntoWindows(combined, 1200, 150);
+        var windows = cneReferenceSemanticWindows_(combined);
         for (var w = 0; w < windows.length - 1; w++) {
           chunks.push({
             topic: currentChapter,
@@ -10734,7 +10803,7 @@ function chunkReferenceLibraryContent(text, fileType, defaultTitle) {
   }
 
   if (chunks.length === 0) {
-    var fallbackWindows = splitTextIntoWindows(clean, 1200, 150);
+    var fallbackWindows = cneReferenceSemanticWindows_(clean);
     for (var f = 0; f < fallbackWindows.length; f++) {
       chunks.push({
         topic: fallbackTitle,
@@ -10757,7 +10826,7 @@ function flushAccumulatedRefText(chunks, chapter, section, text) {
       text: trimmed
     });
   } else {
-    var windows = splitTextIntoWindows(trimmed, 1200, 150);
+    var windows = cneReferenceSemanticWindows_(trimmed);
     for (var i = 0; i < windows.length; i++) {
       chunks.push({
         topic: chapter || 'General Reference',
@@ -12626,7 +12695,282 @@ function passesClinicalRelevanceGate(queryTopic, candidate) {
  * If no meaningful relevant material is found (score < sufficiency threshold),
  * returns INSUFFICIENT_TOPIC_MATERIAL.
  */
-function retrieveCNETopicEvidence(cneId, topic, session) {
+/**
+ * Objective-specific search over the ALREADY indexed and authorized clinical
+ * evidence pool. This does not access or send complete Google Drive PDFs.
+ * Two extra passages per objective, ten in all, with one spreadsheet read.
+ * The base twelve passages remain eligible so saved PLAN evidence IDs survive.
+ * Every supplemental passage must first pass the same topic relevance gate.
+ */
+function cneAiObjectiveSearchTokens_(objective) {
+  var common = {nursing:1,patient:1,patients:1,clinical:1,care:1,safely:1,safety:1,
+    describe:1,identify:1,explain:1,discuss:1,select:1,appropriate:1,correct:1,
+    recognize:1,apply:1,assess:1,understand:1,perform:1,demonstrate:1,
+    using:1,with:1,from:1,into:1,that:1,when:1,which:1,what:1,
+    procedure:1,process:1,nurse:1,role:1,importance:1,strategies:1,
+    preventive:1,intervention:1,interventions:1,management:1};
+  var raw=String(objective||'').toLowerCase().match(/[a-z]{4,}/g)||[];
+  var found={}, result=[];
+  for(var i=0;i<raw.length;i++) {
+    var t=raw[i];
+    if(common[t])continue;
+    // Small, stable morphology normalizer; not a request to Gemini to invent synonyms.
+    if(t.length>6 && /ing$/.test(t))t=t.slice(0,-3);
+    else if(t.length>6 && /ed$/.test(t))t=t.slice(0,-2);
+    else if(t.length>5 && /s$/.test(t))t=t.slice(0,-1);
+    if(!found[t]){found[t]=true;result.push(t);}
+  }
+  // Small clinician-reviewed equivalence map for common nursing terminology;
+  // tokens are SEARCH HINTS only and cannot bypass the original topic gate.
+  var equivalents={
+    cannulat:['catheter','venous','intravenous','venipuncture'],
+    intravenous:['venous','catheter','infusion','peripheral'],
+    aseptic:['antisepsis','infection','sterile','hygiene'],
+    antisepsis:['aseptic','disinfection','infection'],
+    infect:['aseptic','antisepsis','hygiene'],
+    infiltration:['extravasation','phlebitis','catheter'],
+    extravasation:['infiltration','intravenous','catheter'],
+    airway:['breathing','oxygenation','ventilation'],
+    oxygenation:['respiratory','oxygen','ventilation'],
+    positioning:['posture','turning','alignment'],
+    assessment:['observation','monitoring','evaluation']
+  };
+  var seed=result.slice(0,10);
+  seed.forEach(function(word){
+    Object.keys(equivalents).forEach(function(key){
+      if(word.indexOf(key)===0)equivalents[key].forEach(function(syn){
+        if(!found[syn]&&result.length<16){found[syn]=true;result.push(syn);}
+      });
+    });
+  });
+  return result.slice(0,16);
+}
+function cneAiObjectiveEvidenceScore_(objective, item) {
+  var tokens=cneAiObjectiveSearchTokens_(objective);
+  if(!tokens.length||!item)return 0;
+  var heading=(String(item.sectionHeading||'')+' '+String(item.clinicalKeywords||'')+' '+String(item.topic||'')).toLowerCase();
+  var passage=String(item.chunkText||'').toLowerCase();
+  var hits=0,score=0;
+  for(var i=0;i<tokens.length;i++) {
+    var token=tokens[i];
+    if(heading.indexOf(token)>=0){hits++;score+=4;}
+    else if(passage.indexOf(token)>=0){hits++;score+=2;}
+  }
+  // Generic single-word overlap is not evidence of the intended objective.
+  return hits<2 ? 0 : score;
+}
+function cneAiExpandObjectiveEvidence_(baseEvidence, eligibleEvidence, objectives) {
+  var selected=(baseEvidence||[]).slice(0,12), idSet={}, textSet={};
+  var result={evidence:selected,perObjective:{},addedCount:0};
+  selected.forEach(function(ev){idSet[String(ev.indexId)]=true;textSet[cneAiCitationText_(ev.chunkText)]=true;});
+  var objectiveList=Array.isArray(objectives)?objectives.slice(0,5):[];
+  for(var i=0;i<objectiveList.length;i++) {
+    var obj=objectiveList[i]||{}, oid=String(obj.objectiveId||'');
+    if(!/^OBJ_[1-5]$/.test(oid)||!String(obj.objective||'').trim())continue;
+    var ranked=[];
+    for(var j=0;j<eligibleEvidence.length;j++) {
+      var candidate=eligibleEvidence[j];
+      if(!candidate||!candidate.indexId||idSet[String(candidate.indexId)]||
+         (candidate.sourceType!=='UPLOADED_CNE'&&!cneReferenceChunkReadable_(candidate.chunkText)))continue;
+      var score=cneAiObjectiveEvidenceScore_(obj.objective,candidate);
+      if(score<6)continue;
+      ranked.push({item:candidate,score:score});
+    }
+    ranked.sort(function(a,b){return b.score-a.score||Number(b.item.relevanceScore||0)-Number(a.item.relevanceScore||0);});
+    var added=[], sourceSeen={};
+    selected.forEach(function(existing){sourceSeen[String(existing.resourceTitle||'').toLowerCase()]=true;});
+    // Prefer a different approved reference if its objective match is competitive.
+    for(var n=0;n<2 && ranked.length;n++) {
+      var choice=-1;
+      for(var v=0;v<ranked.length;v++) {
+        var r=ranked[v], label=String(r.item.resourceTitle||'').toLowerCase();
+        if(!sourceSeen[label] && r.score>=ranked[0].score-2) {choice=v;break;}
+      }
+      if(choice<0)choice=0;
+      var picked=ranked.splice(choice,1)[0].item, key=cneAiCitationText_(picked.chunkText);
+      if(idSet[String(picked.indexId)]||textSet[key]) {n--;continue;}
+      selected.push(picked);idSet[String(picked.indexId)]=true;textSet[key]=true;
+      sourceSeen[String(picked.resourceTitle||'').toLowerCase()]=true;
+      added.push(String(picked.indexId));result.addedCount++;
+      ranked=ranked.filter(function(entry){return !idSet[String(entry.item.indexId)];});
+    }
+    result.perObjective[oid]=added;
+    if(selected.length>=22)break;
+  }
+  return result;
+}
+/** Rebind only to an approved, better-matching indexed passage; validation remains unchanged. */
+function cneAiChooseObjectiveEvidence_(objectives, evidence, supplementalIds) {
+  var lookup={};(evidence||[]).forEach(function(e){lookup[String(e.indexId)]=e;});
+  return (objectives||[]).map(function(obj) {
+    var original=lookup[obj.evidenceId];
+    var best=original, score=cneAiObjectiveEvidenceScore_(obj.objective,original);
+    var choices=supplementalIds&&supplementalIds[obj.objectiveId]||[];
+    choices.forEach(function(id){
+      var candidate=lookup[id],candidateScore=cneAiObjectiveEvidenceScore_(obj.objective,candidate);
+      if(candidate && candidateScore>=6 && candidateScore>score+2){best=candidate;score=candidateScore;}
+    });
+    return {objectiveId:obj.objectiveId,objective:obj.objective,
+      evidenceId:best?String(best.indexId):obj.evidenceId};
+  });
+}
+
+/**
+ * Read a metadata-only catalog first, then fetch source text for a bounded
+ * shortlist.  No cache is kept: the active-file register and extraction status
+ * are checked on EVERY request so disabling a book takes effect immediately.
+ *
+ * For topics spread over too many noncontiguous sheet ranges, or where the
+ * metadata shortlist could exclude text-only hits, fall back to the original
+ * one-call full-sheet read rather than silently reducing evidence coverage.
+ */
+function cneAiReadTopicIndexRows_(sheet, headerMap, topic, cneId, activeLibFiles, options) {
+  var lastRow=sheet.getLastRow(), width=sheet.getLastColumn(), count=lastRow-1;
+  var textIndex=headerMap['chunktext'];
+  var required=['indexid','sourcetype','cneid','drivefileid','resourcetitle',
+    'topic','sectionheading','clinicalkeywords','extractionstatus'];
+  var valid=(typeof textIndex==='number' && textIndex>=0 && textIndex<width && width<=40);
+  for(var x=0;x<required.length;x++)if(typeof headerMap[required[x]]!=='number')valid=false;
+  function original(reason) {return {rows:sheet.getDataRange().getValues(),mode:'FULL_'+reason};}
+  if(!valid || count<80) return original('SMALL_OR_SCHEMA');
+
+  // Columns physically before and after Chunk Text; never pull the huge text
+  // column during the first stage. All indexes remain 0-based, as in getHeaderMap.
+  var left=textIndex?sheet.getRange(2,1,count,textIndex).getValues():null;
+  var right=textIndex<width-1?sheet.getRange(2,textIndex+2,count,width-textIndex-1).getValues():null;
+  var scores=[], eligible=0, cneUpper=String(cneId||'').toUpperCase();
+  var objectives=options&&Array.isArray(options.objectives)?options.objectives.slice(0,5):[];
+  var statusCol=headerMap['extractionstatus'], typeCol=headerMap['sourcetype'];
+  var cneCol=headerMap['cneid'], driveCol=headerMap['drivefileid'];
+  function getMeta(rowIndex,col) {
+    return col<textIndex?left[rowIndex][col]:col>textIndex?right[rowIndex][col-textIndex-1]:'';
+  }
+  for(var r=0;r<count;r++) {
+    if(String(getMeta(r,statusCol)||'').trim().toUpperCase()!=='SUCCESS')continue;
+    var source=String(getMeta(r,typeCol)||'').trim().toUpperCase();
+    if(source==='UPLOADED_CNE') {
+      if(String(getMeta(r,cneCol)||'').trim().toUpperCase()!==cneUpper)continue;
+    } else if(source==='LOCAL_REFERENCE_LIB') {
+      if(!activeLibFiles[String(getMeta(r,driveCol)||'').trim()])continue;
+    } else continue;
+    eligible++;
+    var candidate={resourceTitle:String(getMeta(r,headerMap['resourcetitle'])||''),
+      topic:String(getMeta(r,headerMap['topic'])||''),
+      sectionHeading:String(getMeta(r,headerMap['sectionheading'])||''),
+      clinicalKeywords:String(getMeta(r,headerMap['clinicalkeywords'])||''),chunkText:''};
+    var score=calculateTopicRelevanceScore(topic,candidate);
+    if(score<=0)continue;
+    var objectiveBonus=0;
+    for(var q=0;q<objectives.length;q++){
+      objectiveBonus=Math.max(objectiveBonus,cneAiObjectiveEvidenceScore_(objectives[q].objective,candidate));
+    }
+    scores.push({rowIndex:r,score:score+Math.min(objectiveBonus,32),
+      bucket:String(getMeta(r,driveCol)||source)+'_'+Math.floor(r/28)});
+  }
+  // Metadata can be insufficient, especially for older imported workbooks with
+  // generic chapter headings and blank keywords. Scan the full text rather than
+  // declaring an otherwise indexed clinical topic absent.
+  if(scores.length<8 && eligible>scores.length) return original('LOW_METADATA_RECALL');
+  if(!scores.length) return {rows:[],mode:'EMPTY',eligibleCount:eligible};
+  scores.sort(function(a,b){return b.score-a.score||a.rowIndex-b.rowIndex;});
+  var limit=objectives.length===5?96:56;
+  var chosen=[], picked={}, perBucket={};
+  // Distribute reads across chapters, page neighborhoods and approved books
+  // so generic headings cannot occupy the complete text-read budget.
+  for(var round=1;round<=14 && chosen.length<limit;round++) {
+    for(var n=0;n<scores.length && chosen.length<limit;n++) {
+      var entry=scores[n], b=entry.bucket;
+      if(picked[entry.rowIndex] || (perBucket[b]||0)>=round*2)continue;
+      chosen.push(entry.rowIndex);picked[entry.rowIndex]=true;
+      perBucket[b]=(perBucket[b]||0)+1;
+    }
+  }
+  chosen.sort(function(a,b){return a-b;});
+  var windows=[];
+  for(var i=0;i<chosen.length;i++) {
+    var at=chosen[i], current=windows[windows.length-1];
+    if(current && at-current.end<=10 && at-current.start<64)current.end=at;
+    else windows.push({start:at,end:at});
+  }
+  // When matches span many areas of two large textbooks, retain the best
+  // *dense* page-neighborhoods from multiple approved sources. Fall back to a
+  // full scan when a 14-range shortlist would discard most possible matches.
+  if(windows.length>14) {
+    var scoreLookup={};
+    scores.forEach(function(entry){scoreLookup[entry.rowIndex]=entry.score;});
+    windows.forEach(function(win){
+      var hits=0,maxScore=0,source='';
+      for(var k=0;k<chosen.length;k++)if(chosen[k]>=win.start&&chosen[k]<=win.end){
+        hits++;maxScore=Math.max(maxScore,scoreLookup[chosen[k]]||0);
+        if(!source)source=String(getMeta(chosen[k],driveCol)||'UPLOADED_CNE');
+      }
+      win.hits=hits;win.source=source;
+      win.rank=maxScore+Math.min(hits,8)*10;
+    });
+    var byRank=windows.slice().sort(function(a,b){return b.rank-a.rank||a.start-b.start;});
+    var kept=[],selectedWindows={};
+    // Give each competitive source one range before filling remaining slots.
+    var sourcesUsed={};
+    for(var s=0;s<byRank.length&&kept.length<14;s++) {
+      var src=byRank[s].source;
+      if(!sourcesUsed[src]){kept.push(byRank[s]);sourcesUsed[src]=true;selectedWindows[byRank[s].start]=true;}
+    }
+    for(var b=0;b<byRank.length&&kept.length<14;b++) {
+      if(!selectedWindows[byRank[b].start]){
+        kept.push(byRank[b]);selectedWindows[byRank[b].start]=true;
+      }
+    }
+    var reduced=chosen.filter(function(row){
+      for(var c=0;c<kept.length;c++)if(row>=kept[c].start&&row<=kept[c].end)return true;
+      return false;
+    });
+    // Aggressive compression cannot silently suppress clinical evidence.
+    if(reduced.length<12||reduced.length<chosen.length*0.40||reduced.length/kept.length<1.7) return original('SCATTERED');
+    chosen=reduced;
+    windows=kept.sort(function(a,b){return a.start-b.start;});
+  }
+  var textByRow={};
+  for(var w=0;w<windows.length;w++) {
+    var range=windows[w], block=sheet.getRange(range.start+2,textIndex+1,
+      range.end-range.start+1,1).getValues();
+    for(var b=0;b<block.length;b++) textByRow[range.start+b]=block[b][0];
+  }
+  var result=[];
+  for(var z=0;z<chosen.length;z++) {
+    var rowAt=chosen[z], data=new Array(width);
+    for(var col=0;col<width;col++)data[col]=col===textIndex?textByRow[rowAt]:getMeta(rowAt,col);
+    data.__sheetRow=rowAt+2;
+    result.push(data);
+  }
+  return {rows:result,mode:'SPARSE',eligibleCount:eligible,metadataMatches:scores.length};
+}
+
+/** Rank the clinical *passage* more strongly than repeated chapter metadata.
+ * A matching chapter title alone is not strong evidence for a narrow question.
+ * This is a ranking adjustment, NOT a bypass of the existing clinical gate.
+ */
+function cneAiClinicalPassageScore_(queryTopic,candidate,baseScore) {
+  var content=String(candidate&&candidate.chunkText||'').toLowerCase();
+  var query=String(queryTopic||'').toLowerCase().trim();
+  var headline=String(candidate&&candidate.sectionHeading||'').toLowerCase().trim();
+  var genericTopic=String(candidate&&candidate.topic||'').toLowerCase().trim();
+  if(!content || !query)return Number(baseScore)||0;
+  var tokens=cneAiObjectiveSearchTokens_(query);
+  var relevant=0;
+  for(var k=0;k<tokens.length;k++){
+    if(content.indexOf(tokens[k])>=0) relevant++;
+  }
+  var score=Number(baseScore)||0;
+  if(content.indexOf(query)>=0)score+=36;
+  score+=Math.min(relevant,5)*12;
+  if(!relevant && content.indexOf(query)<0)score-=65;
+  // Repeated chapter-only metadata should not overwhelm passage matches from
+  // genuine subsections; do not penalize a meaningful, distinct heading.
+  if(headline===genericTopic && headline.length>3)score-=20;
+  return Math.max(0,score);
+}
+
+function retrieveCNETopicEvidence(cneId, topic, session, options) {
   var cleanCneId = sanitizeCellInput(cneId);
   var cleanTopic = sanitizeCellInput(topic);
 
@@ -12698,9 +13042,12 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
     activeLibFiles = {};
   }
 
-  // Read all index rows in one single sheet call
+  // Metadata-first bounded text loading with safe legacy full-scan fallback.
   var idxMap = getHeaderMap(indexSheet);
-  var idxData = indexSheet.getDataRange().getValues();
+  var indexRead = options && options.forceFullIndexRead
+    ? {rows:indexSheet.getDataRange().getValues(),mode:'FULL_RECALL_FALLBACK'}
+    : cneAiReadTopicIndexRows_(indexSheet,idxMap,cleanTopic,cleanCneId,activeLibFiles,options);
+  var idxData = indexRead.rows;
 
   var idCol = idxMap['indexid'] !== undefined ? idxMap['indexid'] : 0;
   var srcTypeCol = idxMap['sourcetype'] !== undefined ? idxMap['sourcetype'] : 1;
@@ -12719,7 +13066,7 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
 
   var upperCneId = cleanCneId.toUpperCase();
 
-  for (var r = 1; r < idxData.length; r++) {
+  for (var r = indexRead.mode.indexOf('FULL_')===0 ? 1 : 0; r < idxData.length; r++) {
     var status = String(idxData[r][statusCol] || '').trim().toUpperCase();
     if (status !== 'SUCCESS' || (String(idxData[r][srcTypeCol] || '').trim().toUpperCase() === 'LOCAL_REFERENCE_LIB' && !cneReferenceChunkReadable_(idxData[r][textCol]))) continue;
 
@@ -12728,7 +13075,7 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
     var rowDriveId = String(idxData[r][driveFileIdCol] || '').trim();
 
     var candidate = {
-      indexId: String(idxData[r][idCol] || ('IDX_' + r)),
+      indexId: String(idxData[r][idCol] || ('IDX_' + (idxData[r].__sheetRow || (r+1)))),
       sourceType: srcType,
       resourceTitle: String(idxData[r][resTitleCol] || ''),
       topic: String(idxData[r][topicCol] || ''),
@@ -12756,7 +13103,7 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
     var uc = uploadedCandidates[u];
     var score = calculateTopicRelevanceScore(cleanTopic, uc);
     if (score > 0 && passesClinicalRelevanceGate(cleanTopic, uc)) {
-      uc.relevanceScore = score;
+      uc.relevanceScore = cneAiClinicalPassageScore_(cleanTopic,uc,score);
       scoredUploaded.push(uc);
     }
   }
@@ -12766,9 +13113,20 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
     var lc = libraryCandidates[l];
     var libScore = calculateTopicRelevanceScore(cleanTopic, lc);
     if (libScore > 0 && passesClinicalRelevanceGate(cleanTopic, lc)) {
-      lc.relevanceScore = libScore;
+      lc.relevanceScore = cneAiClinicalPassageScore_(cleanTopic,lc,libScore);
       scoredLibrary.push(lc);
     }
+  }
+
+  // Sparse catalog search is an optimization, not a change in evidence
+  // availability: retry with the authoritative full scan if it produces too
+  // little verified evidence. This handles indexed books with weak metadata.
+  var minVerifiedCandidates = options && Array.isArray(options.objectives) && options.objectives.length===5 ? 15 : 12;
+  if (indexRead.mode==='SPARSE' && scoredUploaded.length+scoredLibrary.length<minVerifiedCandidates &&
+      indexRead.eligibleCount>idxData.length) {
+    var fallbackOptions=options?Object.assign({},options):{};
+    fallbackOptions.forceFullIndexRead=true;
+    return retrieveCNETopicEvidence(cleanCneId,cleanTopic,session,fallbackOptions);
   }
 
   // Sort each list descending by relevance score
@@ -12782,6 +13140,12 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
 
   // Source ordering: relevant UPLOADED_CNE chunks first, followed by relevant LOCAL_REFERENCE_LIB chunks
   var totalEvidence = cneAiSelectTopicEvidence_(scoredUploaded.concat(scoredLibrary), scoredUploaded.length > 0, cleanTopic);
+  var expansion = null;
+  if (options && Array.isArray(options.objectives) && options.objectives.length === 5 && totalEvidence.length) {
+    // Strictly reuse the original topic gate; objective words cannot admit unrelated medical passages.
+    expansion=cneAiExpandObjectiveEvidence_(totalEvidence,scoredUploaded.concat(scoredLibrary),options.objectives);
+    totalEvidence=expansion.evidence;
+  }
 
   if (totalEvidence.length === 0) {
     return {
@@ -12797,6 +13161,8 @@ function retrieveCNETopicEvidence(cneId, topic, session) {
     cneId: cleanCneId,
     topic: cleanTopic,
     totalEvidenceChunks: totalEvidence.length,
+    indexSearchMode: indexRead.mode,
+    expansionAudit: expansion ? {addedCount:expansion.addedCount,perObjective:expansion.perObjective} : null,
     uploadedCount: scoredUploaded.length,
     libraryCount: scoredLibrary.length,
     evidence: totalEvidence.map(function(c) {
@@ -14449,7 +14815,9 @@ function handleValidateAiQuotaReservation(params, session) {
 
   // Retrieve relevant topic evidence using the approved Phase 4C/4D.1 pipeline:
   // Priority 1: UPLOADED_CNE, Priority 2: LOCAL_REFERENCE_LIB
-  var topicEvidenceResult = retrieveCNETopicEvidence(cneId, record.topic, session);
+  var topicEvidenceResult = params.preparedBlueprint && Array.isArray(params.preparedBlueprint) && params.preparedBlueprint.length === 5
+    ? retrieveCNETopicEvidence(cneId,record.topic,session,{objectives:params.preparedBlueprint})
+    : retrieveCNETopicEvidence(cneId, record.topic, session);
   var retrievedEvidenceChunks = (topicEvidenceResult && topicEvidenceResult.success && topicEvidenceResult.evidence)
     ? topicEvidenceResult.evidence
     : [];
@@ -14568,7 +14936,8 @@ function handleValidateAiQuotaReservation(params, session) {
         hasOwnMaterial: Boolean(dFileId || refTxt.length >= 15),
         learningResourceMetadata: authoritativeExtracted || null,
         generationSource: 'MATERIAL',
-        retrievedEvidence: retrievedEvidenceChunks
+        retrievedEvidence: retrievedEvidenceChunks,
+        evidenceExpansionAudit: topicEvidenceResult && topicEvidenceResult.expansionAudit || null
       }
     };
   } finally {
@@ -14896,7 +15265,7 @@ function generateAiQuestionsInternal(params, session) {
     authoritativeMaterial = goodEvidence.map(function(ev) {return '[Evidence ID: ' + ev.indexId + ']\\nSource: ' + ev.resourceTitle + ' - ' + ev.sectionHeading + '\\n' + ev.chunkText;}).join('\\n\\n');
   }
   if (!authoritativeMaterial || authoritativeMaterial.length < 15) return {success:false,errorCode:'NO_RELEVANT_LIBRARY_CONTENT',message:'No sufficiently relevant learning material was found. Upload topic material to continue.'};
-  updateCNEAiProgress_(cneId, session, 3, 'Checking evidence against the exact CNE topic.');
+  updateCNEAiProgress_(cneId, session, 3, params.preparedBlueprint ? 'Searching additional indexed passages for five objectives.' : 'Checking evidence against the exact CNE topic.');
 
   // 2. Resolve Gemini API Key from Script Properties
   var props = PropertiesService.getScriptProperties();
@@ -14963,6 +15332,21 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
   if (!plan.success) return {success:false,errorCode:'AI_BLUEPRINT_FAILED',message:'AI could not plan five distinct, verifiable learning objectives ('+plan.code+'). No questions were saved. Retry with the library or provide additional CNE material.'};
   var objectives = plan.objectives;
   if (params.planOnly) return {success:true,data:{objectives:objectives},planned:true};
+  // The original plan remains verifiable against the initial twelve chunks.
+  // Supplemental passages are searched only in FINISH, and backend re-binding
+  // is restricted to the objective's approved supplemental Index IDs.
+  var audit=valData.evidenceExpansionAudit || {addedCount:0,perObjective:{}};
+  objectives=cneAiChooseObjectiveEvidence_(objectives,retrievedEvidence,audit.perObjective);
+  try {
+    var details=objectives.map(function(o) {
+      var source=retrievedEvidence.filter(function(e){return String(e.indexId)===o.evidenceId;})[0];
+      return o.objectiveId+':'+o.evidenceId+'@'+String(source&&source.resourceTitle||'SESSION_CNE').slice(0,70);
+    }).join('; ');
+    logAuditAction('AI_EVIDENCE_COVERAGE',session.employeeId,
+      'CNE '+cneId+' initial retrieval cap 12; objective expansion '+Number(audit.addedCount||0)+
+      ' additional indexed passages; verified objective sources '+details,'SUCCESS');
+  } catch(auditError) {console.warn('Evidence audit unavailable: '+auditError);}
+
   var byId={}; retrievedEvidence.forEach(function(ev){byId[String(ev.indexId)]=ev;});
   var spansByObjective={};
   var objectiveEvidence=objectives.map(function(obj) {
@@ -15039,8 +15423,28 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
       status:'ACTIVE',isFinalized:false
     }};
   }
+  var evidenceRebindUsed={};
   function repairOneCandidate(failure) {
     var index=failure.position, obj=objectives[index];
+    // If the originally selected passage fails evidence support, a single
+    // corrective question may use an already screened alternative for THIS
+    // objective. Never expand the source set or invent evidence in the repair.
+    var needsAlternative=/^(?:ANSWER_NOT_SUPPORTED|QUOTE_NOT_FOUND|QUOTE_TOO_SHORT|CLINICAL_CONTRADICTION|NUMERIC_MISMATCH|TOPIC_EVIDENCE_MISMATCH|SOURCE_MISMATCH|UNVERIFIED_SOURCE)$/.test(String(failure.validationReason||''));
+    if(needsAlternative && !evidenceRebindUsed[obj.objectiveId]) {
+      var choices=audit.perObjective && audit.perObjective[obj.objectiveId] || [];
+      for(var alt=0;alt<choices.length;alt++) {
+        var next=byId[choices[alt]];
+        if(!next || String(next.indexId)===obj.evidenceId ||
+           cneAiObjectiveEvidenceScore_(obj.objective,next)<6)continue;
+        obj.evidenceId=String(next.indexId);
+        spansByObjective[obj.objectiveId]=cneAiVerifiedSpans_(String(next.chunkText||''),obj.objectiveId);
+        evidenceRebindUsed[obj.objectiveId]=true;
+        try {logAuditAction('AI_EVIDENCE_REBIND',session.employeeId,
+          'CNE '+cneId+' '+obj.objectiveId+' switched to approved '+obj.evidenceId+' after '+failure.validationReason,'WARNING');}
+        catch(auditError) {}
+        break;
+      }
+    }
     var prior=validatedQuestions.map(function(q){return q.questionText;});
     var ev=byId[obj.evidenceId];
     var correctSource=ev ? (ev.resourceTitle+(ev.sectionHeading?' - '+ev.sectionHeading:'')) : ('Verified CNE Session: '+authoritativeTopic);
