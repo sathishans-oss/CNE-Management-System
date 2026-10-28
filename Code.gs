@@ -16932,7 +16932,11 @@ function handleSaveCNEQuestions(params, session) {
         isFinalized: item.isFinalized,
         isLocked: 'NO',
         createdAt: now,
-        createdBy: session.employeeId,
+        // Immutable creator/provenance: AI [AI:<reservation>] and Question Bank
+        // [QB:<source>] tags belong to the existing server-side row, never to
+        // editable client data. Preserve them for resumable AI slot reconciliation.
+        createdBy: existingRowValues && String(existingRowValues[cols.createdBy] || '').trim()
+          ? existingRowValues[cols.createdBy] : session.employeeId,
         authoritativeSource: item.authoritativeSource,
         status: item.status
       }, data[0].length, existingRowValues);

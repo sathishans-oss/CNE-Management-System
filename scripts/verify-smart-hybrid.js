@@ -76,6 +76,38 @@ export const hybridChecks=[
  {name:'Four validated AI Drafts do not deduct generation quota',run(){const {ctx,q,quota}=fixture();for(let i=1;i<=4;i++){const r=ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_'+i,'TOK',DISTINCT_STEMS[i-1])],session);assert(r.success,'Partial slot '+i+' not saved: '+r.errorCode);}assert(q.rows.length===5&&Number(quota.rows[1][2])===0,'Incomplete batch used quota');}},
  {name:'Fifth validated objective commits exactly one quota allowance with readback',run(){const {ctx,q,quota}=fixture();for(let i=1;i<=5;i++){const result=ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_'+i,'TOK',DISTINCT_STEMS[i-1])],session);assert(result.success,'Slot '+i+' failed '+result.errorCode);if(i<5)assert(!result.data.completed,'Early completion');}assert(q.rows.length===6 && Number(quota.rows[1][2])===1 && quota.rows[1][8]==='TOK','Complete batch did not mark USED');}},
  {name:'Existing AI partial session retains source token and missing slot map',run(){const {ctx}=fixture();ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_1')],session);const res=ctx.cneHybridGetSlots_('CNE-123','TOK');assert(res.success&&res.data.length===1&&res.data[0].objectiveId==='OBJ_1','Original objective slot missing');}},
+ {name:'Edited partial AI Drafts retain immutable provenance and resume remaining objectives exactly once',run(){
+    const {ctx,q,quota}=fixture();
+    for(let i=1;i<=2;i++)assert(ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_'+i,'TOK',DISTINCT_STEMS[i-1])],session).success,'Failed initial partial '+i);
+    const originalRows=q.rows.slice(1).map(row=>row.slice());
+    const edited=originalRows.map((row,i)=>({id:row[1],question:row[2],options:{A:row[3],B:row[4],C:row[5],D:row[6]},correctOption:row[7],explanation:i===0?'Educator reviewed the IV site assessment and documented supporting clinical rationale.':row[8],authoritativeSource:row[13],isFinalized:false}));
+    const saved=ctx.handleSaveCNEQuestions({cneId:'CNE-123',questions:edited},session);
+    assert(saved.success,'Educator edit did not save');
+    for(let i=0;i<2;i++){
+      assert(q.rows[i+1][12]===originalRows[i][12] && q.rows[i+1][12]==='EDUCATOR-1 [AI:TOK]','AI session ownership marker lost');
+      assert(q.rows[i+1][11]===originalRows[i][11] && q.rows[i+1][13]===originalRows[i][13],'AI created timestamp or clinical citation lost');
+    }
+    assert(q.rows[1][8]===edited[0].explanation,'Educator-reviewed edit did not persist');
+    const slots=ctx.cneHybridGetSlots_('CNE-123','TOK');
+    assert(slots.success && slots.data.length===2 && slots.data[0].objectiveId==='OBJ_1' && slots.data[1].objectiveId==='OBJ_2','Previously saved objectives disappeared on edit');
+    assert(Number(quota.rows[1][2])===0,'Editing partial questions consumed AI generation allowance');
+    for(let i=3;i<=5;i++){
+      const resumed=ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_'+i,'TOK',DISTINCT_STEMS[i-1])],session);
+      assert(resumed.success && resumed.data.savedCount===i,'Could not resume missing objective '+i+': '+resumed.errorCode);
+    }
+    assert(q.rows.length===6 && Number(quota.rows[1][2])===1 && quota.rows[1][8]==='TOK','Resumption duplicated a slot or did not commit one quota');
+    const replay=ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_1','TOK',DISTINCT_STEMS[0])],session);
+    assert((replay.success || replay.errorCode==='INVALID_RESERVATION') && q.rows.length===6 && Number(quota.rows[1][2])===1,'Replayed saved AI slot duplicated rows or consumed quota twice');
+  }},
+ {name:'Editing imported Question Bank Draft preserves immutable textbook source marker and original author',run(){
+    const {ctx,q}=fixture();
+    assert(ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session).success,'Question Bank source import failed');
+    const original=q.rows[1].slice();
+    const edited={id:original[1],question:original[2],options:{A:original[3],B:original[4],C:original[5],D:original[6]},correctOption:original[7],explanation:'Educator reviewed this textbook rationale and verified the selection assessment.',authoritativeSource:original[13],isFinalized:false,createdBy:'UNTRUSTED-CLIENT'};
+    assert(ctx.handleSaveCNEQuestions({cneId:'CNE-123',questions:[edited]},session).success,'Question Bank draft edit failed');
+    assert(q.rows[1][12]===original[12] && q.rows[1][12].includes('[QB:REF-001]'),'Imported textbook attribution was overwritten');
+    assert(q.rows[1][11]===original[11] && q.rows[1][13]===original[13] && q.rows[1][8]===edited.explanation,'Question Bank source or edit was lost');
+  }},
  {name:'Partial recovery does not request fresh PLAN or a new reservation token',run(){assert(gas.includes("['PLANNED','PARTIAL_SUCCESS'].indexOf(current.state)===-1")&&gas.includes('cneHybridRenewReservation_(cneId,reservationToken,session)')&&gas.includes('missingObjectiveIds:phase===\'FINISH\''),'Unsafe second AI reservation or missing-slot recovery');}},
  {name:'UI supports generic Question Bank, Saved Drafts, quota-safe partial recovery and ten question cap',run(){for(const term of ['Institutional Question Bank','Save Drafts','partialAiCount','Resume AI Generation','validFinalized.length>10','Question Bank'])assert(MODAL.includes(term),'UI missing '+term);}},
  {name:'TypeScript API exposes bank search and authorized Draft import',run(){const api=readFileSync(join(ROOT,'src/services/api.ts'),'utf8');assert(TYPES.includes('export interface CNEReferenceBankItem')&&api.includes("'importCNEReferenceQuestion'")&&api.includes("'searchCNEReferenceQuestions'"),'Typed API unavailable');}},
