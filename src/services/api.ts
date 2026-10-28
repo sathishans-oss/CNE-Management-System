@@ -962,7 +962,8 @@ export class ApiService {
     return this.executeAction<Employee[]>('getOfficersDropdown', params);
   }
 
-  static async getAreas(): Promise<ApiResponse<Area[]>> {
+  static async getAreas(forceFresh = false): Promise<ApiResponse<Area[]>> {
+    if (forceFresh) this.invalidateCache('getAreas');
     const now = Date.now();
     if (_cachedAreasMem && _cachedAreasMem.expiresAt > now) {
       return { success: true, data: _cachedAreasMem.data.map((a) => ({ ...a })) };
@@ -970,7 +971,7 @@ export class ApiService {
     if (_inFlightAreasPromise) {
       return _inFlightAreasPromise;
     }
-    _inFlightAreasPromise = this.executeAction<Area[]>('getAreas')
+    _inFlightAreasPromise = this.executeAction<Area[]>('getAreas', forceFresh ? { forceFresh: true } : undefined)
       .then((res) => {
         if (res.success && Array.isArray(res.data)) {
           _cachedAreasMem = {

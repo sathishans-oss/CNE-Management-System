@@ -58,10 +58,12 @@ export async function loadOfficersSingleFlight(force: boolean = false, cneId?: s
         cachedOfficers = res.data;
         return res.data;
       }
-      return cachedOfficers || [];
+      if (cachedOfficers && cachedOfficers.length > 0) return cachedOfficers;
+      throw new Error(res.message || 'Resource Person roster is empty or unavailable.');
     } catch (err) {
       console.error('[officerLoader] Error fetching officers dropdown:', err);
-      return cachedOfficers || [];
+      if (cachedOfficers && cachedOfficers.length > 0) return cachedOfficers;
+      throw err;
     } finally {
       inFlightOfficersPromise = null;
     }

@@ -117,8 +117,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [checkingMaterial, setCheckingMaterial] = useState(false);
   const materialRequestRef = useRef(0);
   const materialCheckRef = useRef(false);
+  const initialMaterialPresenceRef = useRef<boolean | null>(null);
   const [failureDialog, setFailureDialog] = useState<{
-    title: string; message: string; type: 'material' | 'validation' | 'technical'; retrySafe: boolean;
+    title: string; message: string; type: 'material' | 'validation' | 'technical'; retrySafe: boolean; retryAction?: 'material-check' | 'generation';
   } | null>(null);
   const [generationElapsedSeconds, setGenerationElapsedSeconds] = useState(0);
   const progressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -133,7 +134,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   ];
   const stopProgressPolling = () => { if (progressPollRef.current) clearInterval(progressPollRef.current); progressPollRef.current = null; };
 
-  // Authoritative AI generation quota; CNE material is checked on demand.
+  // Authoritative AI generation quota; lightweight material presence is checked on first opening.
   const [quotaInfo, setQuotaInfo] = useState<CNEAiQuotaInfo | null>(null);
 
   const { success, error, warning } = useToast();
@@ -146,6 +147,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     bankRequestRef.current += 1;
     setBankMatches([]);setBankSearched(false);setBankOpen(false);setBankError(null);setBankLoading(false);setPartialAiCount(0);
     materialCheckRef.current = false;
+    initialMaterialPresenceRef.current = null;
     generationRequestRef.current += 1;
     stopProgressPolling();
     generatingRef.current = false;
@@ -172,6 +174,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const quotaRequestId = ++quotaRequestRef.current;
     void loadQuestions(questionRequestId, cneId);
     void loadQuota(quotaRequestId, cneId);
+    // Lightweight presence check once when the AI page opens (no evidence extraction).
+    // The Generate action uses this result; a failed check is retryable.
+    void loadMaterialStatus(++materialRequestRef.current, cneId);
     // A blueprint may have been completed after an earlier browser timeout.
     // Offer an explicit Resume action; do not re-reserve quota or auto-generate.
     void ApiService.getCNEAiJobStatus(cneId).then(job => {
@@ -238,8 +243,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     }
   };
 
-  // On-demand material-status check. Keep the backend's permission, material and
-  // library-consent checks authoritative; no material request runs on page opening.
+  // Lightweight material presence check at page opening; detailed extraction is deferred.
+  // The backend remains authoritative for permission, evidence and library consent.
   const loadMaterialStatus = async (requestId = ++materialRequestRef.current, targetCneId = cneId): Promise<boolean | null> => {
     materialCheckRef.current = true;
     setCheckingMaterial(true);
@@ -251,18 +256,21 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           title: 'Unable to Check Learning Material',
           message: status.message || 'The CNE material status is unavailable. Please try again.',
           type: 'technical',
-          retrySafe: true
+          retrySafe: true,
+          retryAction: 'material-check'
         });
         return null;
       }
-      return Boolean(status.data.hasOwnMaterial);
+      initialMaterialPresenceRef.current = Boolean(status.data.hasOwnMaterial);
+      return initialMaterialPresenceRef.current;
     } catch (e: any) {
       if (requestId === materialRequestRef.current && targetCneId === currentCneIdRef.current) {
         setFailureDialog({
           title: 'Unable to Check Learning Material',
           message: e?.message || 'The material check could not be completed. Please try again.',
           type: 'technical',
-          retrySafe: true
+          retrySafe: true,
+          retryAction: 'material-check'
         });
       }
       return null;
@@ -358,12 +366,13 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   const requestAiGeneration = async () => {
     if (!canInteractWithQuestionTools || materialCheckRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
-    // Check material only when Generate is clicked; its state may have changed
-    // since the page opened. Never interpret a failed check as permission to
-    // search the library. Server-side permission and consent checks remain mandatory.
+    // Reuse the lightweight initial presence check; retry only if it failed.
+    // The backend revalidates permissions, sources and library consent during generation.
     setFailureDialog(null);
-    void searchBank(false); // Read-only discovery runs while material availability is checked.
-    const own = await loadMaterialStatus(++materialRequestRef.current, cneId);
+    void searchBank(false);
+    const own = initialMaterialPresenceRef.current !== null
+      ? initialMaterialPresenceRef.current
+      : await loadMaterialStatus(++materialRequestRef.current, cneId);
     if (own === null || currentCneIdRef.current !== cneId) return;
     if (!own) { setMaterialChoice('confirm'); return; }
     await handleGenerateAi(false);
@@ -1266,7 +1275,14 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 {failureDialog.type === 'material' || failureDialog.type === 'validation' ? (
                   <button type="button" onClick={() => { setFailureDialog(null); if (onNavigateToMaterial) onNavigateToMaterial(); else error('Please open Material from the CNE Progress panel.'); }} className="px-3 py-2 rounded-lg border border-purple-400 text-purple-700 font-semibold text-xs">Upload Material</button>
                 ) : null}
-                {failureDialog.retrySafe && <button type="button" onClick={() => { setFailureDialog(null); void requestAiGeneration(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Retry AI Generation</button>}
+                {failureDialog.retrySafe && <button type="button" onClick={() => {
+                  const materialOnly = failureDialog.retryAction === 'material-check';
+                  setFailureDialog(null);
+                  if (materialOnly) void loadMaterialStatus();
+                  else void requestAiGeneration();
+                }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">
+                  {failureDialog.retryAction === 'material-check' ? 'Retry Material Check' : 'Retry AI Generation'}
+                </button>}
                 {pendingGenerationJob && !isGenerating && <button type="button" onClick={() => { setFailureDialog(null); void handleGenerateAi(false, true); }} className="px-3 py-2 rounded-lg bg-indigo-700 text-white font-semibold text-xs">Resume Generation</button>}
                 {failureDialog.type === 'technical' && !failureDialog.retrySafe && <button type="button" onClick={() => { setFailureDialog(null); void loadQuestions(); void loadQuota(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Refresh Questions & Quota</button>}
                 <button type="button" onClick={() => setFailureDialog(null)} className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 font-semibold text-xs">Close</button>

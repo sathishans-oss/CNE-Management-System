@@ -15,7 +15,8 @@ import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { getCachedOfficers, loadOfficersSingleFlight } from '../../services/officerLoader';
 import { CneDateTimeFields } from './CneDateTimeFields';
-import { WardMultiSelect } from './WardMultiSelect';
+import { WardMultiSelect, WardStaffCounts } from './WardMultiSelect';
+import { DropdownRetry } from './DropdownRetry';
 import { getCneTypeLabel, validateCneDuration,
   parseCneStartTimestamp
 } from '../../utils';
@@ -33,6 +34,10 @@ interface AddUnscheduledCneModalProps {
   onClose: () => void;
   onSuccess: (cneId?: string) => void;
   areasList: string[];
+  staffCounts: WardStaffCounts;
+  wardLoading: boolean;
+  wardError: string;
+  onRetryWards: () => void;
   teachingModes: string[];
   officersList: Employee[];
   user: SessionUser | null;
@@ -43,6 +48,10 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   onClose,
   onSuccess,
   areasList,
+  staffCounts,
+  wardLoading,
+  wardError,
+  onRetryWards,
   teachingModes,
   officersList,
   user
@@ -87,6 +96,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
     return cached && cached.length > 0 ? cached : [];
   });
   const [isOfficersLoading, setIsOfficersLoading] = useState(false);
+  const [resourcePersonsError, setResourcePersonsError] = useState('');
 
   useEffect(() => {
     const requestId = ++officerLoadRequestRef.current;
@@ -110,14 +120,18 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
     }
 
     setIsOfficersLoading(true);
+    setResourcePersonsError('');
     loadOfficersSingleFlight()
       .then((offs) => {
         if (requestId !== officerLoadRequestRef.current) return;
-        setInternalOfficers(Array.isArray(offs) ? offs : []);
+        if (!offs.length) throw new Error('Resource Person roster is empty.');
+        setInternalOfficers(offs);
+        setResourcePersonsError('');
       })
       .catch((err) => {
         if (requestId !== officerLoadRequestRef.current) return;
         console.warn('Failed to load officers for unscheduled modal:', err);
+        setResourcePersonsError(err?.message || 'Resource Person roster unavailable.');
       })
       .finally(() => {
         if (requestId === officerLoadRequestRef.current) {
@@ -131,6 +145,23 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       }
     };
   }, [isOpen, areasList, officersList.length]);
+
+  const retryResourcePersons = async () => {
+    if (isOfficersLoading) return;
+    const requestId = ++officerLoadRequestRef.current;
+    setIsOfficersLoading(true);
+    setResourcePersonsError('');
+    try {
+      const officers = await loadOfficersSingleFlight(true);
+      if (requestId !== officerLoadRequestRef.current) return;
+      if (!officers.length) throw new Error('Resource Person roster is empty.');
+      setInternalOfficers(officers);
+    } catch (err: any) {
+      if (requestId === officerLoadRequestRef.current) setResourcePersonsError(err?.message || 'Resource Person roster unavailable.');
+    } finally {
+      if (requestId === officerLoadRequestRef.current) setIsOfficersLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -442,8 +473,11 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                     eligiblePrimaryWards={areasList}
                     selected={selectedWards}
                     primaryWard={area}
-                    staffCounts={{}}
+                    staffCounts={staffCounts}
                     showCounts={false}
+                    isLoading={wardLoading}
+                    loadError={wardError}
+                    onRetry={onRetryWards}
                     onChange={(wards, primary) => { setSelectedWards(wards); setArea(primary); }}
                     disabled={isSubmitting}
                   />
@@ -573,6 +607,9 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                   )}
 
                   {/* Search internal officers */}
+                  <div className="flex justify-end">
+                    <DropdownRetry error={resourcePersonsError} loading={isOfficersLoading} onRetry={() => { void retryResourcePersons(); }} label="Resource Persons" />
+                  </div>
                   <input
                     type="text"
                     placeholder="Search instructor by name or ID..."
@@ -584,24 +621,25 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                   {/* Filtered suggestions list */}
                   <div className="max-h-28 overflow-y-auto border border-slate-200 rounded-lg bg-white divide-y divide-slate-100">
                     {isOfficersLoading ? (
-                      <div className="p-3 text-center text-slate-400">Loading roster...</div>
+                      <div className="p-3 text-center text-slate-500 flex items-center justify-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />Loading Resource Persons...</div>
+                    ) : resourcePersonsError ? (
+                      <span className="p-2 text-xs text-slate-500">Internal faculty unavailable; external entry remains available.</span>
                     ) : filteredRpOfficers.length === 0 ? (
                       <div className="p-3 text-center text-slate-400">No staff found</div>
                     ) : (
                       filteredRpOfficers.map((o, idx) => {
                         const isSelected = selectedRpEmpIds.includes(o.employeeId);
                         return (
-                          <button
+                          <label
                             key={`unsched-rp-off-${o.employeeId || idx}-${idx}`}
-                            type="button"
-                            onClick={() => toggleRp(o.employeeId)}
-                            className={`w-full px-2.5 py-1.5 text-left text-xs flex items-center justify-between transition-colors ${
+                            className={`w-full px-2.5 py-1.5 text-xs flex items-center gap-2 cursor-pointer transition-colors ${
                               isSelected ? 'bg-indigo-50 text-indigo-900 font-bold' : 'hover:bg-slate-50 text-slate-800'
                             }`}
                           >
+                            <input type="checkbox" checked={isSelected} onChange={() => toggleRp(o.employeeId)}
+                              className="rounded accent-indigo-600" />
                             <span>{o.name} <span className="text-slate-400 text-[11px]">({o.employeeId})</span></span>
-                            {isSelected ? <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600" /> : <Plus className="w-3.5 h-3.5 text-slate-400" />}
-                          </button>
+                          </label>
                         );
                       })
                     )}

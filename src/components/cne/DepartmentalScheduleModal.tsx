@@ -9,6 +9,7 @@ import { getUserAssignedAreas, validateCneDuration,
 } from '../../utils';
 import { CneDateTimeFields } from './CneDateTimeFields';
 import { WardMultiSelect, WardStaffCounts } from './WardMultiSelect';
+import { DropdownRetry } from './DropdownRetry';
 
 function parseDateTimeParts(dateTimeStr?: string, defaultTime: string = '09:00') {
   if (!dateTimeStr) return { date: '', time: defaultTime };
@@ -24,6 +25,10 @@ interface DepartmentalScheduleModalProps {
   onClose: () => void;
   user: SessionUser | null;
   areasList: string[];
+  staffCounts: WardStaffCounts;
+  wardLoading: boolean;
+  wardError: string;
+  onRetryWards: () => void;
   teachingModes: string[];
   officersList: Employee[];
   isOfficersLoading?: boolean;
@@ -79,6 +84,10 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   onClose,
   user,
   areasList,
+  staffCounts,
+  wardLoading,
+  wardError,
+  onRetryWards,
   teachingModes,
   officersList,
   isOfficersLoading: isOfficersLoadingProp,
@@ -98,25 +107,13 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   );
   const [selectedWards, setSelectedWards] = useState<string[]>([]);
   const [primaryWard, setPrimaryWard] = useState('');
-  const [staffCounts, setStaffCounts] = useState<WardStaffCounts>({});
-  const [staffCountError, setStaffCountError] = useState('');
+  const staffCountError = wardError;
   const eligiblePrimaryWards = isAreaIncharge ? selectableAssignedAreas : areasList;
   const handleWardChange = (next: string[], primary: string) => {
     setSelectedWards(next);
     setPrimaryWard(primary);
     setRows((prev) => prev.map((r) => ({ ...r, area: primary, participatingWards: next })));
   };
-  React.useEffect(() => {
-    if (!isOpen || !user) return;
-    let alive = true;
-    setStaffCountError('');
-    ApiService.getWardStaffCounts().then((res) => {
-      if (!alive) return;
-      if (res.success && res.data) { setStaffCounts(res.data); setStaffCountError(''); }
-      else { setStaffCounts({}); setStaffCountError(res.message || 'Unable to load CNE staff count master.'); }
-    }).catch(() => { if (alive) { setStaffCounts({}); setStaffCountError('Unable to load CNE staff count master.'); } });
-    return () => { alive = false; };
-  }, [isOpen, user?.employeeId, user?.token]);
   const defaultTeachingMode = useMemo(() => {
     const lecture = teachingModes.find((name) => name.trim().toLowerCase() === 'lecture cum discussion');
     return lecture || teachingModes[0] || '';
@@ -136,6 +133,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
     if (officersList && officersList.length > 0) return officersList;
     return getCachedOfficers() || [];
   });
+  const [resourcePersonsError, setResourcePersonsError] = useState('');
   const [isResourcePersonsLoading, setIsResourcePersonsLoading] = useState<boolean>(() => {
     const cached = getCachedOfficers() || [];
     if ((officersList && officersList.length > 0) || cached.length > 0) return false;
@@ -154,6 +152,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   React.useEffect(() => {
     if (officersList && officersList.length > 0) {
       setInternalOfficers(officersList);
+      setResourcePersonsError('');
       setIsResourcePersonsLoading(false);
     }
   }, [officersList]);
@@ -179,21 +178,24 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
 
     if (officersList && officersList.length > 0) {
       setInternalOfficers(officersList);
+      setResourcePersonsError('');
       setIsResourcePersonsLoading(false);
       return;
     }
 
     let cancelled = false;
     setIsResourcePersonsLoading(true);
+    setResourcePersonsError('');
     loadOfficersSingleFlight()
       .then((officers) => {
-        if (!cancelled && officers && officers.length > 0) {
-          setInternalOfficers(officers);
-          onOfficersLoadedRef.current?.(officers);
-        }
+        if (cancelled) return;
+        if (!officers.length) throw new Error('Resource Person roster is empty.');
+        setInternalOfficers(officers);
+        setResourcePersonsError('');
+        onOfficersLoadedRef.current?.(officers);
       })
-      .catch(() => {
-        // Keep the modal usable for External Resource Person entry even if the officer directory fails.
+      .catch((err: any) => {
+        if (!cancelled) setResourcePersonsError(err?.message || 'Unable to load Resource Persons.');
       })
       .finally(() => {
         if (!cancelled) {
@@ -206,6 +208,22 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
     };
   }, [isOpen, officersList]);
 
+  const retryResourcePersons = async () => {
+    if (isResourcePersonsLoading) return;
+    setIsResourcePersonsLoading(true);
+    setResourcePersonsError('');
+    try {
+      const officers = await loadOfficersSingleFlight(true);
+      if (!officers.length) throw new Error('No Resource Persons returned.');
+      setInternalOfficers(officers);
+      onOfficersLoadedRef.current?.(officers);
+    } catch (err: any) {
+      setResourcePersonsError(err?.message || 'Unable to load Resource Persons.');
+    } finally {
+      setIsResourcePersonsLoading(false);
+    }
+  };
+
   const effectiveOfficers = (officersList && officersList.length > 0)
     ? officersList
     : (internalOfficers.length > 0 ? internalOfficers : (getCachedOfficers() || []));
@@ -217,7 +235,6 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
       setRows([createInitialRow('', defaultTeachingMode)]);
       setSelectedWards([]);
       setPrimaryWard('');
-      setStaffCounts({});
       setExtRpInputMap({});
       setRpSearchMap({});
       pendingSubmissionRef.current = null;
@@ -621,25 +638,33 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                           Department / Ward <span className="text-rose-500">*</span>
                         </label>
                         {idx === 0 ? (
-                          <WardMultiSelect
-                            availableWards={areasList}
-                            eligiblePrimaryWards={eligiblePrimaryWards}
-                            selected={selectedWards}
-                            primaryWard={primaryWard}
-                            staffCounts={staffCounts}
-                            staffCountError={staffCountError}
-                            onChange={handleWardChange}
-                            disabled={isSubmitting}
-                          />
+                        <WardMultiSelect
+                          availableWards={areasList}
+                          eligiblePrimaryWards={eligiblePrimaryWards}
+                          selected={selectedWards}
+                          primaryWard={primaryWard}
+                          staffCounts={staffCounts}
+                          staffCountError={staffCountError}
+                          isLoading={wardLoading}
+                          loadError={wardError}
+                          onRetry={onRetryWards}
+                          onChange={handleWardChange}
+                          disabled={isSubmitting}
+                        />
                         ) : (
-                          <div>
-                            <select disabled aria-label={`Session ${idx + 1} Department / Ward (read-only)`}
-                              value={selectedWards.join(', ')}
-                              className="w-full p-2.5 bg-slate-100 border border-slate-300 rounded-lg text-xs text-slate-700 opacity-100">
-                              <option value={selectedWards.join(', ')}>{selectedWards.join(', ') || 'Select wards in Session 1'}</option>
-                            </select>
-                            <p className="mt-1 text-[10px] text-slate-500">Automatically updated from Session 1 · Read-only</p>
-                          </div>
+                        <WardMultiSelect
+                          availableWards={areasList}
+                          eligiblePrimaryWards={eligiblePrimaryWards}
+                          selected={selectedWards}
+                          primaryWard={primaryWard}
+                          staffCounts={staffCounts}
+                          staffCountError={staffCountError}
+                          isLoading={wardLoading}
+                          loadError={wardError}
+                          onRetry={onRetryWards}
+                          onChange={handleWardChange}
+                          disabled={isSubmitting}
+                        />
                         )}
                       </div>
 
@@ -746,9 +771,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                         <div className="flex items-center justify-between">
                           <label className="text-[11px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                             <span>Internal Faculty</span>
-                            {isResourcePersonsLoading && (
-                              <Loader2 className="w-3 h-3 text-teal-600 animate-spin" />
-                            )}
+                            <DropdownRetry error={resourcePersonsError} loading={isResourcePersonsLoading} onRetry={() => { void retryResourcePersons(); }} label="Resource Persons" />
                           </label>
                         </div>
 
@@ -788,9 +811,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                             }
                             className="w-full p-2 pr-8 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
                           />
-                          {isResourcePersonsLoading && (
-                            <Loader2 className="w-3.5 h-3.5 text-teal-600 animate-spin absolute right-2.5 top-2.5" />
-                          )}
+
                         </div>
 
                         {/* Officers list dropdown / box */}
@@ -800,32 +821,25 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                               <Loader2 className="w-3.5 h-3.5 text-teal-600 animate-spin" />
                               <span>Loading Resource Persons...</span>
                             </div>
+                          ) : resourcePersonsError ? (
+                            <span className="p-2 text-xs text-slate-500">Internal faculty unavailable; external entry remains available.</span>
                           ) : filteredOfficers.length === 0 ? (
                             <div className="p-2.5 text-center text-xs text-slate-400">No officers found</div>
                           ) : (
                             filteredOfficers.slice(0, 10).map((officer, oIdx) => {
                               const isSelected = selectedRowRpIds.includes(officer.employeeId);
                               return (
-                                <div
+                                <label
                                   key={`dept-officer-${officer.employeeId || oIdx}-${oIdx}`}
-                                  onClick={() => toggleRowRpSelection(idx, officer.employeeId)}
-                                  className={`flex items-center justify-between p-1.5 text-xs cursor-pointer transition-colors ${
+                                  className={`flex items-center gap-2 p-1.5 text-xs cursor-pointer transition-colors ${
                                     isSelected ? 'bg-emerald-50 text-emerald-900 font-semibold' : 'hover:bg-slate-50 text-slate-700'
                                   }`}
                                 >
-                                  <div className="flex items-center gap-2 truncate">
-                                    <input
-                                      type="checkbox"
-                                      checked={isSelected}
-                                      onChange={() => {}}
-                                      className="rounded text-emerald-600 pointer-events-none"
-                                    />
-                                    <span className="truncate">
-                                      {officer.name} ({officer.employeeId})
-                                    </span>
-                                  </div>
-                                  <span className="text-sm font-bold text-teal-700 shrink-0" aria-hidden="true">{isSelected ? "✓" : "+"}</span>
-                                </div>
+                                  <input type="checkbox" checked={isSelected}
+                                    onChange={() => toggleRowRpSelection(idx, officer.employeeId)}
+                                    className="rounded accent-emerald-600" />
+                                  <span className="truncate">{officer.name} ({officer.employeeId})</span>
+                                </label>
                               );
                             })
                           )}

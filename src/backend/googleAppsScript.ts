@@ -3029,7 +3029,7 @@ function handleGetAreas(params) {
   var startedAt = Date.now();
   var cacheKey = 'cne_areas_list';
   try {
-    var cached = CacheService.getScriptCache().get(cacheKey);
+    var cached = !params || !params.forceFresh ? CacheService.getScriptCache().get(cacheKey) : null;
     if (cached) {
       var parsed = JSON.parse(cached);
       if (Array.isArray(parsed) && parsed.length > 0) {

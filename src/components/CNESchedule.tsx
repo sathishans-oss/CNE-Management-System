@@ -46,6 +46,7 @@ import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 import { CneDateTimeFields } from './cne/CneDateTimeFields';
 import { SearchInput } from './SearchInput';
 import { WardMultiSelect, WardStaffCounts } from './cne/WardMultiSelect';
+import { DropdownRetry } from './cne/DropdownRetry';
 import { loadOfficersSingleFlight, getCachedOfficers } from '../services/officerLoader';
 
 const CNEReferenceModal = lazy(() => import('./cne/CNEReferenceModal').then((m) => ({ default: m.CNEReferenceModal })));
@@ -116,9 +117,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [newDescription, setNewDescription] = useState('');
   const [newMaxParticipants, setNewMaxParticipants] = useState(40);
   const [areasList, setAreasList] = useState<string[]>([]);
+  const [isWardMasterLoading, setIsWardMasterLoading] = useState(false);
+  const [wardMasterError, setWardMasterError] = useState('');
+  const wardMasterRequestRef = useRef(0);
   const [teachingModes, setTeachingModes] = useState<TeachingMode[]>([]);
   const [officersList, setOfficersList] = useState<any[]>(() => getCachedOfficers() || []);
   const [isResourcePersonsLoading, setIsResourcePersonsLoading] = useState(false);
+  const [resourcePersonsError, setResourcePersonsError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
 
@@ -187,17 +192,43 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
   const canScheduleCne = isAdmin || isAreaIncharge;
 
+  // Load both authoritative Sheets-backed masters as one dropdown readiness check.
+  // A failed fetch cannot be mistaken for an empty but successfully loaded list.
+  const loadWardMasters = useCallback(async (forceFresh = false) => {
+    const requestId = ++wardMasterRequestRef.current;
+    setIsWardMasterLoading(true);
+    setWardMasterError('');
+    try {
+      const [areas, counts] = await Promise.all([ApiService.getAreas(forceFresh), ApiService.getWardStaffCounts()]);
+      if (requestId !== wardMasterRequestRef.current) return;
+      const active = areas.success && Array.isArray(areas.data)
+        ? Array.from(new Set(areas.data.filter(a => a.status === 'ACTIVE').map(a => String(a.name || '').trim()).filter(Boolean)))
+        : [];
+      if (!areas.success || !active.length || !counts.success || !counts.data || !Object.keys(counts.data).length) {
+        // Preserve the previously selected ward and staff-count data on a transient failure.
+        setWardMasterError(!areas.success || !active.length
+          ? (areas.message || 'Could not load active wards from the Area Google Sheet.')
+          : (counts.message || 'Could not load ward staff counts from Google Sheets.'));
+        return;
+      }
+      setAreasList(active);
+      setWardStaffCounts(Object.fromEntries(Object.entries(counts.data).map(([name, count]) => [name.trim().toUpperCase(), count])));
+      setWardCountError('');
+    } catch (err: any) {
+      if (requestId !== wardMasterRequestRef.current) return;
+      // Do not erase last successful masters or selected wards when refresh fails.
+      setWardMasterError(err?.message || 'Could not load wards and staff counts.');
+    } finally {
+      if (requestId === wardMasterRequestRef.current) setIsWardMasterLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    if (!canScheduleCne || (!isDeptScheduleOpen && !isAddClassOpen && !editingCne)) return;
-    let alive = true;
-    setWardCountError('');
-    ApiService.getWardStaffCounts().then((res) => {
-      if (!alive) return;
-      if (res.success && res.data) { setWardStaffCounts(res.data); setWardCountError(''); }
-      else { setWardStaffCounts({}); setWardCountError(res.message || 'Unable to load CNE staff count master.'); }
-    }).catch(() => { if (alive) { setWardStaffCounts({}); setWardCountError('Unable to load CNE staff count master.'); } });
-    return () => { alive = false; };
-  }, [canScheduleCne, isDeptScheduleOpen, isAddClassOpen, editingCne?.cneId, user?.token]);
+    if (!canScheduleCne || !(isAddClassOpen || isDeptScheduleOpen || isUnscheduledOpen || editingCne)) return;
+    void loadWardMasters();
+    return () => { wardMasterRequestRef.current += 1; };
+  }, [canScheduleCne, isAddClassOpen, isDeptScheduleOpen, isUnscheduledOpen, editingCne?.cneId, user?.token, loadWardMasters]);
+
   const dataRequestRef = useRef(0);
   const historyPageRef = useRef(1);
   const historyMoreRequestRef = useRef(false);
@@ -291,6 +322,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setHistoryTotal(0);
     setHistoryHasMore(false);
     setAreasList([]);
+    setWardStaffCounts({});
+    setWardMasterError('');
+    setResourcePersonsError('');
     setTeachingModes([]);
     setOfficersList(getCachedOfficers() || []);
     setSelectedDetailCne(null);
@@ -389,12 +423,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
     // Staff viewing the Schedule do not require CNE-creation master lists.
     if (canScheduleCne) {
-      void ApiService.getAreas().then((res) => {
-        if (!isCurrent()) return;
-        if (res.success && Array.isArray(res.data)) {
-          setAreasList(Array.from(new Set(res.data.filter((a) => a.status === 'ACTIVE').map((a) => a.name).filter(Boolean))));
-        }
-      }).catch((err) => { if (isCurrent()) console.warn('CNE Areas unavailable:', err); });
       void ApiService.getTeachingModes().then((res) => {
         if (!isCurrent()) return;
         if (res.success && Array.isArray(res.data)) {
@@ -491,28 +519,35 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     if (!currentIsActive) setNewMode(preferredTeachingMode);
   }, [activeTeachingModeNames, preferredTeachingMode, newMode]);
 
-  // On-demand fetch of officers when Central CNE Add or Edit modal opens for authorized roles if not yet loaded
-  useEffect(() => {
-    if (canScheduleCne && (isAddClassOpen || Boolean(editingCne)) && officersList.length === 0) {
-      let cancelled = false;
-      setIsResourcePersonsLoading(true);
-      loadOfficersSingleFlight()
-        .then((officers) => {
-          if (!cancelled && officers && officers.length > 0) {
-            setOfficersList(officers);
-          }
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (!cancelled) {
-            setIsResourcePersonsLoading(false);
-          }
-        });
-      return () => {
-        cancelled = true;
-      };
+  const reloadResourcePersons = useCallback(async () => {
+    setResourcePersonsError('');
+    setIsResourcePersonsLoading(true);
+    try {
+      const officers = await loadOfficersSingleFlight(true);
+      if (!officers.length) throw new Error('No Resource Persons returned by the Officers Google Sheet.');
+      setOfficersList(officers);
+    } catch (err: any) {
+      setResourcePersonsError(err?.message || 'Resource Person list failed to load.');
+    } finally {
+      setIsResourcePersonsLoading(false);
     }
-  }, [canScheduleCne, isAddClassOpen, editingCne, officersList.length, sessionKey]);
+  }, []);
+
+  useEffect(() => {
+    if (!canScheduleCne || !(isAddClassOpen || editingCne) || officersList.length) return;
+    let cancelled = false;
+    setIsResourcePersonsLoading(true);
+    setResourcePersonsError('');
+    void loadOfficersSingleFlight()
+      .then(officers => {
+        if (cancelled) return;
+        if (!officers.length) throw new Error('Resource Person list is empty.');
+        setOfficersList(officers);
+      })
+      .catch((err: any) => { if (!cancelled) setResourcePersonsError(err?.message || 'Resource Person list failed to load.'); })
+      .finally(() => { if (!cancelled) setIsResourcePersonsLoading(false); });
+    return () => { cancelled = true; };
+  }, [canScheduleCne, isAddClassOpen, editingCne?.cneId, officersList.length, sessionKey]);
 
   const handleChildModalUpdated = async (targetCneId?: string) => {
     const cneId = targetCneId || selectedDetailCne?.cneId || selectedDetailCne?.classId;
@@ -1455,7 +1490,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         selected={newWards}
                         primaryWard={newArea}
                         staffCounts={wardStaffCounts}
-                        staffCountError={wardCountError}
+                        staffCountError={wardMasterError || wardCountError}
+                        isLoading={isWardMasterLoading}
+                        loadError={wardMasterError}
+                        onRetry={() => { void loadWardMasters(true); }}
                         onChange={(wards, primary) => { setNewWards(wards); setNewArea(primary); }}
                         disabled={isSubmitting}
                       />
@@ -1570,9 +1608,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       <div className="flex items-center justify-between">
                         <label className="text-[11px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                           <span>Internal Faculty</span>
-                          {isResourcePersonsLoading && (
-                            <Loader2 className="w-3 h-3 text-teal-600 animate-spin" />
-                          )}
+                          <DropdownRetry error={resourcePersonsError} loading={isResourcePersonsLoading} onRetry={() => { void reloadResourcePersons(); }} label="Resource Persons" />
                         </label>
                       </div>
 
@@ -1610,9 +1646,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                           onChange={(e) => setRpSearchQuery(e.target.value)}
                           className="w-full p-2 pr-8 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-teal-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
                         />
-                        {isResourcePersonsLoading && (
-                          <Loader2 className="w-3.5 h-3.5 text-teal-600 animate-spin absolute right-2.5 top-2.5" />
-                        )}
+
                       </div>
 
                       {/* Officers Dropdown / Selection List */}
@@ -1622,27 +1656,25 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                             <Loader2 className="w-3.5 h-3.5 text-teal-600 animate-spin" />
                             <span>Loading Resource Persons...</span>
                           </div>
+                        ) : resourcePersonsError ? (
+                          <span className="p-2 text-xs text-slate-500">Internal faculty unavailable; external entry remains available.</span>
                         ) : filteredRpOfficers.length === 0 ? (
                           <div className="p-2 text-center text-xs text-slate-400">No officers found</div>
                         ) : (
                           filteredRpOfficers.slice(0, 10).map((officer, idx) => {
                             const isSelected = selectedRpEmpIds.includes(officer.employeeId);
                             return (
-                              <div
+                              <label
                                 key={`rp-off-${officer.employeeId || idx}-${idx}`}
-                                onClick={() => toggleRpSelection(officer.employeeId)}
-                                className={`flex items-center justify-between p-1.5 text-xs cursor-pointer transition-colors ${
+                                className={`flex items-center gap-2 p-1.5 text-xs cursor-pointer transition-colors ${
                                   isSelected ? 'bg-emerald-50 text-emerald-900 font-semibold' : 'hover:bg-slate-50 text-slate-700'
                                 }`}
                               >
-                                <div className="flex items-center gap-2 truncate">
-                                  
-                                  <span className="truncate">
-                                    {officer.name} ({officer.employeeId})
-                                  </span>
-                                </div>
-                                <span className="text-sm font-bold text-teal-700 shrink-0" aria-hidden="true">{isSelected ? "✓" : "+"}</span>
-                              </div>
+                                <input type="checkbox" checked={isSelected}
+                                  onChange={() => toggleRpSelection(officer.employeeId)}
+                                  className="rounded accent-emerald-600" />
+                                <span className="truncate">{officer.name} ({officer.employeeId})</span>
+                              </label>
                             );
                           })
                         )}
@@ -1863,7 +1895,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                           selected={editWards}
                           primaryWard={editArea}
                           staffCounts={wardStaffCounts}
-                          staffCountError={wardCountError}
+                          staffCountError={wardMasterError || wardCountError}
+                        isLoading={isWardMasterLoading}
+                        loadError={wardMasterError}
+                        onRetry={() => { void loadWardMasters(true); }}
                           onChange={(wards, primary) => {
                             setEditWards(wards);
                             setEditArea(primary);
@@ -2028,9 +2063,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                     <div className="space-y-2 flex-1 flex flex-col">
                       <span className="text-[11px] font-semibold text-slate-600 flex items-center gap-1.5">
                         <span>Internal Faculty:</span>
-                        {isResourcePersonsLoading && (
-                          <Loader2 className="w-3 h-3 text-amber-600 animate-spin" />
-                        )}
+                        <DropdownRetry error={resourcePersonsError} loading={isResourcePersonsLoading} onRetry={() => { void reloadResourcePersons(); }} label="Resource Persons" />
                       </span>
                       <div className="relative">
                         <input
@@ -2041,9 +2074,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                           onChange={(e) => setEditRpSearchQuery(e.target.value)}
                           className="w-full px-2.5 py-1.5 pr-8 border border-slate-300 rounded-lg text-xs bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
                         />
-                        {isResourcePersonsLoading && (
-                          <Loader2 className="w-3.5 h-3.5 text-amber-600 animate-spin absolute right-2.5 top-2" />
-                        )}
+
                       </div>
                       <div className="max-h-28 overflow-y-auto space-y-1 bg-white border border-slate-200 rounded-lg p-2 flex-1">
                         {isResourcePersonsLoading ? (
@@ -2051,29 +2082,25 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                             <Loader2 className="w-3.5 h-3.5 text-amber-600 animate-spin" />
                             <span>Loading Resource Persons...</span>
                           </div>
+                        ) : resourcePersonsError ? (
+                          <span className="p-2 text-xs text-slate-500">Internal faculty unavailable; external entry remains available.</span>
                         ) : filteredEditRpOfficers.length === 0 ? (
                           <div className="p-2 text-center text-xs text-slate-400">No officers found</div>
                         ) : (
                           filteredEditRpOfficers.slice(0, 40).map((o, idx) => {
                             const isSelected = editSelectedRpEmpIds.includes(o.employeeId);
                             return (
-                              <div
+                              <label
                                 key={`edit-rp-off-${o.employeeId || idx}-${idx}`}
-                                onClick={() => toggleEditRpSelection(o.employeeId)}
-                                className={`flex items-center justify-between p-1.5 rounded cursor-pointer text-xs ${
+                                className={`flex items-center gap-2 p-1.5 rounded cursor-pointer text-xs ${
                                   isSelected ? 'bg-amber-50 text-amber-900 font-semibold' : 'hover:bg-slate-50 text-slate-700'
                                 }`}
                               >
-                                <span className="truncate">
-                                  {o.name} ({o.employeeId})
-                                </span>
-                                <input
-                                  type="checkbox"
-                                  checked={isSelected}
-                                  readOnly
-                                  className="rounded text-amber-600 pointer-events-none"
-                                />
-                              </div>
+                                <input type="checkbox" checked={isSelected}
+                                  onChange={() => toggleEditRpSelection(o.employeeId)}
+                                  className="rounded accent-amber-600" />
+                                <span className="truncate">{o.name} ({o.employeeId})</span>
+                              </label>
                             );
                           })
                         )}
@@ -2324,6 +2351,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           onClose={() => setIsDeptScheduleOpen(false)}
           user={user}
           areasList={areasList}
+          staffCounts={wardStaffCounts}
+          wardLoading={isWardMasterLoading}
+          wardError={wardMasterError}
+          onRetryWards={() => { void loadWardMasters(true); }}
           teachingModes={activeTeachingModeNames}
           officersList={officersList}
           isOfficersLoading={isResourcePersonsLoading}
@@ -2338,6 +2369,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           onClose={() => setIsUnscheduledOpen(false)}
           onSuccess={() => loadData()}
           areasList={areasList}
+          staffCounts={wardStaffCounts}
+          wardLoading={isWardMasterLoading}
+          wardError={wardMasterError}
+          onRetryWards={() => { void loadWardMasters(true); }}
           teachingModes={activeTeachingModeNames}
           officersList={officersList}
           user={user}

@@ -7,7 +7,7 @@
  *
  * Structural/behavioral assertions, test fixtures, and expected failures
  * have not been removed or weakened. A SHA-256 hash verifies each embedded
- * source before execution to detect an incomplete manual paste.a
+ * source before execution to detect an incomplete manual paste.
  *
  * Usage:
  *   node scripts/verify-all.js                  # all 7 core suites
@@ -23,10 +23,713 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
+import assert from 'node:assert/strict';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(SCRIPT_DIR, '..');
 const SCRIPT_URL = pathToFileURL(join(SCRIPT_DIR, 'verify-all.js')).href;
+
+// All verification suites live in THIS ONE file. The Apps Script sync utility
+// is intentionally separate because it modifies generated source, not tests.
+// Focused checks retain their original assertions, fixture data and names.
+function createHybridChecks() {
+  const ROOT=ROOT_DIR;
+  const gas=readFileSync(join(ROOT,'Code.gs'),'utf8');
+  const TYPES=readFileSync(join(ROOT,'src/types.ts'),'utf8');
+  const MODAL=readFileSync(join(ROOT,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+/** Smart Hybrid behavioral checks. No Google Sheets or Gemini network calls. */
+function assert(condition,reason){if(!condition)throw Error(reason);}
+function spreadsheet(rows){
+  const self={rows:rows.map(row=>row.slice()),getLastRow(){return this.rows.length;},getLastColumn(){return Math.max(...this.rows.map(row=>row.length));},
+    getDataRange(){return {getValues:()=>self.rows.map(row=>row.slice())};},
+    appendRow(row){self.rows.push(row.slice());},
+    getRange(r,c,n=1,w=1){return {getValues(){return Array.from({length:n},(_,i)=>Array.from({length:w},(_,j)=>self.rows[r-1+i]?.[c-1+j]??''));},
+      getValue(){return self.rows[r-1]?.[c-1]??'';},setValue(value){while(self.rows.length<r)self.rows.push([]);self.rows[r-1][c-1]=value;},
+      setValues(values){values.forEach((row,i)=>row.forEach((v,j)=>{while(self.rows.length<r+i)self.rows.push([]);self.rows[r-1+i][c-1+j]=v;}));}};}
+  };return self;
+}
+const HEADERS=['Question ID','Resource Title','Drive File ID','Unit','Chapter Number','Chapter Title','Topic','Subtopic','Clinical Keywords','Original Question Number','Question Type','Question Text','Option A','Option B','Option C','Option D','Option E','Option F','Correct Answer','Explanation / Rationale','Question PDF Page','Explanation PDF Page','Printed Page Number','Image / Table Required','Image / Table Reference','Clinical Evidence Reference','Verification Status','Reuse Permission','Updated At'];
+const QHEAD=['CNE ID','Question ID','Question Text','Option A','Option B','Option C','Option D','Correct Option','Explanation','Is Finalized','Is Locked','Created At','Created By','Authoritative Source','Status'];
+function question(sourceId='REF-001'){
+ const row=Array(29).fill('');
+ Object.assign(row,{0:sourceId,1:'Approved Nursing Textbook',2:'drive-filename-123',5:'Peripheral Intravenous Therapy',6:'IV Cannulation',7:'Site selection',8:'venipuncture, cannula insertion',10:'Single best answer',11:'Which peripheral vein is appropriate for IV cannulation in this situation?',12:'Appropriate vein with intact skin',13:'Unassessed vein',14:'Inflamed vein',15:'Previous infiltration site',18:'A',19:'The clinical source explains the safe nursing assessment required for IV site selection.',20:101,21:105,23:'NO',26:'EXTRACTED_PENDING_CLINICAL_REVIEW',27:'Institution Authorized (user-confirmed)'});return row;
+}
+function fixture(){
+ const b=spreadsheet([HEADERS,question(),question('REF-002')]);
+ const q=spreadsheet([QHEAD]);
+ const quota=spreadsheet([['CNE ID','Topic','Attempts Used','Max','Updated At','Used By','Reservation','Until','Last Committed'],['CNE-123','IV Cannulation',0,1,'','','TOK',String(Date.now()+600000),'']]);
+ const ctx={console,Date,Set,Map};
+ vm.createContext(ctx);vm.runInContext(gas,ctx,{timeout:13000});
+ ctx.sanitizeCellInput=v=>String(v||'');
+ ctx.getCNEScheduleRecord=cneId=>cneId==='CNE-123'?{cneId,topic:'IV Cannulation',status:'Scheduled'}:null;
+ ctx.checkQuestionManagementAuthorized=()=>null;
+ ctx.isCNEClosedForParticipantAccess=()=>false;
+ ctx.isCNEQuestionsLocked=()=>false;
+ ctx.getHeaderMap=sheet=>Object.fromEntries(sheet.rows[0].map((head,i)=>[String(head||'').toLowerCase().replace(/[^a-z0-9]/g,''),i]));
+ ctx.getSpreadsheet=()=>({getSheetByName:name=>name==='CNE_Reference_Question_Index'?b:name==='CNE Post Test Questions'?q:null});
+ ctx.getQuestionsSheet=()=>q;
+ ctx.getQuestionColIndexes=()=>({cneId:0,qId:1,question:2,optA:3,optB:4,optC:5,optD:6,correctOption:7,explanation:8,isFinalized:9,isLocked:10,createdAt:11,createdBy:12,authoritativeSource:13,status:14});
+ ctx.getOrCreateSheet=name=>name==='CNE_AI_Quota'?quota:null;
+ ctx.revalidateCneMutation_=(session,id)=>({success:true,record:{topic:'IV Cannulation'},session});
+ ctx.LockService={getScriptLock:()=>({tryLock:()=>true,waitLock:()=>{},releaseLock:()=>{}})};
+ ctx.SpreadsheetApp={flush:()=>{}};
+ ctx.invalidateCNEQuestionsCache=()=>{};
+ ctx.logAuditAction=()=>{};
+ ctx.Utilities={sleep:()=>{}};
+ return {ctx,b,q,quota};
+}
+const session={employeeId:'EDUCATOR-1'};
+const DISTINCT_STEMS=[
+  'Which peripheral vein is appropriate for intravenous catheter site selection?',
+  'What skin antisepsis prevents contamination before performing cannula insertion?',
+  'Which signs suggest that intravenous fluid is infiltrating surrounding tissue?',
+  'What findings indicate phlebitis with local pain redness and heat?',
+  'What documentation is required after removing a peripheral IV device?'
+];
+function aiQuestion(objective,token='TOK',stem='What clinical action is indicated during peripheral IV catheter care?'){
+ return {id:`q_ai_${token}_${objective}`,objectiveId:objective,question:stem,options:{A:'Assess site',B:'Ignore swelling',C:'Never perform hand hygiene',D:'Continue without checking'},correctOption:'A',explanation:'The nursing source supports examination and safe selection of vascular access sites.',authoritativeSource:'Approved Clinical Reference - IV Therapy'};
+}
+const hybridChecks=[
+ {name:'Bank search requires an authorized CNE owner',run(){const {ctx}=fixture();ctx.checkQuestionManagementAuthorized=()=>({success:false,errorCode:'FORBIDDEN'});assert(ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session).errorCode==='FORBIDDEN','Unauthorized search exposed answers');}},
+ {name:'Bank search ranks question text and subtopic for all relevant textbook sources',run(){const {ctx}=fixture();const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(result.success&&result.data.length===2&&result.data[0].matchScore>0,'Relevant existing question not found');}},
+ {name:'Bank refuses malformed schema rather than guess answer column positions',run(){const {ctx,b}=fixture();b.rows[0][18]='Unknown Answer';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(result.errorCode==='QUESTION_BANK_SCHEMA_INVALID','Bad schema accepted');}},
+ {name:'Question Bank records needing review are not importable',run(){const {ctx,b}=fixture();b.rows[1][26]='NEEDS_REVIEW';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(!result.data.find(x=>x.questionId==='REF-001').canImport,'Unreviewed figure item import allowed');}},
+ {name:'Question Bank rejects extra options E/F that Post-Test does not support',run(){const {ctx,b}=fixture();b.rows[1][16]='Fifth choice';let result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(!result.data.find(x=>x.questionId==='REF-001').canImport,'Extra option ignored');result=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);assert(result.errorCode==='SOURCE_QUESTION_NEEDS_REVIEW','Forced import succeeded');}},
+ {name:'Question Bank import requires explicit educator confirmation',run(){const {ctx}=fixture();const result=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001'},session);assert(result.errorCode==='REVIEW_CONFIRMATION_REQUIRED','Import without review accepted');}},
+ {name:'Question Bank import persists unfinalized Draft without AI quota usage',run(){const {ctx,q,quota}=fixture();const res=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);assert(res.success && q.rows.length===2 && q.rows[1][9]==='NO' && Number(quota.rows[1][2])===0,'Import marked finalized/used quota');}},
+ {name:'Question Bank import prevents duplicate CNE/source question under lock',run(){const {ctx,q}=fixture();const params={cneId:'CNE-123',questionId:'REF-001',confirmReview:true};assert(ctx.handleImportCNEReferenceQuestion(params,session).success,'Initial import failed');const result=ctx.handleImportCNEReferenceQuestion(params,session);assert(result.errorCode==='QUESTION_ALREADY_IMPORTED'&&q.rows.length===2,'Duplicate source question imported');}},
+ {name:'A valid single saved question may remain a Draft before Post-Test minimum',run(){const {ctx,q}=fixture();const result=ctx.handleSaveCNEQuestions({cneId:'CNE-123',questions:[{id:'q_manual_1',question:'What is the best first clinical step in this nursing procedure?',options:{A:'Assess patient',B:'Ignore history',C:'Skip preparation',D:'Remove assessment'},correctOption:'A',explanation:'Assessing the patient is required before the procedure.',authoritativeSource:'Nursing Reference',isFinalized:false}]},session);assert(result.success&&q.rows.length===2&&result.readyForPostTest===false,'One draft rejected or prematurely published');}},
+ {name:'Post-Test rejects eleven finalized questions and retains five-to-ten rule',run(){const {ctx}=fixture();const questions=Array.from({length:11},(_,i)=>({id:'q_manual_'+i,question:'What nursing intervention is best in example '+i+' for this clinical assessment?',options:{A:'Assess '+i,B:'Ignore '+i,C:'Wait '+i,D:'Disregard '+i},correctOption:'A',explanation:'The clinical rationale supports safe nursing decisions '+i,authoritativeSource:'Approved Nursing Text',isFinalized:true}));const result=ctx.handleSaveCNEQuestions({cneId:'CNE-123',questions},session);assert(result.errorCode==='POST_TEST_MAXIMUM_EXCEEDED','11 finalized questions accepted');}},
+ {name:'Server recognizes only stable original AI objective identifiers',run(){const {ctx}=fixture();const bad=aiQuestion('OBJ_8');const res=ctx.cneHybridPersistPartial_('CNE-123','TOK',[bad],session);assert(res.errorCode==='INVALID_AI_OBJECTIVE','Unplanned AI slot was saved');}},
+ {name:'Partial AI save persists one verified Draft without deducting quota',run(){const {ctx,q,quota}=fixture();const res=ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_1')],session);assert(res.success&&res.data.savedCount===1&&!res.data.completed&&q.rows.length===2&&Number(quota.rows[1][2])===0,'Single partial used quota');}},
+ {name:'Replayed partial AI response is idempotent and does not add rows',run(){const {ctx,q}=fixture();const args=['CNE-123','TOK',[aiQuestion('OBJ_1')],session];assert(ctx.cneHybridPersistPartial_(...args).success,'Initial partial failed');const again=ctx.cneHybridPersistPartial_(...args);assert(again.success&&q.rows.length===2&&again.data.savedCount===1,'Duplicate partial question saved');}},
+ {name:'Conflicting second answer for same AI objective fails closed',run(){const {ctx,q}=fixture();ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_1')],session);const changed=aiQuestion('OBJ_1','TOK','Different clinical question cannot overwrite validated original objective');const res=ctx.cneHybridPersistPartial_('CNE-123','TOK',[changed],session);assert(res.errorCode==='AI_SLOT_CONFLICT'&&q.rows.length===2,'Objective was overwritten');}},
+ {name:'Four validated AI Drafts do not deduct generation quota',run(){const {ctx,q,quota}=fixture();for(let i=1;i<=4;i++){const r=ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_'+i,'TOK',DISTINCT_STEMS[i-1])],session);assert(r.success,'Partial slot '+i+' not saved: '+r.errorCode);}assert(q.rows.length===5&&Number(quota.rows[1][2])===0,'Incomplete batch used quota');}},
+ {name:'Fifth validated objective commits exactly one quota allowance with readback',run(){const {ctx,q,quota}=fixture();for(let i=1;i<=5;i++){const result=ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_'+i,'TOK',DISTINCT_STEMS[i-1])],session);assert(result.success,'Slot '+i+' failed '+result.errorCode);if(i<5)assert(!result.data.completed,'Early completion');}assert(q.rows.length===6 && Number(quota.rows[1][2])===1 && quota.rows[1][8]==='TOK','Complete batch did not mark USED');}},
+ {name:'Existing AI partial session retains source token and missing slot map',run(){const {ctx}=fixture();ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_1')],session);const res=ctx.cneHybridGetSlots_('CNE-123','TOK');assert(res.success&&res.data.length===1&&res.data[0].objectiveId==='OBJ_1','Original objective slot missing');}},
+ {name:'Edited partial AI Drafts retain immutable provenance and resume remaining objectives exactly once',run(){
+    const {ctx,q,quota}=fixture();
+    for(let i=1;i<=2;i++)assert(ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_'+i,'TOK',DISTINCT_STEMS[i-1])],session).success,'Failed initial partial '+i);
+    const originalRows=q.rows.slice(1).map(row=>row.slice());
+    const edited=originalRows.map((row,i)=>({id:row[1],question:row[2],options:{A:row[3],B:row[4],C:row[5],D:row[6]},correctOption:row[7],explanation:i===0?'Educator reviewed the IV site assessment and documented supporting clinical rationale.':row[8],authoritativeSource:row[13],isFinalized:false}));
+    const saved=ctx.handleSaveCNEQuestions({cneId:'CNE-123',questions:edited},session);
+    assert(saved.success,'Educator edit did not save');
+    for(let i=0;i<2;i++){
+      assert(q.rows[i+1][12]===originalRows[i][12] && q.rows[i+1][12]==='EDUCATOR-1 [AI:TOK]','AI session ownership marker lost');
+      assert(q.rows[i+1][11]===originalRows[i][11] && q.rows[i+1][13]===originalRows[i][13],'AI created timestamp or clinical citation lost');
+    }
+    assert(q.rows[1][8]===edited[0].explanation,'Educator-reviewed edit did not persist');
+    const slots=ctx.cneHybridGetSlots_('CNE-123','TOK');
+    assert(slots.success && slots.data.length===2 && slots.data[0].objectiveId==='OBJ_1' && slots.data[1].objectiveId==='OBJ_2','Previously saved objectives disappeared on edit');
+    assert(Number(quota.rows[1][2])===0,'Editing partial questions consumed AI generation allowance');
+    for(let i=3;i<=5;i++){
+      const resumed=ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_'+i,'TOK',DISTINCT_STEMS[i-1])],session);
+      assert(resumed.success && resumed.data.savedCount===i,'Could not resume missing objective '+i+': '+resumed.errorCode);
+    }
+    assert(q.rows.length===6 && Number(quota.rows[1][2])===1 && quota.rows[1][8]==='TOK','Resumption duplicated a slot or did not commit one quota');
+    const replay=ctx.cneHybridPersistPartial_('CNE-123','TOK',[aiQuestion('OBJ_1','TOK',DISTINCT_STEMS[0])],session);
+    assert((replay.success || replay.errorCode==='INVALID_RESERVATION') && q.rows.length===6 && Number(quota.rows[1][2])===1,'Replayed saved AI slot duplicated rows or consumed quota twice');
+  }},
+ {name:'Editing imported Question Bank Draft preserves immutable textbook source marker and original author',run(){
+    const {ctx,q}=fixture();
+    assert(ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session).success,'Question Bank source import failed');
+    const original=q.rows[1].slice();
+    const edited={id:original[1],question:original[2],options:{A:original[3],B:original[4],C:original[5],D:original[6]},correctOption:original[7],explanation:'Educator reviewed this textbook rationale and verified the selection assessment.',authoritativeSource:original[13],isFinalized:false,createdBy:'UNTRUSTED-CLIENT'};
+    assert(ctx.handleSaveCNEQuestions({cneId:'CNE-123',questions:[edited]},session).success,'Question Bank draft edit failed');
+    assert(q.rows[1][12]===original[12] && q.rows[1][12].includes('[QB:REF-001]'),'Imported textbook attribution was overwritten');
+    assert(q.rows[1][11]===original[11] && q.rows[1][13]===original[13] && q.rows[1][8]===edited.explanation,'Question Bank source or edit was lost');
+  }},
+ {name:'Partial recovery does not request fresh PLAN or a new reservation token',run(){assert(gas.includes("['PLANNED','PARTIAL_SUCCESS'].indexOf(current.state)===-1")&&gas.includes('cneHybridRenewReservation_(cneId,reservationToken,session)')&&gas.includes('missingObjectiveIds:phase===\'FINISH\''),'Unsafe second AI reservation or missing-slot recovery');}},
+ {name:'UI supports generic Question Bank, Saved Drafts, quota-safe partial recovery and ten question cap',run(){for(const term of ['Institutional Question Bank','Save Drafts','partialAiCount','Resume AI Generation','validFinalized.length>10','Question Bank'])assert(MODAL.includes(term),'UI missing '+term);}},
+ {name:'TypeScript API exposes bank search and authorized Draft import',run(){const api=readFileSync(join(ROOT,'src/services/api.ts'),'utf8');assert(TYPES.includes('export interface CNEReferenceBankItem')&&api.includes("'importCNEReferenceQuestion'")&&api.includes("'searchCNEReferenceQuestions'"),'Typed API unavailable');}},
+ {name:'Participant-facing Post-Test never displays more than ten finalized questions',run(){assert(gas.includes('if (sanitizedQuestions.length > 10)')&&gas.includes('if (finalizedCount > 10)')&&gas.includes("errorCode:'POST_TEST_MAXIMUM_EXCEEDED'"),'Max ten missing server enforcement');}} ,{name:'Supplementary material rebinds only missing objective evidence to screened active source',run(){
+    const {ctx}=fixture();ctx.passesClinicalRelevanceGate=()=>true;
+    const objective={objectiveId:'OBJ_2',objective:'Assess safe peripheral IV insertion site selection and infection prevention',evidenceId:'OLD-REMOVED'};
+    const evidence=[{indexId:'CURRENT-101',topic:'Peripheral IV cannulation',sectionHeading:'IV insertion site selection infection prevention',clinicalKeywords:'safe insertion assessment infection prevention',chunkText:'Clinical nursing evidence on peripheral IV site selection and infection prevention.'}];
+    const out=ctx.cneHybridRebindStaleBlueprint_([objective],evidence,'IV Cannulation','CNE-123',session);
+    assert(out.length===1&&out[0].evidenceId==='CURRENT-101'&&objective.evidenceId==='OLD-REMOVED','Unapproved or destructive resumption source mutation');
+  }}
+ ,{name:'Unrelated supplementary passage cannot replace missing original clinical source',run(){
+    const {ctx}=fixture();ctx.passesClinicalRelevanceGate=()=>true;
+    const original={objectiveId:'OBJ_2',objective:'Assess safe peripheral IV insertion site selection and infection prevention',evidenceId:'OLD-REMOVED'};
+    const unrelated={indexId:'NEW-BUT-UNRELATED',topic:'Dietary management',sectionHeading:'Nutrition',clinicalKeywords:'vitamins fruits breakfast',chunkText:'Eat a balanced diet rich in vegetables.'};
+    const out=ctx.cneHybridRebindStaleBlueprint_([original],[unrelated],'IV Cannulation','CNE-123',session);
+    assert(out[0].evidenceId==='OLD-REMOVED','Clinical evidence was invented from unrelated material');
+  }}
+ ,{name:'Previously approved blueprint evidence stays stable across additional-material upload',run(){
+    const {ctx}=fixture();const original={objectiveId:'OBJ_1',objective:'Assess peripheral intravenous catheter insertion site selection',evidenceId:'SOURCE-OLD'};
+    const out=ctx.cneHybridRebindStaleBlueprint_([original],[{indexId:'SOURCE-OLD',chunkText:'Approved original clinical passage'}],'IV Cannulation','CNE-123',session);
+    assert(out[0].evidenceId==='SOURCE-OLD','Original evidence ID was unexpectedly replaced');
+  }}
+ ,{name:'Uncertain partial save retains original blueprint for later authoritative status recovery',run(){
+    assert(gas.includes("{state:'UNCERTAIN',message:'The result of saving requires verification.'}")&& !gas.includes("{state:'UNCERTAIN',objectives:[]}"),'Uncertain write erased recoverable objective slots');
+  }}
+ ,{name:'Exactly ten valid finalized questions can be saved and reported ready',run(){
+    const {ctx,q}=fixture();
+    const qs=Array.from({length:10},(_,i)=>({id:'q_final_'+i,question:'Which intervention is clinically appropriate for nursing assessment example '+i+'?',options:{A:'Assess site '+i,B:'Skip assessment '+i,C:'Ignore safety '+i,D:'Continue without review '+i},correctOption:'A',explanation:'The clinical reference supports safe assessment, example '+i,authoritativeSource:'Verified Nursing Material',isFinalized:true}));
+    const res=ctx.handleSaveCNEQuestions({cneId:'CNE-123',questions:qs},session);
+    assert(res.success && res.finalizedCount===10 && res.readyForPostTest && q.rows.length===11,'Maximum ten valid Post-Test questions was not accepted');
+  }}
+];
+
+return hybridChecks;
+}
+
+function createDropdownRetryChecks() {
+/** Ward/resource-person retry and first-open AI material regression checks.
+ * Reads actual project source; backend ward-cache logic is executed in isolation.
+ */
+const get = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const init = get('src/services/initialData.ts');
+const api = get('src/services/api.ts');
+const gas = get('Code.gs');
+const mirror = get('src/backend/googleAppsScript.ts');
+const central = get('src/components/CNESchedule.tsx');
+const ward = get('src/components/cne/WardMultiSelect.tsx');
+const dept = get('src/components/cne/DepartmentalScheduleModal.tsx');
+const uns = get('src/components/cne/AddUnscheduledCneModal.tsx');
+const officer = get('src/services/officerLoader.ts');
+const ai = get('src/components/cne/CNEQuestionsModal.tsx');
+const retry = get('src/components/cne/DropdownRetry.tsx');
+const checks = [];
+const check = (name, run) => checks.push({name, run});
+check('Initial ward names are empty, not hard-coded', () => {
+  assert.match(init, /export const INITIAL_AREAS: Area\[\] = \[\];/);
+  assert.doesNotMatch(init, /"231A\(NICU\)/);
+});
+check('Areas response comes from Sheets and no hard-coded default population is used', () => {
+  const start = gas.indexOf('function handleGetAreas(params)');
+  const end = gas.indexOf('function getAreaStatusMap_',start);
+  assert.ok(start >= 0 && end > start);
+  const source = gas.slice(start,end);
+  assert.match(source, /getOrCreateSheet\('Area'\)/);
+  assert.match(source, /sheet\.getDataRange\(\)\.getValues\(\)/);
+});
+check('Force-refresh bypasses both client and server ward caches', () => {
+  assert.match(api, /static async getAreas\(forceFresh = false\)/);
+  assert.match(api, /if \(forceFresh\) this\.invalidateCache\('getAreas'\)/);
+  assert.match(api, /forceFresh \? \{ forceFresh: true \}/);
+  const start = gas.indexOf('function handleGetAreas(params)');
+  const end = gas.indexOf('function getAreaStatusMap_',start);
+  assert.match(gas.slice(start,end), /!params \|\| !params\.forceFresh/);
+});
+check('Backend fresh read ignores stale cached ward and uses active Sheet rows', () => {
+  const start = gas.indexOf('function handleGetAreas(params)');
+  const end = gas.indexOf('/**\n * Authoritative Area Status Helpers',start);
+  assert.ok(start > 0 && end > start);
+  const calls = {sheet:0, cache:0};
+  const context = {
+    Date, JSON,
+    CacheService: {getScriptCache:()=>({get:()=>{calls.cache++;return JSON.stringify([{name:'STALE'}])},put:()=>{}})},
+    getOrCreateSheet:()=>({getDataRange:()=>({getValues:()=>{calls.sheet++;return [['Area','Status'],['NICU','ACTIVE'],['CLOSED','INACTIVE']]}})}),
+    logPerf:()=>{}
+  };
+  vm.createContext(context);
+  vm.runInContext(gas.slice(start,end),context,{timeout:3000});
+  const fresh = context.handleGetAreas({forceFresh:true});
+  assert.equal(fresh.success,true);assert.equal(calls.cache,0);assert.equal(calls.sheet,1);
+  assert.deepEqual(Array.from(fresh.data, a=>a.name), ['NICU','CLOSED']);
+});
+check('Ward and staff-count requests gate each dropdown together', () => {
+  assert.match(central,/Promise\.all\(\[ApiService\.getAreas\(forceFresh\), ApiService\.getWardStaffCounts\(\)\]\)/);
+  assert.match(central,/if \(!areas\.success \|\| !active\.length \|\| !counts\.success/);
+  assert.match(central,/setWardMasterError\(/);
+  assert.match(central,/Preserve the previously selected ward and staff-count data/);
+});
+check('Ward multi-select has one spinner and disabled controls while loading', () => {
+  assert.match(ward,/isLoading \? 'Loading wards and staff counts\.\.\.'/);
+  assert.match(ward,/disabled=\{disabled \|\| isLoading \|\| Boolean\(loadError\)/);
+  assert.equal((ward.match(/animate-spin/g)||[]).length,1);
+  assert.match(ward,/error=\{loadError\}/);
+});
+check('Small retry icon is failure-only and has an accessible label', () => {
+  assert.match(retry,/if \(!error \|\| loading \|\| !onRetry\) return null/);
+  assert.match(retry,/aria-label=\{`Retry loading \$\{label\}`\}/);
+  assert.match(retry,/h-6 w-6/);
+});
+check('Central, Departmental and Unscheduled forms all expose ward retry', () => {
+  assert.match(central,/onRetry=\{\(\) => \{ void loadWardMasters\(true\); \}\}/);
+  assert.match(dept,/onRetry=\{onRetryWards\}/);
+  assert.match(uns,/onRetry=\{onRetryWards\}/);
+});
+check('Resource Person roster failure is propagated and manual force retry is available', () => {
+  assert.match(officer,/throw new Error\(res\.message/);
+  assert.match(officer,/throw err;/);
+  assert.match(central,/loadOfficersSingleFlight\(true\)/);
+  assert.match(dept,/loadOfficersSingleFlight\(true\)/);
+  assert.match(uns,/loadOfficersSingleFlight\(true\)/);
+});
+check('Only one faculty spinner is rendered in each Central and Departmental selector', () => {
+  const centralNew = central.slice(central.indexOf('{/* Internal Resource Persons Multi-Select */}'),central.indexOf('{/* External Resource Persons */}'));
+  const centralEdit = central.slice(central.indexOf('<span>Internal Faculty:</span>'),central.indexOf('External Resource Persons:'));
+  const deptRp = dept.slice(dept.indexOf('{/* 1. Internal Resource Persons */}'),dept.indexOf('{/* 2. External Resource Person */}'));
+  assert.equal((centralNew.match(/animate-spin/g)||[]).length,1);
+  assert.equal((centralEdit.match(/animate-spin/g)||[]).length,1);
+  assert.equal((deptRp.match(/animate-spin/g)||[]).length,1);
+});
+check('Faculty selection does not show both plus and checkbox in same row', () => {
+  const deptRp = dept.slice(dept.indexOf('{/* Officers list dropdown / box */}'),dept.indexOf('{/* 2. External Resource Person */}'));
+  assert.match(deptRp,/type="checkbox"/);
+  assert.doesNotMatch(deptRp, /isSelected \? "✓" : "\+"/);
+});
+check('Every CNE creation flow and backend rejects missing Resource Person', () => {
+  for(const text of [central,dept,uns]) assert.match(text,/at least one Resource Person \(Internal or External\)/i);
+  for(const token of ['if (rpClean.length === 0 && extRpClean.length === 0)']) assert.ok(gas.includes(token));
+});
+check('Departmental multi-ward selection is synchronized across all session dropdowns', () => {
+  assert.ok(dept.split('<WardMultiSelect').length >= 3);
+  assert.match(dept,/setRows\(\(prev\) => prev\.map\(\(r\) => \(\{ \.\.\.r, area: primary, participatingWards: next \}\)\)\)/);
+  assert.ok(dept.split('onChange={handleWardChange}').length >= 3);
+});
+check('AI material presence check runs on first opening and reuses cached result safely', () => {
+  assert.match(ai,/void loadMaterialStatus\(\+\+materialRequestRef\.current, cneId\)/);
+  assert.match(ai,/initialMaterialPresenceRef\.current !== null/);
+  assert.match(ai,/await loadMaterialStatus\(\+\+materialRequestRef\.current, cneId\)/);
+  assert.match(ai,/if \(own === null \|\| currentCneIdRef\.current !== cneId\) return;/);
+});
+check('Failure feedback is consistent, short, and retry icon is only displayed after errors', () => {
+  assert.match(retry,/Unable to load\. Click refresh to retry\./);
+  assert.match(retry,/if \(!error \|\| loading \|\| !onRetry\) return null/);
+  assert.match(retry,/onClick=\{onRetry\}/);
+});
+check('Central, Departmental and Unscheduled internal faculty selection uses checkboxes only', () => {
+  assert.match(central,/onChange=\{\(\) => toggleRpSelection\(officer\.employeeId\)\}/);
+  assert.match(central,/onChange=\{\(\) => toggleEditRpSelection\(o\.employeeId\)\}/);
+  assert.match(dept,/onChange=\{\(\) => toggleRowRpSelection\(idx, officer\.employeeId\)\}/);
+  assert.match(uns,/onChange=\{\(\) => toggleRp\(o\.employeeId\)\}/);
+  for (const markup of [central, dept, uns]) {
+    assert.doesNotMatch(markup,/pointer-events-none[\s\S]{0,70}type="checkbox"/);
+  }
+});
+check('Departmental backend enforces resource person on each submitted session', () => {
+  const start = gas.indexOf('function handleAddDepartmentalSchedule(params, session)');
+  const section = gas.slice(start, gas.indexOf('validatedList.push({', start));
+  assert.match(section,/for \(var i = 0; i < rawClasses\.length; i\+\+\)/);
+  assert.match(section,/if \(rpClean\.length === 0 && extRpClean\.length === 0\)/);
+  assert.match(section,/Row .*At least one Resource Person/);
+  assert.match(dept,/Row #\$\{rowNum\}: Please assign at least one Resource Person/);
+});
+check('Initial AI material failure retries only material check, not Gemini generation', () => {
+  assert.match(ai,/retryAction: 'material-check'/);
+  assert.match(ai,/if \(materialOnly\) void loadMaterialStatus\(\)/);
+  assert.match(ai,/Retry Material Check/);
+});
+check('Code.gs is synchronized with TypeScript backend mirror', () => {
+  // The mirror prepends an auto-generated TS ignore comment; compare via sync tool independently.
+  assert.ok(gas.includes("function handleGetAreas(params)"));
+  assert.ok(mirror.includes("function handleGetAreas(params)"));
+  assert.ok(mirror.includes("!params || !params.forceFresh"));
+});
+const retryChecks = checks;
+return retryChecks;
+}
+
+function runTimezoneVerification() {
+  const require = createRequire(import.meta.url);
+  const __dirname = SCRIPT_DIR;
+  const __filename = join(SCRIPT_DIR,'verify-all.js');
+/**
+ * Cross-Module Timezone & Date/Time Regression Test Suite
+ *
+ * Verifies application-wide date, time, and timezone consistency for:
+ * 1. CNE Schedule parsing (Asia/Kolkata interpretation, rejection of invalid calendar dates / times)
+ * 2. CNE start timestamps (ISO with Z, ISO with +05:30, negative offsets, timezone-less Asia/Kolkata, separate date & time)
+ * 3. CNE duration calculations (elapsed time, calendar days touched, 8-hour cap rule, duration validation)
+ * 4. Date formatting and display (consistent Indian local civil time, DD-MMM-YYYY, hh:mm AM/PM, datetime-local)
+ * 5. Google Sheets Date objects (Date instances handled without unintended timezone shifts or rollovers)
+ * 6. Invalid date/time rejection (impossible dates, invalid time components, invalid timezone offsets, contradictory fields)
+ *
+ * Cross-timezone execution:
+ * Validates consistent behavior across:
+ * - Asia/Kolkata
+ * - UTC
+ * - America/Los_Angeles
+ *
+ * Direct source functions from src/utils.ts are evaluated authoritative to production behavior.
+ */
+
+const assert = require('assert');
+const path = require('path');
+const child_process = require('child_process');
+// Prefer the original esbuild path. Where esbuild is unavailable, a TypeScript
+// compiler fallback preserves the same unmodified production source under test.
+let esbuild = null;
+let tsCompiler = null;
+try {
+  esbuild = require('esbuild');
+} catch (err) {
+  if (err.code !== 'MODULE_NOT_FOUND' || !String(err.message).includes("'esbuild'")) throw err;
+  try { tsCompiler = require('typescript'); }
+  catch (missingTs) { throw new Error('Timezone verification requires esbuild or typescript. Run npm install first.', {cause: missingTs}); }
+}
+
+// Compile src/utils.ts in memory; never replace authoritative production logic.
+function loadUtils() {
+  const entryPath = path.resolve(__dirname, '../src/utils.ts');
+  let jsSource;
+  if (esbuild) {
+    const bundle = esbuild.buildSync({
+      entryPoints: [entryPath],
+      write: false,
+      format: 'cjs',
+      bundle: true,
+      platform: 'node',
+      target: 'node18'
+    });
+    jsSource = bundle.outputFiles[0].text;
+  } else {
+    // Only type imports exist in utils.ts; transpilation removes these safely.
+    const source = require('fs').readFileSync(entryPath, 'utf8');
+    const result = tsCompiler.transpileModule(source, {
+      fileName: entryPath,
+      compilerOptions: {
+        module: tsCompiler.ModuleKind.CommonJS,
+        target: tsCompiler.ScriptTarget.ES2020
+      },
+      reportDiagnostics: true
+    });
+    const failures = (result.diagnostics || []).filter(d => d.category === tsCompiler.DiagnosticCategory.Error);
+    if (failures.length) throw new Error('Timezone TypeScript compilation failed: ' + failures.map(d => tsCompiler.flattenDiagnosticMessageText(d.messageText, '\n')).join('; '));
+    jsSource = result.outputText;
+  }
+
+  const utils = {};
+  const mod = { exports: utils };
+  const fn = new Function('module', 'exports', 'require', '__dirname', '__filename', jsSource);
+  fn(mod, utils, require, path.dirname(entryPath), entryPath);
+  return mod.exports;
+}
+
+// -----------------------------------------------------------------------------
+// Test Suite Definition for a Specific Runtime Timezone
+// -----------------------------------------------------------------------------
+
+function runTestsForTimezone(tz) {
+  process.env.TZ = tz;
+  const utils = loadUtils();
+  const {
+    isValidCalendarDate,
+    parseStrictTime,
+    parseCneStartTimestamp,
+    parseToIsoDateString,
+    formatCneDateDisplay,
+    formatCneDateRangeDisplay,
+    formatCneDateTimeDisplay,
+    formatCneDateTimeRangeDisplay,
+    toDateTimeLocalString,
+    parseDurationToSeconds,
+    formatSecondsToDuration,
+    getCalendarDaysTouched,
+    calculateCneDuration,
+    validateCneDuration,
+    getIndiaTodayIsoDate
+  } = utils;
+
+  let passed = 0;
+  let total = 0;
+  const failures = [];
+
+  function test(name, fn) {
+    total++;
+    try {
+      fn();
+      passed++;
+      console.log(`  ✓ [${tz}] ${name}`);
+    } catch (err) {
+      failures.push({ name, error: err });
+      console.error(`  ✗ [${tz}] ${name}`);
+      console.error(`    ${err.message}`);
+    }
+  }
+
+  console.log(`\n============================================================`);
+  console.log(`Running Timezone Tests under TZ = ${tz}`);
+  console.log(`============================================================`);
+
+  // ---------------------------------------------------------------------------
+  // 1. CNE Schedule Parsing & Validation
+  // ---------------------------------------------------------------------------
+  test('1.1 Valid schedule date & time in ISO format defaults to Asia/Kolkata (+05:30)', () => {
+    // 2026-10-25 14:30:00 in Asia/Kolkata (+05:30) = 2026-10-25 09:00:00Z = 1792918800000 ms
+    const epochCombined = parseCneStartTimestamp('2026-10-25T14:30:00');
+    assert.strictEqual(epochCombined, 1792918800000, 'Timezone-less ISO must default to Asia/Kolkata (+05:30)');
+  });
+
+  test('1.2 Valid schedule date & separate time fields default to Asia/Kolkata (+05:30)', () => {
+    const epochSeparate = parseCneStartTimestamp('2026-10-25', '14:30:00');
+    assert.strictEqual(epochSeparate, 1792918800000, 'Separate date and time must default to Asia/Kolkata (+05:30)');
+  });
+
+  test('1.3 Valid schedule in DD-MMM-YYYY and 12-hour AM/PM parsed in Asia/Kolkata', () => {
+    const epochDmmm = parseCneStartTimestamp('25-Oct-2026', '02:30 PM');
+    assert.strictEqual(epochDmmm, 1792918800000, 'DD-MMM-YYYY with 12-hour AM/PM must match');
+  });
+
+  test('1.4 Valid schedule in DD/MM/YYYY and 24-hour time parsed in Asia/Kolkata', () => {
+    const epochSlash = parseCneStartTimestamp('25/10/2026', '14:30');
+    assert.strictEqual(epochSlash, 1792918800000, 'DD/MM/YYYY with 24-hr time must match');
+  });
+
+  test('1.5 Strict calendar date validator rejects impossible dates and non-leap years', () => {
+    assert.strictEqual(isValidCalendarDate(2026, 2, 29), false, '2026-02-29 is non-leap year');
+    assert.strictEqual(isValidCalendarDate(2024, 2, 29), true, '2024-02-29 is leap year');
+    assert.strictEqual(isValidCalendarDate(2026, 4, 31), false, 'April has only 30 days');
+    assert.strictEqual(isValidCalendarDate(2026, 6, 31), false, 'June has only 30 days');
+    assert.strictEqual(isValidCalendarDate(2026, 9, 31), false, 'September has only 30 days');
+    assert.strictEqual(isValidCalendarDate(2026, 11, 31), false, 'November has only 30 days');
+    assert.strictEqual(isValidCalendarDate(2026, 13, 1), false, 'Month 13 is invalid');
+    assert.strictEqual(isValidCalendarDate(2026, 0, 1), false, 'Month 0 is invalid');
+    assert.strictEqual(isValidCalendarDate(2026, 10, 0), false, 'Day 0 is invalid');
+    assert.strictEqual(isValidCalendarDate(2026, 10, 32), false, 'Day 32 is invalid');
+  });
+
+  test('1.6 parseCneStartTimestamp returns NaN for invalid calendar dates', () => {
+    assert.ok(isNaN(parseCneStartTimestamp('2026-02-29T10:00:00')), 'parseCneStartTimestamp must return NaN for non-leap Feb 29');
+    assert.ok(isNaN(parseCneStartTimestamp('2026-04-31T10:00:00')), 'parseCneStartTimestamp must return NaN for April 31');
+    assert.ok(isNaN(parseCneStartTimestamp('31-Feb-2026', '10:00 AM')), 'parseCneStartTimestamp must return NaN for 31-Feb-2026');
+  });
+
+  test('1.7 Strict time parser rejects overflow hours, overflow minutes, and invalid 12-hour AM/PM', () => {
+    assert.strictEqual(parseStrictTime('24:00'), null, '24:00 is not valid 24-hour time');
+    assert.strictEqual(parseStrictTime('25:00'), null, '25:00 is overflow hour');
+    assert.strictEqual(parseStrictTime('99:99'), null, '99:99 is invalid');
+    assert.strictEqual(parseStrictTime('10:60'), null, '10:60 is overflow minute');
+    assert.strictEqual(parseStrictTime('14:60:00Z'), null, '14:60:00Z is overflow minute');
+    assert.strictEqual(parseStrictTime('13:00 PM'), null, '13:00 PM is invalid 12-hour hour');
+    assert.strictEqual(parseStrictTime('0:00 AM'), null, '0:00 AM is invalid 12-hour hour');
+    assert.strictEqual(parseStrictTime('00:30 PM'), null, '00:30 PM is invalid 12-hour hour');
+    assert.strictEqual(parseStrictTime('bogus'), null, 'Non-time string must be rejected');
+    assert.strictEqual(parseStrictTime(''), null, 'Empty string must be rejected');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 2. CNE Start Timestamps & Instant Equivalence
+  // ---------------------------------------------------------------------------
+  test('2.1 Handles ISO timestamps with explicit UTC Z', () => {
+    const expectedUtcMillis = Date.UTC(2028, 9, 25, 8, 30, 0); // 1856075400000
+    const tZ = parseCneStartTimestamp('2028-10-25T08:30:00Z');
+    assert.strictEqual(tZ, expectedUtcMillis, 'ISO timestamp with Z matches absolute instant');
+  });
+
+  test('2.2 Handles ISO timestamps with explicit +05:30 offset', () => {
+    const expectedUtcMillis = Date.UTC(2028, 9, 25, 8, 30, 0);
+    const tAsia = parseCneStartTimestamp('2028-10-25T14:00:00+05:30');
+    assert.strictEqual(tAsia, expectedUtcMillis, 'ISO timestamp with +05:30 matches absolute instant');
+  });
+
+  test('2.3 Handles ISO timestamps with negative offset (-05:00)', () => {
+    const expectedUtcMillis = Date.UTC(2028, 9, 25, 8, 30, 0);
+    const tEst = parseCneStartTimestamp('2028-10-25T03:30:00-05:00');
+    assert.strictEqual(tEst, expectedUtcMillis, 'ISO timestamp with -05:00 matches absolute instant');
+  });
+
+  test('2.4 Equivalent timestamps across formats represent the exact same absolute instant', () => {
+    const expectedUtcMillis = Date.UTC(2028, 9, 25, 8, 30, 0);
+    const tZ = parseCneStartTimestamp('2028-10-25T08:30:00Z');
+    const tAsia = parseCneStartTimestamp('2028-10-25T14:00:00+05:30');
+    const tEst = parseCneStartTimestamp('2028-10-25T03:30:00-05:00');
+    const tDefault = parseCneStartTimestamp('2028-10-25T14:00:00');
+    const tSeparate = parseCneStartTimestamp('2028-10-25', '14:00:00');
+    const tDmmmAmPm = parseCneStartTimestamp('25-Oct-2028', '02:00 PM');
+
+    assert.strictEqual(tZ, expectedUtcMillis);
+    assert.strictEqual(tAsia, expectedUtcMillis);
+    assert.strictEqual(tEst, expectedUtcMillis);
+    assert.strictEqual(tDefault, expectedUtcMillis);
+    assert.strictEqual(tSeparate, expectedUtcMillis);
+    assert.strictEqual(tDmmmAmPm, expectedUtcMillis);
+
+    assert.strictEqual(tZ, tAsia, 'Z and +05:30 represent the exact same epoch instant');
+    assert.strictEqual(tZ, tEst, 'Z and -05:00 represent the exact same epoch instant');
+    assert.strictEqual(tZ, tDefault, 'Z and default Asia/Kolkata represent the exact same epoch instant');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 3. CNE Duration Calculations & Calendar Day Boundaries
+  // ---------------------------------------------------------------------------
+  test('3.1 Calculates single-day CNE duration from actual elapsed time', () => {
+    const dur1 = calculateCneDuration('2026-10-25T09:00:00', '2026-10-25T11:30:00');
+    assert.strictEqual(dur1, '02:30:00', 'Single-day duration is exact elapsed time');
+  });
+
+  test('3.2 Caps single-day CNE duration at 8 hours maximum', () => {
+    const durCapped = calculateCneDuration('2026-10-25T06:00:00', '2026-10-25T18:00:00');
+    assert.strictEqual(durCapped, '08:00:00', 'Single day duration capped at 8 hours maximum');
+  });
+
+  test('3.3 Computes Indian calendar days touched correctly', () => {
+    const days1 = getCalendarDaysTouched('2026-10-25T09:00:00', '2026-10-25T17:00:00');
+    assert.strictEqual(days1, 1, 'Same day touched count is 1');
+
+    const days2 = getCalendarDaysTouched('2026-10-25T09:00:00', '2026-10-26T17:00:00');
+    assert.strictEqual(days2, 2, 'Consecutive days touched count is 2');
+  });
+
+  test('3.4 Validates entered duration against 5-min minimum and daily 8-hour cap', () => {
+    const vValid = validateCneDuration('02:30:00', '2026-10-25T09:00:00', '2026-10-25T11:30:00');
+    assert.strictEqual(vValid.isValid, true, 'Valid duration passes validation');
+    assert.strictEqual(vValid.maxDurationStr, '08:00:00', 'Max duration for 1 day is 08:00:00');
+
+    const vUnder = validateCneDuration('00:04:00', '2026-10-25T09:00:00', '2026-10-25T11:30:00');
+    assert.strictEqual(vUnder.isValid, false, 'Duration under 5 minutes rejected');
+
+    const vOver = validateCneDuration('08:05:00', '2026-10-25T09:00:00', '2026-10-25T11:30:00');
+    assert.strictEqual(vOver.isValid, false, 'Duration exceeding 8h daily cap rejected');
+
+    const vInverted = validateCneDuration('01:00:00', '2026-10-25T12:00:00', '2026-10-25T10:00:00');
+    assert.strictEqual(vInverted.isValid, false, 'Inverted dates rejected');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 4. Date Formatting and Display
+  // ---------------------------------------------------------------------------
+  test('4.1 Formats UTC ISO timestamp (2028-10-25T08:30:00Z) to 25-Oct-2028 02:00 PM (IST)', () => {
+    const dtDisplay = formatCneDateTimeDisplay('2028-10-25T08:30:00Z');
+    assert.strictEqual(dtDisplay, '25-Oct-2028 02:00 PM', 'formatCneDateTimeDisplay converts UTC to Indian civil time');
+  });
+
+  test('4.2 Formats UTC ISO timestamp to Indian calendar date DD-MMM-YYYY', () => {
+    const dDisplay = formatCneDateDisplay('2028-10-25T08:30:00Z');
+    assert.strictEqual(dDisplay, '25-Oct-2028', 'formatCneDateDisplay displays Indian calendar date');
+  });
+
+  test('4.3 Formats datetime-local string to Indian civil time YYYY-MM-DDTHH:mm', () => {
+    const dLocal = toDateTimeLocalString('2028-10-25T08:30:00Z');
+    assert.strictEqual(dLocal, '2028-10-25T14:00', 'toDateTimeLocalString converts UTC to Indian local input string');
+  });
+
+  test('4.4 Formats date and time ranges consistently in Indian civil time', () => {
+    const rangeDisplay = formatCneDateTimeRangeDisplay('2028-10-25T08:30:00Z', '2028-10-25T10:30:00Z');
+    assert.strictEqual(rangeDisplay, '25-Oct-2028 02:00 PM – 25-Oct-2028 04:00 PM', 'Range displays Indian start and end times');
+
+    const dateOnlyRange = formatCneDateRangeDisplay('2026-10-25', '2026-10-26');
+    assert.strictEqual(dateOnlyRange, '25-Oct-2026 - 26-Oct-2026', 'Date-only range formatted cleanly');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 5. Google Sheets Date Objects
+  // ---------------------------------------------------------------------------
+  test('5.1 Handles Google Sheets JavaScript Date objects without unintended timezone shifts', () => {
+    // 25-Oct-2026 14:00:00 IST = 1792917000000 ms UTC
+    const sheetsDateObj = new Date(1792917000000);
+
+    const parsedEpoch = parseCneStartTimestamp(sheetsDateObj);
+    assert.strictEqual(parsedEpoch, 1792917000000, 'JS Date parsed into exact UTC epoch ms');
+
+    const formattedDt = formatCneDateTimeDisplay(sheetsDateObj);
+    assert.strictEqual(formattedDt, '25-Oct-2026 02:00 PM', 'JS Date formatted as Indian civil time');
+
+    const formattedDate = formatCneDateDisplay(sheetsDateObj);
+    assert.strictEqual(formattedDate, '25-Oct-2026', 'JS Date formatted as Indian date DD-MMM-YYYY');
+
+    const isoDay = parseToIsoDateString(sheetsDateObj);
+    assert.strictEqual(isoDay, '2026-10-25', 'JS Date converts to canonical India YYYY-MM-DD');
+  });
+
+  test('5.2 Handles invalid Date objects by safely returning NaN or fallback', () => {
+    const invalidDate = new Date('Invalid Date');
+    assert.ok(isNaN(parseCneStartTimestamp(invalidDate)), 'Invalid JS Date returns NaN');
+    assert.strictEqual(formatCneDateTimeDisplay(invalidDate), '—', 'Invalid JS Date displays fallback dash');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 6. Invalid Date/Time Rejection
+  // ---------------------------------------------------------------------------
+  test('6.1 Rejects invalid timezone offsets (+25:00, -25:00, +05:60)', () => {
+    assert.strictEqual(parseStrictTime('14:00:00+25:00'), null, 'Offset > +23 hours rejected');
+    assert.strictEqual(parseStrictTime('14:00:00-25:00'), null, 'Offset < -23 hours rejected');
+    assert.strictEqual(parseStrictTime('14:00:00+05:60'), null, 'Offset minute > 59 rejected');
+  });
+
+  test('6.2 Rejects out-of-range years (<1970 or >2100)', () => {
+    assert.strictEqual(isValidCalendarDate(1969, 12, 31), false, 'Year < 1970 rejected');
+    assert.strictEqual(isValidCalendarDate(2101, 1, 1), false, 'Year > 2100 rejected');
+  });
+
+  test('6.3 Rejects contradictory timestamp inputs and falsy inputs', () => {
+    const contradictory = parseCneStartTimestamp('2026-10-25T14:00:00Z', '16:00:00');
+    assert.ok(isNaN(contradictory), 'Contradictory ISO time and separate explicit time rejected');
+
+    assert.ok(isNaN(parseCneStartTimestamp(null)), 'Null date returns NaN');
+    assert.ok(isNaN(parseCneStartTimestamp(undefined)), 'Undefined date returns NaN');
+    assert.ok(isNaN(parseCneStartTimestamp('')), 'Empty string returns NaN');
+  });
+
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} test(s) failed under timezone ${tz}`);
+  }
+
+  return { passed, total };
+}
+
+// -----------------------------------------------------------------------------
+// Cross-Timezone Master Runner
+// -----------------------------------------------------------------------------
+
+function main() {
+  const isWorker = process.argv.includes('--tz-run');
+  if (isWorker) {
+    const tzIdx = process.argv.indexOf('--tz-run') + 1;
+    const tz = process.argv[tzIdx] || 'UTC';
+    const result = runTestsForTimezone(tz);
+    // Print machine-readable summary line for worker parent
+    console.log(`\nTZ_WORKER_RESULT:${tz}:${result.passed}:${result.total}`);
+    process.exit(0);
+  }
+
+  console.log('================================================================');
+  console.log('   CROSS-MODULE TIMEZONE REGRESSION TEST SUITE');
+  console.log('   Validating CNE Date/Time & Asia/Kolkata Consistency');
+  console.log('================================================================');
+
+  const targetTimezones = ['Asia/Kolkata', 'UTC', 'America/Los_Angeles'];
+  let totalExecuted = 0;
+  let totalPassed = 0;
+
+  for (const tz of targetTimezones) {
+    try {
+      // Execute in child process with explicit TZ environment variable
+      const output = child_process.execFileSync(
+        process.execPath,
+        [__filename, '--tz-run', tz],
+        {
+          env: { ...process.env, TZ: tz },
+          encoding: 'utf8'
+        }
+      );
+
+      process.stdout.write(output);
+
+      // Parse worker result
+      const match = output.match(/TZ_WORKER_RESULT:([^:]+):(\d+):(\d+)/);
+      if (match) {
+        const passedCount = parseInt(match[2], 10);
+        const totalCount = parseInt(match[3], 10);
+        totalPassed += passedCount;
+        totalExecuted += totalCount;
+      }
+    } catch (err) {
+      console.error(`\nFATAL: Tests failed under timezone environment ${tz}:`);
+      if (err.stdout) console.error(err.stdout);
+      if (err.stderr) console.error(err.stderr);
+      process.exit(1);
+    }
+  }
+
+  console.log('\n================================================================');
+  console.log(`TIMEZONE REGRESSION SUITE COMPLETE: ${totalPassed}/${totalExecuted} tests passed across 3 timezones`);
+  console.log('Tested environments: Asia/Kolkata, UTC, America/Los_Angeles');
+  console.log('================================================================\n');
+
+  if (totalPassed !== totalExecuted || totalExecuted === 0) {
+    process.exit(1);
+  }
+}
+
+return main();
+
+}
 
 // Each block below reproduces an original test file verbatim at runtime.
 // The source is kept readable, not minified or encoded, so tests can be edited.
@@ -38,7 +741,7 @@ const suites = [
     originalFilename: "verify-security-and-access.js",
     mode: "module",
     expectedChecks: 30,
-    sha256: "6a7188cb0826fba87ca5bd7965e6672be1ef3de6fea0ec4f537053fb367c5583",
+    sha256: "f622e04432a18a17144a643b675e4c3e3bb21eb1f162d93916184d648e968cb8",
     source: `/**
  * Security & Access Verification Suite
  *
@@ -1279,8 +1982,8 @@ runTest('Frontend does not automatically fetch officer directory for every logge
     'CNESchedule loadData must not fetch the officer directory merely because any user is logged in'
   );
   assert.ok(
-    loadDataSlice.includes('if (canScheduleCne && (isAddClassOpen || Boolean(editingCne))'),
-    'CNESchedule must gate on-demand officer loading behind canScheduleCne && (isAddClassOpen || Boolean(editingCne))'
+    cneSchedule.includes('!canScheduleCne || !(isAddClassOpen || editingCne) || officersList.length'),
+    'CNESchedule must gate on-demand officer loading behind authorized scheduling forms only'
   );
 
   // Public CNE output cannot fall back to raw Employee ID
@@ -7806,7 +8509,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-read-performance.cjs",
     mode: "commonjs",
     expectedChecks: 40,
-    sha256: "cdac716f97671cfd7fcf501e3c18c7354a70272d4e2ae9dbc17be1fdc08153ce",
+    sha256: "b8d74d6241364c3a11daa85db064871f4a6f1392f98e56054f5be5dda631e0d9",
     source: `/**
  * CNE Read Performance & Bounded Query Regression Verification Suite
  *
@@ -8271,16 +8974,17 @@ function createFreshTestEnvironment() {
 runTest('CNE Schedule records load independently of Area and Teaching Mode master data', () => {
   // 1. Verify source architecture in CNESchedule.tsx
   assert.ok(
-    cneScheduleSource.includes('void ApiService.getAreas()'),
-    'CNESchedule must trigger ApiService.getAreas() as an independent background promise'
+    cneScheduleSource.includes('Promise.all([ApiService.getAreas(forceFresh), ApiService.getWardStaffCounts()])') &&
+    cneScheduleSource.includes('if (!canScheduleCne || !(isAddClassOpen || isDeptScheduleOpen || isUnscheduledOpen || editingCne)) return;'),
+    'CNESchedule must fetch ward names and staffing only for an authorized scheduling form'
   );
   assert.ok(
     cneScheduleSource.includes('void ApiService.getTeachingModes()'),
     'CNESchedule must trigger ApiService.getTeachingModes() as an independent background promise'
   );
   assert.ok(
-    !cneScheduleSource.includes('Promise.all([ApiService.getAreas()'),
-    'CNESchedule must NOT gate record rendering behind a Promise.all barrier with master data'
+    !cneScheduleSource.slice(cneScheduleSource.indexOf('const loadData = async'), cneScheduleSource.indexOf('const handleChildModalUpdated')).includes('await loadWardMasters'),
+    'CNESchedule must NOT gate schedule record rendering behind ward/staff master fetching'
   );
   assert.ok(
     cneScheduleSource.includes('await ApiService.getCNESchedulePage({'),
@@ -9404,6 +10108,32 @@ function runSuite(suite) {
   });
 }
 
+// Run any test category from the same file, including timezone workers.
+const specialSuitePos = process.argv.indexOf('--suite');
+const specialSuiteName = specialSuitePos >= 0 ? process.argv[specialSuitePos + 1] : null;
+function runFocusedOnly(name, checks) {
+  let ok = 0;
+  console.log(`Running ${checks.length} ${name} checks...`);
+  for (const {name: title, run} of checks) {
+    try { run(); ok++; console.log('✓ ' + title); }
+    catch (err) { console.error('✗ ' + title + ': ' + err.message); }
+  }
+  console.log(`${name}: ${ok}/${checks.length} passed`);
+  if (ok !== checks.length) process.exitCode = 1;
+}
+if (process.argv.includes('--tz-run') || specialSuiteName === 'timezone') {
+  runTimezoneVerification();
+  process.exit(0);
+}
+if (specialSuiteName === 'smart-hybrid') {
+  runFocusedOnly('Smart Hybrid', createHybridChecks());
+  process.exit(process.exitCode || 0);
+}
+if (specialSuiteName === 'dropdown-retry') {
+  runFocusedOnly('Dropdown recovery', createDropdownRetryChecks());
+  process.exit(process.exitCode || 0);
+}
+
 const suiteFlagIndex = process.argv.indexOf('--suite');
 if (suiteFlagIndex !== -1 && !process.argv[suiteFlagIndex + 1]) {
   console.error('Missing suite name after --suite.');
@@ -9490,13 +10220,13 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   focusCheck('Reference reindex verifies replacement and refuses false SUCCESS', () => {
     if (!gas.includes('INDEX_REPLACEMENT_INCOMPLETE') || !gas.includes('verifiedCount !== rowsToInsert.length')) throw Error('Index replacement does not verify counts');
   });
-  focusCheck('Material is checked on AI Generate, not on Question Bank opening', () => {
+  focusCheck('Material presence is checked on first AI page opening, without full evidence extraction', () => {
     const init = ui.slice(ui.indexOf('  useEffect(() => {'), ui.indexOf('  const loadQuestions = async'));
-    if (init.includes('void loadMaterialStatus(') || !init.includes('void loadQuestions(') || !init.includes('void loadQuota(')) {
-      throw Error('Page opening should load questions and quota, but not CNE material status');
+    if (!init.includes('void loadMaterialStatus(++materialRequestRef.current, cneId)') || !init.includes('void loadQuestions(') || !init.includes('void loadQuota(')) {
+      throw Error('First AI page opening must check material presence with questions and quota');
     }
-    if (!ui.includes('const own = await loadMaterialStatus(++materialRequestRef.current, cneId)')) {
-      throw Error('Material availability is not checked on the Generate action');
+    if (!ui.includes('initialMaterialPresenceRef.current !== null') || !ui.includes('await loadMaterialStatus(++materialRequestRef.current, cneId)')) {
+      throw Error('Generate must reuse initial material result and retry after an initial check failure');
     }
   });
   // Run the real Generate click handler in an isolated sandbox. Backend APIs are
@@ -9514,6 +10244,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       const ctx = {
         canInteractWithQuestionTools: scenario.canInteract !== false,
         materialCheckRef: {current: scenario.checking === true},
+        initialMaterialPresenceRef: {current: scenario.cachedMaterial === undefined ? null : scenario.cachedMaterial},
         isAiGenerationUsed: scenario.used === true,
         isAiGenerationUnavailable: scenario.unavailable === true,
         cneId,
@@ -9542,6 +10273,13 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   focusCheck('Generate with no uploaded material checks once and requires library consent', () => {
     const events = exerciseMaterialClick({serverMaterial: false});
     if (events.check !== 1 || events.generate.length || JSON.stringify(events.popup) !== '["confirm"]') throw Error('Library consent was bypassed');
+  });
+  focusCheck('Previously checked material is reused on Generate without another presence API call', () => {
+    for (const cachedMaterial of [true,false]) {
+      const result = exerciseMaterialClick({cachedMaterial, serverMaterial:null});
+      if (result.check !== 0 || (cachedMaterial ? result.generate.length !== 1 : JSON.stringify(result.popup) !== '["confirm"]'))
+        throw Error('Initial material check was duplicated or library consent was skipped');
+    }
   });
   focusCheck('Unknown material status blocks generation and does not assume library consent', () => {
     const events = exerciseMaterialClick({serverMaterial: null});
@@ -10330,13 +11068,13 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     for (const token of ['export function prefetchRoute','export function scheduleIdlePrefetch','PREFETCH_MAP'])
       if (!route.includes(token)) throw Error('Route optimization missing: ' + token);
   });
-  retainCheck('Restored 43-runner parity: UI recovery and on-demand material checks', () => {
+  retainCheck('Restored 43-runner parity: UI recovery and first-open material checks', () => {
     for (const token of ['submissionUncertain','recoveredResult','formatPostTestTimestamp'])
       if (!postTest.includes(token)) throw Error('Post-Test recovery state missing: ' + token);
-    for (const token of ['const own = await loadMaterialStatus(++materialRequestRef.current, cneId);',
+    for (const token of ['initialMaterialPresenceRef.current !== null',
       'reconcileUncertainGeneration','ApiService.getAiQuota'])
       if (!ui.includes(token)) throw Error('On-demand material or AI recovery logic missing: ' + token);
-    if (ui.includes('void loadMaterialStatus(')) throw Error('Material status loads unnecessarily on page opening');
+    if (!ui.includes('void loadMaterialStatus(++materialRequestRef.current, cneId)')) throw Error('First page-open material presence check is missing');
   });
 
   console.log('\n>>> Additional cross-module checks retained from the 43-test runner');
@@ -10838,10 +11576,11 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     if (ctx.result.errorCode !== 'WARD_STAFF_MASTER_UNAVAILABLE' || !gs.includes("if (!sheet) throw new Error('CNE staff count master sheet is inaccessible')"))
       throw Error('Master access error silently converted to zero');
   });
-  check('Central staff-count query starts when Central creation modal opens', () => {
-    if (!central.includes('!isAddClassOpen && !editingCne') || !central.includes('setWardCountError(') ||
-        !central.includes('staffCountError={wardCountError}'))
-      throw Error('Central creation does not fetch or show staffing master errors');
+  check('Central staff-count and ward master checks start when scheduling forms open', () => {
+    if (!central.includes('isAddClassOpen || isDeptScheduleOpen || isUnscheduledOpen || editingCne') ||
+        !central.includes('Promise.all([ApiService.getAreas(forceFresh), ApiService.getWardStaffCounts()])') ||
+        !central.includes('staffCountError={wardMasterError || wardCountError}') || !central.includes('loadError={wardMasterError}'))
+      throw Error('Central creation is not gated on both authoritative masters');
   });
   check('New shared ward resolver rejects inactive and duplicate wards in every CNE type', () => {
     if (runWards(['NICU','PICU','nicu'],'NICU',false).errorCode !== 'WARD_SELECTION_INVALID')
@@ -10854,7 +11593,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       throw Error('Unselected reporting ward accepted');
   });
   check('Ward multi-select has Done, click-outside, Escape and disabled closing', () => {
-    for (const token of ['>Done</button>', "document.addEventListener('mousedown'", "document.addEventListener('touchstart'", "event.key === 'Escape'", 'if (disabled) setExpanded(false)'])
+    for (const token of ['>Done</button>', "document.addEventListener('mousedown'", "document.addEventListener('touchstart'", "event.key === 'Escape'", 'if (disabled || isLoading || loadError) setExpanded(false)'])
       if (!selector.includes(token)) throw Error('Missing dropdown close pathway: '+token);
   });
   check('Selector handles unknown per-ward count as 0 and omits staff on Unscheduled', () => {
@@ -10862,9 +11601,11 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       throw Error('Missing zero-count / hide-count presentation');
     if (selector.includes('Count unavailable')) throw Error('Old missing-staff warning remains');
   });
-  check('Departmental Session 1 is editable and later sessions retain read-only dropdown', () => {
-    if (!dept.includes('idx === 0 ? (') || !dept.includes('<WardMultiSelect') || !dept.includes('<select disabled aria-label') || !dept.includes('Automatically updated from Session 1'))
-      throw Error('Departmental session permissions or presentation incorrect');
+  check('Departmental wards remain selected in every session, and every dropdown updates the same shared set', () => {
+    if (!dept.includes('idx === 0 ? (') || dept.split('<WardMultiSelect').length < 3 ||
+        !dept.includes('onChange={handleWardChange}') || !dept.includes('prev.map((r) => ({ ...r, area: primary, participatingWards: next }))') ||
+        dept.includes('<select disabled aria-label'))
+      throw Error('Departmental multi-session shared ward dropdown synchronization is broken');
   });
   check('Central creator selects multiple wards and sends them with a primary to backend', () => {
     if (!central.includes('setNewWards(wards); setNewArea(primary)') || !central.includes('participatingWards: newWards') || !central.includes("cneType: 'CENTRAL'"))
@@ -11592,7 +12333,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
 
 // Smart Hybrid reference-question import, partial recovery, five-to-ten Post-Test checks.
 if (selected.some(item=>item.id==='performance') && passed===selected.length) {
-  const {hybridChecks}=await import('./verify-smart-hybrid.js');
+  const hybridChecks = createHybridChecks();
   console.log('\n>>> Smart Hybrid Question Bank and resumable AI behavioral checks');
   for(const item of hybridChecks){
     focusedChecks.push({name:item.name,test:item.run});
@@ -11601,8 +12342,20 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   }
 }
 
+// Fail-closed dropdown retry and first-open AI material verification.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const retryChecks = createDropdownRetryChecks();
+  console.log('\n>>> Ward, Resource Person and AI first-open recovery checks');
+  for (const item of retryChecks) {
+    focusedChecks.push({ name: item.name, test: item.run });
+    try { item.run(); focusedPassed++; console.log('✓ ' + item.name); }
+    catch (err) { console.error('✗ ' + item.name + ': ' + err.message); }
+  }
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');
 if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);
 if (passed !== selected.length || focusedPassed !== focusedChecks.length) process.exit(1);
+if (process.argv.includes('--with-timezone')) runTimezoneVerification();

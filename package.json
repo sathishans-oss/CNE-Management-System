@@ -23,8 +23,10 @@
     "verify:delete": "node scripts/verify-all.js --suite delete",
     "verify:interest": "node scripts/verify-all.js --suite interest",
     "verify:performance": "node scripts/verify-all.js --suite performance",
-    "verify:smart-hybrid": "node scripts/verify-smart-hybrid.js",
-    "verify:timezone": "node scripts/verify-timezone-cross-module.cjs"
+    "verify:smart-hybrid": "node scripts/verify-all.js --suite smart-hybrid",
+    "verify:timezone": "node scripts/verify-all.js --suite timezone",
+    "verify:dropdown-retry": "node scripts/verify-all.js --suite dropdown-retry",
+    "verify:complete": "node scripts/verify-all.js --with-timezone"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

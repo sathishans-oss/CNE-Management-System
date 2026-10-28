@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { ChevronDown, Search } from 'lucide-react';
+import { ChevronDown, Search, Loader2 } from 'lucide-react';
+import { DropdownRetry } from './DropdownRetry';
 
 export type WardStaffCounts = Record<string, number | null>;
 
@@ -19,6 +20,9 @@ interface Props {
   primaryWard: string;
   staffCounts: WardStaffCounts;
   staffCountError?: string;
+  isLoading?: boolean;
+  loadError?: string;
+  onRetry?: () => void;
   showCounts?: boolean;
   onChange: (selected: string[], primary: string) => void;
   disabled?: boolean;
@@ -31,6 +35,9 @@ export const WardMultiSelect: React.FC<Props> = ({
   primaryWard,
   staffCounts,
   staffCountError,
+  isLoading = false,
+  loadError = '',
+  onRetry,
   showCounts = true,
   onChange,
   disabled
@@ -40,8 +47,8 @@ export const WardMultiSelect: React.FC<Props> = ({
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (disabled) setExpanded(false);
-  }, [disabled]);
+    if (disabled || isLoading || loadError) setExpanded(false);
+  }, [disabled, isLoading, loadError]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -78,7 +85,7 @@ export const WardMultiSelect: React.FC<Props> = ({
   const eligible = new Set(eligiblePrimaryWards.map((x) => x.trim().toUpperCase()));
 
   const toggleWard = (name: string) => {
-    if (disabled) return;
+    if (disabled || isLoading || loadError) return;
     const next = selected.some((x) => x.toUpperCase() === name.toUpperCase())
       ? selected.filter((x) => x.toUpperCase() !== name.toUpperCase())
       : [...selected, name];
@@ -87,20 +94,23 @@ export const WardMultiSelect: React.FC<Props> = ({
 
   return (
     <div ref={containerRef} className="relative">
+      <div className="flex items-center gap-1">
       <button
         type="button"
-        disabled={disabled}
+        disabled={disabled || isLoading || Boolean(loadError) || availableWards.length === 0}
         aria-expanded={expanded}
         onClick={() => setExpanded((old) => !old)}
         className="w-full flex justify-between items-center gap-2 bg-white border border-slate-300 rounded-lg px-3 py-2.5 text-left text-xs focus:ring-2 focus:ring-purple-500 disabled:opacity-60"
       >
         <span className="font-semibold text-purple-900">
-          {selected.length ? `${selected.length} ward${selected.length > 1 ? 's' : ''} selected` : 'Select Department / Ward...'}
+          {isLoading ? 'Loading wards and staff counts...' : loadError ? 'Select Department / Ward...' : selected.length ? `${selected.length} ward${selected.length > 1 ? 's' : ''} selected` : 'Select Department / Ward...'}
         </span>
-        <ChevronDown className="w-4 h-4 text-slate-500" />
+        {isLoading ? <Loader2 className="w-3.5 h-3.5 text-purple-600 animate-spin" aria-label="Loading wards and staff counts" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
       </button>
+      <DropdownRetry error={loadError} loading={isLoading} onRetry={onRetry} label="wards and staff counts" />
+      </div>
 
-      {expanded && (
+      {expanded && !isLoading && !loadError && (
         <div className="mt-1 rounded-lg border border-slate-300 bg-white shadow-lg p-2 max-h-64 overflow-auto z-50">
           <label className="flex items-center gap-2 border border-slate-200 rounded-md px-2 py-1 mb-2">
             <Search className="w-3.5 h-3.5 text-slate-400" />
@@ -161,8 +171,12 @@ export const WardMultiSelect: React.FC<Props> = ({
           )}
         </div>
       )}
-      {showCounts && staffCountError && (
-        <p role="alert" className="mt-1 text-[11px] text-amber-700">{staffCountError}</p>
+      {!loadError && (
+        <>
+          {showCounts && staffCountError && (
+            <p role="alert" className="mt-1 text-[11px] text-amber-700">{staffCountError}</p>
+          )}
+        </>
       )}
     </div>
   );
