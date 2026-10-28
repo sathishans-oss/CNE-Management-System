@@ -9468,6 +9468,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
         currentCneIdRef: {current: scenario.wrongCne ? 'OTHER-CNE' : cneId},
         setFailureDialog: (v) => {if(v === null) events.clear++;},
         loadMaterialStatus: async () => {events.check += 1; return scenario.serverMaterial;},
+        searchBank: async () => {},
         setMaterialChoice: (choice) => {events.popup.push(choice);},
         handleGenerateAi: async (allowed) => {events.generate.push(allowed);}
       };
@@ -9508,7 +9509,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   focusCheck('Required header Valid & Finalized count badge remains dynamic, including locked sessions', () => {
     const header=ui.slice(ui.indexOf('{/* Header */}'),ui.indexOf('{/* AI & Manual Action Bar */}'));
     if (!header.includes('{validFinalizedCount} of {activeQuestions.length} Valid & Finalized (Min 5)') || !header.includes('Locked (Submissions Received)')) throw Error('Count or locked status was removed');
-    if (!ui.includes('validFinalizedCount < 5 || incompleteActiveCount > 0')) throw Error('QR eligibility disabled guard was weakened');
+    if (!ui.includes('validFinalizedCount < 5 || validFinalizedCount > 10 || incompleteActiveCount > 0')) throw Error('QR eligibility disabled guard was weakened');
   });
   focusCheck('Redundant AI badges, quota label and QR footer warning are removed', () => {
     const obsolete=['AI: Generating','1 AI generation allowed per CNE','Need 5 valid finalized questions before QR. Ready:','Synthesize exactly 5 clinical MCQs grounded strictly'];
@@ -9852,10 +9853,13 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
     if(result.success||result.errorCode!=='AI_BLUEPRINT_FAILED'||run.calls.length!==1) throw Error('Duplicate clinical blueprint accepted');
   });
-  focusCheck('Repeated unsupported evidence exhausts bounded corrections and saves no partial batch',()=>{
+  focusCheck('Repeated unsupported evidence discards invalid objective but retains other validated Drafts',()=>{
     const run=mockBlueprintScenario({mutateInitial:qs=>{qs[0].evidenceQuote='Fabricated clinical quote that never appeared in teaching material';},makeRepair:(i,q)=>q(i,{evidenceQuote:'Another invented passage that was never supplied by the library'})});
     const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
-    if(result.success||result.errorCode!=='UNSUPPORTED_SOURCE_EVIDENCE'||result.data||run.calls.length!==4) throw Error('Unsafe question batch was accepted or retry unbounded '+JSON.stringify(result));
+    if(!result.success || !result.partial || result.data.length!==4 ||
+       result.data.some(q=>q.objectiveId==='OBJ_1') ||
+       !result.failures.some(f=>f.objectiveId==='OBJ_1' && f.validationReason==='QUOTE_NOT_FOUND') ||
+       run.calls.length!==4) throw Error('Unverified objective entered partial Draft set or retry was unbounded '+JSON.stringify(result));
   });
   focusCheck('Clinical contradiction and unsupported quantities still fail against actual cited passage',()=>{
     const ctx=freshLibrarySandbox();
@@ -9930,14 +9934,16 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if(!result.success || run.calls.length!==3 || result.data[0].correctOption!=='A') throw Error('Source/selector repair failed '+JSON.stringify(result));
     if(!run.calls[2].prompt.includes('REQUIRED FIX:') || !run.calls[2].prompt.includes('source label')) throw Error('No source-specific repair guidance');
   });
-  focusCheck('Invalid correctOption remains rejected after two bad fixes and saves no partial batch',()=>{
+  focusCheck('Invalid correctOption rejected while retaining separately verified objectives',()=>{
     const run=mockBlueprintScenario({
       mutateInitial:qs=>{qs[0].correctOption='B or A';},
       makeRepair:(i,q)=>q(i,{correctOption:'Option Q'})
     });
     const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
-    if(result.success || result.errorCode!=='INVALID_CORRECT_OPTION'||result.data||run.calls.length!==4) throw Error('Invalid answer was committed or retry unbounded '+JSON.stringify(result));
-    if(!result.message.includes('unambiguous A, B, C or D')) throw Error('Missing precise user diagnostic');
+    if(!result.success || !result.partial || result.data.length!==4 ||
+       result.data.some(q=>q.objectiveId==='OBJ_1') ||
+       !result.failures.some(f=>f.validationReason==='INVALID_CORRECT_OPTION') ||
+       run.calls.length!==4) throw Error('Invalid answer was committed into partial set or retry was unbounded '+JSON.stringify(result));
   });
   focusCheck('Backend repair guidance is issue-specific for all five logged failure codes',()=>{
     const ctx=freshLibrarySandbox();
@@ -10044,10 +10050,12 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     const q=result.data[0];
     if(q.questionText!==original.questionText||q.optionA!==original.optionA||q.explanation!==original.explanation||q.correctOption!=='A') throw Error('Unrelated clinical fields changed');
   });
-  focusCheck('Answer-key-only repair cannot force acceptance of a clinically unsupported letter',()=>{
+  focusCheck('Answer-key-only repair cannot force invalid objective into partial validated set',()=>{
     const run=mockBlueprintScenario({mutateInitial:qs=>{qs[0].correctOption='A or B';},makeRepair:()=>({correctOption:'D'})});
     const result=run.ctx.generateAiQuestionsInternal({cneId:'IV_CNE',reservationToken:'TOKEN',allowLibraryOnly:true},{employeeId:'ADM'});
-    if(result.success||result.data) throw Error('Unsupported answer key was accepted');
+    if(!result.success || !result.partial || result.data.length!==4 ||
+       result.data.some(q=>q.objectiveId==='OBJ_1') ||
+       !result.failures.some(f=>f.objectiveId==='OBJ_1')) throw Error('Unsupported answer key was accepted into partial set');
     if(run.calls.length>4) throw Error('Repair exceeded per-question limit');
   });
   focusCheck('Gemini overload during a question repair preserves the technical error code',()=>{
@@ -10341,8 +10349,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if(!statusSource.includes("canResume:state==='PLANNED'")||statusSource.includes('reservationToken:job.')||statusSource.includes('objectives:job.')) throw Error('Job status exposes private state');
   });
   test('Generation cannot resubmit unfinished plan or claim without ScriptLock',()=>{
-    if(!gas.includes("['PLANNING','PLANNED','GENERATING'].indexOf(savedJob.state)")||
-      !gas.includes('claim.tryLock(8000)')||!gas.includes("current.state!=='PLANNED'")) throw Error('Idempotent stage claim missing');
+    if(!gas.includes("['PLANNING','PLANNED','GENERATING','PARTIAL_SUCCESS','UNCERTAIN'].indexOf(savedJob.state)")||
+      !gas.includes('claim.tryLock(8000)')||!gas.includes("['PLANNED','PARTIAL_SUCCESS'].indexOf(current.state)===-1")) throw Error('Idempotent stage claim missing');
   });
   test('Existing library-only consent is persisted and required for resume',()=>{
     if(!gas.includes("cneAiReadJob_(cneId,session)||{}).allowLibraryOnly===true")||
@@ -10380,6 +10388,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       {success:true,planned:true,data:{objectives:Array.from({length:5},(_,i)=>({objectiveId:'OBJ_'+(i+1),objective:'Clinical objective number '+i,evidenceId:'E'+i}))}}:
       (args.preparedBlueprint?.length===5 && args.allowLibraryOnly===true?{success:true,data:questions}:{success:false,errorCode:'MISSING_CONSENT'});
     fresh.handleCommitAiQuota=()=>{commits++;return{success:true};};
+    fresh.cneHybridGetSlots_=()=>({success:true,data:[]});
+    fresh.cneHybridSelectedBankContext_=()=>[];
     fresh.handleGetCNEQuestions=()=>({success:true,data:questions});
     fresh.logAuditAction=()=>{};
     const owner={employeeId:'EDUCATOR_1'}, other={employeeId:'EDUCATOR_2'};
@@ -11525,6 +11535,17 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   });
   console.log('\n>>> Metadata-first source retrieval and semantic clinical chunking checks');
   for(const item of checks){focusedChecks.push(item);try{item.test();focusedPassed++;console.log('✓ '+item.name);}catch(e){console.error('✗ '+item.name+': '+e.message);}}
+}
+
+// Smart Hybrid reference-question import, partial recovery, five-to-ten Post-Test checks.
+if (selected.some(item=>item.id==='performance') && passed===selected.length) {
+  const {hybridChecks}=await import('./verify-smart-hybrid.js');
+  console.log('\n>>> Smart Hybrid Question Bank and resumable AI behavioral checks');
+  for(const item of hybridChecks){
+    focusedChecks.push({name:item.name,test:item.run});
+    try{item.run();focusedPassed++;console.log('✓ '+item.name);}
+    catch(e){console.error('✗ '+item.name+': '+e.message);}
+  }
 }
 
 console.log('\n================================================================');

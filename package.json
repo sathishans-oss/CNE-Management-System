@@ -23,6 +23,7 @@
     "verify:delete": "node scripts/verify-all.js --suite delete",
     "verify:interest": "node scripts/verify-all.js --suite interest",
     "verify:performance": "node scripts/verify-all.js --suite performance",
+    "verify:smart-hybrid": "node scripts/verify-smart-hybrid.js",
     "verify:timezone": "node scripts/verify-timezone-cross-module.cjs"
   },
   "dependencies": {

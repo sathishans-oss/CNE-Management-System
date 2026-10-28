@@ -17,7 +17,7 @@ import {
   ChevronUp,
   ArrowRight
 } from 'lucide-react';
-import { CNERecord, CNEQuestion, CNEAiQuotaInfo } from '../../types';
+import { CNERecord, CNEQuestion, CNEAiQuotaInfo, CNEReferenceBankItem } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 
@@ -88,6 +88,14 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [isLocked, setIsLocked] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [bankOpen, setBankOpen] = useState(false);
+  const [bankMatches, setBankMatches] = useState<CNEReferenceBankItem[]>([]);
+  const [bankLoading, setBankLoading] = useState(false);
+  const [bankSearched, setBankSearched] = useState(false);
+  const [bankError, setBankError] = useState<string | null>(null);
+  const [importingBankId, setImportingBankId] = useState<string | null>(null);
+  const bankRequestRef = useRef(0);
+  const [partialAiCount, setPartialAiCount] = useState(0);
 
   // Request guards prevent an older CNE response from overwriting the currently open CNE.
   const questionsRequestRef = useRef(0);
@@ -135,6 +143,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     questionsRequestRef.current += 1;
     quotaRequestRef.current += 1;
     materialRequestRef.current += 1;
+    bankRequestRef.current += 1;
+    setBankMatches([]);setBankSearched(false);setBankOpen(false);setBankError(null);setBankLoading(false);setPartialAiCount(0);
     materialCheckRef.current = false;
     generationRequestRef.current += 1;
     stopProgressPolling();
@@ -166,7 +176,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     // Offer an explicit Resume action; do not re-reserve quota or auto-generate.
     void ApiService.getCNEAiJobStatus(cneId).then(job => {
       if (cneId === currentCneIdRef.current && job.success) {
-        setPendingGenerationJob(job.data?.state === 'PLANNED');
+        setPendingGenerationJob(job.data?.state === 'PLANNED' || job.data?.state === 'PARTIAL_SUCCESS');
       }
     }).catch(() => {});
 
@@ -174,6 +184,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       questionsRequestRef.current += 1;
       quotaRequestRef.current += 1;
       materialRequestRef.current += 1;
+      bankRequestRef.current += 1;
       generationRequestRef.current += 1;
       stopProgressPolling();
     };
@@ -274,7 +285,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const stored = storedResult.status === 'fulfilled' ? storedResult.value : null;
     const freshQuota = quotaResult.status === 'fulfilled' ? quotaResult.value : null;
     const liveJob = jobResult.status === 'fulfilled' && jobResult.value.success ? jobResult.value.data : null;
-    setPendingGenerationJob(liveJob?.state === 'PLANNED');
+    setPendingGenerationJob(liveJob?.state === 'PLANNED' || liveJob?.state === 'PARTIAL_SUCCESS');
     if (freshQuota?.success && freshQuota.data) setQuotaInfo(freshQuota.data);
     const used = Boolean(freshQuota?.success && freshQuota.data &&
       (freshQuota.data.status === 'USED' || freshQuota.data.status === 'GENERATED' || freshQuota.data.attemptsUsed >= 1));
@@ -311,12 +322,47 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const isPageReady = !loading && !questionLoadError && quotaInfo !== null;
   const canInteractWithQuestionTools = canModify && isPageReady && !checkingMaterial && !materialCheckRef.current && !isGenerating && !generatingRef.current && !isSaving;
 
+  const searchBank = async (open = false) => {
+    if (!canModify) return;
+    const id = ++bankRequestRef.current;
+    const target = cneId;
+    if(open)setBankOpen(true);
+    setBankLoading(true);setBankError(null);
+    try {
+      const res=await ApiService.searchCNEReferenceQuestions(target);
+      if(id!==bankRequestRef.current || target!==currentCneIdRef.current)return;
+      if(!res.success){setBankError(res.message || 'Question Bank search unavailable.');setBankMatches([]);}
+      else {setBankMatches(res.data || []);setBankSearched(true);}
+    }catch(e:any){if(id===bankRequestRef.current)setBankError(e?.message || 'Question Bank search failed.');}
+    finally{if(id===bankRequestRef.current)setBankLoading(false);}
+  };
+
+  const importBankQuestion = async (q:CNEReferenceBankItem) => {
+    if(!canModify || importingBankId || isGenerating || isSaving || !q.canImport)return;
+    if(questions.some(item=>item.id==='q_bank_'+q.questionId.replace(/[^a-zA-Z0-9_-]/g,'_'))){warning('This Question Bank item is already present.');return;}
+    // Avoid discarding unsaved manual edits when reloading the authoritative list.
+    if(questions.some(item=>!persistedQuestionIdsRef.current.has(item.id)&&!isBlankUnsavedQuestion(item))){
+      error('Please save your current Draft edits before importing a Question Bank item.');return;
+    }
+    if(!window.confirm(`Review the original answer and rationale for ${q.questionId}. Import as an unfinalized Draft for educator clinical review?`))return;
+    setImportingBankId(q.questionId);
+    try{
+      const result=await ApiService.importCNEReferenceQuestion(cneId,q.questionId);
+      if(!result.success){error(result.message || 'Question Bank import failed.');return;}
+      await loadQuestions(++questionsRequestRef.current,cneId);
+      success('Question imported as an unfinalized Draft. Verify its clinical accuracy before finalizing.');
+      if(onUpdated)onUpdated();
+    }catch(e:any){error(e?.message || 'Question Bank import failed.');}
+    finally{setImportingBankId(null);}
+  };
+
   const requestAiGeneration = async () => {
     if (!canInteractWithQuestionTools || materialCheckRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
     // Check material only when Generate is clicked; its state may have changed
     // since the page opened. Never interpret a failed check as permission to
     // search the library. Server-side permission and consent checks remain mandatory.
     setFailureDialog(null);
+    void searchBank(false); // Read-only discovery runs while material availability is checked.
     const own = await loadMaterialStatus(++materialRequestRef.current, cneId);
     if (own === null || currentCneIdRef.current !== cneId) return;
     if (!own) { setMaterialChoice('confirm'); return; }
@@ -383,24 +429,17 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       }
       if (!isCurrent()) return;
 
-      if (res && res.success && res.data && Array.isArray(res.data) && res.data.length === 5) {
-        setPendingGenerationJob(false);
-        const generated = res.data.map((q) => ({
-          ...q,
-          options: { ...q.options },
-          status: normalizeQuestionStatus(q.status) as CNEQuestion['status']
-        }));
-        setQuestions(generated);
-        persistedQuestionIdsRef.current = new Set(generated.map((q) => String(q.id || '')).filter(Boolean));
-        draftOriginSnapshotRef.current = new Map();
+      if (res && res.success && res.data && Array.isArray(res.data) && res.data.length >= 1) {
+        const status = await ApiService.getCNEAiJobStatus(requestCneId);
+        const partial = res.partial === true || (status.success && status.data?.state === 'PARTIAL_SUCCESS');
+        setPendingGenerationJob(partial);
+        await loadQuestions(++questionsRequestRef.current, requestCneId);
+        setPartialAiCount(partial ? Number(res.savedCount || res.data.length) : 0);
         setGenerationStep(7);
-        setGenerationStage({
-          title: 'Questions Saved',
-          subtitle: 'Five Draft questions were saved once and are ready for educator review.'
-        });
-        success('Five Draft questions are ready. Review and approve each question before opening QR.');
-        await loadQuota(++quotaRequestRef.current, requestCneId);
-        if (onUpdated) onUpdated();
+        setGenerationStage({title:partial?'Partial AI Questions Saved':'Questions Saved',subtitle:partial?'Verified Drafts saved; upload more CNE material and resume only missing objectives.':'Five Draft questions saved for educator review.'});
+        success(partial ? `Saved ${res.data.length} verified AI Draft question(s). Quota not deducted; resume missing objectives.` : 'Five AI Draft questions saved. Review before finalizing.');
+        await loadQuota(++quotaRequestRef.current,requestCneId);
+        if(onUpdated)onUpdated();
       } else {
         const code = res?.errorCode || 'UNKNOWN_GENERATION_FAILURE';
         const msg = res?.message || 'AI question generation could not be completed.';
@@ -477,6 +516,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       error('AI questions must be reviewed and marked Finalized individually.');
       return;
     }
+    if(active.length>10){error('Finalize All would exceed the 10-question Post-Test maximum. Select up to 10 questions individually.');return;}
     const incomplete = active.filter((q) => !isQuestionComplete(q));
     if (incomplete.length > 0) {
       error(`Complete all active questions before Finalize All. Incomplete: ${incomplete.length}`);
@@ -648,6 +688,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     if (!canModify) return;
     const target = questions[idx];
     if (!target || !isActiveQuestion(target)) return;
+    if(!target.isFinalized && questions.filter(q=>isActiveQuestion(q)&&q.isFinalized).length>=10){error('A Post-Test can contain at most 10 finalized questions.');return;}
     if (!target.isFinalized && !isQuestionComplete(target)) {
       error('Complete the question, all four options, rationale, and authoritative source before marking it Finalized.');
       return;
@@ -659,7 +700,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     });
   };
 
-  const performSaveQuestions = async () => {
+  const performSaveQuestions = async (openQR = false) => {
     if (savingRef.current || isSaving || !canModify) return;
 
     // Purely blank unsaved drafts are UI scratch rows, not question history. Drop them before save.
@@ -670,11 +711,12 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const active = payloadQuestions.filter(isActiveQuestion);
     const validFinalized = active.filter((q) => q.isFinalized && isQuestionComplete(q));
 
-    if (validFinalized.length < 5) {
+    if (openQR && validFinalized.length < 5) {
       error(`At least 5 valid finalized questions are required before opening QR. Currently ready: ${validFinalized.length}/5.`);
       return;
     }
 
+    if(validFinalized.length>10){error('A maximum of 10 questions can be finalized for the Post-Test.');return;}
     const incompleteActive = active.filter((q) => !isQuestionComplete(q));
     if (incompleteActive.length > 0) {
       error(`Complete or remove the remaining ${incompleteActive.length} incomplete active question(s) before saving.`);
@@ -693,9 +735,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         persistedQuestionIdsRef.current = new Set(payloadQuestions.map((q) => String(q.id || '')).filter(Boolean));
         draftOriginSnapshotRef.current = new Map();
         setQuestions(payloadQuestions);
-        success(`Saved question set (${validFinalized.length} valid finalized questions). Opening QR.`);
+        success(openQR ? `Saved ${validFinalized.length} finalized questions. Opening QR.` : 'Draft question set saved. Post-Test needs 5–10 finalized questions.');
         if (onUpdated) onUpdated();
-        if (onNavigateToQR) onNavigateToQR();
+        if (openQR && onNavigateToQR) onNavigateToQR();
       } else {
         error(res.message || 'Failed to save question bank.');
       }
@@ -844,6 +886,12 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 </button>
               )}
 
+              <button type="button" onClick={() => { setBankOpen(prev=>!prev); if(!bankSearched)void searchBank(true); }}
+                disabled={!canModify||!isPageReady||isGenerating||isSaving||bankLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-800 bg-white rounded-lg text-xs font-bold disabled:opacity-50">
+                <BookOpen className="w-3.5 h-3.5"/> Question Bank {bankSearched ? `(${bankMatches.length})` : ''}
+              </button>
+
               {/* Manual Question */}
               <button
                 type="button"
@@ -871,6 +919,29 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           </div>
         )}
 
+        {canModify && bankOpen && <div className="px-6 py-3 max-h-72 overflow-y-auto border-b border-indigo-200 bg-indigo-50/50 text-xs space-y-3">
+          <div className="font-bold text-indigo-950">Institutional Question Bank — topic matches. Import only after reading the answer and rationale.</div>
+          {bankLoading && <div>Searching approved Question Bank entries…</div>}
+          {bankError && <div className="text-rose-700">{bankError}</div>}
+          {!bankLoading && bankSearched && !bankMatches.length && <div>No matching Question Bank questions were found. Clinical Reference Library generation remains available.</div>}
+          {bankMatches.map(q=><div key={q.questionId} className="border bg-white rounded-lg p-3 space-y-2">
+            <div className="text-slate-600">{q.resourceTitle} · {q.questionId} · {q.chapter} · PDF page {q.questionPdfPage}</div>
+            <div className="font-semibold text-slate-900">{q.question}</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-1">{(['A','B','C','D'] as const).map(key=><div key={key}>{key}. {q.options[key]}</div>)}</div>
+            <div><strong>Original answer:</strong> {q.correctOption} · <strong>Rationale:</strong> {q.explanation}</div>
+            <div className="text-slate-500">Source status: {q.verificationStatus} · {q.questionType} · Source figure required: {q.imageRequired}</div>
+            <button type="button" disabled={!q.canImport||!!importingBankId||isGenerating||isSaving}
+              onClick={() => void importBankQuestion(q)}
+              className="px-3 py-1.5 rounded-md bg-indigo-700 text-white font-semibold disabled:opacity-40">
+              {importingBankId===q.questionId ? 'Importing…' : 'Import as Draft'}
+            </button>
+            {!q.canImport&&<span className="ml-2 text-amber-700">Needs source-format review before import.</span>}
+          </div>)}
+        </div>}
+        {pendingGenerationJob && !isGenerating && <div className="px-6 py-2 bg-amber-50 text-amber-950 text-xs border-b border-amber-200 flex items-center justify-between gap-3">
+          <span>AI generation can be resumed. {partialAiCount ? `${partialAiCount}/5 AI Drafts validated. ` : ''}Existing verified Drafts remain saved; only missing objectives will be generated.</span>
+          <button type="button" className="border border-amber-500 rounded px-2 py-1" onClick={() => {if(onNavigateToMaterial)onNavigateToMaterial();}}>Upload additional material</button>
+        </div>}
         {sessionClosed && (
           <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 text-xs text-slate-700 shrink-0">
             <Lock className="w-4 h-4 text-slate-500 shrink-0" />
@@ -1227,11 +1298,13 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         {/* Footer: one action only — Save & Next opens QR after 5 valid finalized questions */}
         <div className="px-3 sm:px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-end gap-2 shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+            {canModify && <button type="button" onClick={() => void performSaveQuestions(false)} disabled={isSaving||isGenerating||incompleteActiveCount>0||activeQuestions.length===0}
+              className="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-bold text-xs disabled:opacity-40">Save Drafts</button>}
             {canModify && (
               <button
                 type="button"
-                onClick={performSaveQuestions}
-                disabled={isSaving || isGenerating || validFinalizedCount < 5 || incompleteActiveCount > 0}
+                onClick={() => void performSaveQuestions(true)}
+                disabled={isSaving || isGenerating || validFinalizedCount < 5 || validFinalizedCount > 10 || incompleteActiveCount > 0}
                 className="flex items-center gap-1.5 px-5 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl font-bold text-xs shadow-xs disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
                 title="Save the valid question set and open QR"
               >

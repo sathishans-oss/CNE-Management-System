@@ -221,6 +221,27 @@ export interface CNEQuestion {
   isLocked?: boolean;
 }
 
+export interface CNEReferenceBankItem {
+  questionId: string;
+  resourceTitle: string;
+  driveFileId: string;
+  chapter: string;
+  topic: string;
+  subtopic: string;
+  questionType: string;
+  question: string;
+  options: {A:string;B:string;C:string;D:string};
+  correctOption: string;
+  explanation: string;
+  questionPdfPage: string;
+  explanationPdfPage: string;
+  verificationStatus: string;
+  reusePermission: string;
+  imageRequired: string;
+  matchScore: number;
+  canImport: boolean;
+}
+
 export interface CNEReferenceMaterial {
   cneId: string;
   topic: string;
@@ -423,6 +444,9 @@ export interface SessionUser {
 
 export interface ApiResponse<T = any> {
   success: boolean;
+  partial?: boolean;
+  savedCount?: number;
+  remaining?: number;
   data?: T;
   message?: string;
   errorCode?: string;

@@ -14,6 +14,7 @@ import {
   UserRole,
   CoordinatorDeskInfo,
   CNEQuestion,
+  CNEReferenceBankItem,
   CNEReferenceMaterial,
   CNELearningResourceMetadata,
   CNENursingReferenceResource,
@@ -456,6 +457,8 @@ export class ApiService {
       case 'getQRToken':
       case 'saveCNEQuestions':
       case 'getCNEQuestions':
+      case 'searchCNEReferenceQuestions':
+      case 'importCNEReferenceQuestion':
       case 'generateCNEQuestions':
       case 'getCNEAiMaterialStatus':
       case 'getCNEAiGenerationProgress':
@@ -1354,6 +1357,13 @@ export class ApiService {
    * Invokes Gemini directly inside Google Apps Script using UrlFetchApp.
    * Atomically checks quota, retrieves evidence, generates 5 MCQs, persists them, and commits quota.
    */
+  static async searchCNEReferenceQuestions(cneId: string): Promise<ApiResponse<CNEReferenceBankItem[]>> {
+    return this.executeAction<CNEReferenceBankItem[]>('searchCNEReferenceQuestions',{cneId});
+  }
+  static async importCNEReferenceQuestion(cneId:string, questionId:string): Promise<ApiResponse<{questionId:string;sourceQuestionId:string;isFinalized:boolean}>> {
+    return this.executeAction('importCNEReferenceQuestion',{cneId,questionId,confirmReview:true});
+  }
+
   static async generateCNEQuestions(cneId: string, allowLibraryOnly = false): Promise<ApiResponse<CNEQuestion[]>> {
     return this.executeAction<CNEQuestion[]>('generateCNEQuestions', { cneId, allowLibraryOnly });
   }
