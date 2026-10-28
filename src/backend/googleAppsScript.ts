@@ -7383,8 +7383,8 @@ function handleGetChairpersonPhoto() {
 /**
  * 13. Institutional Quick Links (Public Read, Admin Write)
  * Stored in the CNE spreadsheet tab: "Quick Links".
- * Legacy QUICK_LINKS_CUSTOM Script Property is used only once to seed/migrate
- * an empty/new sheet, then the sheet becomes the authoritative source.
+ * Existing rows remain authoritative. A new/empty sheet is populated with
+ * built-in defaults, without relying on legacy Script Properties.
  */
 function getDefaultQuickLinks_() {
   return [
@@ -7478,19 +7478,10 @@ function ensureQuickLinksSheetSeeded_() {
   // rows marked INACTIVE after Admin deletions. Never re-seed it automatically.
   if (existing && sheet.getLastRow() > 1) return sheet;
 
-  var seedLinks = null;
-  var legacy = PropertiesService.getScriptProperties().getProperty('QUICK_LINKS_CUSTOM');
-  if (legacy) {
-    try {
-      var parsed = JSON.parse(legacy);
-      if (Array.isArray(parsed) && parsed.length > 0) seedLinks = parsed;
-    } catch (e) {}
-  }
-  if (!seedLinks) seedLinks = getDefaultQuickLinks_();
-
   if (sheet.getLastRow() <= 1) {
+    var seedLinks = getDefaultQuickLinks_();
     for (var i = 0; i < seedLinks.length; i++) {
-      writeQuickLinkRow_(sheet, seedLinks[i], i + 1, legacy ? 'MIGRATED_FROM_SCRIPT_PROPERTIES' : 'SYSTEM_DEFAULT');
+      writeQuickLinkRow_(sheet, seedLinks[i], i + 1, 'SYSTEM_DEFAULT');
     }
   }
   return sheet;
@@ -7705,8 +7696,8 @@ function handleDeleteQuickLink(params, session) {
 /**
  * 13a. Coordinator Desk (Public Read, Admin Write)
  * Stored in the CNE spreadsheet tab: "Portal Content".
- * Legacy COORDINATOR_* Script Properties are used only once to seed/migrate
- * an empty/new sheet, then the sheet becomes the authoritative source.
+ * Existing Coordinator rows remain authoritative. Missing Coordinator rows
+ * are seeded with built-in defaults, without relying on Script Properties.
  */
 function ensureCoordinatorContentSeeded_() {
   var ss = getSpreadsheet('CNE');
@@ -7726,24 +7717,10 @@ function ensureCoordinatorContentSeeded_() {
 
   // If the sheet already existed with unrelated content, adding only missing
   // Coordinator keys is safe and non-destructive.
-  var props = PropertiesService.getScriptProperties();
-  var email = props.getProperty('COORDINATOR_EMAIL') || 'training.nur@aiimsrishikesh.edu.in';
+  var email = 'training.nur@aiimsrishikesh.edu.in';
   var names = ['Ms. Ramya T', 'Ms. Suman Choudhary'];
-  var namesRaw = props.getProperty('COORDINATOR_NAMES');
-  if (namesRaw) {
-    try {
-      var parsed = JSON.parse(namesRaw);
-      if (Array.isArray(parsed) && parsed.length > 0) names = parsed;
-    } catch (e) {
-      names = namesRaw.split(',').map(function(v) { return v.trim(); }).filter(Boolean);
-    }
-  }
-
-  var source = (props.getProperty('COORDINATOR_NOTE') || props.getProperty('COORDINATOR_EMAIL') || namesRaw)
-    ? 'MIGRATED_FROM_SCRIPT_PROPERTIES'
-    : 'SYSTEM_DEFAULT';
-  sheet.appendRow(['COORDINATOR', 'NAMES', names.join('\\n'), new Date().toISOString(), source]);
-  sheet.appendRow(['COORDINATOR', 'EMAIL', sanitizeCellInput(email), new Date().toISOString(), source]);
+  sheet.appendRow(['COORDINATOR', 'NAMES', names.join('\\n'), new Date().toISOString(), 'SYSTEM_DEFAULT']);
+  sheet.appendRow(['COORDINATOR', 'EMAIL', sanitizeCellInput(email), new Date().toISOString(), 'SYSTEM_DEFAULT']);
   return sheet;
 }
 
