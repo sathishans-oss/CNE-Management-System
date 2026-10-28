@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   X,
   Lock,
@@ -16,7 +16,9 @@ import {
   UserCheck,
   Sparkles,
   Info,
-  ArrowLeft
+  ArrowLeft,
+  Settings2,
+  ChevronDown
 } from 'lucide-react';
 import { CNERecord, SessionUser, Employee, CNEActivityProgress, CneInterestStatus } from '../../types';
 import { formatCneDateTimeDisplay, formatResourcePersonsDisplay, getCneTypeLabel, parseCneStartTimestamp } from '../../utils';
@@ -89,7 +91,30 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   const isCanceled = statusStr === 'canceled' || statusStr === 'cancelled';
   const isScheduled = statusStr === 'scheduled';
   const canEditOrCancel = canLifecycle && !isCompleted && !isCanceled;
-  const showDeleteButton = Boolean(canDeleteCne && !isCompleted);
+  const showDeleteButton = Boolean(canDeleteCne && !isCompleted && onDelete);
+  const showManageMenu = Boolean(canEditOrCancel || showDeleteButton);
+  const [isManageMenuOpen, setIsManageMenuOpen] = useState(false);
+  const manageMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close the menu on outside interaction, Escape, or a change of CNE/permissions.
+  useEffect(() => {
+    setIsManageMenuOpen(false);
+  }, [cne.cneId, canEditOrCancel, showDeleteButton]);
+  useEffect(() => {
+    if (!isManageMenuOpen) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (!manageMenuRef.current?.contains(event.target as Node)) setIsManageMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsManageMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [isManageMenuOpen]);
 
   // Expression of Interest state
   const [interestStatus, setInterestStatus] = useState<CneInterestStatus | null>(null);
@@ -113,8 +138,10 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   // Load employee's current interest status on open
   useEffect(() => {
     let active = true;
-    if (!user || !cne.cneId) {
-      setInterestStatus(null);
+    // Do not contact Apps Script when registration is already closed.
+    setInterestStatus(null);
+    if (!user || !cne.cneId || !isInterestOpen) {
+      setIsCheckingInterest(false);
       return;
     }
 
@@ -133,7 +160,7 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
     return () => {
       active = false;
     };
-  }, [cne.cneId, user]);
+  }, [cne.cneId, user?.employeeId, user?.token, isInterestOpen]);
 
   // Handle Register Interest
   const handleRegisterInterest = useCallback(async () => {
@@ -191,7 +218,7 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
       <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
         <div className="bg-white rounded-2xl w-[92vw] max-w-[1280px] max-h-[calc(100dvh-1.5rem)] sm:max-h-[85dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden animate-in fade-in zoom-in-95 duration-150">
           {/* Compact Header: CNE ID • CNE TYPE • STATUS */}
-          <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0 bg-slate-50/80">
+          <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-slate-100 relative z-20 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0 bg-slate-50/80">
             <div className="flex flex-wrap items-center gap-2 text-sm sm:text-base font-bold text-slate-900">
               <span className="font-mono text-slate-800">{cne.cneId}</span>
               <span className="text-slate-400 font-sans">•</span>
@@ -217,7 +244,7 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
               )}
             </div>
 
-            <div className="w-full sm:w-auto max-h-[26dvh] sm:max-h-none overflow-y-auto sm:overflow-visible flex flex-wrap items-center gap-2 justify-start sm:justify-end">
+            <div className="w-full sm:w-auto overflow-visible flex flex-wrap items-center gap-2 justify-start sm:justify-end">
               {onBackToCalendar && (
                 <button type="button" onClick={onBackToCalendar}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-3 py-1.5 text-xs font-bold text-teal-800 hover:bg-teal-50">
@@ -237,11 +264,11 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
                 </button>
               )}
 
-              {canOperate && (
+              {canOperate && isCompleted && (
                 <button
                   type="button"
                   onClick={() => onDownloadSessionReport(cne)}
-                  disabled={isDownloadingReport || !isCompleted}
+                  disabled={isDownloadingReport}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
                   title={isCompleted ? "Download finalized CNE session report" : "Available after finalization"}
                 >
@@ -254,40 +281,60 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
                 </button>
               )}
 
-              {canEditOrCancel && (
-                <>
+              {showManageMenu && (
+                <div className="relative" ref={manageMenuRef}>
                   <button
                     type="button"
-                    onClick={() => onEdit(cne)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs"
-                    title="Edit CNE workshop details"
+                    onClick={() => setIsManageMenuOpen((open) => !open)}
+                    aria-haspopup="menu"
+                    aria-expanded={isManageMenuOpen}
+                    aria-label="Manage CNE actions"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
                   >
-                    <Edit3 className="w-3.5 h-3.5 text-amber-700" />
-                    <span>Edit CNE</span>
+                    <Settings2 className="w-3.5 h-3.5" />
+                    <span>Manage CNE</span>
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isManageMenuOpen ? 'rotate-180' : ''}`} />
                   </button>
-
-                  <button
-                    type="button"
-                    onClick={() => onCancel(cne)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs"
-                    title="Cancel CNE programme"
-                  >
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-700" />
-                    <span>Cancel</span>
-                  </button>
-                </>
-              )}
-
-              {showDeleteButton && onDelete && (
-                <button
-                  type="button"
-                  onClick={() => onDelete(cne)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 hover:text-red-800 border border-red-300 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-2xs"
-                  title="Delete CNE and archive record (Admin only)"
-                >
-                  <Trash2 className="w-3.5 h-3.5 text-red-600" />
-                  <span>Delete CNE</span>
-                </button>
+                  {isManageMenuOpen && (
+                    <div
+                      role="menu"
+                      aria-label="Manage CNE"
+                      className="absolute right-0 top-full mt-1.5 z-40 w-48 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl"
+                    >
+                      {canEditOrCancel && (
+                        <>
+                          <button
+                            type="button" role="menuitem"
+                            onClick={() => { setIsManageMenuOpen(false); onEdit(cne); }}
+                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-800 hover:bg-slate-100 focus-visible:bg-slate-100"
+                          >
+                            <Edit3 className="h-3.5 w-3.5" /> Edit CNE
+                          </button>
+                          <button
+                            type="button" role="menuitem"
+                            onClick={() => { setIsManageMenuOpen(false); onCancel(cne); }}
+                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-amber-800 hover:bg-amber-50 focus-visible:bg-amber-50"
+                          >
+                            <AlertTriangle className="h-3.5 w-3.5" /> Cancel CNE
+                          </button>
+                        </>
+                      )}
+                      {showDeleteButton && onDelete && (
+                        <>
+                          {canEditOrCancel && <div className="my-1 border-t border-slate-200" />}
+                          <button
+                            type="button" role="menuitem"
+                            onClick={() => { setIsManageMenuOpen(false); onDelete(cne); }}
+                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-rose-700 hover:bg-rose-50 focus-visible:bg-rose-50"
+                            title="Admin only — requires confirmation and archival"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" /> Delete CNE
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
 
               <button

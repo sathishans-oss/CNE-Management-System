@@ -4645,17 +4645,8 @@ function cneScheduleDateMatches_(start, end, fromDate, toDate) {
 }
 
 function cneScheduleOrder_(a, b, status) {
-  if (status === 'Scheduled') {
-    // Upcoming dates first (nearest first); overdue Scheduled records follow.
-    var today = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd');
-    var af = a.fromDate >= today ? 0 : 1;
-    var bf = b.fromDate >= today ? 0 : 1;
-    if (af !== bf) return af - bf;
-    var aKey = a.fromDate || '';
-    var bKey = b.fromDate || '';
-    var cmp = af === 0 ? aKey.localeCompare(bKey) : bKey.localeCompare(aKey);
-    return cmp || b.rowNumber - a.rowNumber;
-  }
+  // One stable From Date descending rule for Scheduled, Completed, Canceled and ALL.
+  // Sort the authorized candidates BEFORE pagination. Latest date appears first.
   return (b.fromDate || '').localeCompare(a.fromDate || '') || b.rowNumber - a.rowNumber;
 }
 
@@ -4724,15 +4715,10 @@ function cneSchedulePageResult_(authorized, status, page, pageSize, search, from
       c.proposedByEmpId,c.proposedByName,c.adminRemarks,c.remarks,c.cneType].join(' ').toLowerCase();
     return terms.indexOf(needle)!==-1;
   });
-  var today=Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd');
+  // Search results follow the same newest-From-Date-first ordering as normal pages.
   matches.sort(function(a,b) {
     var da=cneScheduleDateKey_(a.fromDate || a.date), db=cneScheduleDateKey_(b.fromDate || b.date);
-    if (status==='Scheduled') {
-      var aa=da >= today ? 0 : 1, bb=db >= today ? 0 : 1;
-      if (aa!==bb) return aa-bb;
-      return aa===0 ? da.localeCompare(db) : db.localeCompare(da);
-    }
-    return db.localeCompare(da);
+    return db.localeCompare(da) || String(a.cneId || a.classId || '').localeCompare(String(b.cneId || b.classId || ''));
   });
   var total=matches.length;
   var begin=status==='Scheduled'?0:(page-1)*pageSize;

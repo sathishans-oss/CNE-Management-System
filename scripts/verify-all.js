@@ -12522,6 +12522,93 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   }
 }
 
+// CNE details action consolidation, EOI load gating and date-descending schedule ordering.
+// The same runner tests actual backend sorting functions, not just source strings.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const modal = readFileSync(join(ROOT_DIR, 'src/components/cne/CneDetailsModal.tsx'), 'utf8');
+  const schedule = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
+  const calendar = readFileSync(join(ROOT_DIR, 'src/components/cne/CalendarFullCneDetails.tsx'), 'utf8');
+  const gas = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const isolate = (name) => {
+    const match = gas.match(new RegExp('function ' + name + '\\([^]*?\\n\\}', 'm'));
+    assert(match, 'Missing backend function: ' + name);
+    return match[0];
+  };
+  const backend = { String, Date };
+  backend.cneScheduleDateKey_ = value => String(value || '').slice(0, 10);
+  backend.cneScheduleDateMatches_ = (start, end, from, to) => (!from || end >= from) && (!to || start <= to);
+  vm.runInNewContext(isolate('cneScheduleOrder_') + '\n' + isolate('cneSchedulePageResult_'), backend, { timeout: 2000 });
+  const records = [
+    { cneId:'CNE-MIDDLE', fromDate:'2026-11-08', toDate:'2026-11-08', topic:'topic' },
+    { cneId:'CNE-OLD', fromDate:'2026-09-12', toDate:'2026-09-12', topic:'topic' },
+    { cneId:'CNE-NEW', fromDate:'2026-12-20', toDate:'2026-12-20', topic:'topic' },
+    { cneId:'CNE-TIE', fromDate:'2026-11-08', toDate:'2026-11-08', topic:'topic' }
+  ];
+  const checks = [
+    ['Manage CNE is a single permission-guarded dropdown, not three header buttons', () => {
+      const header = modal.slice(modal.indexOf('{/* Compact Header:'), modal.indexOf('{/* Scrollable Content Body'));
+      assert(header.includes('Manage CNE') && header.includes('aria-haspopup="menu"') && header.includes('role="menu"'));
+      assert(header.includes('showManageMenu &&') && header.includes('canEditOrCancel &&') && header.includes('showDeleteButton && onDelete &&'));
+      assert(header.includes('setIsManageMenuOpen(false); onEdit(cne)') && header.includes('setIsManageMenuOpen(false); onCancel(cne)') && header.includes('setIsManageMenuOpen(false); onDelete(cne)'));
+      assert(!header.includes('title="Edit CNE workshop details"') && !header.includes('title="Cancel CNE programme"'));
+    }],
+    ['Manage CNE closes on outside click or Escape and is not clipped on mobile', () => {
+      assert(modal.includes("event.key === 'Escape'") && modal.includes("document.addEventListener('pointerdown', closeOnOutside)"));
+      assert(modal.includes('manageMenuRef.current?.contains(event.target as Node)'));
+      assert(modal.includes('relative z-20 flex flex-col') && modal.includes('w-full sm:w-auto overflow-visible flex flex-wrap'));
+    }],
+    ['Session report appears only when completed and cannot run while downloading', () => {
+      assert(modal.includes('{canOperate && isCompleted && (') && modal.includes('disabled={isDownloadingReport}'));
+      assert(schedule.includes('if (isDownloadingReport || !isCneCompleted(cne) || !canOperateCne(cne)) return;'));
+    }],
+    ['EOI lookup is skipped for started, completed or canceled CNEs', () => {
+      const useEffectCode = modal.slice(modal.indexOf('// Load employee\'s current interest status on open'), modal.indexOf('// Handle Register Interest'));
+      assert(useEffectCode.includes('!isInterestOpen') && useEffectCode.includes('setIsCheckingInterest(false)'));
+      assert(useEffectCode.indexOf('!isInterestOpen') < useEffectCode.indexOf('ApiService.getMyCneInterestStatus'));
+      assert(modal.includes('const isInterestOpen = isScheduled && !hasCneStarted'));
+    }],
+    ['CNE Progress initiates without waiting for EOI in Schedule and Calendar', () => {
+      assert(schedule.includes('fetchActivityProgress(selectedId);'));
+      assert(calendar.includes('void reloadDetails();') && calendar.includes('void reloadProgress();'));
+      assert(!schedule.includes('await ApiService.getMyCneInterestStatus'));
+    }],
+    ['All schedule status filters order by From Date descending before pagination', () => {
+      const candidates = [{ fromDate:'2026-11-08',rowNumber:2 },{fromDate:'2026-09-12',rowNumber:3},{fromDate:'2026-12-20',rowNumber:4},{fromDate:'2026-11-08',rowNumber:5}];
+      for (const status of ['Scheduled','Completed','Canceled','ALL']) {
+        const result = candidates.slice().sort((a,b) => backend.cneScheduleOrder_(a,b,status));
+        assert.equal(result.map(r => r.fromDate).join(','),'2026-12-20,2026-11-08,2026-11-08,2026-09-12');
+        assert.equal(result[1].rowNumber, 5, 'Stable row tie-break lost');
+      }
+      assert(gas.indexOf('candidates.sort(function(a,b){ return cneScheduleOrder_(a,b,status); });') < gas.indexOf("var pageRows=(status==='Scheduled'?candidates:candidates.slice(startAt,startAt+pageSize))"));
+    }],
+    ['Search matches normal date-descending ordering and paginates the sorted results', () => {
+      for (const status of ['Scheduled','Completed','Canceled','ALL']) {
+        const result = backend.cneSchedulePageResult_(records,status,1,2,'topic','','');
+        assert(result.success && result.data.records[0].cneId === 'CNE-NEW');
+        assert.equal(result.data.records[1].cneId, 'CNE-MIDDLE');
+        assert.equal(result.data.total, 4);
+      }
+      const second = backend.cneSchedulePageResult_(records,'ALL',2,2,'topic','','');
+      assert.equal(second.data.records[0].cneId,'CNE-TIE');
+      assert.equal(second.data.records[1].cneId,'CNE-OLD');
+      const ranged = backend.cneSchedulePageResult_(records,'ALL',1,2,'topic','2026-10-01','2026-11-30');
+      assert.equal(ranged.data.total,2);
+      assert.equal(ranged.data.records[0].cneId,'CNE-MIDDLE');
+    }],
+    ['Calendar remains separate from Schedule sorting and lifecycle safeguards are untouched', () => {
+      assert(gas.includes('function handleGetCNECalendarMonth('));
+      assert(gas.includes('function handleDeleteCNE('));
+      assert(modal.includes("const showDeleteButton = Boolean(canDeleteCne && !isCompleted && onDelete)"));
+    }]
+  ];
+  console.log('\n>>> CNE header management, EOI readiness and descending schedule checks');
+  for (const [name, test] of checks) {
+    focusedChecks.push({name, test});
+    try { test(); focusedPassed++; console.log('✓ ' + name); }
+    catch (err) { console.error('✗ ' + name + ': ' + err.message); }
+  }
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');
