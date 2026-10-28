@@ -3383,8 +3383,8 @@ console.log('========================================================\\n');
     name: "System Integration",
     originalFilename: "verify-system-integration.js",
     mode: "module",
-    expectedChecks: 25,
-    sha256: "41150cab9b50697847fd90d0707bdc3bae828657e4683d300e277472f409bc74",
+    expectedChecks: 27,
+    sha256: "81b686b94da57fb995f66471ac013febe60516d893821e53ae15f502947cf8fa",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -4594,19 +4594,15 @@ runTest('Coordinator Desk and Quick Links use Google Sheet storage, not Script P
     codeGs.includes("getOrCreateSheet('Quick Links')"),
     'Coordinator Desk and Quick Links must be backed by spreadsheet tabs'
   );
+  for (const legacyKey of ['COORDINATOR_NOTE', 'COORDINATOR_EMAIL', 'COORDINATOR_NAMES', 'QUICK_LINKS_CUSTOM']) {
+    assert.ok(!codeGs.includes(legacyKey) && !backendGs.includes(legacyKey),
+      'Removed legacy configuration must not be referenced in either backend source: ' + legacyKey);
+  }
   assert.ok(
-    !codeGs.includes("setProperty('COORDINATOR_NOTE'") &&
-    !codeGs.includes("setProperty('COORDINATOR_EMAIL'") &&
-    !codeGs.includes("setProperty('COORDINATOR_NAMES'") &&
-    !codeGs.includes("setProperty('QUICK_LINKS_CUSTOM'"),
-    'Coordinator Desk and Quick Links must not write editable content to Script Properties'
-  );
-  assert.ok(
-    codeGs.includes("getProperty('COORDINATOR_NOTE')") &&
-    codeGs.includes("getProperty('COORDINATOR_EMAIL')") &&
-    codeGs.includes("getProperty('COORDINATOR_NAMES')") &&
-    codeGs.includes("getProperty('QUICK_LINKS_CUSTOM')"),
-    'Legacy content properties may only remain as one-time migration sources'
+    codeGs.includes('function getDefaultQuickLinks_()') &&
+    codeGs.includes("writeQuickLinkRow_(sheet, seedLinks[i], i + 1, 'SYSTEM_DEFAULT')") &&
+    codeGs.includes("sheet.appendRow(['COORDINATOR', 'EMAIL', sanitizeCellInput(email), new Date().toISOString(), 'SYSTEM_DEFAULT'])"),
+    'Missing content must seed from built-in defaults, not legacy configuration'
   );
   assert.ok(
     codeGs.includes('function handleGetCoordinatorDesk(') &&
@@ -4619,6 +4615,63 @@ runTest('Coordinator Desk and Quick Links use Google Sheet storage, not Script P
   );
 });
 
+
+// Execute real seeding functions against in-memory Sheets without exposing
+// PropertiesService. This ensures new Apps Script deployments require none of
+// the four removed legacy configuration keys.
+function createLegacyFreeContentSeedFixture() {
+  const headers = {
+    'Quick Links': ['ID', 'Title', 'Description', 'Icon Name', 'Target', 'Badge', 'Action Type', 'URL', 'Modal Title', 'Modal Body', 'Status', 'Sort Order', 'Updated At', 'Updated By'],
+    'Portal Content': ['Section', 'Key', 'Value', 'Updated At', 'Updated By']
+  };
+  const sheets = {};
+  function makeSheet(name, extraRows = []) {
+    const grid = [headers[name].slice(), ...extraRows.map(r => r.slice())];
+    return {
+      grid,
+      getLastRow() { return grid.length; },
+      getDataRange() { return { getValues() { return grid.map(r => r.slice()); } }; },
+      appendRow(row) { grid.push(row.slice()); }
+    };
+  }
+  const ctx = { console, Date };
+  vm.createContext(ctx);
+  vm.runInContext(codeGs, ctx, {timeout: 12000});
+  ctx.getSpreadsheet = () => ({ getSheetByName: name => sheets[name] || null });
+  ctx.getOrCreateSheet = name => sheets[name] || (sheets[name] = makeSheet(name));
+  ctx.getHeaderMap = sheet => Object.fromEntries(sheet.grid[0].map((header, idx) => [header.toLowerCase().replace(/[^a-z0-9]/g, ''), idx]));
+  ctx.sanitizeCellInput = value => String(value);
+  // Deliberately do not define PropertiesService. Any legacy dependency fails.
+  return { ctx, sheets, makeSheet };
+}
+
+runTest('Quick Links defaults seed without Script Properties and existing inactive rows stay untouched', () => {
+  const {ctx, sheets} = createLegacyFreeContentSeedFixture();
+  const seeded = ctx.ensureQuickLinksSheetSeeded_();
+  assert.strictEqual(seeded.grid.length, 1 + ctx.getDefaultQuickLinks_().length);
+  assert.ok(seeded.grid.slice(1).every(row => row[13] === 'SYSTEM_DEFAULT'));
+  seeded.grid[1][10] = 'INACTIVE';
+  const before = JSON.stringify(seeded.grid);
+  assert.strictEqual(ctx.ensureQuickLinksSheetSeeded_(), sheets['Quick Links']);
+  assert.strictEqual(JSON.stringify(seeded.grid), before, 'Existing Quick Links were reset or reactivated');
+});
+
+runTest('Coordinator Desk seeds missing rows without Script Properties and preserves existing sheet content', () => {
+  const {ctx, sheets, makeSheet} = createLegacyFreeContentSeedFixture();
+  sheets['Portal Content'] = makeSheet('Portal Content', [['OTHER','HEADLINE','Existing announcement','','ADMIN']]);
+  const seeded = ctx.ensureCoordinatorContentSeeded_();
+  assert.strictEqual(seeded.grid[1][2], 'Existing announcement');
+  assert.strictEqual(seeded.grid.length, 4, 'Expected existing row and two default Coordinator rows');
+  assert.ok(seeded.grid.slice(2).every(row => row[0] === 'COORDINATOR' && row[4] === 'SYSTEM_DEFAULT'));
+  assert.ok(seeded.grid.some(row => row[1] === 'EMAIL' && row[2] === 'training.nur@aiimsrishikesh.edu.in'));
+  const before = JSON.stringify(seeded.grid);
+  ctx.ensureCoordinatorContentSeeded_();
+  assert.strictEqual(JSON.stringify(seeded.grid), before, 'Existing Coordinator information was overwritten');
+  seeded.grid[2][2] = 'Updated from Admin';
+  const edited = JSON.stringify(seeded.grid);
+  ctx.ensureCoordinatorContentSeeded_();
+  assert.strictEqual(JSON.stringify(seeded.grid), edited, 'Admin-edited coordinator data was overwritten');
+});
 
 runTest('Coordinator Desk homepage renders sheet-backed Admin content', () => {
   const coordinatorCardTs = fs.readFileSync('src/components/home/CoordinatorDeskCard.tsx', 'utf8');
