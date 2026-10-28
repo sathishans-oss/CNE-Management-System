@@ -5790,35 +5790,59 @@ function getCalendarDaysTouched(fromDtStr, toDtStr) {
 }
 
 /**
- * Helper: Authoritative CNE duration validator.
- * Enforces minimum 00:05:00 (5 minutes) and maximum 8 hours × calendar days touched.
+ * CNE classroom duration: count only 08:00–17:00 Asia/Kolkata on each
+ * calendar day. First/last dates contribute their actual overlap and each
+ * intermediate date contributes nine hours (including weekends and holidays).
+ */
+function calculateCneDuration_(fromDtStr, toDtStr) {
+  var start = parseCneStartTimestamp_(fromDtStr);
+  var end = parseCneStartTimestamp_(toDtStr);
+  if (!isFinite(start) || !isFinite(end) || end < start) return '00:00:00';
+  var daysTouched = getCalendarDaysTouched(fromDtStr, toDtStr);
+  if (!daysTouched) return '00:00:00';
+  var open = 8 * 3600;
+  var close = 17 * 3600;
+  var timeOfDay = function(epoch) {
+    var d = new Date(epoch + 330 * 60000); // India civil time, not runtime timezone
+    return d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+  };
+  var clamp = function(s) { return Math.max(open, Math.min(close, s)); };
+  var first = clamp(timeOfDay(start));
+  var last = clamp(timeOfDay(end));
+  if (daysTouched === 1) return formatSecondsToDuration(Math.max(0, last - first));
+  var seconds = (close - first) + Math.max(0, daysTouched - 2) * (close - open) + (last - open);
+  return formatSecondsToDuration(seconds);
+}
+
+/**
+ * Authoritative duration validator for Central, Departmental and Unscheduled
+ * scheduling, including edits. Accept a manual duration >= 5 minutes only up
+ * to the actual classroom-hours maximum between the selected dates/times.
  */
 function validateCneDuration(durationStr, fromDtStr, toDtStr) {
-  var daysTouched = getCalendarDaysTouched(fromDtStr, toDtStr);
-  if (daysTouched < 1) {
+  var start = parseCneStartTimestamp_(fromDtStr);
+  var end = parseCneStartTimestamp_(toDtStr);
+  if (!isFinite(start) || !isFinite(end) || end < start) {
     return { isValid: false, message: 'Please enter a valid From Date & Time and To Date & Time.', maxDurationStr: '00:00:00' };
   }
-  var maxSeconds = daysTouched * 8 * 3600;
-  var maxDurationStr = formatSecondsToDuration(maxSeconds);
-  var minSeconds = 300; // 5 minutes (00:05:00)
-
+  var open = 8 * 3600;
+  var close = 17 * 3600;
+  var timeOfDay = function(epoch) {
+    var d = new Date(epoch + 330 * 60000);
+    return d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+  };
+  if (timeOfDay(start) < open || timeOfDay(start) > close || timeOfDay(end) < open || timeOfDay(end) > close) {
+    return { isValid: false, message: 'CNE start and end times must be between 08:00 AM and 05:00 PM.', maxDurationStr: '00:00:00' };
+  }
+  var maxDurationStr = calculateCneDuration_(fromDtStr, toDtStr);
+  var maxSeconds = parseDurationToSeconds(maxDurationStr) || 0;
   var sec = parseDurationToSeconds(durationStr);
   if (sec === null) {
-    return {
-      isValid: false,
-      message: 'Invalid duration format. Please enter as HH:MM:SS (e.g. 01:30:00 or 08:00:00).',
-      maxDurationStr: maxDurationStr
-    };
+    return { isValid: false, message: 'Invalid duration format. Please enter as HH:MM:SS (e.g. 01:30:00 or 09:00:00).', maxDurationStr: maxDurationStr };
   }
-
-  if (sec < minSeconds || sec > maxSeconds) {
-    return {
-      isValid: false,
-      message: 'Duration must be between 00:05:00 and ' + maxDurationStr + ' for this CNE.',
-      maxDurationStr: maxDurationStr
-    };
+  if (sec < 300 || sec > maxSeconds) {
+    return { isValid: false, message: 'Duration must be between 00:05:00 and ' + maxDurationStr + ' for this CNE.', maxDurationStr: maxDurationStr };
   }
-
   return { isValid: true, maxDurationStr: maxDurationStr };
 }
 

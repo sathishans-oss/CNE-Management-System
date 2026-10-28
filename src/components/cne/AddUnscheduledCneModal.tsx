@@ -546,9 +546,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                       setToTime(tt);
                       setFullFromDate(fullFrom);
                       setFullToDate(fullTo);
-                      if (calculatedDuration && calculatedDuration !== '00:00:00') {
-                        setDuration(calculatedDuration);
-                      }
+                      setDuration(calculatedDuration);
                     }}
                   />
 
@@ -567,7 +565,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                       className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                       title="Duration (HH:MM:SS)"
                     />
-                    <span className="text-[10px] text-slate-500 mt-1 block">Past dates are fully valid for unscheduled CNE. Today is also allowed; future dates are not allowed for a completed CNE.</span>
+                    <span className="text-[10px] text-slate-500 mt-1 block">Past dates are fully valid for unscheduled CNE. Today is also allowed; future dates are not allowed for a completed CNE. Only 08:00 AM–05:00 PM is counted per day; overnight hours are excluded.</span>
                   </div>
                 </div>
 

@@ -1575,7 +1575,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                       />
                       <p className="text-[10px] text-slate-500 mt-1">
-                        Calculated from From/To dates. Max 8 hours per calendar day. Format: HH:MM:SS
+                        Calculated within 08:00 AM–05:00 PM each day (up to 9 hours/day); overnight time excluded. Format: HH:MM:SS
                       </p>
                     </div>
 
@@ -1958,9 +1958,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       onChange={({ fullFrom, fullTo, calculatedDuration }) => {
                         setEditDate(fullFrom);
                         setEditToDate(fullTo);
-                        if (calculatedDuration && calculatedDuration !== '00:00:00') {
-                          setEditDuration(calculatedDuration);
-                        }
+                        setEditDuration(calculatedDuration);
                       }}
                     />
 
@@ -1980,7 +1978,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs font-mono"
                       />
                       <p className="text-[10px] text-slate-500 mt-1">
-                        Calculated from From/To dates. Max 8 hours per calendar day. Format: HH:MM:SS
+                        Calculated within 08:00 AM–05:00 PM each day (up to 9 hours/day); overnight time excluded. Format: HH:MM:SS
                       </p>
                     </div>
 

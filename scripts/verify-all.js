@@ -335,7 +335,7 @@ function runTimezoneVerification() {
  * Verifies application-wide date, time, and timezone consistency for:
  * 1. CNE Schedule parsing (Asia/Kolkata interpretation, rejection of invalid calendar dates / times)
  * 2. CNE start timestamps (ISO with Z, ISO with +05:30, negative offsets, timezone-less Asia/Kolkata, separate date & time)
- * 3. CNE duration calculations (elapsed time, calendar days touched, 8-hour cap rule, duration validation)
+ * 3. CNE duration calculations (08:00–17:00 classroom windows, calendar day boundaries, validation)
  * 4. Date formatting and display (consistent Indian local civil time, DD-MMM-YYYY, hh:mm AM/PM, datetime-local)
  * 5. Google Sheets Date objects (Date instances handled without unintended timezone shifts or rollovers)
  * 6. Invalid date/time rejection (impossible dates, invalid time components, invalid timezone offsets, contradictory fields)
@@ -553,9 +553,9 @@ function runTestsForTimezone(tz) {
     assert.strictEqual(dur1, '02:30:00', 'Single-day duration is exact elapsed time');
   });
 
-  test('3.2 Caps single-day CNE duration at 8 hours maximum', () => {
-    const durCapped = calculateCneDuration('2026-10-25T06:00:00', '2026-10-25T18:00:00');
-    assert.strictEqual(durCapped, '08:00:00', 'Single day duration capped at 8 hours maximum');
+  test('3.2 Caps single-day CNE duration at 08:00–17:00 (9 hours)', () => {
+    assert.strictEqual(calculateCneDuration('2026-10-25T08:00:00', '2026-10-25T17:00:00'), '09:00:00');
+    assert.strictEqual(calculateCneDuration('2026-10-25T06:00:00', '2026-10-25T18:00:00'), '09:00:00', 'Outside hours are excluded');
   });
 
   test('3.3 Computes Indian calendar days touched correctly', () => {
@@ -566,19 +566,41 @@ function runTestsForTimezone(tz) {
     assert.strictEqual(days2, 2, 'Consecutive days touched count is 2');
   });
 
-  test('3.4 Validates entered duration against 5-min minimum and daily 8-hour cap', () => {
+  test('3.4 Validates duration against actual classroom time and 5-minute minimum', () => {
     const vValid = validateCneDuration('02:30:00', '2026-10-25T09:00:00', '2026-10-25T11:30:00');
     assert.strictEqual(vValid.isValid, true, 'Valid duration passes validation');
-    assert.strictEqual(vValid.maxDurationStr, '08:00:00', 'Max duration for 1 day is 08:00:00');
+    assert.strictEqual(vValid.maxDurationStr, '02:30:00', 'Maximum is the actual classroom interval');
+    assert.strictEqual(validateCneDuration('00:04:00', '2026-10-25T09:00:00', '2026-10-25T11:30:00').isValid, false);
+    assert.strictEqual(validateCneDuration('02:31:00', '2026-10-25T09:00:00', '2026-10-25T11:30:00').isValid, false);
+    assert.strictEqual(validateCneDuration('01:00:00', '2026-10-25T12:00:00', '2026-10-25T10:00:00').isValid, false);
+  });
 
-    const vUnder = validateCneDuration('00:04:00', '2026-10-25T09:00:00', '2026-10-25T11:30:00');
-    assert.strictEqual(vUnder.isValid, false, 'Duration under 5 minutes rejected');
+  test('3.5 Two-day CNE excludes all overnight time', () => {
+    assert.strictEqual(calculateCneDuration('2026-10-25T14:00:00', '2026-10-26T11:00:00'), '06:00:00');
+    assert.strictEqual(validateCneDuration('06:00:00', '2026-10-25T14:00:00', '2026-10-26T11:00:00').isValid, true);
+    assert.strictEqual(validateCneDuration('06:01:00', '2026-10-25T14:00:00', '2026-10-26T11:00:00').isValid, false);
+  });
 
-    const vOver = validateCneDuration('08:05:00', '2026-10-25T09:00:00', '2026-10-25T11:30:00');
-    assert.strictEqual(vOver.isValid, false, 'Duration exceeding 8h daily cap rejected');
+  test('3.6 Three-day CNE counts nine hours for every intermediate calendar day', () => {
+    assert.strictEqual(calculateCneDuration('2026-10-25T16:00:00', '2026-10-27T10:00:00'), '12:00:00');
+    assert.strictEqual(calculateCneDuration('2026-10-25T08:00:00', '2026-10-28T17:00:00'), '36:00:00');
+  });
 
-    const vInverted = validateCneDuration('01:00:00', '2026-10-25T12:00:00', '2026-10-25T10:00:00');
-    assert.strictEqual(vInverted.isValid, false, 'Inverted dates rejected');
+  test('3.7 Preserves minutes and seconds across dates and month boundaries', () => {
+    assert.strictEqual(calculateCneDuration('2026-10-31T16:30:45', '2026-11-01T08:30:15'), '00:59:30');
+    assert.strictEqual(calculateCneDuration('2026-10-31T16:30:45', '2026-11-02T08:30:15'), '09:59:30');
+  });
+
+  test('3.8 Rejects scheduled start or end outside classroom hours', () => {
+    assert.strictEqual(validateCneDuration('01:00:00','2026-10-25T07:59:00','2026-10-25T12:00:00').isValid,false);
+    assert.strictEqual(validateCneDuration('01:00:00','2026-10-25T10:00:00','2026-10-25T17:01:00').isValid,false);
+    assert.strictEqual(validateCneDuration('01:00:00','2026-10-25T10:00:00','2026-10-25T17:00:01').isValid,false);
+    assert.strictEqual(validateCneDuration('09:00:00','2026-10-25T08:00:00','2026-10-25T17:00:00').isValid,true);
+  });
+
+  test('3.9 Same India-local instants expressed with different offsets give the same duration', () => {
+    assert.strictEqual(calculateCneDuration('2026-10-25T08:00:00+05:30','2026-10-26T17:00:00+05:30'), '18:00:00');
+    assert.strictEqual(calculateCneDuration('2026-10-25T02:30:00Z','2026-10-26T11:30:00Z'), '18:00:00');
   });
 
   // ---------------------------------------------------------------------------
@@ -12331,6 +12353,75 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   for(const item of checks){focusedChecks.push(item);try{item.test();focusedPassed++;console.log('✓ '+item.name);}catch(e){console.error('✗ '+item.name+': '+e.message);}}
 }
 
+// New 08:00–17:00 classroom duration policy: actual backend helper behavior,
+// source time controls, and shared validation across all CNE entry points.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const gas = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const ui = readFileSync(join(ROOT_DIR, 'src/components/cne/CneDateTimeFields.tsx'), 'utf8');
+  const utils = readFileSync(join(ROOT_DIR, 'src/utils.ts'), 'utf8');
+  const central = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
+  const department = readFileSync(join(ROOT_DIR, 'src/components/cne/DepartmentalScheduleModal.tsx'), 'utf8');
+  const unscheduled = readFileSync(join(ROOT_DIR, 'src/components/cne/AddUnscheduledCneModal.tsx'), 'utf8');
+  const start = gas.indexOf('function parseDurationToSeconds(str)');
+  const stop = gas.indexOf(' * Departmental scheduling idempotency.', start);
+  const backend = { Date, isFinite, parseInt, parseFloat, Math };
+  backend.parseCneStartTimestamp_ = (v) => {
+    const s = String(v || '');
+    return Date.parse(/(?:Z|[+-]\d\d:\d\d)$/.test(s) ? s : s + '+05:30');
+  };
+  const durationChecks = [];
+  const addDurationCheck = (name, run) => durationChecks.push({ name, run });
+  addDurationCheck('Backend duration helper is isolated from runtime timezone and compiles', () => {
+    assert(start >= 0 && stop > start);
+    const code = gas.slice(start, gas.lastIndexOf('/**', stop));
+    vm.runInNewContext(code, backend, { timeout: 3000 });
+    assert.equal(typeof backend.validateCneDuration, 'function');
+    assert.equal(typeof backend.calculateCneDuration_, 'function');
+  });
+  addDurationCheck('Backend calculates same-day maximum of nine classroom hours', () => {
+    assert.equal(backend.calculateCneDuration_('2026-10-25T08:00','2026-10-25T17:00'),'09:00:00');
+    assert.equal(backend.validateCneDuration('09:00:00','2026-10-25T08:00','2026-10-25T17:00').isValid,true);
+    assert.equal(backend.validateCneDuration('09:00:01','2026-10-25T08:00','2026-10-25T17:00').isValid,false);
+  });
+  addDurationCheck('Backend excludes overnight hours on two dates', () => {
+    assert.equal(backend.calculateCneDuration_('2026-10-25T14:00','2026-10-26T11:00'),'06:00:00');
+    assert.equal(backend.validateCneDuration('06:01:00','2026-10-25T14:00','2026-10-26T11:00').isValid,false);
+  });
+  addDurationCheck('Backend includes intermediate calendar days with precision beyond 24 hours', () => {
+    assert.equal(backend.calculateCneDuration_('2026-10-25T16:00','2026-10-27T10:00'),'12:00:00');
+    assert.equal(backend.calculateCneDuration_('2026-10-25T08:00','2026-10-28T17:00'),'36:00:00');
+    assert.equal(backend.calculateCneDuration_('2026-10-31T16:30:45','2026-11-01T08:30:15'),'00:59:30');
+  });
+  addDurationCheck('Backend rejects outside-hour inputs, too-short durations, and reversed timestamps', () => {
+    assert.equal(backend.validateCneDuration('01:00:00','2026-10-25T07:59','2026-10-25T11:00').isValid,false);
+    assert.equal(backend.validateCneDuration('01:00:00','2026-10-25T09:00','2026-10-25T17:01').isValid,false);
+    assert.equal(backend.validateCneDuration('00:04:00','2026-10-25T09:00','2026-10-25T11:00').isValid,false);
+    assert.equal(backend.validateCneDuration('01:00:00','2026-10-25T11:00','2026-10-25T09:00').isValid,false);
+  });
+  addDurationCheck('Shared CNE time picker clamps selections to 08:00–17:00', () => {
+    assert(ui.includes('max="17:00"') && ui.includes("'08:00'") && ui.includes("selected > '17:00'"));
+    assert(ui.includes('calculateCneDuration(fullFrom, fullTo)'));
+  });
+  addDurationCheck('Central, Departmental, Unscheduled forms use shared duration validation', () => {
+    assert(central.includes('validateCneDuration(newDuration, newDate, newToDate)'));
+    assert(department.includes('validateCneDuration(r.duration, r.date, r.toDate)'));
+    assert(unscheduled.includes('validateCneDuration(duration.trim(), fullFromDate, fullToDate)'));
+    for(const src of [central, department, unscheduled]) assert(src.includes('<CneDateTimeFields'));
+    assert(utils.includes('const middleDays = Math.max(0, daysTouched - 2) * (close - open)'));
+  });
+  addDurationCheck('Apps Script schedule creation, edit, and Departmental batch call validator', () => {
+    assert(gas.includes('validateCneDuration(duration, fromDate, toDate)'));
+    assert(gas.includes('validateCneDuration(effDuration, effDate, effToDate)'));
+    assert(gas.includes('validateCneDuration(duration, date, toDate)'));
+  });
+  console.log('\n>>> CNE classroom hours duration and server validation checks');
+  for (const item of durationChecks) {
+    focusedChecks.push({ name: item.name, test: item.run });
+    try { item.run(); focusedPassed++; console.log('✓ ' + item.name); }
+    catch (e) { console.error('✗ ' + item.name + ': ' + e.message); }
+  }
+}
+
 // Smart Hybrid reference-question import, partial recovery, five-to-ten Post-Test checks.
 if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   const hybridChecks = createHybridChecks();
@@ -12350,6 +12441,84 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     focusedChecks.push({ name: item.name, test: item.run });
     try { item.run(); focusedPassed++; console.log('✓ ' + item.name); }
     catch (err) { console.error('✗ ' + item.name + ': ' + err.message); }
+  }
+}
+
+// Full-width two-tab Question Bank / My Questions UI checks. Keep in the single runner.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const modal = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEQuestionsModal.tsx'), 'utf8');
+  const section = (begin, end) => {
+    const a = modal.indexOf(begin);
+    const b = modal.indexOf(end, a + begin.length);
+    assert(a >= 0 && b > a, 'Required UI section missing: ' + begin);
+    return modal.slice(a, b);
+  };
+  const bankPanel = section('id="cne-question-bank-panel"', '        ) : (\n          <>');
+  const mine = section('id="cne-my-questions-panel"', '          </>\n        )}');
+  const tabChecks = [
+    ['Two permanent accessible tabs start at My Questions and reset when changing CNE', () => {
+      assert(modal.includes("useState<'questions' | 'bank'>('questions')"));
+      assert(modal.includes("setActiveView('questions');setBankError"));
+      assert(modal.includes('role="tablist"') && modal.includes('role="tab"'));
+      assert(modal.includes("aria-selected={activeView === 'questions'}") && modal.includes("aria-selected={activeView === 'bank'}"));
+    }],
+    ['Question Bank occupies exclusive full-height scroll area, not an inline split section', () => {
+      assert(modal.includes("{activeView === 'bank' ? ("));
+      assert(bankPanel.includes('overflow-y-auto min-h-0 flex-1'));
+      assert(!bankPanel.includes('max-h-72') && !modal.includes('bankOpen'));
+      assert(!bankPanel.includes('Replaced Questions History') && !bankPanel.includes('Add Manual Question'));
+    }],
+    ['Only My Questions includes AI actions, finalization and Save/Next', () => {
+      assert(modal.includes("{canModify && activeView === 'questions' && ("));
+      assert(modal.includes("{activeView === 'questions' && <div"));
+      assert(mine.includes('Replaced Questions History'));
+      assert(!bankPanel.includes('AI Generate MCQs') && !bankPanel.includes('Save &amp; Next'));
+    }],
+    ['Add Manual Question is inside My Questions and remains blocked while material/generation/saving is busy', () => {
+      assert(mine.includes('onClick={handleAddManualQuestion}') && mine.includes('Add Manual Question'));
+      assert(mine.includes('disabled={!canInteractWithQuestionTools || !!importingBankId}'));
+      assert(!bankPanel.includes('onClick={handleAddManualQuestion}'));
+      assert(modal.includes('const canInteractWithQuestionTools = canModify && isPageReady && !checkingMaterial'));
+    }],
+    ['Imported textbook items show an Imported status and cannot be reimported from the same list', () => {
+      assert(bankPanel.includes('const alreadyImported = questions.some('));
+      assert(bankPanel.includes('item.id === sourceId') && bankPanel.includes("sourceId + '__v'"));
+      assert(bankPanel.includes('Imported · Review under My Questions'));
+      assert(mine.includes('Imported from Question Bank'));
+      assert(modal.includes('QUESTION_ALREADY_IMPORTED') || modal.includes('already present'));
+    }],
+    ['Import leaves educator browsing the bank and guides them to the permanent My Questions tab', () => {
+      const importer = section('const importBankQuestion = async', '  const requestAiGeneration = async');
+      assert(importer.includes('loadQuestions(++questionsRequestRef.current,cneId)'));
+      assert(importer.includes('Open My Questions to review'));
+      assert(!importer.includes('setActiveView('));
+      assert(modal.includes("onClick={() => setActiveView('questions')}"));
+    }],
+    ['Import refresh is guarded against losing existing saved-row edits, finalized changes or unsaved manual Drafts', () => {
+      assert(modal.includes('persistedQuestionSnapshotRef'));
+      assert(modal.includes('const hasUnsavedQuestionEdits = ()'));
+      assert(modal.includes('if (!persistedQuestionIdsRef.current.has(id)) return true;'));
+      assert(modal.includes('status: normalizeQuestionStatus(q.status), isFinalized: Boolean(q.isFinalized)'));
+      assert(modal.includes('if (hasUnsavedQuestionEdits())'));
+      assert(modal.includes('persistedQuestionSnapshotRef.current = new Map(payloadQuestions.map'));
+    }],
+    ['Question Bank search runs on entering the view and can be retried without starting Gemini', () => {
+      assert(modal.includes('if (!bankSearched && !bankLoading) void searchBank()'));
+      assert(bankPanel.includes('onClick={() => void searchBank()}') && bankPanel.includes('Refresh Results'));
+      assert(modal.includes('bankRequestRef.current') && modal.includes('currentCneIdRef.current'));
+      assert(!section('const requestAiGeneration = async', '  const handleGenerateAi = async').includes('void searchBank('));
+    }],
+    ['Tab switching and closing cannot interrupt an active import or generation', () => {
+      assert(modal.includes('disabled={isGenerating || isSaving || !!importingBankId}'));
+      assert(modal.includes('disabled={!canModify || !isPageReady || isGenerating || isSaving || !!importingBankId}'));
+      assert(modal.includes('if (!canModify || !isPageReady || isGenerating || isSaving || importingBankId) return;'));
+    }]
+  ];
+  console.log('\n>>> Full-width Question Bank and My Questions navigation checks');
+  for (const [name, test] of tabChecks) {
+    focusedChecks.push({name, test});
+    try { test(); focusedPassed++; console.log('✓ ' + name); }
+    catch (err) { console.error('✗ ' + name + ': ' + err.message); }
   }
 }
 

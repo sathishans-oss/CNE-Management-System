@@ -614,33 +614,39 @@ export function getCalendarDaysTouched(fromDtStr: string, toDtStr: string): numb
 }
 
 /**
- * Authoritative CNE automatic duration calculation rule:
- * - For each calendar day touched by the CNE:
- *   - maximum allowed CNE duration for that day = 8 hours
- *   - first and last days respect actual time interval
- *   - intermediate full calendar days contribute a maximum of 8 hours each
+ * CNE classroom hours are 08:00–17:00 Asia/Kolkata on every calendar day.
+ * Each touched day contributes only its overlap with that window. Overnight
+ * time is never counted; all intermediate dates (including weekends) contribute
+ * nine hours. Keep sub-hour and second precision and allow totals above 24 h.
  */
 export function calculateCneDuration(fromDtStr: string, toDtStr: string): string {
   const start = parseCneStartTimestamp(fromDtStr);
   const end = parseCneStartTimestamp(toDtStr);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '00:00:00';
   const daysTouched = getCalendarDaysTouched(fromDtStr, toDtStr);
-  if (daysTouched === 1) return formatSecondsToDuration(Math.min(8 * 3600, Math.max(0, (end - start) / 1000)));
-  const begin = indiaDateParts(start);
-  const finish = indiaDateParts(end);
-  const fromHour = begin.hour + begin.minute / 60 + begin.second / 3600;
-  const toHour = finish.hour + finish.minute / 60 + finish.second / 3600;
-  // Preserve the existing eight-hours-per-day convention in India civil time.
-  const firstHours = Math.min(8, Math.max(0, fromHour < 17 ? 17 - fromHour : 24 - fromHour));
-  const middleHours = Math.max(0, daysTouched - 2) * 8;
-  const lastHours = Math.min(8, Math.max(0, toHour));
-  return formatSecondsToDuration((firstHours + middleHours + lastHours) * 3600);
+  if (!daysTouched) return '00:00:00';
+  const first = indiaDateParts(start);
+  const last = indiaDateParts(end);
+  const timeInSeconds = (p: { hour: number; minute: number; second: number }) =>
+    p.hour * 3600 + p.minute * 60 + p.second;
+  const open = 8 * 3600;
+  const close = 17 * 3600;
+  const firstSecond = timeInSeconds(first);
+  const lastSecond = timeInSeconds(last);
+  const clamp = (s: number) => Math.max(open, Math.min(close, s));
+  if (daysTouched === 1) {
+    return formatSecondsToDuration(Math.max(0, clamp(lastSecond) - clamp(firstSecond)));
+  }
+  const firstDay = close - clamp(firstSecond);
+  const lastDay = clamp(lastSecond) - open;
+  const middleDays = Math.max(0, daysTouched - 2) * (close - open);
+  return formatSecondsToDuration(firstDay + middleDays + lastDay);
 }
 
 /**
- * Validates whether an entered duration satisfies:
- * 1. Minimum 00:05:00 (5 minutes)
- * 2. Maximum 8 hours × calendar days touched
+ * Validates a manually entered duration against the actual classroom time
+ * available between From and To (08:00–17:00 per day, India time).
+ * A manually entered duration may be shorter than the calculated maximum.
  */
 export function validateCneDuration(
   durationStr: string,
@@ -651,40 +657,29 @@ export function validateCneDuration(
   const to = parseCneStartTimestamp(toDtStr);
   if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) {
     const err = 'Please enter a valid From Date & Time and To Date & Time before setting duration.';
-    return {
-      isValid: false,
-      error: err,
-      message: err,
-      maxDurationStr: '00:00:00'
-    };
+    return { isValid: false, error: err, message: err, maxDurationStr: '00:00:00' };
   }
-
-  const daysTouched = getCalendarDaysTouched(fromDtStr, toDtStr);
-  const maxSeconds = daysTouched * 8 * 3600;
-  const maxDurationStr = formatSecondsToDuration(maxSeconds);
-  const minSeconds = 300; // 00:05:00
-
+  const open = 8 * 3600;
+  const close = 17 * 3600;
+  const clockSeconds = (epoch: number) => {
+    const p = indiaDateParts(epoch);
+    return p.hour * 3600 + p.minute * 60 + p.second;
+  };
+  if ([from, to].some(epoch => clockSeconds(epoch) < open || clockSeconds(epoch) > close)) {
+    const err = 'CNE start and end times must be between 08:00 AM and 05:00 PM.';
+    return { isValid: false, error: err, message: err, maxDurationStr: '00:00:00' };
+  }
+  const maxDurationStr = calculateCneDuration(fromDtStr, toDtStr);
+  const maxSeconds = parseDurationToSeconds(maxDurationStr) || 0;
   const sec = parseDurationToSeconds(durationStr);
   if (sec === null) {
-    const err = 'Invalid duration format. Please enter as HH:MM:SS (e.g. 01:30:00 or 08:00:00).';
-    return {
-      isValid: false,
-      error: err,
-      message: err,
-      maxDurationStr
-    };
+    const err = 'Invalid duration format. Please enter as HH:MM:SS (e.g. 01:30:00 or 09:00:00).';
+    return { isValid: false, error: err, message: err, maxDurationStr };
   }
-
-  if (sec < minSeconds || sec > maxSeconds) {
+  if (sec < 300 || sec > maxSeconds) {
     const err = `Duration must be between 00:05:00 and ${maxDurationStr} for this CNE.`;
-    return {
-      isValid: false,
-      error: err,
-      message: err,
-      maxDurationStr
-    };
+    return { isValid: false, error: err, message: err, maxDurationStr };
   }
-
   return { isValid: true, message: '', maxDurationStr };
 }
 

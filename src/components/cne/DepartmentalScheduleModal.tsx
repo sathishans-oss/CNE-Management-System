@@ -727,7 +727,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                                 ...updated[idx],
                                 date: fullFrom,
                                 toDate: fullTo,
-                                duration: calculatedDuration !== '00:00:00' ? calculatedDuration : updated[idx].duration
+                                duration: calculatedDuration
                               };
                               return updated;
                             });
@@ -751,7 +751,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                             className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                           />
                           <p className="text-[10px] text-slate-500 mt-1">
-                            Calculated from From/To dates. Max 8 hours per calendar day. Format: HH:MM:SS
+                            Calculated within 08:00 AM–05:00 PM each day (up to 9 hours/day); overnight time excluded. Format: HH:MM:SS
                           </p>
                         </div>
                       </div>

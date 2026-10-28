@@ -88,7 +88,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [isLocked, setIsLocked] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
-  const [bankOpen, setBankOpen] = useState(false);
+  // Two exclusive full-width views; local question edits remain mounted in state across tabs.
+  const [activeView, setActiveView] = useState<'questions' | 'bank'>('questions');
   const [bankMatches, setBankMatches] = useState<CNEReferenceBankItem[]>([]);
   const [bankLoading, setBankLoading] = useState(false);
   const [bankSearched, setBankSearched] = useState(false);
@@ -108,6 +109,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   // Saved-question edits create a new version ID and preserve the prior row as REPLACED.
   const persistedQuestionIdsRef = useRef<Set<string>>(new Set());
   const draftOriginSnapshotRef = useRef<Map<string, CNEQuestion>>(new Map());
+  // Source snapshots guard against import-refresh discarding edits to an existing saved row.
+  const persistedQuestionSnapshotRef = useRef<Map<string, string>>(new Map());
   const versionSequenceRef = useRef(0);
 
   // Real-time stage progress state for AI generation
@@ -145,7 +148,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     quotaRequestRef.current += 1;
     materialRequestRef.current += 1;
     bankRequestRef.current += 1;
-    setBankMatches([]);setBankSearched(false);setBankOpen(false);setBankError(null);setBankLoading(false);setPartialAiCount(0);
+    setBankMatches([]);setBankSearched(false);setActiveView('questions');setBankError(null);setBankLoading(false);setPartialAiCount(0);
     materialCheckRef.current = false;
     initialMaterialPresenceRef.current = null;
     generationRequestRef.current += 1;
@@ -169,6 +172,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setIsSaving(false);
     persistedQuestionIdsRef.current = new Set();
     draftOriginSnapshotRef.current = new Map();
+    persistedQuestionSnapshotRef.current = new Map();
 
     const questionRequestId = ++questionsRequestRef.current;
     const quotaRequestId = ++quotaRequestRef.current;
@@ -195,6 +199,18 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     };
   }, [cneId]);
 
+  const editableQuestionFingerprint = (q: CNEQuestion): string => JSON.stringify({
+    question: q.question, options: q.options, correctOption: q.correctOption,
+    explanation: q.explanation, authoritativeSource: q.authoritativeSource,
+    status: normalizeQuestionStatus(q.status), isFinalized: Boolean(q.isFinalized)
+  });
+
+  const hasUnsavedQuestionEdits = (): boolean => questions.some((q) => {
+    const id = String(q.id || '');
+    if (!persistedQuestionIdsRef.current.has(id)) return true;
+    return persistedQuestionSnapshotRef.current.get(id) !== editableQuestionFingerprint(q);
+  });
+
   const loadQuestions = async (requestId = ++questionsRequestRef.current, targetCneId = cneId) => {
     setLoading(true);
     setQuestionLoadError(null);
@@ -211,6 +227,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         }));
         setQuestions(normalized);
         persistedQuestionIdsRef.current = new Set(normalized.map((q) => String(q.id || '')).filter(Boolean));
+        persistedQuestionSnapshotRef.current = new Map(normalized.map(q => [String(q.id || ''), editableQuestionFingerprint(q)]));
         draftOriginSnapshotRef.current = new Map();
         setIsLocked(normalized.some((q) => Boolean(q.isLocked)));
         setQuestionLoadError(null);
@@ -301,6 +318,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       const fresh = stored.data.map(q => ({ ...q, options: { ...q.options }, status: normalizeQuestionStatus(q.status) as CNEQuestion['status'] }));
       setQuestions(fresh);
       persistedQuestionIdsRef.current = new Set(fresh.map(q => String(q.id || '')).filter(Boolean));
+      persistedQuestionSnapshotRef.current = new Map(fresh.map(q => [String(q.id || ''), editableQuestionFingerprint(q)]));
       setQuestionLoadError(null);
       if (onUpdated) onUpdated();
       return { completed: true, safeToRetry: false };
@@ -330,11 +348,17 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const isPageReady = !loading && !questionLoadError && quotaInfo !== null;
   const canInteractWithQuestionTools = canModify && isPageReady && !checkingMaterial && !materialCheckRef.current && !isGenerating && !generatingRef.current && !isSaving;
 
-  const searchBank = async (open = false) => {
-    if (!canModify) return;
+  const openQuestionBank = () => {
+    if (!canModify || !isPageReady || isGenerating || isSaving || importingBankId) return;
+    setActiveView('bank');
+    // Search only on first entry, or after a failure; the user can also refresh manually.
+    if (!bankSearched && !bankLoading) void searchBank();
+  };
+
+  const searchBank = async () => {
+    if (!canModify || isGenerating || isSaving) return;
     const id = ++bankRequestRef.current;
     const target = cneId;
-    if(open)setBankOpen(true);
     setBankLoading(true);setBankError(null);
     try {
       const res=await ApiService.searchCNEReferenceQuestions(target);
@@ -348,9 +372,11 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const importBankQuestion = async (q:CNEReferenceBankItem) => {
     if(!canModify || importingBankId || isGenerating || isSaving || !q.canImport)return;
     if(questions.some(item=>item.id==='q_bank_'+q.questionId.replace(/[^a-zA-Z0-9_-]/g,'_'))){warning('This Question Bank item is already present.');return;}
-    // Avoid discarding unsaved manual edits when reloading the authoritative list.
-    if(questions.some(item=>!persistedQuestionIdsRef.current.has(item.id)&&!isBlankUnsavedQuestion(item))){
-      error('Please save your current Draft edits before importing a Question Bank item.');return;
+    // Import reloads the authoritative question list: never silently discard *any*
+    // unsaved change (including finalized flags, saved-row edits, and blank manual rows).
+    if (hasUnsavedQuestionEdits()) {
+      error('Save or discard edits in My Questions before importing. Your changes were not lost.');
+      return;
     }
     if(!window.confirm(`Review the original answer and rationale for ${q.questionId}. Import as an unfinalized Draft for educator clinical review?`))return;
     setImportingBankId(q.questionId);
@@ -358,7 +384,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       const result=await ApiService.importCNEReferenceQuestion(cneId,q.questionId);
       if(!result.success){error(result.message || 'Question Bank import failed.');return;}
       await loadQuestions(++questionsRequestRef.current,cneId);
-      success('Question imported as an unfinalized Draft. Verify its clinical accuracy before finalizing.');
+      success('Imported as Draft. Open My Questions to review, edit and finalize it.');
       if(onUpdated)onUpdated();
     }catch(e:any){error(e?.message || 'Question Bank import failed.');}
     finally{setImportingBankId(null);}
@@ -369,7 +395,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     // Reuse the lightweight initial presence check; retry only if it failed.
     // The backend revalidates permissions, sources and library consent during generation.
     setFailureDialog(null);
-    void searchBank(false);
+    // Question Bank discovery is a separate user-selected view, not part of AI startup.
     const own = initialMaterialPresenceRef.current !== null
       ? initialMaterialPresenceRef.current
       : await loadMaterialStatus(++materialRequestRef.current, cneId);
@@ -742,6 +768,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
       if (res.success) {
         persistedQuestionIdsRef.current = new Set(payloadQuestions.map((q) => String(q.id || '')).filter(Boolean));
+        persistedQuestionSnapshotRef.current = new Map(payloadQuestions.map(q => [String(q.id || ''), editableQuestionFingerprint(q)]));
         draftOriginSnapshotRef.current = new Map();
         setQuestions(payloadQuestions);
         success(openQR ? `Saved ${validFinalized.length} finalized questions. Opening QR.` : 'Draft question set saved. Post-Test needs 5–10 finalized questions.');
@@ -776,7 +803,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-50 text-purple-800 border border-purple-200">
-                  Post-Test Question Bank
+                  Post-Test Questions
                 </span>
                 {isLocked ? (
                   <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
@@ -802,15 +829,35 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
           <button
             onClick={onClose}
-            disabled={isSaving || isGenerating}
+            disabled={isSaving || isGenerating || !!importingBankId}
             className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 disabled:opacity-40 cursor-pointer transition-colors shrink-0"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* AI & Manual Action Bar */}
-        {canModify && (
+        {/* Permanent full-width tabs; Question Bank never shares body space with My Questions. */}
+        <div role="tablist" aria-label="Post-Test question views" className="px-6 pt-2 bg-white border-b border-slate-200 flex gap-2 shrink-0">
+          <button type="button" role="tab" id="cne-my-questions-tab" aria-controls="cne-my-questions-panel"
+            aria-selected={activeView === 'questions'}
+            onClick={() => setActiveView('questions')}
+            onKeyDown={(event) => { if (event.key === 'ArrowRight') { event.preventDefault(); openQuestionBank(); } }}
+            disabled={isGenerating || isSaving || !!importingBankId}
+            className={`px-4 py-2 text-xs font-bold rounded-t-lg border-b-2 transition-colors disabled:opacity-50 ${activeView === 'questions' ? 'border-purple-700 bg-purple-50 text-purple-800' : 'border-transparent text-slate-600 hover:bg-slate-50'}`}>
+            My Questions ({activeQuestions.length})
+          </button>
+          <button type="button" role="tab" id="cne-question-bank-tab" aria-controls="cne-question-bank-panel"
+            aria-selected={activeView === 'bank'}
+            onClick={openQuestionBank}
+            onKeyDown={(event) => { if (event.key === 'ArrowLeft') { event.preventDefault(); setActiveView('questions'); } }}
+            disabled={!canModify || !isPageReady || isGenerating || isSaving || !!importingBankId}
+            className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-t-lg border-b-2 transition-colors disabled:opacity-50 ${activeView === 'bank' ? 'border-indigo-700 bg-indigo-50 text-indigo-900' : 'border-transparent text-slate-600 hover:bg-slate-50'}`}>
+            <BookOpen className="w-3.5 h-3.5"/> Question Bank {bankSearched ? `(${bankMatches.length})` : ''}
+          </button>
+        </div>
+
+        {/* My Questions-only AI and finalization actions. */}
+        {canModify && activeView === 'questions' && (
           <div className="px-6 py-3 bg-purple-50/60 border-b border-purple-100 flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
             <div className="space-y-0.5">
               <div className="flex items-center gap-2 text-xs text-purple-950 font-bold">
@@ -895,58 +942,51 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 </button>
               )}
 
-              <button type="button" onClick={() => { setBankOpen(prev=>!prev); if(!bankSearched)void searchBank(true); }}
-                disabled={!canModify||!isPageReady||isGenerating||isSaving||bankLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-800 bg-white rounded-lg text-xs font-bold disabled:opacity-50">
-                <BookOpen className="w-3.5 h-3.5"/> Question Bank {bankSearched ? `(${bankMatches.length})` : ''}
-              </button>
 
-              {/* Manual Question */}
-              <button
-                type="button"
-                onClick={handleAddManualQuestion}
-                disabled={
-                  !isPageReady ||
-                  isGenerating ||
-                  checkingMaterial ||
-                  materialCheckRef.current ||
-                  generatingRef.current ||
-                  isSaving ||
-                  !canModify
-                }
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-lg font-bold text-xs cursor-pointer shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                title={
-                  !isPageReady
-                    ? 'Please wait while the question page finishes loading'
-                    : 'Add a custom question manually (free, never consumes AI quota)'
-                }
-              >
-                <Plus className="w-3.5 h-3.5 text-purple-600" />
-                <span>Manual Question</span>
-              </button>
             </div>
           </div>
         )}
 
-        {canModify && bankOpen && <div className="px-6 py-3 max-h-72 overflow-y-auto border-b border-indigo-200 bg-indigo-50/50 text-xs space-y-3">
-          <div className="font-bold text-indigo-950">Institutional Question Bank — topic matches. Import only after reading the answer and rationale.</div>
-          {bankLoading && <div>Searching approved Question Bank entries…</div>}
-          {bankError && <div className="text-rose-700">{bankError}</div>}
-          {!bankLoading && bankSearched && !bankMatches.length && <div>No matching Question Bank questions were found. Clinical Reference Library generation remains available.</div>}
-          {bankMatches.map(q=><div key={q.questionId} className="border bg-white rounded-lg p-3 space-y-2">
-            <div className="text-slate-600">{q.resourceTitle} · {q.questionId} · {q.chapter} · PDF page {q.questionPdfPage}</div>
-            <div className="font-semibold text-slate-900">{q.question}</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-1">{(['A','B','C','D'] as const).map(key=><div key={key}>{key}. {q.options[key]}</div>)}</div>
-            <div><strong>Original answer:</strong> {q.correctOption} · <strong>Rationale:</strong> {q.explanation}</div>
-            <div className="text-slate-500">Source status: {q.verificationStatus} · {q.questionType} · Source figure required: {q.imageRequired}</div>
-            <button type="button" disabled={!q.canImport||!!importingBankId||isGenerating||isSaving}
-              onClick={() => void importBankQuestion(q)}
-              className="px-3 py-1.5 rounded-md bg-indigo-700 text-white font-semibold disabled:opacity-40">
-              {importingBankId===q.questionId ? 'Importing…' : 'Import as Draft'}
-            </button>
-            {!q.canImport&&<span className="ml-2 text-amber-700">Needs source-format review before import.</span>}
-          </div>)}
-        </div>}
+        {activeView === 'bank' ? (
+          <div role="tabpanel" id="cne-question-bank-panel" aria-labelledby="cne-question-bank-tab"
+            className="p-4 sm:p-6 overflow-y-auto min-h-0 flex-1 bg-indigo-50/40 text-xs space-y-4">
+            <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h4 className="text-sm font-bold text-indigo-950">Institutional Question Bank</h4>
+                <p className="text-slate-600 mt-1">Review the original answer, rationale and textbook source before importing a Draft.</p>
+              </div>
+              <button type="button" onClick={() => void searchBank()} disabled={bankLoading || !!importingBankId || !canModify}
+                className="px-3 py-1.5 rounded-lg border border-indigo-300 bg-white font-bold text-indigo-800 disabled:opacity-50">
+                {bankLoading ? 'Searching…' : 'Refresh Results'}
+              </button>
+            </div>
+            {bankLoading && <div role="status" className="flex items-center gap-2 text-indigo-800"><Loader2 className="w-4 h-4 animate-spin" /> Searching approved Question Bank entries…</div>}
+            {bankError && <div role="alert" className="text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">{bankError} Use Refresh Results to try again.</div>}
+            {!bankLoading && !bankError && bankSearched && !bankMatches.length && <div>No matching Question Bank questions were found. Clinical Reference Library generation remains available under My Questions.</div>}
+            {bankMatches.map(q => {
+              const sourceId = 'q_bank_' + q.questionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+              const alreadyImported = questions.some(item => item.id === sourceId || String(item.id || '').startsWith(sourceId + '__v'));
+              return <div key={q.questionId} className="border border-indigo-100 bg-white rounded-xl p-4 space-y-3 shadow-xs">
+                <div className="text-slate-600">{q.resourceTitle} · {q.questionId} · {q.chapter} · PDF page {q.questionPdfPage}</div>
+                <div className="font-semibold text-slate-900 text-sm">{q.question}</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{(['A','B','C','D'] as const).map(key => <div key={key}>{key}. {q.options[key]}</div>)}</div>
+                <div><strong>Original answer:</strong> {q.correctOption} · <strong>Rationale:</strong> {q.explanation}</div>
+                <div className="text-slate-500">Source status: {q.verificationStatus} · {q.questionType} · Source figure required: {q.imageRequired}</div>
+                {alreadyImported ? (
+                  <span className="inline-flex items-center gap-1 text-emerald-700 font-bold"><CheckCircle2 className="w-4 h-4"/> Imported · Review under My Questions</span>
+                ) : (
+                  <button type="button" disabled={!q.canImport || !!importingBankId || isGenerating || isSaving || !canModify}
+                    onClick={() => void importBankQuestion(q)}
+                    className="px-3 py-1.5 rounded-lg bg-indigo-700 text-white font-semibold disabled:opacity-40">
+                    {importingBankId === q.questionId ? 'Importing…' : 'Import as Draft'}
+                  </button>
+                )}
+                {!q.canImport && <span className="ml-2 text-amber-700">Needs source-format review before import.</span>}
+              </div>;
+            })}
+          </div>
+        ) : (
+          <>
         {pendingGenerationJob && !isGenerating && <div className="px-6 py-2 bg-amber-50 text-amber-950 text-xs border-b border-amber-200 flex items-center justify-between gap-3">
           <span>AI generation can be resumed. {partialAiCount ? `${partialAiCount}/5 AI Drafts validated. ` : ''}Existing verified Drafts remain saved; only missing objectives will be generated.</span>
           <button type="button" className="border border-amber-500 rounded px-2 py-1" onClick={() => {if(onNavigateToMaterial)onNavigateToMaterial();}}>Upload additional material</button>
@@ -968,7 +1008,20 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         )}
 
         {/* Question List Content - 2-Column Wide Grid on Desktop */}
-        <div className="p-6 overflow-y-auto flex-1 bg-slate-50/40 text-xs flex flex-col">
+        <div role="tabpanel" id="cne-my-questions-panel" aria-labelledby="cne-my-questions-tab"
+          className="p-4 sm:p-6 overflow-y-auto min-h-0 flex-1 bg-slate-50/40 text-xs flex flex-col">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-4 shrink-0">
+            <div>
+              <h4 className="text-sm font-bold text-slate-900">My Questions ({activeQuestions.length})</h4>
+              <p className="text-slate-500 mt-1">Review, edit and finalize AI, Question Bank and manual Drafts.</p>
+            </div>
+            {canModify && <button type="button" onClick={handleAddManualQuestion}
+              disabled={!canInteractWithQuestionTools || !!importingBankId}
+              title="Add a manual Draft; this does not consume AI quota"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-purple-300 bg-white text-purple-800 font-bold hover:bg-purple-50 disabled:opacity-50">
+              <Plus className="w-3.5 h-3.5" /> Add Manual Question
+            </button>}
+          </div>
           {/* Prominent Single-Stage Processing Status in Main Content Area */}
           {isGenerating ? (
             <div role="status" aria-live="polite" className="mx-auto my-auto max-w-lg w-full rounded-2xl border border-purple-200 bg-purple-50 p-5 space-y-4">
@@ -1039,6 +1092,11 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                             </span>
                           )}
 
+                          {String(q.id || '').startsWith('q_bank_') && (
+                            <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
+                              <BookOpen className="w-2.5 h-2.5" /> Imported from Question Bank
+                            </span>
+                          )}
                           {q.authoritativeSource && (
                             <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 max-w-[240px] truncate" title={`Source: ${q.authoritativeSource}`}>
                               <BookOpen className="w-2.5 h-2.5 text-slate-500 shrink-0" />
@@ -1263,6 +1321,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             </div>
           )}
         </div>
+          </>
+        )}
 
         {failureDialog && (
           <div className="fixed inset-0 z-[95] bg-slate-950/70 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={failureDialog.title}>
@@ -1311,8 +1371,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           </div>
         )}
 
-        {/* Footer: one action only — Save & Next opens QR after 5 valid finalized questions */}
-        <div className="px-3 sm:px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-end gap-2 shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        {/* Save/finalization belong only to My Questions, never the Question Bank view. */}
+        {activeView === 'questions' && <div className="px-3 sm:px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-end gap-2 shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
             {canModify && <button type="button" onClick={() => void performSaveQuestions(false)} disabled={isSaving||isGenerating||incompleteActiveCount>0||activeQuestions.length===0}
               className="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-bold text-xs disabled:opacity-40">Save Drafts</button>}
@@ -1338,7 +1398,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               </button>
             )}
           </div>
-        </div>
+        </div>}
       </div>
     </div>
   );

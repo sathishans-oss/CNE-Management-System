@@ -8,6 +8,7 @@ export interface CneTimePickerProps {
   onChange: (time: string) => void;
   disabled?: boolean;
   min?: string;
+  max?: string;
   required?: boolean;
   compact?: boolean;
   title?: string;
@@ -19,7 +20,8 @@ export const CneTimePicker: React.FC<CneTimePickerProps> = ({
   value,
   onChange,
   disabled = false,
-  min,
+  min = '08:00',
+  max = '17:00',
   required = false,
   compact = false,
   title = 'Select time',
@@ -30,14 +32,29 @@ export const CneTimePicker: React.FC<CneTimePickerProps> = ({
       ? 'focus:ring-emerald-500 focus:border-emerald-500'
       : 'focus:ring-indigo-500 focus:border-indigo-500';
 
+  const handleChange = (selected: string) => {
+    if (!selected) {
+      onChange(selected);
+      return;
+    }
+    if (selected < '08:00') {
+      onChange('08:00');
+    } else if (selected > '17:00') {
+      onChange('17:00');
+    } else {
+      onChange(selected);
+    }
+  };
+
   return (
     <input
       type="time"
       id={id}
       value={value}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={(e) => handleChange(e.target.value)}
       disabled={disabled}
       min={min}
+      max="17:00"
       required={required}
       title={title}
       className={`w-full ${
