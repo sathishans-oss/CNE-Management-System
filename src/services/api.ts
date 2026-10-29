@@ -1358,8 +1358,8 @@ export class ApiService {
    * Invokes Gemini directly inside Google Apps Script using UrlFetchApp.
    * Atomically checks quota, retrieves evidence, generates 5 MCQs, persists them, and commits quota.
    */
-  static async searchCNEReferenceQuestions(cneId: string): Promise<ApiResponse<CNEReferenceBankItem[]>> {
-    return this.executeAction<CNEReferenceBankItem[]>('searchCNEReferenceQuestions',{cneId});
+  static async searchCNEReferenceQuestions(cneId: string, searchConcept?: string): Promise<ApiResponse<CNEReferenceBankItem[]>> {
+    return this.executeAction<CNEReferenceBankItem[]>('searchCNEReferenceQuestions',{cneId, searchConcept:searchConcept?.trim() || ''});
   }
   static async importCNEReferenceQuestion(cneId:string, questionId:string): Promise<ApiResponse<{questionId:string;sourceQuestionId:string;isFinalized:boolean}>> {
     return this.executeAction('importCNEReferenceQuestion',{cneId,questionId,confirmReview:true});

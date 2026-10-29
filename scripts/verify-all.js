@@ -19,7 +19,8 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import vm from 'node:vm';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -93,6 +94,88 @@ function aiQuestion(objective,token='TOK',stem='What clinical action is indicate
 const hybridChecks=[
  {name:'Bank search requires an authorized CNE owner',run(){const {ctx}=fixture();ctx.checkQuestionManagementAuthorized=()=>({success:false,errorCode:'FORBIDDEN'});assert(ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session).errorCode==='FORBIDDEN','Unauthorized search exposed answers');}},
  {name:'Bank search ranks question text and subtopic for all relevant textbook sources',run(){const {ctx}=fixture();const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(result.success&&result.data.length===2&&result.data[0].matchScore>0,'Relevant existing question not found');}},
+ {name:'Gastritis excludes generic patient care, team nursing and delegation questions',run(){
+    const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Care of gastritis patient',status:'Scheduled'});
+    b.rows[1][6]='Leadership and Delegation';b.rows[1][7]='Team Nursing';b.rows[1][8]='patient care, delegation';b.rows[1][11]='A registered nurse leads nursing personnel in providing care to patients.';
+    b.rows[2][6]='Gastritis';b.rows[2][7]='Gastritis nursing care';b.rows[2][11]='What nursing advice is appropriate for a patient with gastritis?';
+    const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(result.success&&result.data.length===1&&result.data[0].questionId==='REF-002','Generic nursing care was treated as gastritis');
+    assert(result.clinicalSearch.concepts[0]==='gastritis'&&result.clinicalSearch.context.includes('nursing care'),'Principal clinical concept or care context missing');
+  }},
+ {name:'Gastritis verified synonym recognizes gastric mucosal inflammation but not peptic ulcer',run(){
+    const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Care of gastritis patient'});
+    b.rows[1][6]='Gastric mucosal inflammation';b.rows[1][11]='How is gastric mucosal inflammation managed?';
+    b.rows[2][6]='Peptic ulcer disease';b.rows[2][11]='What is the nursing management of peptic ulcer disease?';
+    const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(r.data.length===1&&r.data[0].questionId==='REF-001','Unverified GI disease equivalence accepted');
+  }},
+ {name:'Generic CNE heading returns clarification, not thirty arbitrary textbook questions',run(){
+    const {ctx}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Care of patients'});
+    const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(r.success&&r.data.length===0&&r.clinicalSearch.requiresClarification,'Generic-only CNE topic produced unrelated questions');
+  }},
+ {name:'Multiple independent ABG and VBG concepts match either relevant question, not generic analysis',run(){
+    const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'ABG AND VBG ANALYSIS'});
+    b.rows[1][6]='ABG Analysis';b.rows[1][11]='What does an ABG indicate?';
+    b.rows[2][6]='Venous blood gas analysis';b.rows[2][11]='What does a VBG measurement indicate?';
+    b.rows.push(question('REF-003'));b.rows[3][6]='Nursing analysis';b.rows[3][11]='What is the correct general approach to analyzing care?';
+    const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(r.data.length===2&&r.clinicalSearch.concepts.length===2,'ABG/VBG combined title failed independent matching');
+  }},
+ {name:'CAUTI CLABSI VAP bundles recognize three independent infection concepts',run(){
+    const {ctx,b}=fixture();const a=ctx.cneHybridClinicalAnalyze_('CAUTI / CLABSI / VAP BUNDLES');
+    assert(a.concepts.length===3&&!a.requiresClarification,'Combined infection-prevention bundles lost concepts');
+    b.rows[1][6]='Ventilator associated pneumonia prevention';b.rows[2][6]='Leadership and delegation';b.rows[2][11]='Nursing leadership and team care';
+    ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'CAUTI / CLABSI / VAP BUNDLES'});
+    const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(r.data.length===1&&r.data[0].questionId==='REF-001','Multi-concept search accepted unrelated care');
+  }},
+ {name:'Wound care and patient safety remain whole clinical phrases',run(){
+    const {ctx}=fixture();
+    for (const [topic,expected] of [['Wound Care & Pressure Injury','wound care'],['PATIENT SAFETY','patient safety'],['Medication safety and high alert medications','medication safety'],['Neonatal resuscitation','neonatal resuscitation']]) {
+      const a=ctx.cneHybridClinicalAnalyze_(topic);assert(!a.requiresClarification&&a.concepts.some(x=>x.name===expected),'Lost full clinical concept '+topic);
+    }
+  }},
+ {name:'High-information unknown diagnoses remain precise clinical phrase anchors',run(){
+    const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Nursing management of patients with cholecystitis'});
+    b.rows[1][6]='Cholecystitis';b.rows[1][11]='What interventions are required for cholecystitis?';
+    b.rows[2][6]='Cholelithiasis';b.rows[2][11]='What interventions are required for cholelithiasis?';
+    const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(r.data.length===1&&r.data[0].questionId==='REF-001','Unknown diagnosis matched neighboring disease');
+  }},
+ {name:'ICD and GBS ambiguous abbreviations require educator expansion',run(){
+    const {ctx}=fixture();
+    for(const title of ['GBS','ICD Care']){
+      const a=ctx.cneHybridClinicalAnalyze_(title);assert(a.requiresClarification&&a.concepts.length===0,'Ambiguous abbreviation guessed: '+title);
+    }
+    const explicit=ctx.cneHybridClinicalAnalyze_('Guillain Barre syndrome');
+    assert(!explicit.requiresClarification&&explicit.concepts[0].name==='guillain barre syndrome','Explicit diagnosis wrongly rejected');
+  }},
+ {name:'Educator may correct clinical concept without modifying CNE schedule or quota',run(){
+    const {ctx,b,quota}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'GBS'});
+    b.rows[1][6]='Guillain Barre syndrome';b.rows[2][6]='Team nursing care';b.rows[2][11]='Which team provides patient care?';
+    const before=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    const after=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123',searchConcept:'Guillain Barre syndrome'},session);
+    assert(before.data.length===0&&before.clinicalSearch.requiresClarification&&after.data.length===1&&after.clinicalSearch.manual,'Educator override unavailable');
+    assert(Number(quota.rows[1][2])===0,'Search consumed generation quota');
+  }},
+ {name:'Case presentation extracts diagnosis, not identifying patient-name tokens',run(){
+    const {ctx}=fixture();const r=ctx.cneHybridClinicalAnalyze_('A case presentation of patient Master SAMPLE diagnosed with Choroid plexus Papilloma');
+    assert(r.concepts.length===1&&r.concepts[0].name==='choroid plexus papilloma'&&!r.concepts[0].name.includes('sample'),'Patient name leaked into search concept');
+    const noDiagnosis=ctx.cneHybridClinicalAnalyze_('Case presentation of patient SAMPLE');
+    assert(noDiagnosis.requiresClarification,'Patient-only case presentation should not search');
+  }},
+ {name:'Metadata chapter alone cannot admit a question with no clinical topic match',run(){
+    const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Care of gastritis patient'});
+    b.rows.forEach((row,i)=>{if(i){row[5]='Gastritis';row[6]='Team Nursing';row[7]='Delegation';row[8]='patient care';row[11]='How does a registered nurse manage a nursing team?';}});
+    const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(r.data.length===0,'Broad chapter matched a clinically unrelated question');
+  }},
+ {name:'Unrecognized or ambiguous manual correction never auto-expands generic words',run(){
+    const {ctx}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Gastritis'});
+    const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123',searchConcept:'patient care'},session);
+    assert(r.data.length===0&&r.clinicalSearch.requiresClarification,'Manual override bypassed relevance threshold');
+  }},
  {name:'Bank refuses malformed schema rather than guess answer column positions',run(){const {ctx,b}=fixture();b.rows[0][18]='Unknown Answer';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(result.errorCode==='QUESTION_BANK_SCHEMA_INVALID','Bad schema accepted');}},
  {name:'Question Bank records needing review are not importable',run(){const {ctx,b}=fixture();b.rows[1][26]='NEEDS_REVIEW';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(!result.data.find(x=>x.questionId==='REF-001').canImport,'Unreviewed figure item import allowed');}},
  {name:'Question Bank rejects extra options E/F that Post-Test does not support',run(){const {ctx,b}=fixture();b.rows[1][16]='Fifth choice';let result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(!result.data.find(x=>x.questionId==='REF-001').canImport,'Extra option ignored');result=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);assert(result.errorCode==='SOURCE_QUESTION_NEEDS_REVIEW','Forced import succeeded');}},
@@ -12466,7 +12549,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(modal.includes("{activeView === 'bank' ? ("));
       assert(bankPanel.includes('overflow-y-auto min-h-0 flex-1'));
       assert(!bankPanel.includes('max-h-72') && !modal.includes('bankOpen'));
-      assert(!bankPanel.includes('Replaced Questions History') && !bankPanel.includes('Add Manual Question'));
+      assert(!bankPanel.includes('Replaced Questions History') && !bankPanel.includes('onClick={handleAddManualQuestion}'));
     }],
     ['Only My Questions includes AI actions, finalization and Save/Next', () => {
       assert(modal.includes("{canModify && activeView === 'questions' && ("));
@@ -12501,6 +12584,13 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(modal.includes('status: normalizeQuestionStatus(q.status), isFinalized: Boolean(q.isFinalized)'));
       assert(modal.includes('if (hasUnsavedQuestionEdits())'));
       assert(modal.includes('persistedQuestionSnapshotRef.current = new Map(payloadQuestions.map'));
+    }],
+    ['Clinical Question Bank displays recognized concepts, lets educator edit and rejects generic-only matches', () => {
+      assert(bankPanel.includes('Recognized clinical concept') && bankPanel.includes('bankClinicalSearch.concepts.join'));
+      assert(bankPanel.includes('Edit concept') && bankPanel.includes('Search concept') && bankPanel.includes('bankSearchOverride'));
+      assert(bankPanel.includes('No clinically relevant Question Bank questions found') && bankPanel.includes('Clarify the clinical topic to search'));
+      assert(modal.includes('ApiService.searchCNEReferenceQuestions(target, searchOverride !== undefined ? searchOverride : bankSearchOverride)'));
+      assert(bankPanel.includes("void searchBank('')"), 'Restoring original CNE topic did not refresh the results');
     }],
     ['Question Bank search runs on entering the view and can be retried without starting Gemini', () => {
       assert(modal.includes('if (!bankSearched && !bankLoading) void searchBank()'));
@@ -12609,9 +12699,111 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   }
 }
 
+// SMART_TOPIC_AUTOCOMPLETE_CHECKS: These are consolidated alongside the existing
+// clinical Question Bank, scheduling and timezone tests. Compile the actual
+// pure TypeScript engine and execute real behavior, not only source fragments.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const sourceDir=join(ROOT_DIR,'src/data');
+  const formFiles=[
+    'src/components/CNESchedule.tsx',
+    'src/components/cne/DepartmentalScheduleModal.tsx',
+    'src/components/cne/AddUnscheduledCneModal.tsx'
+  ].map(path=>readFileSync(join(ROOT_DIR,path),'utf8'));
+  const input=readFileSync(join(ROOT_DIR,'src/components/cne/SmartCneTopicInput.tsx'),'utf8');
+  const dictionary=readFileSync(join(sourceDir,'cneClinicalTerminology.ts'),'utf8');
+  const tmp=mkdtempSync(join(tmpdir(),'cne-smart-topic-'));
+  let engine;
+  try {
+    const tsc=existsSync(join(ROOT_DIR,'node_modules','.bin',process.platform==='win32'?'tsc.cmd':'tsc'))
+      ?join(ROOT_DIR,'node_modules','.bin',process.platform==='win32'?'tsc.cmd':'tsc'):'tsc';
+    execFileSync(tsc,['--target','ES2020','--module','commonjs','--outDir',tmp,
+      join(sourceDir,'cneClinicalTerminology.ts'),join(sourceDir,'commonClinicalTopics.ts'),join(sourceDir,'cneTopicEngine.ts')],{stdio:'pipe'});
+    engine=createRequire(SCRIPT_URL)(join(tmp,'cneTopicEngine.js'));
+  } catch(err) {
+    console.error('Smart topic engine compile failed:',String(err.stderr||err));
+  }
+  const tests=[
+    ['Smart topic has a broad candidate terminology library and historical titles exclude patient names',()=>{
+      assert(engine,'Clinical topic engine did not compile');
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.abbreviations>=500,'Insufficient abbreviation coverage');
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.previousTopics>=800,'Historical topic coverage absent');
+      for(const name of ['Rishabh Maindola','Himanshi','Shivam','Annamaria','Reyansh','Shankar','Ansh'])assert(!dictionary.includes(name),'Patient identity leaked to suggestion library');
+    }],
+    ['Gastritis and future clinical terms are suggested while typing',()=>{
+      assert(engine.suggestCneTopics('Care of gastrit').some(r=>/gastritis/i.test(r.text)));
+      assert(engine.suggestCneTopics('Neonatal resuscit').some(r=>/resuscitation/i.test(r.text)));
+      assert.equal(engine.suggestCneTopics('x').length,0);
+      assert(engine.suggestCneTopics('ABG',5).length<=5);
+    }],
+    ['Space corrects only explicitly recognized misspellings with reversible original value',()=>{
+      assert.equal(engine.correctCompletedClinicalWord('Care of gastritits ').value,'Care of gastritis ');
+      assert.equal(engine.correctCompletedClinicalWord('Folys ').value,"Foley's ");
+      assert.equal(engine.correctCompletedClinicalWord('Unknown medicalword '),null);
+      assert.equal(engine.correctCompletedClinicalWord('Gastri'),null);
+      assert(input.includes('Undo')&&input.includes('setUndo({before:next,after:correction.value'));
+    }],
+    ['Clinical abbreviations are recognized but not automatically replaced',()=>{
+      assert(engine.identifyTopicAbbreviations('ABG and VBG analysis').some(x=>x.short==='ABG'));
+      assert.equal(engine.needsTopicClarification('ABG and VBG analysis').length,0);
+      assert(!engine.identifyTopicAbbreviations('gastritis patient').some(x=>x.short==='PT'));
+    }],
+    ['Ambiguous GBS and ICD must be clarified and expansion is whole-token only',()=>{
+      for(const term of ['GBS','ICD','ALL'])assert(engine.needsTopicClarification(term).some(x=>x.short===term));
+      assert(!engine.needsTopicClarification('All Aspects of gastritis').some(x=>x.short==='ALL'));
+      assert(engine.expandTopicAbbreviation('GBS in children','GBS','Guillain–Barré syndrome').includes('Guillain–Barré syndrome'));
+      assert.equal(engine.expandTopicAbbreviation('ICDICD and ICD','ICD','Intercostal chest drain'),'ICDICD and Intercostal chest drain');
+      assert(input.includes('setCustomValidity')&&input.includes('Choose intended clinical meaning'));
+    }],
+    ['Error-prone dose abbreviations are identified for replacement by educator',()=>{
+      for(const term of ['QD','QOD','MSO4','MgSO4','IU'])assert(engine.needsTopicClarification(term).length>0,`${term} did not trigger safety clarification`);
+      assert(input.includes('Error-prone abbreviation'));
+    }],
+    ['All CNE creation and edit topic fields use same reusable component',()=>{
+      assert.equal((formFiles[0].match(/<SmartCneTopicInput/g)||[]).length,2);
+      assert.equal((formFiles[1].match(/<SmartCneTopicInput/g)||[]).length,1);
+      assert.equal((formFiles[2].match(/<SmartCneTopicInput/g)||[]).length,1);
+      assert(input.includes('role="combobox"')&&input.includes('role="listbox"'));
+      assert(input.includes("e.key==='ArrowDown'")&&input.includes("e.key==='Enter'"));
+    }],
+    ['Question Bank backend recognizes expanded future abbreviations without weakening gastritis strictness',()=>{
+      const gas=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+      const names=['cneHybridClinicalText_','cneHybridAdditionalClinicalAbbreviations_','cneHybridClinicalVocabulary_',
+        'cneHybridClinicalContains_','cneHybridClinicalDistinctive_','cneHybridClinicalAnalyze_'];
+      const extracted=names.map(name=>{
+        const match=gas.match(new RegExp('function '+name+'\\([^]*?\\n\\}','m'));
+        assert(match,'Missing backend recognizer '+name);
+        return match[0];
+      }).join('\n');
+      const ctx={};vm.runInNewContext(extracted,ctx,{timeout:3000});
+      assert(ctx.cneHybridClinicalAnalyze_('ECHO').concepts.some(c=>c.name==='echocardiography'));
+      assert(ctx.cneHybridClinicalAnalyze_('Care of gastritis patient').concepts.some(c=>c.name==='gastritis'));
+      assert(ctx.cneHybridClinicalAnalyze_('All Aspects of gastritis').concepts.some(c=>c.name==='gastritis'));
+    }],
+    ['Question Bank clinical parsing never silently assigns GBS or ALL',()=>{
+      const gas=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+      assert(gas.includes('var ambiguousTopicSource=source.replace'));
+      assert(gas.includes('cneHybridAdditionalClinicalAbbreviations_()'));
+      const parsed=engine.needsTopicClarification('GBS and ALL');
+      assert(parsed.some(x=>x.short==='GBS')&&parsed.some(x=>x.short==='ALL'));
+    }],
+    ['Suggestions stay local and do not transmit topic data to external search services',()=>{
+      assert(!input.includes('fetch(') && !input.includes('google.com/search') && !input.includes('ApiService.'));
+      assert(!readFileSync(join(sourceDir,'cneTopicEngine.ts'),'utf8').includes('fetch('));
+    }]
+  ];
+  console.log('\n>>> Shared CNE clinical topic autocomplete and abbreviation safety checks');
+  for (const [name,test] of tests){
+    focusedChecks.push({name,test});
+    try { test(); focusedPassed++; console.log('✓ '+name); }
+    catch(err){console.error('✗ '+name+': '+err.message);}
+  }
+  rmSync(tmp,{recursive:true,force:true});
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');
 if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);
 if (passed !== selected.length || focusedPassed !== focusedChecks.length) process.exit(1);
 if (process.argv.includes('--with-timezone')) runTimezoneVerification();
+

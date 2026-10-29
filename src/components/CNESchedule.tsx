@@ -42,6 +42,7 @@ import {
   getCneTypeLabel,
   parseCneStartTimestamp
 } from '../utils';
+import { SmartCneTopicInput } from './cne/SmartCneTopicInput';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 import { CneDateTimeFields } from './cne/CneDateTimeFields';
 import { SearchInput } from './SearchInput';
@@ -1470,14 +1471,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                         Topic / Skills Training Subject *
                       </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Pediatric Advanced Life Support & Defibrillator Handling"
-                        value={newTopic}
-                        onChange={(e) => setNewTopic(e.target.value)}
-                        className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
-                      />
+                      <SmartCneTopicInput required value={newTopic} onChange={setNewTopic} placeholder="e.g. Pediatric Advanced Life Support & Defibrillator Handling" className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none" />
                     </div>
 
                     <div>
@@ -1867,14 +1861,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                         Topic Title *
                       </label>
-                      <input
-                        type="text"
-                        required
-                        value={editTopic}
-                        onChange={(e) => setEditTopic(e.target.value)}
-                        placeholder="e.g., Advanced Ventilator Nursing Protocols"
-                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
-                      />
+                      <SmartCneTopicInput required value={editTopic} onChange={setEditTopic} placeholder="e.g., Advanced Ventilator Nursing Protocols" className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs" />
                     </div>
 
                     <div>

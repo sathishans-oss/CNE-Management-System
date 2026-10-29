@@ -221,6 +221,14 @@ export interface CNEQuestion {
   isLocked?: boolean;
 }
 
+export interface CNEClinicalBankSearchInfo {
+  concepts: string[];
+  context: string[];
+  requiresClarification: boolean;
+  notice?: string;
+  manual: boolean;
+}
+
 export interface CNEReferenceBankItem {
   questionId: string;
   resourceTitle: string;
@@ -450,6 +458,7 @@ export interface ApiResponse<T = any> {
   data?: T;
   message?: string;
   errorCode?: string;
+  clinicalSearch?: CNEClinicalBankSearchInfo;
 }
 
 export interface SheetAuditItem {

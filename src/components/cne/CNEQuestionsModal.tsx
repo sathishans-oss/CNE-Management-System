@@ -17,7 +17,7 @@ import {
   ChevronUp,
   ArrowRight
 } from 'lucide-react';
-import { CNERecord, CNEQuestion, CNEAiQuotaInfo, CNEReferenceBankItem } from '../../types';
+import { CNERecord, CNEQuestion, CNEAiQuotaInfo, CNEReferenceBankItem, CNEClinicalBankSearchInfo } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 
@@ -94,6 +94,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [bankLoading, setBankLoading] = useState(false);
   const [bankSearched, setBankSearched] = useState(false);
   const [bankError, setBankError] = useState<string | null>(null);
+  const [bankClinicalSearch, setBankClinicalSearch] = useState<CNEClinicalBankSearchInfo | null>(null);
+  const [bankSearchOverride, setBankSearchOverride] = useState('');
+  const [editingBankConcept, setEditingBankConcept] = useState(false);
   const [importingBankId, setImportingBankId] = useState<string | null>(null);
   const bankRequestRef = useRef(0);
   const [partialAiCount, setPartialAiCount] = useState(0);
@@ -148,7 +151,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     quotaRequestRef.current += 1;
     materialRequestRef.current += 1;
     bankRequestRef.current += 1;
-    setBankMatches([]);setBankSearched(false);setActiveView('questions');setBankError(null);setBankLoading(false);setPartialAiCount(0);
+    setBankMatches([]);setBankSearched(false);setActiveView('questions');setBankError(null);setBankLoading(false);
+    setBankClinicalSearch(null);setBankSearchOverride('');setEditingBankConcept(false);setPartialAiCount(0);
     materialCheckRef.current = false;
     initialMaterialPresenceRef.current = null;
     generationRequestRef.current += 1;
@@ -355,16 +359,16 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     if (!bankSearched && !bankLoading) void searchBank();
   };
 
-  const searchBank = async () => {
+  const searchBank = async (searchOverride?: string) => {
     if (!canModify || isGenerating || isSaving) return;
     const id = ++bankRequestRef.current;
     const target = cneId;
     setBankLoading(true);setBankError(null);
     try {
-      const res=await ApiService.searchCNEReferenceQuestions(target);
+      const res=await ApiService.searchCNEReferenceQuestions(target, searchOverride !== undefined ? searchOverride : bankSearchOverride);
       if(id!==bankRequestRef.current || target!==currentCneIdRef.current)return;
-      if(!res.success){setBankError(res.message || 'Question Bank search unavailable.');setBankMatches([]);}
-      else {setBankMatches(res.data || []);setBankSearched(true);}
+      if(!res.success){setBankError(res.message || 'Question Bank search unavailable.');setBankMatches([]);setBankClinicalSearch(null);}
+      else {setBankMatches(res.data || []);setBankClinicalSearch(res.clinicalSearch || null);setBankSearched(true);setEditingBankConcept(false);}
     }catch(e:any){if(id===bankRequestRef.current)setBankError(e?.message || 'Question Bank search failed.');}
     finally{if(id===bankRequestRef.current)setBankLoading(false);}
   };
@@ -960,9 +964,35 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 {bankLoading ? 'Searching…' : 'Refresh Results'}
               </button>
             </div>
-            {bankLoading && <div role="status" className="flex items-center gap-2 text-indigo-800"><Loader2 className="w-4 h-4 animate-spin" /> Searching approved Question Bank entries…</div>}
+            {bankClinicalSearch && <div className="bg-white border border-indigo-200 rounded-lg p-3 space-y-2" aria-label="Recognized clinical search concept">
+              <div className="flex flex-wrap items-center gap-2 justify-between">
+                <div className="space-y-1">
+                  <div className="text-[11px] font-semibold text-indigo-800">Recognized clinical concept{bankClinicalSearch.concepts.length === 1 ? '' : 's'}</div>
+                  <div className="font-semibold text-slate-900">{bankClinicalSearch.concepts.join(' · ') || 'Needs clarification'}</div>
+                  {bankClinicalSearch.context.length > 0 && <div className="text-slate-500">Context: {bankClinicalSearch.context.join(', ')}</div>}
+                </div>
+                <button type="button" disabled={bankLoading || !!importingBankId} onClick={() => setEditingBankConcept(v => !v)}
+                  className="px-2 py-1 border border-indigo-200 rounded-md text-indigo-800 font-semibold disabled:opacity-40">
+                  <Edit3 className="w-3 h-3 inline-block mr-1" /> Edit concept
+                </button>
+              </div>
+              {bankClinicalSearch.notice && <div role="status" className="text-amber-800">{bankClinicalSearch.notice}</div>}
+            </div>}
+            {editingBankConcept && <form className="flex flex-col sm:flex-row gap-2" onSubmit={(e) => {e.preventDefault();void searchBank();}}>
+              <label className="flex-1 font-semibold text-slate-700">Clinical topic for Question Bank search
+                <input value={bankSearchOverride} maxLength={120} onChange={e => setBankSearchOverride(e.target.value)}
+                  placeholder="e.g. Guillain Barre syndrome, gastritis, wound care" disabled={bankLoading}
+                  className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-900 font-normal" />
+              </label>
+              <button type="submit" disabled={bankLoading || !!importingBankId || !canModify} className="self-end px-3 py-2 bg-indigo-700 text-white rounded-md font-semibold disabled:opacity-40">Search concept</button>
+              {bankSearchOverride && <button type="button" onClick={() => {setBankSearchOverride('');setBankClinicalSearch(null);setBankSearched(false);setBankMatches([]);void searchBank('');}} disabled={bankLoading} className="self-end px-2 py-2 underline text-indigo-800">Use CNE topic</button>}
+            </form>}
+            {bankLoading && <div role="status" className="flex items-center gap-2 text-indigo-800"><Loader2 className="w-4 h-4 animate-spin" /> Searching clinically relevant Question Bank entries…</div>}
             {bankError && <div role="alert" className="text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">{bankError} Use Refresh Results to try again.</div>}
-            {!bankLoading && !bankError && bankSearched && !bankMatches.length && <div>No matching Question Bank questions were found. Clinical Reference Library generation remains available under My Questions.</div>}
+            {!bankLoading && !bankError && bankSearched && !bankMatches.length && <div role="status" className="rounded-lg border border-slate-200 bg-white p-3 space-y-1">
+              <div className="font-bold text-slate-800">{bankClinicalSearch?.requiresClarification ? 'Clarify the clinical topic to search' : 'No clinically relevant Question Bank questions found'}</div>
+              <p className="text-slate-600">{bankClinicalSearch?.requiresClarification ? 'Use Edit concept to enter a specific disease, procedure, nursing practice or an expanded abbreviation.' : 'No indexed textbook MCQs matched the clinical concept. Unrelated care/patient questions have been excluded. You can use AI Question Generation or Add Manual Question under My Questions.'}</p>
+            </div>}
             {bankMatches.map(q => {
               const sourceId = 'q_bank_' + q.questionId.replace(/[^a-zA-Z0-9_-]/g, '_');
               const alreadyImported = questions.some(item => item.id === sourceId || String(item.id || '').startsWith(sourceId + '__v'));

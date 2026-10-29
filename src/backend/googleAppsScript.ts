@@ -16035,21 +16035,181 @@ function cneHybridBankFields_(sheet) {
   var missing=Object.keys(names).filter(function(k){return cols[k]===undefined;});
   return missing.length?{success:false,missing:missing}:{success:true,cols:cols};
 }
-function cneHybridBankScore_(topic,row,cols) {
-  var query=String(topic||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').trim();
-  if(!query)return 0;
-  var parts=query.split(/\\s+/).filter(function(x){return x.length>=3;});
-  if(!parts.length)return 0;
-  var fields=[['subtopic',45],['keywords',40],['topic',38],['question',36],['chapter',8]];
-  var score=0,passageHits=0;
-  fields.forEach(function(pair){
-    var value=String(row[cols[pair[0]]]||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ');
-    if(value.indexOf(query)!==-1)score+=pair[1];
-    var hits=parts.filter(function(t){return new RegExp('\\\\b'+t+'\\\\b').test(value);}).length;
-    score+=Math.min(12,hits*3);
-    if(pair[0]==='question'||pair[0]==='subtopic'||pair[0]==='keywords')passageHits+=hits;
+/**
+ * Clinical-topic-aware textbook search.
+ * The canonical phrases below are intentionally limited to established nursing
+ * concepts/synonyms. Do NOT infer equivalence of neighboring conditions from a
+ * shared symptom, specialty, chapter or a word such as "care" or "patient".
+ * Unknown concepts use a strict normalized phrase match instead of guessing.
+ * Keep independent concepts for multi-topic CNEs; never pass patient names to search.
+ */
+function cneHybridClinicalText_(value) {
+  return String(value || '').toLowerCase()
+    .replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').replace(/\\s+/g,' ').trim();
+}
+/**
+ * Supplemental unambiguous clinical abbreviations from the candidate CNE
+ * topic lexicon. Ambiguous and medication error-prone abbreviations are excluded.
+ * This is an educational search aid, NOT an approved clinical prescribing list.
+ * Keep strict full-concept matching: generic words alone never qualify an MCQ.
+ */
+function cneHybridAdditionalClinicalAbbreviations_() {
+  return [["arterial blood gas",["abg"]],["allergic bronchopulmonary aspergillosis",["abpa"]],["angiotensin-converting enzyme inhibitor",["acei"]],["advanced cardiovascular life support",["acls"]],["acute coronary syndrome",["acs"]],["assist-control ventilation",["acv"]],["adverse drug event",["ade"]],["attention-deficit/hyperactivity disorder",["adhd"]],["activities of daily living",["adl"]],["autosomal dominant polycystic kidney disease",["adpkd"]],["adverse drug reaction",["adr"]],["acid-fast bacilli",["afb"]],["atrial fibrillation",["afib"]],["appropriate for gestational age",["aga"]],["acquired immunodeficiency syndrome",["aids"]],["acute kidney disease",["akd"]],["acute kidney injury",["aki"]],["alcohol-associated liver disease",["ald"]],["acute lung injury",["ali"]],["age-related macular degeneration",["amd"]],["anti-müllerian hormone",["amh"]],["acute myocardial infarction",["ami"]],["acute myeloid leukemia",["aml"]],["antimicrobial resistance",["amr"]],["antimicrobial stewardship",["ams"]],["aseptic non-touch technique",["antt"]],["automated peritoneal dialysis",["apd"]],["apgar score",["apgar"]],["antepartum hemorrhage",["aph"]],["activated partial thromboplastin time",["aptt"]],["angiotensin receptor blocker",["arb"]],["acute respiratory distress syndrome",["ards"]],["angiotensin receptor-neprilysin inhibitor",["arni"]],["assisted reproductive technology",["art"]],["american society of anesthesiologists",["asa"]],["american spinal injury association",["asia"]],["acute tubular necrosis",["atn"]],["alcohol use disorder",["aud"]],["atrioventricular block",["avb"]],["arteriovenous fistula",["avf"]],["arteriovenous graft",["avg"]],["bronchoalveolar lavage",["bal"]],["best-corrected visual acuity",["bcva"]],["bilevel positive airway pressure",["bipap"]],["basic life support",["bls"]],["bone mineral density",["bmd"]],["body mass index",["bmi"]],["basal metabolic rate",["bmr"]],["bone marrow transplantation",["bmt"]],["biomedical waste",["bmw"]],["biomedical waste management",["bmwm"]],["bipolar affective disorder",["bpad"]],["bronchopulmonary dysplasia",["bpd"]],["benign prostatic hyperplasia",["bph"]],["brief psychiatric rating scale",["bprs"]],["behavioral pain scale",["bps"]],["braden pressure injury risk assessment",["braden"]],["breast cancer susceptibility gene",["brca"]],["branch retinal vein occlusion",["brvo"]],["blood urea nitrogen",["bun"]],["columbia suicide severity rating scale",["c-ssrs"]],["coronary artery bypass grafting",["cabg"]],["coronary artery disease",["cad"]],["coronary angiography",["cag"]],["confusion assessment method for the icu",["cam-icu"]],["community-acquired pneumonia",["cap"]],["corrective and preventive action",["capa"]],["continuous ambulatory peritoneal dialysis",["capd"]],["chimeric antigen receptor t-cell therapy",["car-t"]],["catheter-associated urinary tract infection",["cauti"]],["complete blood count",["cbc"]],["continuous bladder irrigation",["cbi"]],["cartridge-based nucleic acid amplification test",["cbnaat"]],["cognitive behavioural therapy",["cbt"]],["calcium channel blocker",["ccb"]],["carcinoembryonic antigen",["cea"]],["contrast-enhanced computed tomography",["cect"]],["continuous glucose monitoring",["cgm"]],["congestive heart failure",["chf"]],["chronic kidney disease",["ckd"]],["central line-associated bloodstream infection",["clabsi"]],["chronic liver disease",["cld"]],["chronic lymphocytic leukemia",["cll"]],["chronic myeloid leukemia",["cml"]],["comprehensive nursing care plan",["cncp"]],["central nervous system",["cns"]],["chronic obstructive pulmonary disease",["copd"]],["continuous positive airway pressure",["cpap"]],["cardiopulmonary bypass",["cpb"]],["creatine phosphokinase",["cpk"]],["critical-care pain observation tool",["cpot"]],["cerebral perfusion pressure",["cpp"]],["cardiopulmonary resuscitation",["cpr"]],["central retinal artery occlusion",["cra0"]],["catheter-related bloodstream infection",["crbsi"]],["colorectal cancer",["crc"]],["carbapenem-resistant enterobacterales",["cre"]],["closed reduction and internal fixation",["crif"]],["c-reactive protein",["crp"]],["continuous renal replacement therapy",["crrt"]],["cardiac resynchronization therapy",["crt"]],["central retinal vein occlusion",["crvo"]],["cerebrospinal fluid",["csf"]],["continuous subcutaneous insulin infusion",["csii"]],["central sterile supply department",["cssd"]],["cardiotocography",["ctg"]],["cerebrovascular accident",["cva"]],["central venous access device",["cvad"]],["central venous catheter",["cvc"]],["central venous pressure",["cvp"]],["cerebral venous sinus thrombosis",["cvst"]],["continuous venovenous hemofiltration",["cvvh"]],["continuous venovenous hemodialysis",["cvvhd"]],["chest radiograph",["cxr"]],["5% dextrose in water",["d5w"]],["dialectical behaviour therapy",["dbt"]],["decompensated chronic liver disease",["dcld"]],["dynamic condylar screw",["dcs"]],["dual-energy x-ray absorptiometry",["dexa"]],["diabetic foot ulcer",["dfu"]],["dynamic hip screw",["dhs"]],["disseminated intravascular coagulation",["dic"]],["diabetic ketoacidosis",["dka"]],["diabetic macular edema",["dme"]],["direct oral anticoagulant",["doac"]],["doppler ultrasonography",["doppler"]],["directly observed treatment short-course",["dots"]],["diabetic peripheral neuropathy",["dpn"]],["digital subtraction angiography",["dsa"]],["deep tendon reflex",["dtr"]],["deep vein thrombosis",["dvt"]],["external beam radiotherapy",["ebrt"]],["echocardiography",["echo"]],["electroconvulsive therapy",["ect"]],["estimated date of delivery",["edd"]],["extradural hematoma",["edh"]],["extended focused assessment with sonography for trauma",["efast"]],["estimated gestational age",["ega"]],["estimated glomerular filtration rate",["egfr"]],["electrocardiogram",["ekg"]],["extremely low birth weight",["elbw"]],["electronic medication administration record",["emar"]],["electromyography",["emg"]],["expanded programme on immunization",["epi"]],["extrapyramidal symptoms",["eps"]],["enhanced recovery after surgery",["eras"]],["endoscopic retrograde cholangiopancreatography",["ercp"]],["extended-spectrum beta-lactamase",["esbl"]],["end-stage kidney disease",["eskd"]],["erythrocyte sedimentation rate",["esr"]],["end-stage renal disease",["esrd"]],["extracorporeal shock wave lithotripsy",["eswl"]],["end-tidal carbon dioxide",["etco2"]],["ethylene oxide",["eto"]],["endotracheal tube",["ett"]],["endoscopic ultrasound",["eus"]],["endoscopic ultrasound-guided biliary drainage",["eus-bd"]],["endoscopic ultrasound-guided fine needle aspiration",["eus-fna"]],["endoscopic ultrasound-guided fine needle biopsy",["eus-fnb"]],["external ventricular drain",["evd"]],["endoscopic variceal ligation",["evl"]],["endovenous laser ablation",["evla"]],["early warning score",["ews"]],["focused assessment with sonography for trauma",["fast"]],["feeding analgesia sedation thromboembolic prophylaxis head of bed elevation ulcer prophylaxis glucose control",["fasthugs"]],["full blood count",["fbc"]],["fasting blood sugar",["fbs"]],["forced expiratory volume in one second",["fev1"]],["fresh frozen plasma",["ffp"]],["fetal growth restriction",["fgr"]],["fetal heart rate",["fhr"]],["fetal heart sounds",["fhs"]],["fraction of inspired oxygen",["fio2"]],["failure mode and effects analysis",["fmea"]],["fine needle aspiration",["fna"]],["fine needle aspiration cytology",["fnac"]],["focal segmental glomerulosclerosis",["fsgs"]],["forced vital capacity",["fvc"]],["generalized anxiety disorder",["gad"]],["generalized anxiety disorder-7",["gad-7"]],["glasgow coma scale",["gcs"]],["gestational diabetes mellitus",["gdm"]],["gastroesophageal reflux disease",["gerd"]],["glomerular filtration rate",["gfr"]],["gastrointestinal stromal tumor",["gist"]],["histamine-2 receptor antagonist",["h2ra"]],["healthcare-associated infection",["hai"]],["high-alert medication",["ham"]],["hospital-acquired pneumonia",["hap"]],["hepatitis a virus",["hav"]],["glycated hemoglobin",["hba1c"]],["hepatitis b virus",["hbv"]],["hepatocellular carcinoma",["hcc"]],["hematocrit",["hct"]],["hepatitis c virus",["hcv"]],["high dependency unit",["hdu"]],["hemolysis elevated liver enzymes and low platelets",["hellp"]],["human epidermal growth factor receptor 2",["her2"]],["high-flow nasal cannula",["hfnc"]],["high-flow nasal oxygen",["hfno"]],["heart failure with preserved ejection fraction",["hfpef"]],["heart failure with reduced ejection fraction",["hfref"]],["hyperosmolar hyperglycemic state",["hhs"]],["hypoxic-ischemic encephalopathy",["hie"]],["hyperthermic intraperitoneal chemotherapy",["hipec"]],["hospital information system",["his"]],["human immunodeficiency virus",["hiv"]],["high-level disinfection",["hld"]],["head and neck squamous cell carcinoma",["hnscc"]],["hematopoietic stem cell transplantation",["hsct"]],["hysterosalpingography",["hsg"]],["hypoglycemia",["hypo"]],["instrumental activities of daily living",["iadl"]],["inflammatory bowel disease",["ibd"]],["invasive blood pressure",["ibp"]],["intracerebral hemorrhage",["ich"]],["intracranial pressure",["icp"]],["intensive care unit",["icu"]],["intradialytic hypertension",["idhtn"]],["iga nephropathy",["igan"]],["immunohistochemistry",["ihc"]],["ischemic heart disease",["ihd"]],["interstitial lung disease",["ild"]],["intensity-modulated radiotherapy",["imrt"]],["injection",["inj"]],["international normalized ratio",["inr"]],["intraocular lens",["iol"]],["intraocular pressure",["iop"]],["intraoperative ultrasound",["ious"]],["infection prevention and control",["ipc"]],["international patient safety goals",["ipsg"]],["identify situation background assessment recommendation",["isbar"]],["intrauterine fetal demise",["iufd"]],["intrauterine growth restriction",["iugr"]],["intrauterine insemination",["iui"]],["intraventricular hemorrhage",["ivh"]],["intravenous immunoglobulin",["ivig"]],["joint commission international",["jci"]],["kirschner wire",["k-wire"]],["potassium chloride",["kcl"]],["kidney function tests",["kft"]],["kangaroo mother care",["kmc"]],["key performance indicator",["kpi"]],["long-acting reversible contraception",["larc"]],["look-alike sound-alike",["lasa"]],["laser-assisted in situ keratomileusis",["lasik"]],["low birth weight",["lbw"]],["lactate dehydrogenase",["ldh"]],["liver function tests",["lft"]],["large for gestational age",["lga"]],["lower gastrointestinal bleeding",["lgib"]],["laryngeal mask airway",["lma"]],["last menstrual period",["lmp"]],["low-molecular-weight heparin",["lmwh"]],["lower segment cesarean section",["lscs"]],["latent tuberculosis infection",["ltbi"]],["left ventricular ejection fraction",["lvef"]],["monoamine oxidase inhibitor",["maoi"]],["mean arterial pressure",["map"]],["medication administration record",["mar"]],["meconium aspiration syndrome",["mas"]],["metabolic dysfunction-associated steatohepatitis",["mash"]],["metabolic dysfunction-associated steatotic liver disease",["masld"]],["mean corpuscular hemoglobin",["mch"]],["mean corpuscular hemoglobin concentration",["mchc"]],["mean corpuscular volume",["mcv"]],["major depressive disorder",["mdd"]],["multidrug resistant",["mdr"]],["multidrug-resistant tuberculosis",["mdr-tb"]],["multidrug-resistant organism",["mdro"]],["myelodysplastic syndrome",["mds"]],["modified early warning score",["mews"]],["medico-legal case",["mlc"]],["mini-mental state examination",["mmse"]],["motor neuron disease",["mnd"]],["montreal cognitive assessment",["moca"]],["morse fall scale",["morse"]],["myeloproliferative neoplasm",["mpn"]],["magnetic resonance angiography",["mra"]],["magnetic resonance cholangiopancreatography",["mrcp"]],["magnetic resonance imaging",["mri"]],["methicillin-resistant staphylococcus aureus",["mrsa"]],["magnetic resonance venography",["mrv"]],["methicillin-sensitive staphylococcus aureus",["mssa"]],["medical termination of pregnancy",["mtp"]],["n95 filtering facepiece respirator",["n95"]],["nucleic acid amplification test",["naat"]],["national accreditation board for hospitals and healthcare providers",["nabh"]],["n-acetylcysteine",["nac"]],["sodium chloride",["nacl"]],["nonalcoholic fatty liver disease",["nafld"]],["nursing care plan",["ncp"]],["nerve conduction velocity",["ncv"]],["necrotizing enterocolitis",["nec"]],["national early warning score 2",["news2"]],["non-invasive blood pressure",["nibp"]],["neonatal intensive care unit",["nicu"]],["national institutes of health stroke scale",["nihss"]],["non-invasive positive pressure ventilation",["nippv"]],["non-invasive ventilation",["niv"]],["neuroleptic malignant syndrome",["nms"]],["neonatal hyperbilirubinemia",["nnh"]],["non-vitamin k antagonist oral anticoagulant",["noac"]],["nonproliferative diabetic retinopathy",["npdr"]],["negative pressure wound therapy",["npwt"]],["neonatal resuscitation program",["nrp"]],["nonsteroidal anti-inflammatory drug",["nsaid"]],["non-small-cell lung cancer",["nsclc"]],["needlestick injury",["nsi"]],["non-stress test",["nst"]],["non-st-elevation myocardial infarction",["nstemi"]],["oral anticoagulant",["oac"]],["obsessive-compulsive disorder",["ocd"]],["optical coherence tomography",["oct"]],["optical coherence tomography angiography",["octa"]],["oesophagogastroduodenoscopy",["ogd"]],["orogastric tube",["ogt"]],["oral glucose tolerance test",["ogtt"]],["ocular hypertension",["oht"]],["open reduction and internal fixation",["orif"]],["oral rehydration solution",["ors"]],["obstructive sleep apnea",["osa"]],["arterial partial pressure of carbon dioxide",["paco2"]],["post-anesthesia care unit",["pacu"]],["pulmonary arterial hypertension",["pah"]],["pediatric advanced life support",["pals"]],["positive and negative syndrome scale",["panss"]],["arterial partial pressure of oxygen",["pao2"]],["percutaneous coronary intervention",["pci"]],["posterior chamber intraocular lens",["pciol"]],["percutaneous nephrostomy",["pcn"]],["percutaneous nephrolithotomy",["pcnl"]],["polycystic ovarian disease",["pcod"]],["polycystic ovary syndrome",["pcos"]],["pre-conception and pre-natal diagnostic techniques",["pcpndt"]],["polymerase chain reaction",["pcr"]],["procalcitonin",["pct"]],["pressure-controlled ventilation",["pcv"]],["proliferative diabetic retinopathy",["pdr"]],["plan do study act",["pdsa"]],["positive end-expiratory pressure",["peep"]],["peak expiratory flow rate",["pefr"]],["percutaneous endoscopic gastrostomy",["peg"]],["percutaneous endoscopic jejunostomy",["pej"]],["post-exposure prophylaxis",["pep"]],["tunneled hemodialysis catheter",["permcath"]],["positron emission tomography-computed tomography",["pet-ct"]],["pulmonary function test",["pft"]],["patient health questionnaire-9",["phq-9"]],["pulmonary hypertension",["pht"]],["peripherally inserted central catheter",["picc"]],["pediatric intensive care unit",["picu"]],["pregnancy-induced hypertension",["pih"]],["postnatal care",["pnc"]],["postnatal depression",["pnd"]],["peripheral nervous system",["pns"]],["point-of-care testing",["poct"]],["point-of-care ultrasonography",["pocus"]],["postoperative nausea and vomiting",["ponv"]],["postprandial blood sugar",["ppbs"]],["personal protective equipment",["ppe"]],["postpartum hemorrhage",["pph"]],["persistent pulmonary hypertension of the newborn",["pphn"]],["permanent pacemaker",["ppm"]],["preterm prelabor rupture of membranes",["pprom"]],["packed red blood cells",["prbc"]],["pre-exposure prophylaxis",["prep"]],["posterior reversible encephalopathy syndrome",["pres"]],["photorefractive keratectomy",["prk"]],["prelabor rupture of membranes",["prom"]],["prostate-specific antigen",["psa"]],["pressure support ventilation",["psv"]],["percutaneous transhepatic biliary drainage",["ptbd"]],["percutaneous transluminal coronary angioplasty",["ptca"]],["parathyroid hormone",["pth"]],["post-traumatic stress disorder",["ptsd"]],["peptic ulcer disease",["pud"]],["relative afferent pupillary defect",["rapd"]],["richmond agitation-sedation scale",["rass"]],["red blood cell",["rbc"]],["random blood sugar",["rbs"]],["root cause analysis",["rca"]],["renal cell carcinoma",["rcc"]],["random-donor platelets",["rdp"]],["respiratory distress syndrome",["rds"]],["radiofrequency ablation",["rfa"]],["renal function tests",["rft"]],["rheumatic heart disease",["rhd"]],["retrograde intrarenal surgery",["rirs"]],["refractive lens exchange",["rle"]],["retinopathy of prematurity",["rop"]],["return of spontaneous circulation",["rosc"]],["retained products of conception",["rpoc"]],["rapid sequence intubation",["rsi"]],["reverse transcription polymerase chain reaction",["rt-pcr"]],["renal tubular acidosis",["rta"]],["rapid urease test",["rut"]],["subarachnoid hemorrhage",["sah"]],["arterial oxygen saturation",["sao2"]],["situation background assessment recommendation",["sbar"]],["spontaneous bacterial peritonitis",["sbp"]],["stereotactic body radiotherapy",["sbrt"]],["spinal cord injury",["sci"]],["small-cell lung cancer",["sclc"]],["stem cell transplantation",["sct"]],["subdural hematoma",["sdh"]],["single-donor platelets",["sdp"]],["small for gestational age",["sga"]],["syndrome of inappropriate antidiuretic hormone secretion",["siadh"]],["synchronised intermittent mandatory ventilation",["simv"]],["special newborn care unit",["sncu"]],["serotonin-norepinephrine reuptake inhibitor",["snri"]],["peripheral oxygen saturation",["spo2"]],["surgical site infection",["ssi"]],["subacute sclerosing panencephalitis",["sspe"]],["selective serotonin reuptake inhibitor",["ssri"]],["st-elevation myocardial infarction",["stemi"]],["hydrogen peroxide gas plasma sterilization",["sterrad"]],["substance use disorder",["sud"]],["supraventricular tachycardia",["svt"]],["t-piece resuscitator",["t-piece"]],["type 1 diabetes mellitus",["t1dm"]],["type 2 diabetes mellitus",["t2dm"]],["transcatheter aortic valve implantation",["tavi"]],["transcatheter aortic valve replacement",["tavr"]],["traumatic brain injury",["tbi"]],["tricyclic antidepressant",["tca"]],["transesophageal echocardiography",["tee"]],["thyroid function tests",["tft"]],["total hip arthroplasty",["tha"]],["transient ischemic attack",["tia"]],["transjugular intrahepatic portosystemic shunt",["tips"]],["total knee arthroplasty",["tka"]],["tumor lysis syndrome",["tls"]],["thoracolumbosacral orthosis",["tlso"]],["tumor node metastasis",["tnm"]],["tetralogy of fallot",["tof"]],["trial of labor after cesarean",["tolac"]],["therapeutic plasma exchange",["tpe"]],["total parenteral nutrition",["tpn"]],["thyroid stimulating hormone",["tsh"]],["transthoracic echocardiography",["tte"]],["transient tachypnea of the newborn",["ttn"]],["transurethral resection of bladder tumor",["turbt"]],["transurethral resection of the prostate",["turp"]],["tranexamic acid",["txa"]],["umbilical arterial catheter",["uac"]],["uterine artery embolization",["uae"]],["unfractionated heparin",["ufh"]],["upper gastrointestinal",["ugi"]],["upper gastrointestinal bleeding",["ugib"]],["upper gastrointestinal endoscopy",["ugie"]],["ultrasonography",["usg"]],["urinary tract infection",["uti"]],["umbilical venous catheter",["uvc"]],["vacuum-assisted closure",["vac"]],["ventilator-associated event",["vae"]],["ventilator-associated pneumonia",["vap"]],["vaginal birth after cesarean",["vbac"]],["venous blood gas",["vbg"]],["volume-controlled ventilation",["vcv"]],["vitamin k antagonist",["vka"]],["very low birth weight",["vlbw"]],["vancomycin-resistant enterococcus",["vre"]],["ventricular septal defect",["vsd"]],["venous thromboembolism",["vte"]],["tidal volume indexed to ideal body weight",["vtid"]],["white blood cell",["wbc"]],["world health organization",["who"]],["radiography",["x-ray"]],["extensively drug-resistant tuberculosis",["xdr-tb"]]];
+}
+function cneHybridClinicalVocabulary_() {
+  return [
+    ['gastritis',['gastric mucosal inflammation']],
+    ['diabetic ketoacidosis',['dka']],
+    ['intravenous cannulation',['iv cannulation','peripheral iv cannulation','peripheral intravenous cannulation','peripheral intravenous therapy','cannula insertion']],
+    ['arterial blood gas analysis',['abg','abg analysis','abg interpretation','arterial blood gas']],
+    ['venous blood gas analysis',['vbg','vbg analysis','venous blood gas']],
+    ['pressure injury',['pressure injuries','pressure ulcer','pressure ulcers','bed sore','bed sores','bedsore','bedsores','decubitus ulcer']],
+    ['wound care',['wound management','wound dressing']],
+    ['patient safety',['patient safety goals']],
+    ['medication safety',['safe medication practices','safe medication practice']],
+    ['medication errors',['medication error','medicine errors']],
+    ['high alert medications',['high risk medications','high risk medicines','high alert medicines']],
+    ['central line care',['central venous catheter care','cvc care','central line maintenance']],
+    ['catheter associated urinary tract infection',['cauti']],
+    ['central line associated bloodstream infection',['clabsi']],
+    ['ventilator associated pneumonia',['vap']],
+    ['hand hygiene',['handwashing','hand washing','hand rub']],
+    ['biomedical waste management',['bmw','bio medical waste management','biomedical waste segregation']],
+    ['needle stick injury',['nsi','needlestick injury']],
+    ['neonatal resuscitation',['nrp','neonatal resuscitation programme']],
+    ['cardiopulmonary resuscitation',['cpr','basic life support','bls']],
+    ['glasgow coma scale',['gcs','glasgow coma score']],
+    ['stroke',['cva','cerebrovascular accident']],
+    ['deep vein thrombosis',['dvt']],
+    ['chronic kidney disease',['ckd','chronic renal failure']],
+    ['chronic obstructive pulmonary disease',['copd']],
+    ['urinary tract infection',['uti']],
+    ['tuberculosis',['tb']],
+    ['tracheostomy care',['tracheostomy tube care']],
+    ['foley catheterization',['foleys catheterisation','foley catheterisation','foley catheter insertion','folys catheterization']],
+    ['infection prevention and control',['infection control','hospital infection control','infection control practices']],
+    ['sepsis',['sepsis management']],
+    ['guillain barre syndrome',['guillain barre','guillain barré syndrome']],
+    ['group b streptococcus',['group b strep','group b streptococcal infection']],
+    ['intercostal chest drain',['intercostal drainage','chest drain','icd chest drain']],
+    ['implantable cardioverter defibrillator',['implantable cardiac defibrillator']],
+    ['myocardial infarction',['acute myocardial infarction']],
+    ['acute coronary syndrome',['acs']],
+    ['hemodialysis',['haemodialysis']],
+    ['ventilator care',['ventilator patient care','care of ventilator patient']],
+    ['endotracheal suctioning',['et suctioning','ett suctioning','endotracheal tube suctioning']],
+    ['surgical site infection',['ssi']],
+    ['fall prevention',['falls prevention','patient fall prevention']]
+  ].concat(cneHybridAdditionalClinicalAbbreviations_());
+}
+function cneHybridClinicalContains_(haystack,needle) {
+  var h=' '+cneHybridClinicalText_(haystack)+' ';
+  var n=cneHybridClinicalText_(needle);
+  return Boolean(n && h.indexOf(' '+n+' ')!==-1);
+}
+function cneHybridClinicalDistinctive_(phrase) {
+  var noise={a:1,an:1,the:1,of:1,for:1,in:1,on:1,and:1,with:1,to:1,from:1,about:1,its:1,at:1,by:1,
+    care:1,patient:1,patients:1,nursing:1,nurses:1,nurse:1,management:1,manage:1,role:1,roles:1,
+    importance:1,overview:1,basics:1,basic:1,aspects:1,procedure:1,procedures:1,clinical:1,
+    introduction:1,techniques:1,technique:1,explanation:1,case:1,presentation:1,study:1,
+    prevention:1,treatment:1,assessment:1,interventions:1,practice:1,practices:1,
+    understanding:1,patients:1,health:1,education:1,all:1,regarding:1};
+  return cneHybridClinicalText_(phrase).split(' ').filter(function(t){return t.length>=3&&!noise[t];});
+}
+function cneHybridClinicalAnalyze_(title) {
+  var source=cneHybridClinicalText_(title);
+  // Case presentations are recognized only through a stated diagnosis or the
+  // explicit subject after "case presentation on"; never index patient names.
+  if (/\\bcase presentation\\b|\\bcase study\\b/.test(source)) {
+    var diagnosis=source.match(/\\b(?:diagnosed with|diagnosis of|diagnosis|case presentation on|case study of patient with)\\s+(.+)$/);
+    if(!diagnosis) return {concepts:[],context:[],requiresClarification:true,notice:'Specify the clinical diagnosis rather than a patient name.'};
+    source=diagnosis[1];
+    source=source.replace(/\\b(?:patient|master|miss|mr|mrs|ms)\\b.*$/,'').trim() || diagnosis[1];
+  }
+  // Context alone cannot justify question inclusion. Do not remove the same
+  // words inside a recognized whole clinical phrase (e.g. "patient safety").
+  var context=[];
+  var contextExpressions=[['nursing care',/\\b(?:nursing care|care of|care for)\\b/],['nursing management',/\\bnursing management\\b/],
+    ['prevention',/\\bprevention\\b/],['patient education',/\\bpatient education\\b/],
+    ['pediatric',/\\b(?:pediatric|paediatric|children)\\b/],['neonatal',/\\bneonatal\\b/],
+    ['psychiatric setting',/\\bpsychiatric\\b/]];
+  contextExpressions.forEach(function(p){if(p[1].test(source))context.push(p[0]);});
+  // Abbreviations that are clinically ambiguous MUST be expanded by the educator.
+  // Match only standalone abbreviations; full explicit names are unambiguous.
+  // "all" is ordinary language except when explicitly entered as the ALL acronym.
+  var ambiguousTopicSource=source.replace(/\\ball\\b/g, /\\bALL\\b/.test(String(title||'')) ? ' all ' : ' ');
+  if(/\\b(?:gbs|icd|all)\\b/.test(ambiguousTopicSource) &&
+     !/\\b(?:guillain barre|group b strep|group b streptococcus|intercostal chest drain|implantable cardioverter|acute lymphoblastic leukemia)\\b/.test(source)) {
+    var abbr=ambiguousTopicSource.match(/\\b(gbs|icd|all)\\b/)[1].toUpperCase();
+    return {concepts:[],context:context,requiresClarification:true,notice:'“'+abbr+'” has more than one clinical meaning. Enter the full clinical concept.'};
+  }
+  var matches=[], covered=[];
+  cneHybridClinicalVocabulary_().forEach(function(entry){
+    var alternatives=[entry[0]].concat(entry[1]);
+    alternatives.forEach(function(v){
+      var normal=cneHybridClinicalText_(v);
+      if(cneHybridClinicalContains_(source,normal))matches.push({canonical:entry[0],length:normal.length,matched:normal});
+    });
   });
-  return passageHits||score>=75?score:0;
+  // Prefer longest, most specific phrases, avoiding nested "pneumonia" etc.
+  matches.sort(function(a,b){return b.length-a.length || a.canonical.localeCompare(b.canonical);});
+  var concepts=[],used={};
+  matches.forEach(function(m){
+    if(used[m.canonical])return;
+    // Avoid treating a shorter phrase as a second independent concept when it
+    // occurs only within an already recognized longer phrase.
+    if(covered.some(function(phrase){return cneHybridClinicalContains_(phrase,m.matched);} ))return;
+    concepts.push({name:m.canonical,variants:[m.canonical].concat(cneHybridClinicalVocabulary_().filter(function(v){return v[0]===m.canonical;}).map(function(v){return v[1];})[0]||[]),kind:'verified'});
+    covered.push(m.matched);used[m.canonical]=true;
+  });
+  if(!concepts.length){
+    // Deterministic fallback for unfamiliar diagnoses, procedures or drugs.
+    // Require a meaningful phrase; never use just "care", "patient" etc.
+    var raw=source.replace(/^(?:a cne on|a cne about|a session on|case presentation on|care of|nursing care of|nursing care for|nursing management of|management of|prevention of|nurses role in|role of nurses in|role of nurse in|overview of|basics of|an introduction to)\\s+/,'')
+      .replace(/^(?:patients|patient)\\s+(?:with|on|undergoing)\\s+/,'')
+      .replace(/\\s+(?:in|among|for)\\s+(?:children|pediatric patients|paediatric patients|neonates|icu patients|patients|psychiatric ward)$/,'')
+      .replace(/\\s+(?:and its management|and nursing care|and its care|and care of patients)$/,'')
+      .replace(/\\s+patients?$/,'').trim();
+    var distinct=cneHybridClinicalDistinctive_(raw);
+    if(distinct.length && distinct.length<=8 && raw.length<=100 &&
+       !/^(?:all|none|not conducted|ward meeting|topic|staff meeting|one hour|general nursing)$/.test(raw)) {
+      concepts=[{name:raw,variants:[raw],kind:'literal'}];
+    }
+  }
+  return {concepts:concepts,context:context,requiresClarification:concepts.length===0,
+    notice:concepts.length?'':'The CNE title does not identify a specific clinical concept. Enter the clinical subject to search.'};
+}
+function cneHybridBankScoreConcept_(concept,row,cols) {
+  var variants=concept.variants||[concept.name];
+  // Topic, subtopic, keywords and question stem provide primary evidence.
+  // A broad textbook chapter alone must NEVER qualify a question.
+  var fields=[['topic',55],['subtopic',50],['keywords',45],['question',40]];
+  var best=0;
+  fields.forEach(function(pair){
+    var value=cneHybridClinicalText_(row[cols[pair[0]]]);
+    variants.forEach(function(phrase){
+      var p=cneHybridClinicalText_(phrase);
+      if(!p)return;
+      var exact=cneHybridClinicalContains_(value,p);
+      // Unknown titles require phrase overlap of >= 2 meaningful tokens,
+      // preventing one generic word ("care") or broad chapter from matching.
+      var terms=cneHybridClinicalDistinctive_(p);
+      var hits=terms.filter(function(t){return cneHybridClinicalContains_(value,t);}).length;
+      var minHits=terms.length===1?1:Math.max(2,Math.ceil(terms.length*0.8));
+      var matches=exact || (concept.kind==='literal' && terms.length && hits>=minHits);
+      if(matches) best=Math.max(best,pair[1]+(exact?25:Math.floor(15*hits/terms.length)));
+    });
+  });
+  return best;
+}
+function cneHybridBankScore_(topic,row,cols,analysis) {
+  var recognized=analysis||cneHybridClinicalAnalyze_(topic);
+  if(recognized.requiresClarification)return 0;
+  var score=0;
+  recognized.concepts.forEach(function(concept){
+    score=Math.max(score,cneHybridBankScoreConcept_(concept,row,cols));
+  });
+  return score;
 }
 function cneHybridBankCandidate_(row,cols,score) {
   var id=String(row[cols.questionId]||'').trim();
@@ -16079,9 +16239,14 @@ function handleSearchCNEReferenceQuestions(params,session) {
   if(!fields.success)return {success:false,errorCode:'QUESTION_BANK_SCHEMA_INVALID',message:'Question Bank headers missing: '+fields.missing.join(', ')};
   var rows=sheet.getDataRange().getValues(), cols=fields.cols;
   var topic=String(record.topic||'').trim();
+  // Manual correction affects only discovery, never saved CNE topic or evidence.
+  var override=String(params.searchConcept||'').trim().slice(0,120);
+  var analyzed=cneHybridClinicalAnalyze_(override||topic);
+  var clinicalSearch={concepts:analyzed.concepts.map(function(c){return c.name;}),context:analyzed.context,
+    requiresClarification:analyzed.requiresClarification,notice:analyzed.notice,manual:Boolean(override)};
   var out=[];
   for(var i=1;i<rows.length;i++){
-    var score=cneHybridBankScore_(topic,rows[i],cols);
+    var score=cneHybridBankScore_(override||topic,rows[i],cols,analyzed);
     if(score<=0)continue;
     var candidate=cneHybridBankCandidate_(rows[i],cols,score);
     candidate.canImport=cneHybridCanImportBank_(candidate) &&
@@ -16090,7 +16255,7 @@ function handleSearchCNEReferenceQuestions(params,session) {
     out.push(candidate);
   }
   out.sort(function(a,b){return b.matchScore-a.matchScore || a.questionId.localeCompare(b.questionId);});
-  return {success:true,data:out.slice(0,30),totalMatches:out.length,topic:topic};
+  return {success:true,data:out.slice(0,30),totalMatches:out.length,topic:topic,clinicalSearch:clinicalSearch};
 }
 function handleImportCNEReferenceQuestion(params,session) {
   if(!session||!session.employeeId)return {success:false,errorCode:'UNAUTHORIZED'};

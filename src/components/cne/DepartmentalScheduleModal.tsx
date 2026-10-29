@@ -9,6 +9,7 @@ import { getUserAssignedAreas, validateCneDuration,
 } from '../../utils';
 import { CneDateTimeFields } from './CneDateTimeFields';
 import { WardMultiSelect, WardStaffCounts } from './WardMultiSelect';
+import { SmartCneTopicInput } from './SmartCneTopicInput';
 import { DropdownRetry } from './DropdownRetry';
 
 function parseDateTimeParts(dateTimeStr?: string, defaultTime: string = '09:00') {
@@ -622,14 +623,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                         <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                           CNE Topic <span className="text-rose-500">*</span>
                         </label>
-                        <input
-                          type="text"
-                          required
-                          placeholder="e.g. Infection Control & Hand Hygiene Protocols"
-                          value={row.topic}
-                          onChange={(e) => handleFieldChange(idx, 'topic', e.target.value)}
-                          className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
-                        />
+                        <SmartCneTopicInput required value={row.topic} onChange={(next) => handleFieldChange(idx, 'topic', next)} placeholder="e.g. Infection Control & Hand Hygiene Protocols" className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none" />
                       </div>
 
                       {/* 2. Department / Ward * */}

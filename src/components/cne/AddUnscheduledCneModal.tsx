@@ -16,6 +16,7 @@ import { useToast } from '../Toast';
 import { getCachedOfficers, loadOfficersSingleFlight } from '../../services/officerLoader';
 import { CneDateTimeFields } from './CneDateTimeFields';
 import { WardMultiSelect, WardStaffCounts } from './WardMultiSelect';
+import { SmartCneTopicInput } from './SmartCneTopicInput';
 import { DropdownRetry } from './DropdownRetry';
 import { getCneTypeLabel, validateCneDuration,
   parseCneStartTimestamp
@@ -450,15 +451,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                     Topic / Subject *
                   </label>
-                  <input
-                    type="text"
-                    required
-                    id="unscheduled-topic"
-                    placeholder="e.g. Unscheduled Crash Cart Drill & Rapid Defibrillation"
-                    value={topic}
-                    onChange={(e) => setTopic(e.target.value)}
-                    className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                  />
+                  <SmartCneTopicInput required id="unscheduled-topic" value={topic} onChange={setTopic} placeholder="e.g. Unscheduled Crash Cart Drill & Rapid Defibrillation" className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none" />
                 </div>
 
                 {/* Clinical Ward / Area */}
