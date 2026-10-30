@@ -231,9 +231,7 @@ export interface CNEClinicalBankSearchInfo {
 
 export interface CNEReferenceBankItem {
   questionId: string;
-  resourceTitle: string;
-  driveFileId: string;
-  chapter: string;
+  unit?: string; // Administrative source organization (not displayed in Question Bank cards)
   topic: string;
   subtopic: string;
   questionType: string;
@@ -241,11 +239,10 @@ export interface CNEReferenceBankItem {
   options: {A:string;B:string;C:string;D:string};
   correctOption: string;
   explanation: string;
-  questionPdfPage: string;
-  explanationPdfPage: string;
-  verificationStatus: string;
-  reusePermission: string;
-  imageRequired: string;
+  questionPdfPage?: string; // Administrator-only source location
+  verificationStatus?: string; // Administrator-only clinical review state
+  imageRequired?: string; // Administrator-only image eligibility flag
+  imageTableReference?: string; // Reserved metadata; images are not supported yet
   matchScore: number;
   canImport: boolean;
 }

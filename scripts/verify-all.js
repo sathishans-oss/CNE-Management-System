@@ -50,11 +50,11 @@ function spreadsheet(rows){
       setValues(values){values.forEach((row,i)=>row.forEach((v,j)=>{while(self.rows.length<r+i)self.rows.push([]);self.rows[r-1+i][c-1+j]=v;}));}};}
   };return self;
 }
-const HEADERS=['Question ID','Resource Title','Drive File ID','Unit','Chapter Number','Chapter Title','Topic','Subtopic','Clinical Keywords','Original Question Number','Question Type','Question Text','Option A','Option B','Option C','Option D','Option E','Option F','Correct Answer','Explanation / Rationale','Question PDF Page','Explanation PDF Page','Printed Page Number','Image / Table Required','Image / Table Reference','Clinical Evidence Reference','Verification Status','Reuse Permission','Updated At'];
+const HEADERS=['Question ID','Unit','Topic','Subtopic','Clinical Keywords','Question Type','Question Text','Option A','Option B','Option C','Option D','Option E','Option F','Correct Answer','Explanation / Rationale','Question PDF Page','Image / Table Required','Image / Table Reference','Verification Status','Updated At'];
 const QHEAD=['CNE ID','Question ID','Question Text','Option A','Option B','Option C','Option D','Correct Option','Explanation','Is Finalized','Is Locked','Created At','Created By','Authoritative Source','Status'];
 function question(sourceId='REF-001'){
- const row=Array(29).fill('');
- Object.assign(row,{0:sourceId,1:'Approved Nursing Textbook',2:'drive-filename-123',5:'Peripheral Intravenous Therapy',6:'IV Cannulation',7:'Site selection',8:'venipuncture, cannula insertion',10:'Single best answer',11:'Which peripheral vein is appropriate for IV cannulation in this situation?',12:'Appropriate vein with intact skin',13:'Unassessed vein',14:'Inflamed vein',15:'Previous infiltration site',18:'A',19:'The clinical source explains the safe nursing assessment required for IV site selection.',20:101,21:105,23:'NO',26:'EXTRACTED_PENDING_CLINICAL_REVIEW',27:'Institution Authorized (user-confirmed)'});return row;
+ const row=Array(20).fill('');
+ Object.assign(row,{0:sourceId,1:'Nursing Procedures',2:'IV Cannulation',3:'Site selection',4:'venipuncture, cannula insertion',5:'Single best answer',6:'Which peripheral vein is appropriate for IV cannulation in this situation?',7:'Appropriate vein with intact skin',8:'Unassessed vein',9:'Inflamed vein',10:'Previous infiltration site',13:'A',14:'The clinical source explains the safe nursing assessment required for IV site selection.',15:101,16:'NO',17:'',18:'CLINICALLY_APPROVED'});return row;
 }
 function fixture(){
  const b=spreadsheet([HEADERS,question(),question('REF-002')]);
@@ -96,16 +96,16 @@ const hybridChecks=[
  {name:'Bank search ranks question text and subtopic for all relevant textbook sources',run(){const {ctx}=fixture();const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(result.success&&result.data.length===2&&result.data[0].matchScore>0,'Relevant existing question not found');}},
  {name:'Gastritis excludes generic patient care, team nursing and delegation questions',run(){
     const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Care of gastritis patient',status:'Scheduled'});
-    b.rows[1][6]='Leadership and Delegation';b.rows[1][7]='Team Nursing';b.rows[1][8]='patient care, delegation';b.rows[1][11]='A registered nurse leads nursing personnel in providing care to patients.';
-    b.rows[2][6]='Gastritis';b.rows[2][7]='Gastritis nursing care';b.rows[2][11]='What nursing advice is appropriate for a patient with gastritis?';
+    b.rows[1][2]='Leadership and Delegation';b.rows[1][3]='Team Nursing';b.rows[1][4]='patient care, delegation';b.rows[1][6]='A registered nurse leads nursing personnel in providing care to patients.';
+    b.rows[2][2]='Gastritis';b.rows[2][3]='Gastritis nursing care';b.rows[2][6]='What nursing advice is appropriate for a patient with gastritis?';
     const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
     assert(result.success&&result.data.length===1&&result.data[0].questionId==='REF-002','Generic nursing care was treated as gastritis');
     assert(result.clinicalSearch.concepts[0]==='gastritis'&&result.clinicalSearch.context.includes('nursing care'),'Principal clinical concept or care context missing');
   }},
  {name:'Gastritis verified synonym recognizes gastric mucosal inflammation but not peptic ulcer',run(){
     const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Care of gastritis patient'});
-    b.rows[1][6]='Gastric mucosal inflammation';b.rows[1][11]='How is gastric mucosal inflammation managed?';
-    b.rows[2][6]='Peptic ulcer disease';b.rows[2][11]='What is the nursing management of peptic ulcer disease?';
+    b.rows[1][2]='Gastric mucosal inflammation';b.rows[1][6]='How is gastric mucosal inflammation managed?';
+    b.rows[2][2]='Peptic ulcer disease';b.rows[2][6]='What is the nursing management of peptic ulcer disease?';
     const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
     assert(r.data.length===1&&r.data[0].questionId==='REF-001','Unverified GI disease equivalence accepted');
   }},
@@ -116,16 +116,16 @@ const hybridChecks=[
   }},
  {name:'Multiple independent ABG and VBG concepts match either relevant question, not generic analysis',run(){
     const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'ABG AND VBG ANALYSIS'});
-    b.rows[1][6]='ABG Analysis';b.rows[1][11]='What does an ABG indicate?';
-    b.rows[2][6]='Venous blood gas analysis';b.rows[2][11]='What does a VBG measurement indicate?';
-    b.rows.push(question('REF-003'));b.rows[3][6]='Nursing analysis';b.rows[3][11]='What is the correct general approach to analyzing care?';
+    b.rows[1][2]='ABG Analysis';b.rows[1][6]='What does an ABG indicate?';
+    b.rows[2][2]='Venous blood gas analysis';b.rows[2][6]='What does a VBG measurement indicate?';
+    b.rows.push(question('REF-003'));b.rows[3][2]='Nursing analysis';b.rows[3][6]='What is the correct general approach to analyzing care?';
     const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
     assert(r.data.length===2&&r.clinicalSearch.concepts.length===2,'ABG/VBG combined title failed independent matching');
   }},
  {name:'CAUTI CLABSI VAP bundles recognize three independent infection concepts',run(){
     const {ctx,b}=fixture();const a=ctx.cneHybridClinicalAnalyze_('CAUTI / CLABSI / VAP BUNDLES');
     assert(a.concepts.length===3&&!a.requiresClarification,'Combined infection-prevention bundles lost concepts');
-    b.rows[1][6]='Ventilator associated pneumonia prevention';b.rows[2][6]='Leadership and delegation';b.rows[2][11]='Nursing leadership and team care';
+    b.rows[1][2]='Ventilator associated pneumonia prevention';b.rows[2][2]='Leadership and delegation';b.rows[2][6]='Nursing leadership and team care';
     ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'CAUTI / CLABSI / VAP BUNDLES'});
     const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
     assert(r.data.length===1&&r.data[0].questionId==='REF-001','Multi-concept search accepted unrelated care');
@@ -138,8 +138,8 @@ const hybridChecks=[
   }},
  {name:'High-information unknown diagnoses remain precise clinical phrase anchors',run(){
     const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Nursing management of patients with cholecystitis'});
-    b.rows[1][6]='Cholecystitis';b.rows[1][11]='What interventions are required for cholecystitis?';
-    b.rows[2][6]='Cholelithiasis';b.rows[2][11]='What interventions are required for cholelithiasis?';
+    b.rows[1][2]='Cholecystitis';b.rows[1][6]='What interventions are required for cholecystitis?';
+    b.rows[2][2]='Cholelithiasis';b.rows[2][6]='What interventions are required for cholelithiasis?';
     const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
     assert(r.data.length===1&&r.data[0].questionId==='REF-001','Unknown diagnosis matched neighboring disease');
   }},
@@ -153,7 +153,7 @@ const hybridChecks=[
   }},
  {name:'Educator may correct clinical concept without modifying CNE schedule or quota',run(){
     const {ctx,b,quota}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'GBS'});
-    b.rows[1][6]='Guillain Barre syndrome';b.rows[2][6]='Team nursing care';b.rows[2][11]='Which team provides patient care?';
+    b.rows[1][2]='Guillain Barre syndrome';b.rows[2][2]='Team nursing care';b.rows[2][6]='Which team provides patient care?';
     const before=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
     const after=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123',searchConcept:'Guillain Barre syndrome'},session);
     assert(before.data.length===0&&before.clinicalSearch.requiresClarification&&after.data.length===1&&after.clinicalSearch.manual,'Educator override unavailable');
@@ -165,9 +165,9 @@ const hybridChecks=[
     const noDiagnosis=ctx.cneHybridClinicalAnalyze_('Case presentation of patient SAMPLE');
     assert(noDiagnosis.requiresClarification,'Patient-only case presentation should not search');
   }},
- {name:'Metadata chapter alone cannot admit a question with no clinical topic match',run(){
+ {name:'Unit metadata alone cannot admit a question with no clinical topic match',run(){
     const {ctx,b}=fixture();ctx.getCNEScheduleRecord=id=>({cneId:id,topic:'Care of gastritis patient'});
-    b.rows.forEach((row,i)=>{if(i){row[5]='Gastritis';row[6]='Team Nursing';row[7]='Delegation';row[8]='patient care';row[11]='How does a registered nurse manage a nursing team?';}});
+    b.rows.forEach((row,i)=>{if(i){row[1]='Gastritis';row[2]='Team Nursing';row[3]='Delegation';row[4]='patient care';row[6]='How does a registered nurse manage a nursing team?';}});
     const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
     assert(r.data.length===0,'Broad chapter matched a clinically unrelated question');
   }},
@@ -176,9 +176,135 @@ const hybridChecks=[
     const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123',searchConcept:'patient care'},session);
     assert(r.data.length===0&&r.clinicalSearch.requiresClarification,'Manual override bypassed relevance threshold');
   }},
- {name:'Bank refuses malformed schema rather than guess answer column positions',run(){const {ctx,b}=fixture();b.rows[0][18]='Unknown Answer';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(result.errorCode==='QUESTION_BANK_SCHEMA_INVALID','Bad schema accepted');}},
- {name:'Question Bank records needing review are not importable',run(){const {ctx,b}=fixture();b.rows[1][26]='NEEDS_REVIEW';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(!result.data.find(x=>x.questionId==='REF-001').canImport,'Unreviewed figure item import allowed');}},
- {name:'Question Bank rejects extra options E/F that Post-Test does not support',run(){const {ctx,b}=fixture();b.rows[1][16]='Fifth choice';let result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(!result.data.find(x=>x.questionId==='REF-001').canImport,'Extra option ignored');result=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);assert(result.errorCode==='SOURCE_QUESTION_NEEDS_REVIEW','Forced import succeeded');}},
+ {name:'Bank refuses malformed schema rather than guess answer column positions',run(){const {ctx,b}=fixture();b.rows[0][13]='Unknown Answer';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(result.errorCode==='QUESTION_BANK_SCHEMA_INVALID','Bad schema accepted');}},
+ {name:'Testing-only index schemas use 20/10/11 columns without migration or a script property',run(){
+    const {ctx}=fixture();
+    assert(typeof ctx.cneAdminMigrateIndexSchemas_==='undefined'&&typeof ctx.cneEvidenceSplitReady_==='undefined','Old migration or switch still callable');
+    assert(!/CNE_EVIDENCE_INDEX_V2_READY/.test(gas),'Migration property still present');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===20,'Question index schema is not 20 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'].length===10,'Library schema is not 10 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Material_Index'].length===11,'Uploaded material schema is not 11 columns');
+    assert(ctx.cneIndexProjectRows_([['ID','LOCAL_REFERENCE_LIB','','DOC','Source','Gastritis','Heading',1,'Evidence','Keyword','SUCCESS','Today']],ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'])[0].length===10,'Library projection failed');
+    assert(ctx.cneIndexProjectRows_([['ID','UPLOADED_CNE','CNE-123','DOC','Slides','Gastritis','Heading',1,'Evidence','Keyword','SUCCESS','Today']],ctx.CNE_SHEET_HEADERS['CNE_Material_Index'])[0][1]==='CNE-123','CNE-specific evidence projection failed');
+  }},
+ {name:'Verify Sheets initializes both evidence indexes and Question Index without a migration flag',run(){
+    const {ctx}=fixture(), created={};
+    ctx.setupSecurityProperties=()=>{};
+    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>created[n]||null};
+    ctx.getOrCreateSheet=name=>{
+      if (!created[name]){
+        const headers=ctx.CNE_SHEET_HEADERS[name]||[];
+        created[name]=spreadsheet([headers.slice()]);
+      }
+      return created[name];
+    };
+    const result=ctx.setupAndVerifyCNESheets('ADMIN',null);
+    assert(result.success,'Clean index initialization failed '+result.message);
+    assert(created['CNE_Reference_Index'].rows[0].length===10,'Library headers not initialized');
+    assert(created['CNE_Material_Index'].rows[0].length===11,'CNE material tab not created');
+    assert(created['CNE_Reference_Question_Index'].rows[0].length===20,'Question index tab not created');
+    assert(result.auditReport.some(x=>x.tab==='CNE_Material_Index'),'Material tab missing from verification results');
+  }},
+ {name:'Verify Sheets flags old mixed-index columns without restoring or deleting headers',run(){
+    const {ctx}=fixture(), existing={};
+    const old=['Index ID','Source Type','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At'];
+    existing['CNE_Reference_Index']=spreadsheet([old.slice()]);
+    ctx.setupSecurityProperties=()=>{};
+    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>existing[n]||null};
+    ctx.getOrCreateSheet=name=>existing[name]||(existing[name]=spreadsheet([(ctx.CNE_SHEET_HEADERS[name]||[]).slice()]));
+    const result=ctx.setupAndVerifyCNESheets('ADMIN',null);
+    assert(!result.success&&result.message.includes('CNE_Reference_Index'),'Old schema was not flagged');
+    assert(existing['CNE_Reference_Index'].rows[0].join('|')===old.join('|'),'Verifier modified old index instead of reporting');
+    assert(existing['CNE_Material_Index'].rows[0].length===11,'Material tab not created alongside warning');
+  }},
+ {name:'Index write guard rejects obsolete columns to prevent shifted clinical evidence',run(){
+    const {ctx}=fixture();
+    const old=spreadsheet([['Index ID','Source Type','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At']]);
+    old.getName=()=> 'CNE_Reference_Index';
+    let error='';try{ctx.cneRequireIndexHeaders_(old,ctx.CNE_SHEET_HEADERS['CNE_Reference_Index']);}catch(e){error=e.message;}
+    assert(error.includes('INDEX_SCHEMA_MISMATCH')&&old.rows[0].length===12,'Old index accepted or modified');
+  }},
+ {name:'Separated 10/11-column indexes preserve CNE-only evidence and active library citation IDs',run(){
+    const {ctx}=fixture();
+    const hs={lib:['Index ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At'],mat:['Index ID','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At']};
+    const passage='The nurse selects an appropriate peripheral vein and uses aseptic preparation during intravenous cannulation. '.repeat(3);
+    const lib=spreadsheet([hs.lib,['LIB1','ACTIVE','Nursing Handbook','IV Cannulation','Intravenous Therapy',1,passage,'venous catheter','SUCCESS','2026-10-29']]);
+    const mat=spreadsheet([hs.mat,['MAT1','CNE-123','MATERIAL','Uploaded Clinical Guide','IV Cannulation','Venous Access',1,passage,'intravenous','SUCCESS','2026-10-29'],['OTHER','OTHER-CNE','PRIVATE','Private File','IV Cannulation','Other',1,passage,'intravenous','SUCCESS','2026-10-29']]);
+    const libraryRegistry=spreadsheet([['Resource ID','Source Type','Resource Title','Drive File ID','Author / Organization','License','Version','File Type','Active','Indexed At','Updated At'],['REF','LOCAL_REFERENCE_LIB','Nursing Handbook','ACTIVE','','','','PDF','TRUE','','']]);
+    ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Reference_Index'?lib:n==='CNE_Material_Index'?mat:n==='CNE_Reference_Library'?libraryRegistry:null});
+    ctx.getCNEScheduleRecord=()=>({cneId:'CNE-123',topic:'IV Cannulation'});
+    ctx.checkCNEActionAuthorized=()=>null;
+    ctx.cneReferenceChunkReadable_=()=>true;
+    ctx.calculateTopicRelevanceScore=()=>100;
+    ctx.passesClinicalRelevanceGate=()=>true;
+    ctx.cneAiClinicalPassageScore_=(_t,_v,s)=>s;
+    ctx.cneAiSelectTopicEvidence_=(arr)=>arr.slice(0,12);
+    const result=ctx.retrieveCNETopicEvidence('CNE-123','IV Cannulation',session,{});
+    assert(result.success,'Split-index retrieval failed '+result.errorCode);
+    assert(result.evidence.some(x=>x.indexId==='MAT1'&&x.sourceType==='UPLOADED_CNE'),'Own CNE evidence missing');
+    assert(result.evidence.some(x=>x.indexId==='LIB1'&&x.sourceType==='LOCAL_REFERENCE_LIB'),'Approved library evidence missing');
+    assert(!result.evidence.some(x=>x.indexId==='OTHER'),"Another CNE's private passage leaked");
+  }},
+ {name:'Pending clinical review must never import despite an educator confirmation',run(){
+    const {ctx,b}=fixture();b.rows[1][18]='EXTRACTED_PENDING_CLINICAL_REVIEW';
+    const found=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(found.success&&found.data.length===2&&!found.data[0].canImport,'Pending textbook extraction was importable');
+    const importing=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);
+    assert(importing.errorCode==='SOURCE_QUESTION_NEEDS_REVIEW','Educator bypassed clinical approval');
+  }},
+ {name:'Question Bank popup omits technical status and long textbook source lines',run(){
+    assert(!MODAL.includes('Source status: {q.verificationStatus}')&&!MODAL.includes('PDF page {q.questionPdfPage}'),'Technical provenance still visible to educators');
+    assert(MODAL.includes('Original answer:')&&MODAL.includes('Import as Draft'),'Educator answer review and import disappeared');
+  }},
+ {name:'Question Bank hides source metadata from educators but retains it for admins',run(){
+    const {ctx}=fixture();const publicResult=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(publicResult.success&&publicResult.data.length>0,'No question retrieved');
+    for(const entry of publicResult.data){
+      assert(!Object.prototype.hasOwnProperty.call(entry,'unit') && !Object.prototype.hasOwnProperty.call(entry,'verificationStatus') && !Object.prototype.hasOwnProperty.call(entry,'imageTableReference') && !Object.prototype.hasOwnProperty.call(entry,'questionPdfPage'),'Educator response leaked internal source metadata');
+      assert(entry.question&&entry.correctOption&&entry.explanation,'Clinical review fields were hidden');
+    }
+    const adminResult=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},{employeeId:'ADMIN-1',role:'ADMIN'});
+    assert(adminResult.data[0].verificationStatus&&adminResult.data[0].unit==='Nursing Procedures'&&adminResult.data[0].questionPdfPage==='101','Admin review metadata was discarded');
+  }},
+ {name:'20-column Question Bank with Unit and image reference remains searchable and importable',run(){
+    const {ctx,b,q}=fixture();
+    assert(b.rows[0].length===20&&b.rows[0][1]==='Unit'&&b.rows[0][17]==='Image / Table Reference','Expected 20-column schema with retained metadata');
+    const found=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(found.success&&found.data.length===2&&found.data[0].canImport,'Reduced Question Bank header map failed');
+    const result=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);
+    assert(result.success&&q.rows[1][13]==='Question Bank','Question Bank Draft did not use fixed source label');
+  }},
+ {name:'Removed permission and resource columns do not gate clinically approved Question Bank imports',run(){
+    const {ctx,b,q}=fixture();
+    assert(!b.rows[0].includes('Reuse Permission')&&!b.rows[0].includes('Resource Title')&&!b.rows[0].includes('Drive File ID'),'Unwanted metadata column in new index');
+    const r=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);
+    assert(r.success&&q.rows[1][13]==='Question Bank'&&q.rows[1][12].includes('[QB:REF-001]'),'Source label or internal question ID missing');
+    assert(!Object.hasOwn(ctx.cneHybridBankCandidate_(b.rows[1],ctx.cneHybridBankFields_(b).cols,5),'reusePermission'),'Question Bank still depends on permission');
+  }},
+ {name:'Image/Table Reference remains metadata-only and image questions stay blocked',run(){
+    const {ctx,b}=fixture();b.rows[1][17]='Figure 7.5, panel B';
+    const eligible=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},{employeeId:'ADMIN-1',role:'ADMIN'});
+    assert(eligible.data[0].imageTableReference==='Figure 7.5, panel B'&&eligible.data[0].canImport,'Storing image metadata incorrectly prevented a text-only question');
+    b.rows[1][16]='YES';
+    const blocked=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(!blocked.data.find(x=>x.questionId==='REF-001').canImport,'Unimplemented image question was importable');
+    const direct=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);
+    assert(direct.errorCode==='SOURCE_QUESTION_NEEDS_REVIEW','Backend import bypassed image guard');
+  }},
+ {name:'Unknown image requirement is not treated as text-only safe',run(){
+    const {ctx,b}=fixture();b.rows[1][16]='';
+    const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(!r.data.find(x=>x.questionId==='REF-001').canImport,'Missing image requirement was accepted');
+  }},
+ {name:'Old 25/29-column Question Bank sheets fail safely pending manual cleanup',run(){
+    for(const bad of ['Resource Title','Reuse Permission']){
+      const {ctx,b}=fixture();b.rows[0].splice(1,0,bad);for(let i=1;i<b.rows.length;i++)b.rows[i].splice(1,0,'legacy');
+      const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+      assert(r.errorCode==='QUESTION_BANK_SCHEMA_INVALID','Legacy column '+bad+' was silently accepted');
+    }
+  }},
+ {name:'Question Bank records needing review are not importable',run(){const {ctx,b}=fixture();b.rows[1][18]='NEEDS_REVIEW';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(!result.data.find(x=>x.questionId==='REF-001').canImport,'Unreviewed figure item import allowed');}},
+ {name:'Question Bank rejects extra options E/F that Post-Test does not support',run(){const {ctx,b}=fixture();b.rows[1][11]='Fifth choice';let result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(!result.data.find(x=>x.questionId==='REF-001').canImport,'Extra option ignored');result=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);assert(result.errorCode==='SOURCE_QUESTION_NEEDS_REVIEW','Forced import succeeded');}},
  {name:'Question Bank import requires explicit educator confirmation',run(){const {ctx}=fixture();const result=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001'},session);assert(result.errorCode==='REVIEW_CONFIRMATION_REQUIRED','Import without review accepted');}},
  {name:'Question Bank import persists unfinalized Draft without AI quota usage',run(){const {ctx,q,quota}=fixture();const res=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);assert(res.success && q.rows.length===2 && q.rows[1][9]==='NO' && Number(quota.rows[1][2])===0,'Import marked finalized/used quota');}},
  {name:'Question Bank import prevents duplicate CNE/source question under lock',run(){const {ctx,q}=fixture();const params={cneId:'CNE-123',questionId:'REF-001',confirmReview:true};assert(ctx.handleImportCNEReferenceQuestion(params,session).success,'Initial import failed');const result=ctx.handleImportCNEReferenceQuestion(params,session);assert(result.errorCode==='QUESTION_ALREADY_IMPORTED'&&q.rows.length===2,'Duplicate source question imported');}},
@@ -221,7 +347,7 @@ const hybridChecks=[
     const edited={id:original[1],question:original[2],options:{A:original[3],B:original[4],C:original[5],D:original[6]},correctOption:original[7],explanation:'Educator reviewed this textbook rationale and verified the selection assessment.',authoritativeSource:original[13],isFinalized:false,createdBy:'UNTRUSTED-CLIENT'};
     assert(ctx.handleSaveCNEQuestions({cneId:'CNE-123',questions:[edited]},session).success,'Question Bank draft edit failed');
     assert(q.rows[1][12]===original[12] && q.rows[1][12].includes('[QB:REF-001]'),'Imported textbook attribution was overwritten');
-    assert(q.rows[1][11]===original[11] && q.rows[1][13]===original[13] && q.rows[1][8]===edited.explanation,'Question Bank source or edit was lost');
+    assert(q.rows[1][11]===original[11] && q.rows[1][13]==='Question Bank' && q.rows[1][8]===edited.explanation,'Question Bank source or edit was lost');
   }},
  {name:'Partial recovery does not request fresh PLAN or a new reservation token',run(){assert(gas.includes("['PLANNED','PARTIAL_SUCCESS'].indexOf(current.state)===-1")&&gas.includes('cneHybridRenewReservation_(cneId,reservationToken,session)')&&gas.includes('missingObjectiveIds:phase===\'FINISH\''),'Unsafe second AI reservation or missing-slot recovery');}},
  {name:'UI supports generic Question Bank, Saved Drafts, quota-safe partial recovery and ten question cap',run(){for(const term of ['Institutional Question Bank','Save Drafts','partialAiCount','Resume AI Generation','validFinalized.length>10','Question Bank'])assert(MODAL.includes(term),'UI missing '+term);}},
@@ -12248,6 +12374,12 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   const setup=()=>{
     const ctx={isProbableHeading:(s)=>/^(?:Chapter \d+|Site Selection|Infection Prevention)$/i.test(s),calculateTopicRelevanceScore:(q,c)=>[c.sectionHeading,c.clinicalKeywords,c.topic,c.resourceTitle].join(' ').toLowerCase().includes(q.toLowerCase())?50:0,
       cneAiObjectiveEvidenceScore_:()=>0,cneAiObjectiveSearchTokens_:()=>['intravenous','catheter']};
+    // These semantic-retrieval fixtures intentionally use the legacy 12-field
+    // in-memory view. Exact physical sheet-schema guards are tested separately.
+    ctx.cneRequireIndexHeaders_=()=>{};
+    ctx.CNE_SHEET_HEADERS={'CNE_Reference_Index':['Index ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At'],
+      'CNE_Material_Index':['Index ID','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At']};
+    ctx.CNE_INDEX_CANONICAL_HEADERS_=['Index ID','Source Type','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At'];
     vm.runInNewContext(semantic+'\n'+helper,ctx,{timeout:3000});
     return ctx;
   };
@@ -12354,7 +12486,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
       ['REF-A','Approved','Nursing','ACTIVE','','','','',true]]})};
     ctx.sanitizeCellInput=x=>String(x||'');ctx.getCNEScheduleRecord=()=>({topic:'IV cannulation'});
     ctx.checkCNEActionAuthorized=()=>null;
-    ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Reference_Index'?sh:lib});
+    ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Reference_Index'?sh:n==='CNE_Material_Index'?null:lib});
     ctx.getHeaderMap=x=>x.isLib?{drivefileid:3,active:8}:headers;
     ctx.cneReferenceChunkReadable_=s=>String(s||'').length>=90;
     ctx.passesClinicalRelevanceGate=()=>true;
@@ -12403,7 +12535,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
       ['Source ID','Title','Category','Drive File ID','Author','Year','License','Version','Active'],
       ['REF-A','Approved','Nursing','ACTIVE','','','','',true]]})};
     ctx.sanitizeCellInput=x=>String(x||'');ctx.getCNEScheduleRecord=()=>({topic:'IV cannulation'});
-    ctx.checkCNEActionAuthorized=()=>null;ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Reference_Index'?sh:lib});
+    ctx.checkCNEActionAuthorized=()=>null;ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Reference_Index'?sh:n==='CNE_Material_Index'?null:lib});
     ctx.getHeaderMap=x=>x.isLib?{drivefileid:3,active:8}:headers;
     ctx.cneReferenceChunkReadable_=s=>String(s||'').length>=90;
     ctx.passesClinicalRelevanceGate=()=>true;ctx.cneAiSelectTopicEvidence_=arr=>arr.slice(0,12);
@@ -12785,6 +12917,136 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(gas.includes('cneHybridAdditionalClinicalAbbreviations_()'));
       const parsed=engine.needsTopicClarification('GBS and ALL');
       assert(parsed.some(x=>x.short==='GBS')&&parsed.some(x=>x.short==='ALL'));
+    }],
+    ['Lowercase and mixed-case abbreviations expand as complete tokens only',()=>{
+      assert.equal(engine.expandTopicAbbreviation('gbs in children','GBS','Guillain–Barré syndrome'),'Guillain–Barré syndrome in children');
+      assert.equal(engine.expandTopicAbbreviation('MgSO4 in eclampsia','MGSO4','Magnesium sulfate'),'Magnesium sulfate in eclampsia');
+      assert.equal(engine.expandTopicAbbreviation('GBSGBS and gBs','GBS','Group B Streptococcus'),'GBSGBS and Group B Streptococcus');
+    }],
+    ['An honorific Ms and ordinary ALL ASPECTS are not interpreted as diagnoses',()=>{
+      assert(!engine.needsTopicClarification('Ms Kanta (ANS)').some(a=>a.short==='MS'));
+      assert(!engine.needsTopicClarification('Ms. Anugra').some(a=>a.short==='MS'));
+      assert.equal(engine.suggestCneTopics('Ms').length,0);
+      assert(engine.needsTopicClarification('MS').some(a=>a.short==='MS'));
+      assert(!engine.needsTopicClarification('ALL ASPECTS OF Nursing').some(a=>a.short==='ALL'));
+    }],
+    ['Classification ICD-11 takes precedence over ambiguous ICD chest-drain codes',()=>{
+      for(const text of ['ICD-11','ICD 11']){
+        const recognized=engine.identifyTopicAbbreviations(text);
+        assert(recognized.some(a=>a.short==='ICD-11'));
+        assert(!engine.needsTopicClarification(text).some(a=>a.short==='ICD'));
+      }
+      assert.equal(engine.expandTopicAbbreviation('Workshop on ICD-11 and ICD','ICD','Intercostal chest drain'),
+        'Workshop on ICD-11 and Intercostal chest drain');
+      assert(engine.needsTopicClarification('ICD').some(a=>a.short==='ICD'));
+      assert(engine.expandTopicAbbreviation('ICD 11 workshop','ICD-11','International Classification of Diseases, Eleventh Revision').startsWith('International Classification'));
+    }],
+    ['BSE has two meanings; expanded candidate dictionary recognizes training and skills',()=>{
+      const bse=engine.needsTopicClarification('BSE');
+      assert(bse.some(a=>a.short==='BSE' && a.meanings.length===2));
+      for(const term of ['TURB','PBLS','DASH','POSH','TOT'])assert(engine.identifyTopicAbbreviations(term).some(a=>a.short===term),term);
+      assert(!engine.needsTopicClarification('ICD-11').length);
+      assert(engine.needsTopicClarification('IYD').some(a=>a.short==='IYD'));
+    }],
+    ['Clinical spelling correction preserves sensitivity and context-specific mass casualty',()=>{
+      assert.equal(engine.correctCompletedClinicalWord('Antibiotic sensitiblity ').value,'Antibiotic sensitivity ');
+      assert.equal(engine.correctCompletedClinicalWord('hand hygine ').value,'hand hygiene ');
+      assert.equal(engine.correctCompletedClinicalWord('Patient to strecher ').value,'Patient to stretcher ');
+      assert.equal(engine.correctCompletedClinicalWord('Mass Causality ').value,'Mass casualty ');
+      assert.equal(engine.correctCompletedClinicalWord('Research causality '),null);
+      assert.equal(engine.correctCompletedClinicalWord('Unknown drugname '),null);
+    }],
+    ['Long combined neonatal CNE title separates two conditions and phototherapy skill',()=>{
+      const raw='Topic: Nursing management of Neonatal Hyperbilirubinemia and Rh Incompatibility (Skills: Care of Neonates on Phototherapy)';
+      const parsed=engine.interpretCneTopic(raw);
+      assert.deepEqual(parsed.principalConcepts,['Neonatal Hyperbilirubinemia','Rh Incompatibility']);
+      assert.deepEqual(parsed.practicalSkills,['Phototherapy care for neonates']);
+      assert(parsed.secondaryContext.includes('Nursing management'));
+      assert.equal(parsed.original,raw);
+    }],
+    ['Additional skill-linked CNE examples and clinical compound concepts remain separate',()=>{
+      const heart=engine.interpretCneTopic('Topic: Nursing management of Tetralogy of Fallot (Skills: Management of Patient during Tet Spell)');
+      assert(heart.principalConcepts.some(c=>/tetralogy of fallot/i.test(c)));
+      assert(heart.practicalSkills.some(c=>/tet spell/i.test(c)));
+      const gall=engine.interpretCneTopic('Nursing management of Cholecystitis/ Cholelithiasis (Skill: Surgical Safety & Pre & Post Op. Management)');
+      assert.deepEqual(gall.principalConcepts,['Cholecystitis','Cholelithiasis']);
+      assert.equal(gall.practicalSkills.length,1);
+      const liver=engine.interpretCneTopic('Nursing management of Acute and Chronic Liver Failure (Skills: Fluid & Electrolyte Imbalance)');
+      assert.deepEqual(liver.principalConcepts,['Acute Liver Failure','Chronic Liver Failure']);
+    }],
+    ['Nonclinical programmes and ICD-11 workshops remain legitimate topics',()=>{
+      assert.equal(engine.interpretCneTopic('Soft Skills').category,'professional');
+      assert.equal(engine.interpretCneTopic('Nursing Induction Training program').category,'education');
+      const icd=engine.interpretCneTopic('Workshop to promote the use of ICD 11 in Tertiary care hospitals & medical Colleges');
+      assert.equal(icd.category,'education');
+      assert.deepEqual(icd.principalConcepts,['ICD-11']);
+    }],
+    ['Suspected CKD and TURB mismatch is advisory only, not a validation block',()=>{
+      const raw='Topic: Nursing management Chronic Kidney Disease (Skills: Care of Patient undergoing TURB)';
+      const parsed=engine.interpretCneTopic(raw);
+      assert(parsed.reviewAdvisory && /confirm/i.test(parsed.reviewAdvisory));
+      assert.equal(parsed.original,raw);
+      assert(!engine.interpretCneTopic('Nursing management of Chronic Kidney Disease').reviewAdvisory);
+      assert(input.includes('You may keep the title unchanged'));
+    }],
+    ['Historical and additional CNE topic suggestions share the same fast local input',()=>{
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.additionalTopics>=50);
+      assert(engine.suggestCneTopics('Care of gastrit').some(s=>/gastritis/i.test(s.text)));
+      assert(engine.suggestCneTopics('Nursing management of neonatal hyper').some(s=>/hyperbilirubinemia/i.test(s.text)));
+      assert(engine.suggestCneTopics('Soft skill').some(s=>/soft skills/i.test(s.text)));
+      assert(input.includes('interpretCneTopic(value)'));
+      assert(input.includes('Practical skill:'));
+    }],
+    ['Regression: ICD-10 and ICD-11 remain independent of ambiguous ICD',()=>{
+      for (const code of ['ICD-10','ICD-11']) {
+        const recognized=engine.identifyTopicAbbreviations('Classification '+code);
+        assert(recognized.some(item=>item.short===code),code+' not recognized');
+        assert(!engine.needsTopicClarification('Classification '+code).some(item=>item.short==='ICD'),code+' misidentified as ICD');
+      }
+      assert.equal(engine.expandTopicAbbreviation('ICD-10 classification and ICD','ICD','Intercostal chest drain'),
+        'ICD-10 classification and Intercostal chest drain');
+      assert.equal(engine.expandTopicAbbreviation('ICD-11 classification and ICD','ICD','Intercostal chest drain'),
+        'ICD-11 classification and Intercostal chest drain');
+    }],
+    ['Regression: omitted common spelling corrections are restored',()=>{
+      for (const [before,after] of [
+        ['neontal ','neonatal '],['pneumona ','pneumonia '],['managemnet ','management '],
+        ['Neontal ','Neonatal ']
+      ]) assert.equal(engine.correctCompletedClinicalWord(before)?.value,after,before+' correction missing');
+      assert.equal(engine.correctCompletedClinicalWord('anesthesia '),null,'Correct spelling should never be rewritten');
+    }],
+    ['Regression: skill labels are parsed with or without parentheses',()=>{
+      for (const title of [
+        'Nursing management of Ulcerative Colitis Skill: Stoma Care',
+        'Nursing management of Ulcerative Colitis (Skill: Stoma Care)',
+        'Nursing management of Ulcerative Colitis Skills: Stoma Care'
+      ]) {
+        const parsed=engine.interpretCneTopic(title);
+        assert(parsed.principalConcepts.some(c=>/ulcerative colitis/i.test(c)),'Principal clinical subject missing');
+        assert(parsed.practicalSkills.some(c=>/stoma care/i.test(c)),'Practical skill not separated');
+        assert.equal(parsed.original,title,'Educator wording changed');
+      }
+    }],
+    ['Regression: approved clinical dictionary and topic suggestions are retained',()=>{
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.abbreviations>=586,'ICD-10/dictionary entry was lost');
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.additionalTopics>=61,'Recent CNE topic suggestions were dropped');
+      assert(engine.suggestCneTopics('Nursing management of neonatal hyper').some(s=>/hyperbilirubinemia/i.test(s.text)),
+        'Practical-skill-linked title not suggested');
+    }],
+    ['Regression: Question Bank cards do not expose obsolete source fields or image status',()=>{
+      const modal=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+      for (const forbidden of ['q.resourceTitle','q.chapter','q.imageRequired','Source figure required:',
+        'Review the original answer, rationale and textbook source']) {
+        assert(!modal.includes(forbidden),'Deprecated or educator-hidden Question Bank field reintroduced: '+forbidden);
+      }
+      assert(modal.includes('Original answer:') && modal.includes('Rationale:'),'Question/answer educator review was removed');
+      assert(modal.includes('Institutional Question Bank'),'Question Bank tab removed');
+    }],
+    ['Regression: topic input shows main topic and practical skill without altering saved title',()=>{
+      assert(input.includes('Topic:</strong>') && input.includes('Practical skill:</strong>'),
+        'Clinical topic and skill display regressed');
+      assert(input.includes('Suggested interpretation only; your complete topic is saved as entered.'),
+        'Educator control notice lost');
     }],
     ['Suggestions stay local and do not transmit topic data to external search services',()=>{
       assert(!input.includes('fetch(') && !input.includes('google.com/search') && !input.includes('ApiService.'));

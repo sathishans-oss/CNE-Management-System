@@ -382,7 +382,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       error('Save or discard edits in My Questions before importing. Your changes were not lost.');
       return;
     }
-    if(!window.confirm(`Review the original answer and rationale for ${q.questionId}. Import as an unfinalized Draft for educator clinical review?`))return;
+    if(!window.confirm(`Review the answer and rationale? Import as an unfinalized Draft for educator clinical review?`))return;
     setImportingBankId(q.questionId);
     try{
       const result=await ApiService.importCNEReferenceQuestion(cneId,q.questionId);
@@ -957,7 +957,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
               <div>
                 <h4 className="text-sm font-bold text-indigo-950">Institutional Question Bank</h4>
-                <p className="text-slate-600 mt-1">Review the original answer, rationale and textbook source before importing a Draft.</p>
+                <p className="text-slate-600 mt-1">Review the question, correct answer and rationale before importing as a Draft.</p>
               </div>
               <button type="button" onClick={() => void searchBank()} disabled={bankLoading || !!importingBankId || !canModify}
                 className="px-3 py-1.5 rounded-lg border border-indigo-300 bg-white font-bold text-indigo-800 disabled:opacity-50">
@@ -997,11 +997,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               const sourceId = 'q_bank_' + q.questionId.replace(/[^a-zA-Z0-9_-]/g, '_');
               const alreadyImported = questions.some(item => item.id === sourceId || String(item.id || '').startsWith(sourceId + '__v'));
               return <div key={q.questionId} className="border border-indigo-100 bg-white rounded-xl p-4 space-y-3 shadow-xs">
-                <div className="text-slate-600">{q.resourceTitle} · {q.questionId} · {q.chapter} · PDF page {q.questionPdfPage}</div>
                 <div className="font-semibold text-slate-900 text-sm">{q.question}</div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{(['A','B','C','D'] as const).map(key => <div key={key}>{key}. {q.options[key]}</div>)}</div>
                 <div><strong>Original answer:</strong> {q.correctOption} · <strong>Rationale:</strong> {q.explanation}</div>
-                <div className="text-slate-500">Source status: {q.verificationStatus} · {q.questionType} · Source figure required: {q.imageRequired}</div>
                 {alreadyImported ? (
                   <span className="inline-flex items-center gap-1 text-emerald-700 font-bold"><CheckCircle2 className="w-4 h-4"/> Imported · Review under My Questions</span>
                 ) : (
@@ -1011,7 +1009,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                     {importingBankId === q.questionId ? 'Importing…' : 'Import as Draft'}
                   </button>
                 )}
-                {!q.canImport && <span className="ml-2 text-amber-700">Needs source-format review before import.</span>}
+                {!q.canImport && <span className="ml-2 text-amber-700">Not available for import. Contact the Question Bank administrator for review.</span>}
               </div>;
             })}
           </div>

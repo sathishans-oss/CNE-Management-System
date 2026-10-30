@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, RotateCcw, Search, ShieldAlert } from 'lucide-react';
-import { correctCompletedClinicalWord, expandTopicAbbreviation, identifyTopicAbbreviations, needsTopicClarification, suggestCneTopics } from '../../data/cneTopicEngine';
+import { correctCompletedClinicalWord, expandTopicAbbreviation, identifyTopicAbbreviations, interpretCneTopic, needsTopicClarification, suggestCneTopics } from '../../data/cneTopicEngine';
 
 interface Props {
   value: string;
@@ -29,6 +29,7 @@ export const SmartCneTopicInput: React.FC<Props> = ({ value, onChange, id, place
   const matches=useMemo(()=>suggestCneTopics(value,5),[value]);
   const terms=useMemo(()=>identifyTopicAbbreviations(value),[value]);
   const clarify=useMemo(()=>needsTopicClarification(value),[value]);
+  const interpretation=useMemo(()=>interpretCneTopic(value),[value]);
   useEffect(()=>{
     if (!fieldRef.current)return;
     fieldRef.current.setCustomValidity(clarify.length ? `Clarify ${clarify.map(t=>t.short).join(', ')} using its full clinical term before saving.` : '');
@@ -85,5 +86,11 @@ export const SmartCneTopicInput: React.FC<Props> = ({ value, onChange, id, place
       </div>)}
     </div>}
     {terms.length>0&&!clarify.length && <div className="mt-1 text-[10px] text-slate-500">Recognized: {terms.slice(0,3).map(t=>`${t.short} (${t.meanings[0]})`).join(' · ')}. You may keep standard abbreviations or select a full title.</div>}
+    {interpretation.practicalSkills.length>0 && <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-600" aria-live="polite">
+      <div><strong>Topic:</strong> {interpretation.principalConcepts.join(' · ')}</div>
+      <div><strong>Practical skill:</strong> {interpretation.practicalSkills.join(' · ')}</div>
+      <div className="text-[10px]">Suggested interpretation only; your complete topic is saved as entered.</div>
+    </div>}
+    {interpretation.reviewAdvisory && <p className="mt-1 text-[11px] text-amber-700" role="status">{interpretation.reviewAdvisory} You may keep the title unchanged.</p>}
   </div>;
 };

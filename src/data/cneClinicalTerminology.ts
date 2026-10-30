@@ -13,6 +13,17 @@ export interface ClinicalAbbreviation {
   safetyNote: string;
 }
 export const CLINICAL_ABBREVIATIONS: ClinicalAbbreviation[] = [
+  // Additional institution-relevant candidates; any ambiguous term requires educator clarification.
+  { short: 'ICD-11', meanings: ['International Classification of Diseases, Eleventh Revision'], category: 'Health information', status: 'recognized', safetyNote: '' },
+  { short: 'ICD-10', meanings: ['International Classification of Diseases, Tenth Revision'], category: 'Health information', status: 'recognized', safetyNote: '' },
+  { short: 'BSE', meanings: ['Breast self-examination', 'Bovine spongiform encephalopathy'], category: 'Oncology, Medicine', status: 'ambiguous', safetyNote: 'Select the intended meaning for this CNE topic.' },
+  { short: 'TURB', meanings: ['Transurethral resection of bladder tumour'], category: 'Urology', status: 'recognized', safetyNote: 'TURBT is also widely used; confirm local preferred terminology.' },
+  { short: 'PBLS', meanings: ['Pediatric basic life support'], category: 'Pediatrics', status: 'recognized', safetyNote: '' },
+  { short: 'DASH', meanings: ['Dietary Approaches to Stop Hypertension'], category: 'Nutrition', status: 'recognized', safetyNote: '' },
+  { short: 'POSH', meanings: ['Prevention of Sexual Harassment'], category: 'Institutional training', status: 'recognized', safetyNote: '' },
+  { short: 'TOT', meanings: ['Training of trainers'], category: 'Education', status: 'recognized', safetyNote: '' },
+  { short: 'IYD', meanings: ['International Yoga Day'], category: 'Institutional training', status: 'ambiguous', safetyNote: 'Confirm that International Yoga Day is the intended meaning.' },
+
   {
     "short": "5S",
     "meanings": [
