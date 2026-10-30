@@ -12851,7 +12851,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     const tsc=existsSync(join(ROOT_DIR,'node_modules','.bin',process.platform==='win32'?'tsc.cmd':'tsc'))
       ?join(ROOT_DIR,'node_modules','.bin',process.platform==='win32'?'tsc.cmd':'tsc'):'tsc';
     execFileSync(tsc,['--target','ES2020','--module','commonjs','--outDir',tmp,
-      join(sourceDir,'cneClinicalTerminology.ts'),join(sourceDir,'commonClinicalTopics.ts'),join(sourceDir,'cneTopicEngine.ts')],{stdio:'pipe'});
+      join(sourceDir,'cneClinicalTerminology.ts'),join(sourceDir,'commonClinicalTopics.ts'),
+      join(sourceDir,'historicalCneTopics2026.ts'),join(sourceDir,'cneTopicEngine.ts')],{stdio:'pipe'});
     engine=createRequire(SCRIPT_URL)(join(tmp,'cneTopicEngine.js'));
   } catch(err) {
     console.error('Smart topic engine compile failed:',String(err.stderr||err));
@@ -12862,6 +12863,44 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(engine.SMART_TOPIC_DICTIONARY_STATS.abbreviations>=500,'Insufficient abbreviation coverage');
       assert(engine.SMART_TOPIC_DICTIONARY_STATS.previousTopics>=800,'Historical topic coverage absent');
       for(const name of ['Rishabh Maindola','Himanshi','Shivam','Annamaria','Reyansh','Shankar','Ansh'])assert(!dictionary.includes(name),'Patient identity leaked to suggestion library');
+    }],
+    ['Corrected historical titles are integrated without replacing the original topic candidates',()=>{
+      assert.equal(engine.SMART_TOPIC_DICTIONARY_STATS.correctedHistoricalTopics,1054,
+        'Corrected historical topic file is incomplete');
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.previousTopics>=800,
+        'Earlier topic candidates were lost');
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.additionalTopics>=61,
+        'Earlier skill-linked topic examples were lost');
+    }],
+    ['Corrected medical titles appear ahead of older variants while typing',()=>{
+      for(const [partial,term] of [
+        ['Foley Catheter','Foley Catheterization'],
+        ['Acute Coronary Synd','Acute Coronary Syndrome'],
+        ['Glasgow Coma Scale','Glasgow Coma Scale'],
+        ['Nursing Management of Patients with Whipple','Whipple']
+      ]) {
+        const suggestions=engine.suggestCneTopics(partial,5);
+        assert(suggestions.some(item=>item.source==='Corrected Previous CNE' && item.text.includes(term)),
+          'Missing corrected historical suggestion for '+partial);
+        assert(suggestions.length<=5,'Suggestion limit exceeded');
+      }
+    }],
+    ['Historical suggestion index is de-identified and remains local to the browser',()=>{
+      const source=readFileSync(join(sourceDir,'historicalCneTopics2026.ts'),'utf8');
+      for(const name of ['Rishabh Maindola','Himanshi','Shivam','Annamaria','Reyansh','Shankar','Ansh']) {
+        assert(!source.includes(name),'Patient name leaked into corrected suggestions');
+      }
+      assert(!source.includes('fetch('),'Topic list must not call external APIs');
+      assert(!source.includes('NOT CONDUCTED'),'Non-topic entry was retained');
+      assert.equal(engine.suggestCneTopics('A').length,0);
+    }],
+    ['Topic suggestions do not change saved wording or CNE scheduling forms',()=>{
+      const raw='Nursing care of neonatal hyperbilirubinemia';
+      const before=raw;
+      engine.suggestCneTopics(raw);
+      assert.equal(raw,before);
+      assert.equal(engine.interpretCneTopic(raw).original,before);
+      assert(input.includes('onChange(next)'),'Educator must accept suggestions explicitly');
     }],
     ['Gastritis and future clinical terms are suggested while typing',()=>{
       assert(engine.suggestCneTopics('Care of gastrit').some(r=>/gastritis/i.test(r.text)));

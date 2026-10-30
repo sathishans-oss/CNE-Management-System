@@ -1,5 +1,6 @@
 import { CLINICAL_ABBREVIATIONS, HISTORICAL_CNE_TITLES, ClinicalAbbreviation } from './cneClinicalTerminology';
 import { COMMON_CLINICAL_TERMS, ADDITIONAL_CNE_TOPIC_SUGGESTIONS } from './commonClinicalTopics';
+import { CLEANED_HISTORICAL_CNE_TOPICS } from './historicalCneTopics2026';
 
 export interface TopicSuggestion {
   text: string;
@@ -22,6 +23,7 @@ export interface CneTopicInterpretation {
 export const SMART_TOPIC_DICTIONARY_STATS = {
   abbreviations: CLINICAL_ABBREVIATIONS.length,
   previousTopics: HISTORICAL_CNE_TITLES.length,
+  correctedHistoricalTopics: CLEANED_HISTORICAL_CNE_TOPICS.length,
   commonTerms: COMMON_CLINICAL_TERMS.length,
   additionalTopics: ADDITIONAL_CNE_TOPIC_SUGGESTIONS.length
 };
@@ -234,6 +236,14 @@ export function suggestCneTopics(rawQuery: string, limit = 5): TopicSuggestion[]
     if(lower.startsWith(q)) add(term,'Clinical Term',100);
     else if(lower.includes(' '+q)) add(term,'Clinical Term',85);
     else if(lower.includes(q)) add(term,'Clinical Term',65);
+  }
+  // Prefer reviewed, de-identified historical titles over older raw suggestions.
+  // The legacy candidate sources remain available for uncommon and future topics.
+  for (const title of CLEANED_HISTORICAL_CNE_TOPICS) {
+    const lower=title.toLowerCase();
+    if (lower.startsWith(q)) add(title,'Corrected Previous CNE',125);
+    else if (lower.includes(' '+q)) add(title,'Corrected Previous CNE',90);
+    else if (lower.includes(q)) add(title,'Corrected Previous CNE',68);
   }
   for(const title of ADDITIONAL_CNE_TOPIC_SUGGESTIONS) {
     const lower=title.toLowerCase();
