@@ -828,8 +828,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
   };
 
+  // The only exception to the normal closed-CNE edit guard is ADMIN + Completed.
+  // All operational actions (questions, attendance, QR, cancellation) remain locked.
+  const canEditCneRecord = (cls: CNERecord) =>
+    canManageLifecycle(cls) && !isCneCanceled(cls) && (!isCneCompleted(cls) || isAdmin);
+
   const handleOpenEditModal = (cls: CNERecord) => {
-    if (!canManageLifecycle(cls) || isCneClosed(cls)) { error('This CNE cannot be edited.'); return; }
+    if (!canEditCneRecord(cls)) { error('This CNE cannot be edited.'); return; }
     setEditingCne(cls);
     setEditTopic(cls.topic || '');
     setEditArea(cls.area || '');
@@ -888,9 +893,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const handleUpdateClassSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingCne || editSubmittingRef.current || isEditSubmitting) return;
-    if (!canManageLifecycle(editingCne) || isCneClosed(editingCne)) { error('This CNE cannot be edited.'); return; }
+    if (!canEditCneRecord(editingCne)) { error('This CNE cannot be edited.'); return; }
 
-    if ((editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && (!editWards.length || !editArea.trim())) {
+    if (!isCneCompleted(editingCne) && (editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && (!editWards.length || !editArea.trim())) {
       error('Select at least one participating ward and an authorized Primary Ward.');
       return;
     }
@@ -953,8 +958,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       const targetCneId = editingCne.cneId || editingCne.classId || '';
       const res = await ApiService.updateCNE(targetCneId, {
         topic: editTopic.trim(),
-        area: editArea,
-        ...((editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && editWardChanged ? { participatingWards: editWards } : {}),
+        ...(!isCneCompleted(editingCne) ? { area: editArea } : {}),
+        ...(!isCneCompleted(editingCne) && (editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && editWardChanged ? { participatingWards: editWards } : {}),
         cneType: editCneType,
         date: editDate,
         toDate: editToDate,
@@ -965,12 +970,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         externalResourcePersons: editExternalRpList,
         modeOfTeaching: editMode,
         description: editDescription.trim(),
-        maxParticipants: editMaxParticipants,
+        ...(!isCneCompleted(editingCne) ? { maxParticipants: editMaxParticipants } : {}),
         adminRemarks: editAdminRemarks.trim()
       } as any);
 
       if (res.success) {
-        success('Upcoming CNE workshop updated successfully.', 'CNE Updated');
+        success(isCneCompleted(editingCne) ? 'Completed CNE details corrected successfully.' : 'Upcoming CNE workshop updated successfully.', 'CNE Updated');
         const updatedRecord: CNERecord = {
           ...editingCne,
           cneId: targetCneId,
@@ -1814,7 +1819,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                     </span>
                   </div>
                   <p className="text-xs text-slate-500">
-                    Update workshop curriculum and resource persons. The CNE ID is permanently immutable.
+                    {isCneCompleted(editingCne)
+                      ? 'Admin correction of a Completed CNE. Status, wards, attendance, questions and results remain locked.'
+                      : 'Update workshop curriculum and resource persons. The CNE ID is permanently immutable.'}
                   </p>
                 </div>
               </div>
@@ -1891,11 +1898,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                             setEditArea(primary);
                             setEditWardChanged(true);
                           }}
-                          disabled={isEditSubmitting}
+                          disabled={isEditSubmitting || (editingCne ? isCneCompleted(editingCne) : false)}
                         />
                       ) : (
                         <select
                         required
+                        disabled={Boolean(editingCne && isCneCompleted(editingCne))}
                         value={editArea}
                         onChange={(e) => setEditArea(e.target.value)}
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
@@ -2003,6 +2011,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                             min={1}
                             max={500}
                             value={editMaxParticipants}
+                            disabled={Boolean(editingCne && isCneCompleted(editingCne))}
                             onChange={(e) => setEditMaxParticipants(Number(e.target.value))}
                             className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
                           />

@@ -5281,13 +5281,14 @@ function handleUpdateCNE(params, session) {
   var authErr = checkCNEAuthorized(session, record.area, record.cneType);
   if (authErr) return authErr;
 
-  // Closed CNEs are immutable through Edit CNE.
+  // Completed CNE historical details may be corrected by ADMIN only.
+  // This does not reopen the CNE, permit status changes, or unlock participants/tests.
   var normalizedRecordStatus = normalizeCNEStatus(record.status);
-  if (normalizeCNEStatus(record.status) === 'Completed') {
+  if (normalizedRecordStatus === 'Completed' && String(session.role || '').toUpperCase() !== 'ADMIN') {
     return {
       success: false,
-      errorCode: 'CNE_ALREADY_FINALIZED',
-      message: 'This CNE has already been finalized. Details cannot be modified.'
+      errorCode: 'COMPLETED_CNE_ADMIN_ONLY',
+      message: 'Only an administrator can edit details of a Completed CNE.'
     };
   }
   if (normalizedRecordStatus === 'Canceled') {
@@ -5371,12 +5372,23 @@ function handleUpdateCNE(params, session) {
     if (liveUpdateAuthErr) return liveUpdateAuthErr;
 
     var liveUpdateStatus = normalizeCNEStatus(liveUpdateRecord.status);
-    if (liveUpdateStatus === 'Completed') {
+    // Authoritative role and lifecycle are checked again after acquiring the lock.
+    if (liveUpdateStatus === 'Completed' && String(session.role || '').toUpperCase() !== 'ADMIN') {
       return {
         success: false,
-        errorCode: 'CNE_ALREADY_FINALIZED',
-        message: 'This CNE has already been finalized. Details cannot be modified.'
+        errorCode: 'COMPLETED_CNE_ADMIN_ONLY',
+        message: 'Only an administrator can edit details of a Completed CNE.'
       };
+    }
+    // Do not modify participant coverage, recorded staff or maximum capacity after finalization.
+    if (liveUpdateStatus === 'Completed') {
+      if (params.participatingWards !== undefined || params.staffEmpIds !== undefined ||
+          params.staffEmpId !== undefined || params.externalStaffParticipants !== undefined ||
+          params.maxParticipants !== undefined ||
+          (params.area !== undefined && String(params.area || '').trim().toUpperCase() !== String(liveUpdateRecord.area || '').trim().toUpperCase())) {
+        return { success: false, errorCode: 'COMPLETED_CNE_COVERAGE_LOCKED',
+          message: 'Participating wards, department, attendance and capacity cannot be changed after CNE completion.' };
+      }
     }
     if (liveUpdateStatus === 'Canceled') {
       return {
@@ -5513,8 +5525,12 @@ function handleUpdateCNE(params, session) {
             return { success: false, message: 'To Date & Time must be equal to or later than From Date & Time.' };
           }
           var editFromDay = getCNECanonicalDay(effDate);
-          if (!editFromDay || editFromDay < getIndiaTodayString()) {
+          if (!editFromDay || (liveUpdateStatus !== 'Completed' && editFromDay < getIndiaTodayString())) {
             return { success: false, message: 'Scheduled CNE date cannot be in the past.' };
+          }
+          if (liveUpdateStatus === 'Completed' && getCNECanonicalDay(effToDate) > getIndiaTodayString()) {
+            return { success: false, errorCode: 'COMPLETED_CNE_FUTURE_DATE',
+              message: 'Completed CNE dates may be corrected only to dates up to today.' };
           }
         }
 
@@ -5689,11 +5705,20 @@ function handleUpdateCNE(params, session) {
           setColVal('adminremarks', 15, sanitizeCellInput(params.adminRemarks || params.remarks || ''));
         }
 
+        var changedFields = [];
         if (rowDirty) {
-          sheet.getRange(rowNum, 1, 1, updatedRow.length).setValues([updatedRow]);
+          for (var changedIndex = 0; changedIndex < updatedRow.length; changedIndex++) {
+            if (String(updatedRow[changedIndex] == null ? '' : updatedRow[changedIndex]) !==
+                String(data[r][changedIndex] == null ? '' : data[r][changedIndex])) {
+              changedFields.push(String(data[0][changedIndex] || 'Column ' + (changedIndex + 1)));
+            }
+          }
+          if (changedFields.length) sheet.getRange(rowNum, 1, 1, updatedRow.length).setValues([updatedRow]);
         }
 
-        logAuditAction('UPDATE_CNE', session.employeeId, 'Updated CNE ID: ' + cneId, 'SUCCESS');
+        logAuditAction(liveUpdateStatus === 'Completed' ? 'ADMIN_CORRECT_COMPLETED_CNE' : 'UPDATE_CNE',
+          session.employeeId, 'Updated CNE ID: ' + cneId + '; changed fields: ' + (changedFields.join(', ') || 'none') +
+          '; lifecycle status preserved: ' + liveUpdateStatus, 'SUCCESS');
         return { success: true, message: 'CNE record updated successfully.',
           data: editedCoverage ? { participatingWards: editedCoverage.wards, coverageAreasSnapshot: editedCoverage.coverageAreasSnapshot, totalAllottedStaff: editedCoverage.totalAllottedStaff } : null };
       }

@@ -972,7 +972,7 @@ const suites = [
     originalFilename: "verify-security-and-access.js",
     mode: "module",
     expectedChecks: 30,
-    sha256: "f622e04432a18a17144a643b675e4c3e3bb21eb1f162d93916184d648e968cb8",
+    sha256: "4b6729d2e3894bd747875fb5830a52598e8ac06e21a1843c1d2e1f685c357f41",
     source: `/**
  * Security & Access Verification Suite
  *
@@ -1603,17 +1603,19 @@ runTest('Cancel uses dedicated cancellation workflow', () => {
   );
 });
 
-runTest('Finalized CNE cannot be edited or have mutations', () => {
-  // 1. Edit CNE locked
+runTest('Completed CNE edits are admin-only; participant, material and question mutations remain locked', () => {
+  // 1. Completed CNE metadata edits require ADMIN before and after acquiring the lock.
   const updateSection = codeGs.substring(
     codeGs.indexOf('function handleUpdateCNE'),
     codeGs.indexOf('function parseDurationToSeconds')
   );
-  assert.ok(
-    updateSection.includes("normalizeCNEStatus(record.status) === 'Completed'") &&
-    updateSection.includes('CNE_ALREADY_FINALIZED'),
-    'handleUpdateCNE must reject edits on Completed CNE with CNE_ALREADY_FINALIZED'
-  );
+  assert.ok(updateSection.includes('COMPLETED_CNE_ADMIN_ONLY') &&
+    updateSection.includes("liveUpdateStatus === 'Completed' && String(session.role || '').toUpperCase() !== 'ADMIN'"),
+    'handleUpdateCNE must restrict completed edits to ADMIN after locking');
+  assert.ok(updateSection.includes('COMPLETED_CNE_COVERAGE_LOCKED') &&
+    updateSection.includes('COMPLETED_CNE_FUTURE_DATE') &&
+    updateSection.includes('ADMIN_CORRECT_COMPLETED_CNE'),
+    'Completed edit must preserve coverage, historical dates and admin audit trail');
 
   // 2. Participant mutations locked
   const manualPartSection = codeGs.substring(
@@ -12770,7 +12772,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     ['Manage CNE is a single permission-guarded dropdown, not three header buttons', () => {
       const header = modal.slice(modal.indexOf('{/* Compact Header:'), modal.indexOf('{/* Scrollable Content Body'));
       assert(header.includes('Manage CNE') && header.includes('aria-haspopup="menu"') && header.includes('role="menu"'));
-      assert(header.includes('showManageMenu &&') && header.includes('canEditOrCancel &&') && header.includes('showDeleteButton && onDelete &&'));
+      assert(header.includes('showManageMenu &&') && header.includes('canEditCne &&') && header.includes('canCancelCne &&') && header.includes('showDeleteButton && onDelete &&'));
       assert(header.includes('setIsManageMenuOpen(false); onEdit(cne)') && header.includes('setIsManageMenuOpen(false); onCancel(cne)') && header.includes('setIsManageMenuOpen(false); onDelete(cne)'));
       assert(!header.includes('title="Edit CNE workshop details"') && !header.includes('title="Cancel CNE programme"'));
     }],
@@ -13060,6 +13062,122 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     catch(err){console.error('✗ '+name+': '+err.message);}
   }
   rmSync(tmp,{recursive:true,force:true});
+}
+
+
+// Completed CNE administrator correction: exercise the actual Apps Script update
+// function with a mock schedule row and fresh post-lock role, not string-only assertions.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const gas = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const start = gas.indexOf('function handleUpdateCNE(');
+  const end = gas.indexOf('function parseDurationToSeconds(', start);
+  assert(start >= 0 && end > start, 'Completed CNE update handler not found');
+  const handler = gas.slice(start, end);
+  const schedule = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
+  const details = readFileSync(join(ROOT_DIR, 'src/components/cne/CneDetailsModal.tsx'), 'utf8');
+  function buildCompletedHarness(status='Completed', freshRole='ADMIN') {
+    const headers = ['CNE ID','Topic','Area','From Date','To Date','Duration',
+      'Resource Person Emp Id','Mode of Teaching','Description','Admin Remarks','Status','Type of CNE',
+      'Staff Emp ID','Staff Count','Max Participants','Participating Wards'];
+    const record = ['CNE-COMP-001','Original Topic','ICU','2026-05-05T09:00','2026-05-05T10:30',
+      '01:30:00','RP001','Lecture','Original objectives','Original remarks',status,'CENTRAL',
+      'EMP001',1,40,'["ICU"]'];
+    const rows = [headers, record];
+    const events = {writes:0,audit:[],locks:0,validation:0};
+    const sheet = {
+      getDataRange:()=>({getValues:()=>rows.map(row=>row.slice())}),
+      getRange:(r,c,n,w)=>({setValues:(values)=>{events.writes++;rows[r-1]=values[0].slice();}})
+    };
+    const context = {
+      Date, String, Array, Math, Number,
+      normalizeCNEStatus:v=>v,
+      normalizeCNEType:v=>v,
+      getCNEScheduleRecord:()=>({cneId:record[0],area:rows[1][2],status:rows[1][10],
+        cneType:'CENTRAL',participatingWards:['ICU'],staffCount:1,internalAttendanceCount:1}),
+      checkCNEAuthorized:()=>null,
+      getSpreadsheet:()=>({getSheetByName:name=>name==='CNE Schedule'?sheet:null}),
+      getHeaderMap:()=>Object.fromEntries(headers.map((x,i)=>[x.toLowerCase().replace(/[^a-z0-9]/g,''),i])),
+      LockService:{getScriptLock:()=>({waitLock:()=>{events.locks++;},releaseLock:()=>{}})},
+      refreshMutationSession:()=>({success:true,session:{employeeId:'STAFF001',role:freshRole}}),
+      parseCneStartTimestamp_:v=>Date.parse(String(v)),
+      getCNECanonicalDay:v=>String(v).slice(0,10),
+      getIndiaTodayString:()=> '2026-10-30',
+      validateCneDuration:(duration,from,to)=>{events.validation++;return {isValid:Boolean(duration)&&Date.parse(from)<=Date.parse(to)};},
+      logAuditAction:(...args)=>events.audit.push(args),
+      sanitizeCellInput:v=>String(v||''),
+      requireActiveArea_:()=>null,
+      requireActiveTeachingMode_:()=>null,
+      _executionRosterData:null,
+      _inMemoryOfficerMap:null
+    };
+    vm.createContext(context);
+    vm.runInContext(handler,context,{timeout:3000});
+    return {update:(patch,role='ADMIN')=>context.handleUpdateCNE({cneId:'CNE-COMP-001',...patch},{employeeId:'STAFF001',role}),events,rows};
+  }
+  const checks = [
+    ['Completed CNE admin may correct topic and remarks without altering status or attendance',()=>{
+      const h=buildCompletedHarness();
+      const r=h.update({topic:'Corrected Topic',adminRemarks:'Verified update'});
+      assert(r.success,r.message);assert.equal(h.rows[1][1],'Corrected Topic');
+      assert.equal(h.rows[1][9],'Verified update');assert.equal(h.rows[1][10],'Completed');
+      assert.equal(h.rows[1][12],'EMP001');assert.equal(h.rows[1][13],1);
+      assert(h.events.audit.some(x=>x[0]==='ADMIN_CORRECT_COMPLETED_CNE'&&x[2].includes('Topic')));
+    }],
+    ['Non-admin Completed CNE edit is rejected before any sheet write',()=>{
+      const h=buildCompletedHarness('Completed','AREA_INCHARGE');
+      const r=h.update({topic:'Illegal edit'},'AREA_INCHARGE');
+      assert.equal(r.errorCode,'COMPLETED_CNE_ADMIN_ONLY');assert.equal(h.events.writes,0);
+    }],
+    ['Revoked admin role during update lock fails closed',()=>{
+      const h=buildCompletedHarness('Completed','AREA_INCHARGE');
+      const r=h.update({topic:'Illegal after role revocation'});
+      assert.equal(r.errorCode,'COMPLETED_CNE_ADMIN_ONLY');assert.equal(h.events.writes,0);
+      assert(h.events.locks>0,'Live session was not checked under lock');
+    }],
+    ['Completed CNE status cannot be changed through Edit',()=>{
+      const h=buildCompletedHarness();const r=h.update({topic:'New topic',status:'Scheduled'});
+      assert.equal(r.errorCode,'INVALID_STATUS_TRANSITION');assert.equal(h.events.writes,0);
+      assert.equal(h.rows[1][10],'Completed');
+    }],
+    ['Completed CNE wards, area, capacity and participant mutation remain locked',()=>{
+      for(const patch of [{area:'NICU'},{participatingWards:['ICU','NICU']},
+        {maxParticipants:80},{staffEmpIds:['EMP002']},{externalStaffParticipants:['Visitor']}]){
+        const h=buildCompletedHarness();const r=h.update(patch);
+        assert.equal(r.errorCode,'COMPLETED_CNE_COVERAGE_LOCKED',JSON.stringify(patch));
+        assert.equal(h.events.writes,0);
+      }
+    }],
+    ['Admin Completed CNE historical date correction validates duration without requiring future date',()=>{
+      const h=buildCompletedHarness();const r=h.update({date:'2026-04-02T09:00',toDate:'2026-04-02T11:00',duration:'02:00:00'});
+      assert(r.success,r.message);assert.equal(h.rows[1][3],'2026-04-02T09:00');
+      assert.equal(h.rows[1][4],'2026-04-02T11:00');assert.equal(h.rows[1][5],'02:00:00');
+      assert(h.events.validation>0);
+    }],
+    ['Completed CNE cannot be changed to a future date',()=>{
+      const h=buildCompletedHarness();const r=h.update({date:'2026-11-02T09:00',toDate:'2026-11-02T10:30',duration:'01:30:00'});
+      assert.equal(r.errorCode,'COMPLETED_CNE_FUTURE_DATE');assert.equal(h.events.writes,0);
+    }],
+    ['Canceled CNE stays immutable, scheduled admin edit stays supported',()=>{
+      const canceled=buildCompletedHarness('Canceled');const cr=canceled.update({topic:'Wrong'});
+      assert.equal(cr.errorCode,'CNE_ALREADY_CANCELED');assert.equal(canceled.events.writes,0);
+      const scheduled=buildCompletedHarness('Scheduled');const sr=scheduled.update({topic:'Revised Scheduled'});
+      assert(sr.success,sr.message);assert.equal(scheduled.rows[1][1],'Revised Scheduled');
+    }],
+    ['Completed Edit is admin-only in UI; Cancel and Delete are hidden for Completed CNE',()=>{
+      assert(details.includes("(!isCompleted || user?.role === 'ADMIN')"));
+      assert(details.includes('const canCancelCne = canLifecycle && !isCompleted && !isCanceled'));
+      assert(details.includes('const showDeleteButton = Boolean(canDeleteCne && !isCompleted && onDelete)'));
+      assert(schedule.includes('(!isCneCompleted(cls) || isAdmin)'));
+      assert(schedule.includes('!isCneCompleted(editingCne) ? { area: editArea } : {}'));
+      assert(schedule.includes('!isCneCompleted(editingCne) ? { maxParticipants: editMaxParticipants } : {}'));
+    }]
+  ];
+  console.log('\n>>> Admin-only Completed CNE historical-edit checks');
+  for (const [name,test] of checks) {
+    focusedChecks.push({name,test});
+    try {test();focusedPassed++;console.log('✓ '+name);}
+    catch(err){console.error('✗ '+name+': '+err.message);}
+  }
 }
 
 console.log('\n================================================================');

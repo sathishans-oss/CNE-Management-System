@@ -90,16 +90,18 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   const isCompleted = statusStr === 'completed';
   const isCanceled = statusStr === 'canceled' || statusStr === 'cancelled';
   const isScheduled = statusStr === 'scheduled';
-  const canEditOrCancel = canLifecycle && !isCompleted && !isCanceled;
+  // Completed records are editable by ADMIN only; cancel and delete stay closed.
+  const canEditCne = canLifecycle && !isCanceled && (!isCompleted || user?.role === 'ADMIN');
+  const canCancelCne = canLifecycle && !isCompleted && !isCanceled;
   const showDeleteButton = Boolean(canDeleteCne && !isCompleted && onDelete);
-  const showManageMenu = Boolean(canEditOrCancel || showDeleteButton);
+  const showManageMenu = Boolean(canEditCne || canCancelCne || showDeleteButton);
   const [isManageMenuOpen, setIsManageMenuOpen] = useState(false);
   const manageMenuRef = useRef<HTMLDivElement>(null);
 
   // Close the menu on outside interaction, Escape, or a change of CNE/permissions.
   useEffect(() => {
     setIsManageMenuOpen(false);
-  }, [cne.cneId, canEditOrCancel, showDeleteButton]);
+  }, [cne.cneId, canEditCne, canCancelCne, showDeleteButton]);
   useEffect(() => {
     if (!isManageMenuOpen) return;
     const closeOnOutside = (event: PointerEvent) => {
@@ -301,15 +303,16 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
                       aria-label="Manage CNE"
                       className="absolute right-0 top-full mt-1.5 z-40 w-48 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl"
                     >
-                      {canEditOrCancel && (
-                        <>
-                          <button
+                      {canEditCne && (
+                        <button
                             type="button" role="menuitem"
                             onClick={() => { setIsManageMenuOpen(false); onEdit(cne); }}
                             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-800 hover:bg-slate-100 focus-visible:bg-slate-100"
                           >
                             <Edit3 className="h-3.5 w-3.5" /> Edit CNE
                           </button>
+                      )}
+                      {canCancelCne && (
                           <button
                             type="button" role="menuitem"
                             onClick={() => { setIsManageMenuOpen(false); onCancel(cne); }}
@@ -317,11 +320,10 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
                           >
                             <AlertTriangle className="h-3.5 w-3.5" /> Cancel CNE
                           </button>
-                        </>
                       )}
                       {showDeleteButton && onDelete && (
                         <>
-                          {canEditOrCancel && <div className="my-1 border-t border-slate-200" />}
+                          {(canEditCne || canCancelCne) && <div className="my-1 border-t border-slate-200" />}
                           <button
                             type="button" role="menuitem"
                             onClick={() => { setIsManageMenuOpen(false); onDelete(cne); }}
