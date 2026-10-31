@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, RotateCcw, Search, ShieldAlert } from 'lucide-react';
-import { correctCompletedClinicalWord, expandTopicAbbreviation, identifyTopicAbbreviations, interpretCneTopic, needsTopicClarification, suggestCneTopics } from '../../data/cneTopicEngine';
+import { correctCompletedClinicalWord, expandTopicAbbreviation, interpretCneTopic, needsTopicClarification, suggestCneTopics } from '../../data/cneTopicEngine';
 
 interface Props {
   value: string;
@@ -27,7 +27,6 @@ export const SmartCneTopicInput: React.FC<Props> = ({ value, onChange, id, place
   const [activeIndex,setActiveIndex]=useState(-1);
   const [undo,setUndo]=useState<{before:string;after:string;label:string}|null>(null);
   const matches=useMemo(()=>suggestCneTopics(value,5),[value]);
-  const terms=useMemo(()=>identifyTopicAbbreviations(value),[value]);
   const clarify=useMemo(()=>needsTopicClarification(value),[value]);
   const interpretation=useMemo(()=>interpretCneTopic(value),[value]);
   useEffect(()=>{
@@ -41,17 +40,17 @@ export const SmartCneTopicInput: React.FC<Props> = ({ value, onChange, id, place
     else{onChange(next);setUndo(null);}
     setActiveIndex(-1);
   };
-  const accept=(next:string)=>{onChange(next);setUndo(null);setFocused(false);setSuppressSuggestions(true);setActiveIndex(-1);fieldRef.current?.focus();};
+  const accept=(next:string)=>{onChange(next);setUndo(null);setSuppressSuggestions(true);setActiveIndex(-1);fieldRef.current?.focus();};
   const showList=focused && !suppressSuggestions && matches.length>0 && !disabled;
   return <div className="relative min-w-0">
     <div className="relative">
       <input
         ref={fieldRef} id={inputId} name="cneTopic" type="text" value={value}
         required={required} disabled={disabled} placeholder={placeholder || 'Enter CNE clinical topic…'}
-        onChange={e=>update(e.target.value)} onFocus={()=>setFocused(true)}
+        onChange={e=>update(e.target.value)} onFocus={()=>{setFocused(true);setSuppressSuggestions(false);}} onClick={()=>{setFocused(true);setSuppressSuggestions(false);}}
         onBlur={()=>setFocused(false)}
         onKeyDown={e=>{
-          if(e.key==='Escape'){setFocused(false);setActiveIndex(-1);return;}
+          if(e.key==='Escape'){setSuppressSuggestions(true);setActiveIndex(-1);return;}
           if(e.key==='ArrowDown' && showList){e.preventDefault();setActiveIndex(i=>(i+1)%matches.length);return;}
           if(e.key==='ArrowUp' && showList){e.preventDefault();setActiveIndex(i=>(i<1?matches.length-1:i-1));return;}
           if(e.key==='Enter' && showList && activeIndex>=0){e.preventDefault();accept(matches[activeIndex].text);}
@@ -64,11 +63,10 @@ export const SmartCneTopicInput: React.FC<Props> = ({ value, onChange, id, place
       <Search size={14} aria-hidden="true" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
     </div>
     {showList&&<div id={listId} role="listbox" aria-label="Suggested CNE topics" className="absolute z-50 top-full mt-1 w-full bg-white border border-slate-300 rounded-lg shadow-lg max-h-56 overflow-y-auto">
-      {matches.map((item,index)=><button key={`${item.source}-${item.text}`} id={`${listId}-${index}`} role="option" aria-selected={index===activeIndex} type="button"
+      {matches.map((item,index)=><button key={item.text} id={`${listId}-${index}`} role="option" aria-selected={index===activeIndex} type="button"
         onPointerDown={e=>e.preventDefault()} onMouseDown={e=>e.preventDefault()} onClick={()=>accept(item.text)}
         className={`block w-full text-left px-3 py-2 text-xs border-b last:border-b-0 border-slate-100 hover:bg-indigo-50 ${index===activeIndex?'bg-indigo-50':''}`}>
         <span className="block text-slate-800 break-words">{item.text}</span>
-        <span className="text-[10px] text-slate-500">{item.source}</span>
       </button>)}
     </div>}
     {undo && value===undo.after && <div className="flex items-center justify-between gap-2 mt-1 text-[11px] text-emerald-700">
@@ -85,7 +83,6 @@ export const SmartCneTopicInput: React.FC<Props> = ({ value, onChange, id, place
         </div>
       </div>)}
     </div>}
-    {terms.length>0&&!clarify.length && <div className="mt-1 text-[10px] text-slate-500">Recognized: {terms.slice(0,3).map(t=>`${t.short} (${t.meanings[0]})`).join(' · ')}. You may keep standard abbreviations or select a full title.</div>}
     {interpretation.practicalSkills.length>0 && <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-600" aria-live="polite">
       <div><strong>Topic:</strong> {interpretation.principalConcepts.join(' · ')}</div>
       <div><strong>Practical skill:</strong> {interpretation.practicalSkills.join(' · ')}</div>

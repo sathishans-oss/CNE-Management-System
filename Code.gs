@@ -3872,6 +3872,13 @@ function isTeachingModeActive_(modeName, forceFresh) {
 }
 
 function requireActiveTeachingMode_(modeName, forceFresh) {
+  if (!String(modeName || '').trim()) {
+    return {
+      success: false,
+      errorCode: 'TEACHING_MODE_REQUIRED',
+      message: 'Teaching Mode is required. Please select a Teaching Mode explicitly.'
+    };
+  }
   if (!isTeachingModeActive_(modeName, forceFresh)) {
     return {
       success: false,
@@ -4924,7 +4931,7 @@ function handleCreateCNE(params, session) {
 
   var topic = sanitizeCellInput(params.topic);
   var area = sanitizeCellInput(params.area);
-  var modeOfTeaching = sanitizeCellInput(params.modeOfTeaching || 'Lecture Cum Discussion');
+  var modeOfTeaching = sanitizeCellInput(params.modeOfTeaching || '');
   var fromDate = String(params.fromDate || params.date || '').trim();
   var toDate = String(params.toDate || fromDate).trim();
 
@@ -6025,7 +6032,7 @@ function handleAddDepartmentalSchedule(params, session) {
       return { success: false, message: 'Row ' + (i + 1) + ': ' + durVal.message };
     }
 
-    var teachingMode = sanitizeCellInput(c.modeOfTeaching || 'Lecture Cum Discussion');
+    var teachingMode = sanitizeCellInput(c.modeOfTeaching || '');
     var rowTeachingModeErr = requireActiveTeachingMode_(teachingMode, false);
     if (rowTeachingModeErr) {
       return { success: false, errorCode: 'TEACHING_MODE_INACTIVE', message: 'Row ' + (i + 1) + ': ' + rowTeachingModeErr.message };

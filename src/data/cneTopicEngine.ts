@@ -1,10 +1,7 @@
-import { CLINICAL_ABBREVIATIONS, HISTORICAL_CNE_TITLES, ClinicalAbbreviation } from './cneClinicalTerminology';
-import { COMMON_CLINICAL_TERMS, ADDITIONAL_CNE_TOPIC_SUGGESTIONS } from './commonClinicalTopics';
-import { CLEANED_HISTORICAL_CNE_TOPICS } from './historicalCneTopics2026';
+import { STANDARDIZED_CNE_MASTER_SUGGESTIONS, CLINICAL_ABBREVIATIONS, ClinicalAbbreviation } from './cneMasterTerminology';
 
 export interface TopicSuggestion {
   text: string;
-  source: string;
 }
 export interface SpellingCorrection {
   value: string;
@@ -22,10 +19,12 @@ export interface CneTopicInterpretation {
 /** Candidate terminology only. No abbreviation is deemed institutionally approved. */
 export const SMART_TOPIC_DICTIONARY_STATS = {
   abbreviations: CLINICAL_ABBREVIATIONS.length,
-  previousTopics: HISTORICAL_CNE_TITLES.length,
-  correctedHistoricalTopics: CLEANED_HISTORICAL_CNE_TOPICS.length,
-  commonTerms: COMMON_CLINICAL_TERMS.length,
-  additionalTopics: ADDITIONAL_CNE_TOPIC_SUGGESTIONS.length
+  preferredTopics: STANDARDIZED_CNE_MASTER_SUGGESTIONS.length,
+  // Retained for compatibility with older diagnostic callers only.
+  previousTopics: 0,
+  correctedHistoricalTopics: 0,
+  commonTerms: 0,
+  additionalTopics: 0
 };
 
 // Deliberately small high-confidence typo map; never use fuzzy replacement for a drug or diagnosis.
@@ -141,8 +140,24 @@ export function identifyTopicAbbreviations(text: string): ClinicalAbbreviation[]
   return found;
 }
 
+function clearlyExpandedInTitle(text:string,entry:ClinicalAbbreviation):boolean {
+  // "Guillain–Barré Syndrome (GBS)" is NOT an unresolved "GBS".
+  // Require a complete parenthesized abbreviation and a documented full form,
+  // or the exact educator-selected preferred term. Other ambiguous mentions
+  // still require manual clarification.
+  if(!new RegExp(`\\(\\s*${escapeRegExp(entry.short)}\\s*\\)`,'i').test(text))return false;
+  const typed=normalizeClinicalQuery(text);
+  if(STANDARDIZED_CNE_MASTER_SUGGESTIONS.some(s=>normalizeClinicalQuery(s.title)===typed))return true;
+  const before=text.slice(0,text.search(new RegExp(`\\(\\s*${escapeRegExp(entry.short)}\\s*\\)`,'i')));
+  const normalizedBefore=normalizeClinicalQuery(before);
+  return entry.meanings.some(meaning=>{
+    const full=normalizeClinicalQuery(meaning);
+    return full.length>=5 && normalizedBefore.includes(full);
+  });
+}
 export function needsTopicClarification(text: string): ClinicalAbbreviation[] {
-  return identifyTopicAbbreviations(text).filter(entry => entry.status === 'ambiguous' || entry.status === 'unsafe');
+  return identifyTopicAbbreviations(text).filter(entry => entry.status==='unsafe' ||
+    (entry.status==='ambiguous'&&!clearlyExpandedInTitle(text,entry)));
 }
 
 function tidy(text: string): string {
@@ -209,59 +224,140 @@ export function interpretCneTopic(text: string): CneTopicInterpretation {
   return {original,principalConcepts:primaryConcepts,practicalSkills,secondaryContext,category,reviewAdvisory};
 }
 
-export function suggestCneTopics(rawQuery: string, limit = 5): TopicSuggestion[] {
-  if (!rawQuery || rawQuery.trim().length < 2 || limit <= 0) return [];
-  // Honorifics are not topic abbreviations; do not suggest multiple sclerosis
-  // when a title such as 'Ms' is being typed.
-  if (/^Ms\.?($|\s)/.test(rawQuery.trim())) return [];
-  const q = rawQuery.trim().toLowerCase();
-  const results: Array<{text:string;source:string;score:number}> = [];
-  const seen = new Set<string>();
-  const add = (text: string, source: string, score: number) => {
-    const cleaned = tidy(text);
-    if (!cleaned || seen.has(cleaned.toLowerCase())) return;
-    seen.add(cleaned.toLowerCase()); results.push({text:cleaned,source,score});
+/**
+ * Word-by-word, abbreviation-safe local search.
+ * A full clinical title is a suggestion; aliases are matching metadata only.
+ * General linking words may be omitted from matching, never from saved titles.
+ */
+const GENERIC_QUERY_WORDS = new Set([
+  'patient','patients','of','the','a','an','and','with','for','on','in','to','is',
+  'its','about','regarding','topic','cne','care','case','nursing','management',
+  'plan','presentation','clinical','education','about','treatment','diagnosis','ncp'
+]);
+const SEARCH_TYPO_ALIASES: Record<string,string> = {
+  miocardial:'myocardial', mycardial:'myocardial',
+  pneumona:'pneumonia',neontal:'neonatal',gastritits:'gastritis',
+  hygine:'hygiene',managemnet:'management',managment:'management',
+  transfussion:'transfusion',resusitation:'resuscitation'
+};
+
+function normalizeClinicalQuery(value:string):string {
+  return value.toLowerCase().normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g,'')
+    .replace(/\bicd[\s\-–]*(10|11)\b/g,'icd$1')
+    .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
+}
+function wordsOf(value:string):string[] {
+  return normalizeClinicalQuery(value).split(' ').filter(Boolean);
+}
+function significantWords(value:string):string[] {
+  const words=wordsOf(value).map(word=>SEARCH_TYPO_ALIASES[word]||word);
+  return words.filter(word=>!GENERIC_QUERY_WORDS.has(word));
+}
+const SEARCH_ENTRIES = (()=>{
+  const map=new Map<string,{title:string;texts:string[];tokens:string[][];kind:string;nursingContext?:'condition'}>();
+  function add(title:string,aliases:readonly string[],kind:string,nursingContext?:'condition'){
+    const text=title.trim().replace(/\s+/g,' '),key=normalizeClinicalQuery(title);
+    if (!key) return;
+    const existing=map.get(key);
+    if(existing){
+      for(const alias of aliases)if(alias && !existing.texts.includes(alias))existing.texts.push(alias);
+      if(nursingContext)existing.nursingContext=nursingContext;
+      return;
+    }
+    map.set(key,{title:text,texts:[text,...aliases],tokens:[],kind,nursingContext});
+  }
+  for(const term of STANDARDIZED_CNE_MASTER_SUGGESTIONS)
+    add(term.title,term.aliases,term.kind,term.nursingContext);
+  // Recognized, single-meaning abbreviations may offer a preferred expansion
+  // only if that spelling is not already in the master library. No ambiguous
+  // abbreviation is expanded without educator selection.
+  for(const abbr of CLINICAL_ABBREVIATIONS){
+    if(abbr.status!=='recognized'||abbr.meanings.length!==1)continue;
+    if(STANDARDIZED_CNE_MASTER_SUGGESTIONS.some(s=>
+      s.aliases.some(alias=>alias.toUpperCase()===abbr.short.toUpperCase()) ||
+      s.title.toUpperCase().includes(`(${abbr.short.toUpperCase()})`)))continue;
+    const meaning=abbr.meanings[0].trim();
+    if(!meaning||meaning.length<4||/^(?:unknown|not applicable)/i.test(meaning))continue;
+    const title=meaning.replace(/\b[a-z]/g,c=>c.toUpperCase())+` (${abbr.short})`;
+    add(title,[abbr.short,meaning],'term');
+  }
+  return [...map.values()].map(e=>({...e,tokens:e.texts.map(wordsOf)}));
+})();
+
+/** Topic-style preferences are separate from clinical diagnosis/abbreviation parsing. */
+function topicIntent(raw:string):'nursing-care'|'care-plan'|'case'|'education'|'general'{
+  if(/\b(?:ncp|care\s+plan|plan\s+of\s+care)\b/i.test(raw))return 'care-plan';
+  if(/\b(?:case(?:\s+(?:study|presentation|report))?|present\s+a\s+case)\b/i.test(raw))return 'case';
+  if(/\b(?:nursing\s+(?:care|management)|care\s+of|patient\s+care|management\s+of|care\s+for)\b/i.test(raw))return 'nursing-care';
+  if(/\b(?:patient\s+education|health\s+education|counselling)\b/i.test(raw))return 'education';
+  return 'general';
+}
+function suggestedNursingTitles(diagnosis:string):{title:string;purpose:string}[]{
+  return [
+    {title:`Nursing Care of Patients with ${diagnosis}`,purpose:'nursing-care'},
+    {title:`Nursing Care Plan for Patients with ${diagnosis}`,purpose:'care-plan'},
+    {title:`Case Presentation: ${diagnosis}`,purpose:'case'},
+    {title:`${diagnosis}: Clinical Management and Patient Education`,purpose:'education'}
+  ];
+}
+function scoreSuggestion(entry: typeof SEARCH_ENTRIES[number],raw:string,queryWords:string[]):number {
+  const exact=normalizeClinicalQuery(raw),title=normalizeClinicalQuery(entry.title);
+  if (title===exact)return 3000;
+  const results=entry.texts.map((text,i)=>{
+    const form=normalizeClinicalQuery(text);
+    if(form===exact)return 2600-(i===0?0:100);
+    if(form.startsWith(exact)&&exact.length>=3)return 1900-(i===0?0:80);
+    const tokens=entry.tokens[i];
+    if(!queryWords.every(q=>tokens.some(t=>t===q || (q.length>=3&&t.startsWith(q)))))return -1;
+    const exactMatches=queryWords.filter(q=>tokens.includes(q)).length;
+    const nameBonus=i===0?90:15;
+    const kindBonus=entry.kind==='cne-topic'?18:0;
+    return 700 + exactMatches*80 + nameBonus + kindBonus - Math.min(tokens.length,40);
+  });
+  return Math.max(-1,...results);
+}
+
+/**
+ * Five locally generated, clinically coherent candidates. The medical master
+ * contains the *conditions*; the engine adds nursing education title templates
+ * only to editor-curated conditions, not to drugs, procedures, or policies.
+ * Aliases are search-only; nothing overwrites the educator's typed text.
+ */
+export function suggestCneTopics(rawQuery: string, limit=5): TopicSuggestion[] {
+  const raw=(rawQuery||'').trim();
+  if(raw.length<2||limit<=0)return [];
+  if(/^Ms\.?($|\s)/.test(raw))return [];
+  const queryWords=significantWords(raw);
+  if(!queryWords.length || queryWords.some(word=>word.length<2))return [];
+  const intent=topicIntent(raw);
+  const coreQuery=queryWords.join(' ');
+  const pool=new Map<string,{text:string;score:number}>();
+  const offer=(text:string,score:number)=>{
+    const key=normalizeClinicalQuery(text);
+    const existing=pool.get(key);
+    if(!existing || existing.score<score)pool.set(key,{text,score});
   };
-  const lastSpaceIdx=rawQuery.lastIndexOf(' ');
-  if (lastSpaceIdx>0) {
-    const prefix=rawQuery.slice(0,lastSpaceIdx+1);
-    const lastWord=rawQuery.slice(lastSpaceIdx+1).trim().toLowerCase();
-    if (lastWord.length>=3) for(const term of COMMON_CLINICAL_TERMS) {
-      const lower=term.toLowerCase();
-      if(lower.startsWith(lastWord)) add(`${prefix}${term.toLowerCase()}`,'Clinical Term',98);
+  for(const entry of SEARCH_ENTRIES){
+    const relevance=scoreSuggestion(entry,coreQuery,queryWords);
+    if(relevance<0)continue;
+    // Keep an exact diagnosis first for unqualified queries. For queries with
+    // 'care of' or 'case presentation', rank matching nursing intent first.
+    const preferredTitleScore= intent==='general' ? relevance : relevance-450;
+    offer(entry.title,preferredTitleScore);
+    // An unresolved acronym with multiple meanings should list distinct
+    // diagnoses without auto-building a care plan around a guessed meaning.
+    if(entry.nursingContext!=='condition' || needsTopicClarification(raw).some(a=>a.status==='ambiguous' && a.short.toUpperCase()===raw.toUpperCase()))continue;
+    const highlyRelevant=Math.min(relevance,3000);
+    for(const [i,variant] of suggestedNursingTitles(entry.title).entries()){
+      const preferred=intent!=='general' && variant.purpose===intent;
+      const boost=intent==='general' ?  -400-i*110 :
+        preferred ? 1250 : (intent==='nursing-care'&&variant.purpose==='care-plan') ? 950 :
+          (intent==='care-plan'&&variant.purpose==='nursing-care') ? 780 : -500-i*90;
+      const score=highlyRelevant+boost;
+      offer(variant.title,score);
     }
   }
-  for (const term of COMMON_CLINICAL_TERMS) {
-    const lower=term.toLowerCase();
-    if(lower.startsWith(q)) add(term,'Clinical Term',100);
-    else if(lower.includes(' '+q)) add(term,'Clinical Term',85);
-    else if(lower.includes(q)) add(term,'Clinical Term',65);
-  }
-  // Prefer reviewed, de-identified historical titles over older raw suggestions.
-  // The legacy candidate sources remain available for uncommon and future topics.
-  for (const title of CLEANED_HISTORICAL_CNE_TOPICS) {
-    const lower=title.toLowerCase();
-    if (lower.startsWith(q)) add(title,'Corrected Previous CNE',125);
-    else if (lower.includes(' '+q)) add(title,'Corrected Previous CNE',90);
-    else if (lower.includes(q)) add(title,'Corrected Previous CNE',68);
-  }
-  for(const title of ADDITIONAL_CNE_TOPIC_SUGGESTIONS) {
-    const lower=title.toLowerCase();
-    if(lower.startsWith(q)) add(title,'CNE Topic Example',115);
-    else if(lower.includes(' '+q)) add(title,'CNE Topic Example',77);
-  }
-  for (const title of HISTORICAL_CNE_TITLES) {
-    const lower=title.toLowerCase();
-    if(lower.startsWith(q)) add(title,'Previous CNE',105);
-    else if(lower.includes(' '+q)) add(title,'Previous CNE',80);
-    else if(lower.includes(q)) add(title,'Previous CNE',60);
-  }
-  for (const abbr of CLINICAL_ABBREVIATIONS) {
-    if(abbr.short.toLowerCase().startsWith(q)) {
-      const full=abbr.meanings[0];
-      add(full ? `${abbr.short} (${full})` : abbr.short,'Clinical Term',88);
-    }
-  }
-  results.sort((a,b)=>b.score-a.score||a.text.length-b.text.length||a.text.localeCompare(b.text));
-  return results.slice(0,limit).map(({text,source})=>({text,source}));
+  return [...pool.values()].sort((a,b)=>b.score-a.score||a.text.length-b.text.length||a.text.localeCompare(b.text))
+    .slice(0,Math.floor(limit)).map(({text})=>({text}));
 }

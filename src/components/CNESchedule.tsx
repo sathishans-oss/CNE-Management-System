@@ -247,10 +247,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
     [teachingModes]
   );
-  const preferredTeachingMode = useMemo(() => {
-    const lecture = activeTeachingModeNames.find((name) => name.toLowerCase() === 'lecture cum discussion');
-    return lecture || activeTeachingModeNames[0] || '';
-  }, [activeTeachingModeNames]);
   const editTeachingModeOptions = useMemo(() => {
     const current = String(editingCne?.modeOfTeaching || editMode || '').trim();
     const active = [...activeTeachingModeNames];
@@ -511,14 +507,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     return () => { dataRequestRef.current += 1; };
   }, [sessionKey, statusFilter, debouncedSearch, fromDateFilter, toDateFilter]);
 
+  // New CNEs must never silently select a Teaching Mode, including after masters refresh.
+  // If a previously chosen mode becomes inactive, clear it and require a fresh choice.
   useEffect(() => {
-    if (!activeTeachingModeNames.length) {
-      if (newMode) setNewMode('');
-      return;
+    if (newMode && !activeTeachingModeNames.some((name) => name.toLowerCase() === newMode.toLowerCase())) {
+      setNewMode('');
     }
-    const currentIsActive = activeTeachingModeNames.some((name) => name.toLowerCase() === newMode.toLowerCase());
-    if (!currentIsActive) setNewMode(preferredTeachingMode);
-  }, [activeTeachingModeNames, preferredTeachingMode, newMode]);
+  }, [activeTeachingModeNames, newMode]);
 
   const reloadResourcePersons = useCallback(async () => {
     setResourcePersonsError('');
@@ -785,7 +780,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         setRpSearchQuery('');
         setNewExternalRpList([]);
         setNewExternalRpInput('');
-        setNewMode(preferredTeachingMode);
+        setNewMode('');
         loadData();
       } else {
         if (res.errorCode === 'AREA_INACTIVE') {
@@ -855,7 +850,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setEditRpSearchQuery('');
     setEditExternalRpList(cls.externalResourcePersons ? [...cls.externalResourcePersons] : []);
     setEditExternalRpInput('');
-    setEditMode(cls.modeOfTeaching || preferredTeachingMode);
+    setEditMode(cls.modeOfTeaching || '');
     setEditDescription(cls.description || '');
     setEditMaxParticipants(cls.maxParticipants || 40);
     setEditAdminRemarks(cls.adminRemarks || '');
@@ -1500,20 +1495,20 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                        Mode of Teaching
+                        Mode of Teaching <span className="text-red-600">*</span>
                       </label>
                       <select
+                        required
                         value={newMode}
                         onChange={(e) => setNewMode(e.target.value)}
                         className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
                       >
-                        {activeTeachingModeNames.length === 0 ? (
-                          <option value="">No active Teaching Modes available</option>
-                        ) : (
-                          activeTeachingModeNames.map((mode) => (
-                            <option key={`central-teaching-mode-${mode}`} value={mode}>{mode}</option>
-                          ))
-                        )}
+                        <option value="" disabled>
+                          {activeTeachingModeNames.length === 0 ? 'No active Teaching Modes available' : '— Select Teaching Mode —'}
+                        </option>
+                        {activeTeachingModeNames.map((mode) => (
+                          <option key={`central-teaching-mode-${mode}`} value={mode}>{mode}</option>
+                        ))}
                       </select>
                     </div>
 
@@ -1596,7 +1591,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                   {/* Column 3: Resource Persons Multi-Select */}
                   <div className="space-y-3.5 bg-slate-50/60 p-4 rounded-xl border border-slate-200 flex flex-col">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-teal-900 border-b border-teal-100 pb-2 flex items-center justify-between">
-                      <span>3. Resource Persons</span>
+                      <span>3. Resource Persons <span className="text-red-600">*</span></span>
                       <span className="text-[10px] text-slate-500 font-semibold lowercase">
                         {selectedRpEmpIds.length} selected
                       </span>
@@ -1979,7 +1974,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                        Mode of Teaching
+                        Mode of Teaching <span className="text-red-600">*</span>
                       </label>
                       <select
                         required
@@ -1987,15 +1982,14 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         onChange={(e) => setEditMode(e.target.value)}
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
                       >
-                        {editTeachingModeOptions.length === 0 ? (
-                          <option value="">No active Teaching Modes available</option>
-                        ) : (
-                          editTeachingModeOptions.map((option) => (
-                            <option key={`edit-teaching-mode-${option.name}`} value={option.name}>
-                              {option.inactiveCurrent ? `${option.name} (Current — Inactive)` : option.name}
-                            </option>
-                          ))
-                        )}
+                        <option value="" disabled>
+                          {editTeachingModeOptions.length === 0 ? 'No active Teaching Modes available' : '— Select Teaching Mode —'}
+                        </option>
+                        {editTeachingModeOptions.map((option) => (
+                          <option key={`edit-teaching-mode-${option.name}`} value={option.name}>
+                            {option.inactiveCurrent ? `${option.name} (Current — Inactive)` : option.name}
+                          </option>
+                        ))}
                       </select>
                     </div>
 
@@ -2048,7 +2042,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                   {/* Column 3: Resource Persons Selection */}
                   <div className="space-y-3.5 bg-slate-50/60 p-4 rounded-xl border border-slate-200 flex flex-col">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-teal-900 border-b border-teal-100 pb-2 flex items-center justify-between">
-                      <span>3. Resource Persons</span>
+                      <span>3. Resource Persons <span className="text-red-600">*</span></span>
                       <span className="text-[10px] text-slate-500 font-semibold lowercase">
                         {editSelectedRpEmpIds.length} internal selected
                       </span>
@@ -2431,6 +2425,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                   setNewDuration('00:00:00');
                   setNewArea('');
                   setNewWards([]);
+                  setNewMode('');
                   setIsAddClassOpen(true);
                 }}
                 className="w-full flex items-start gap-3.5 p-3.5 rounded-xl border border-slate-200 hover:border-purple-500 hover:bg-purple-50/50 text-left transition-all group cursor-pointer"

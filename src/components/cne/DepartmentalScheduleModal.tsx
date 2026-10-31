@@ -115,10 +115,6 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
     setPrimaryWard(primary);
     setRows((prev) => prev.map((r) => ({ ...r, area: primary, participatingWards: next })));
   };
-  const defaultTeachingMode = useMemo(() => {
-    const lecture = teachingModes.find((name) => name.trim().toLowerCase() === 'lecture cum discussion');
-    return lecture || teachingModes[0] || '';
-  }, [teachingModes]);
   const todayStr = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
     year: 'numeric',
@@ -128,7 +124,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
 
   // Initially show exactly 1 blank CNE schedule row
   const [rows, setRows] = useState<DepartmentalScheduleRow[]>([
-    createInitialRow('', defaultTeachingMode)
+    createInitialRow('')
   ]);
   const [internalOfficers, setInternalOfficers] = useState<Employee[]>(() => {
     if (officersList && officersList.length > 0) return officersList;
@@ -233,7 +229,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   React.useEffect(() => {
     let active = true;
     if (isOpen) {
-      setRows([createInitialRow('', defaultTeachingMode)]);
+      setRows([createInitialRow('')]);
       setSelectedWards([]);
       setPrimaryWard('');
       setExtRpInputMap({});
@@ -261,12 +257,12 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
       } catch (_) {}
     }
     return () => { active = false; };
-  }, [isOpen, defaultTeachingMode, user?.employeeId]);
+  }, [isOpen, user?.employeeId]);
 
   if (!isOpen) return null;
 
   const handleAddRow = () => {
-    setRows((prev) => [...prev, { ...createInitialRow(primaryWard, defaultTeachingMode), participatingWards: [...selectedWards] }]);
+    setRows((prev) => [...prev, { ...createInitialRow(primaryWard), participatingWards: [...selectedWards] }]);
   };
 
   const handleRemoveRow = (index: number) => {
@@ -665,20 +661,20 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                       {/* 3. Teaching Mode */}
                       <div>
                         <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                          Teaching Mode
+                          Teaching Mode <span className="text-red-600">*</span>
                         </label>
                         <select
+                          required
                           value={row.modeOfTeaching}
                           onChange={(e) => handleFieldChange(idx, 'modeOfTeaching', e.target.value)}
                           className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
                         >
-                          {teachingModes.length === 0 ? (
-                            <option value="">No active Teaching Modes available</option>
-                          ) : (
-                            teachingModes.map((mode) => (
-                              <option key={`dept-teaching-mode-${mode}`} value={mode}>{mode}</option>
-                            ))
-                          )}
+                          <option value="" disabled>
+                            {teachingModes.length === 0 ? 'No active Teaching Modes available' : '— Select Teaching Mode —'}
+                          </option>
+                          {teachingModes.map((mode) => (
+                            <option key={`dept-teaching-mode-${mode}`} value={mode}>{mode}</option>
+                          ))}
                         </select>
                       </div>
 
@@ -754,7 +750,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                     {/* Column 3: Resource Persons */}
                     <div className="space-y-3.5 bg-slate-50/60 p-4 rounded-xl border border-slate-200 flex flex-col">
                       <h4 className="text-xs font-bold uppercase tracking-wider text-teal-900 border-b border-teal-100 pb-2 flex items-center justify-between">
-                        <span>3. Resource Persons</span>
+                        <span>3. Resource Persons <span className="text-red-600">*</span></span>
                         <span className="text-[10px] text-slate-500 font-semibold lowercase">
                           {selectedRowRpIds.length + (row.externalResourcePersons?.length || 0)} selected
                         </span>

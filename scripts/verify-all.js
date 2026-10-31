@@ -11718,7 +11718,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     if (!context.result.success || context.result.totalAllottedStaff !== 42) throw Error('missing ward count should contribute zero');
   });
   check('Empty ward selection is rejected and initial popup selection is empty', () => {
-    if(scenario([],'').success || !modal.includes('useState<string[]>([])') || !modal.includes("createInitialRow('', defaultTeachingMode)")) throw Error('auto selection or empty selection allowed');
+    if(scenario([],'').success || !modal.includes('useState<string[]>([])') || !modal.includes("createInitialRow('')") || modal.includes('defaultTeachingMode')) throw Error('auto selection or empty selection allowed');
   });
   check('Every session retains its dropdown and all rows share ward selection', () => {
     if(!modal.includes('<WardMultiSelect') || !modal.includes('prev.map((r) => ({ ...r, area: primary, participatingWards: next }))') || !modal.includes('participatingWards: [...selectedWards]')) throw Error('session synchronization missing');
@@ -12844,55 +12844,56 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     'src/components/cne/AddUnscheduledCneModal.tsx'
   ].map(path=>readFileSync(join(ROOT_DIR,path),'utf8'));
   const input=readFileSync(join(ROOT_DIR,'src/components/cne/SmartCneTopicInput.tsx'),'utf8');
-  const dictionary=readFileSync(join(sourceDir,'cneClinicalTerminology.ts'),'utf8');
+  const dictionary=readFileSync(join(sourceDir,'cneMasterTerminology.ts'),'utf8');
   const tmp=mkdtempSync(join(tmpdir(),'cne-smart-topic-'));
   let engine;
   try {
     const tsc=existsSync(join(ROOT_DIR,'node_modules','.bin',process.platform==='win32'?'tsc.cmd':'tsc'))
       ?join(ROOT_DIR,'node_modules','.bin',process.platform==='win32'?'tsc.cmd':'tsc'):'tsc';
     execFileSync(tsc,['--target','ES2020','--module','commonjs','--outDir',tmp,
-      join(sourceDir,'cneClinicalTerminology.ts'),join(sourceDir,'commonClinicalTopics.ts'),
-      join(sourceDir,'historicalCneTopics2026.ts'),join(sourceDir,'cneTopicEngine.ts')],{stdio:'pipe'});
+      join(sourceDir,'cneMasterTerminology.ts'),join(sourceDir,'cneTopicEngine.ts')],{stdio:'pipe'});
     engine=createRequire(SCRIPT_URL)(join(tmp,'cneTopicEngine.js'));
   } catch(err) {
     console.error('Smart topic engine compile failed:',String(err.stderr||err));
   }
   const tests=[
-    ['Smart topic has a broad candidate terminology library and historical titles exclude patient names',()=>{
+    ['One master medical terminology file contains a broad, de-identified preferred vocabulary',()=>{
       assert(engine,'Clinical topic engine did not compile');
-      assert(engine.SMART_TOPIC_DICTIONARY_STATS.abbreviations>=500,'Insufficient abbreviation coverage');
-      assert(engine.SMART_TOPIC_DICTIONARY_STATS.previousTopics>=800,'Historical topic coverage absent');
-      for(const name of ['Rishabh Maindola','Himanshi','Shivam','Annamaria','Reyansh','Shankar','Ansh'])assert(!dictionary.includes(name),'Patient identity leaked to suggestion library');
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.abbreviations>=586,'Abbreviation safety dictionary coverage lost');
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.preferredTopics>=1100,'Standardized topic coverage lost');
+      for(const name of ['Rishabh Maindola','Himanshi','Reyansh','Shankar'])
+        assert(!dictionary.includes(name),'Patient identity leaked to standardized suggestions');
+      const engineSource=readFileSync(join(sourceDir,'cneTopicEngine.ts'),'utf8');
+      assert(engineSource.includes("from './cneMasterTerminology'"), 'Topic engine must use only consolidated master data');
+      for(const retired of ['cneClinicalTerminology','commonClinicalTopics','historicalCneTopics2026'])
+        assert(!engineSource.includes(retired), 'Topic engine still imports legacy source: '+retired);
     }],
-    ['Corrected historical titles are integrated without replacing the original topic candidates',()=>{
-      assert.equal(engine.SMART_TOPIC_DICTIONARY_STATS.correctedHistoricalTopics,1054,
-        'Corrected historical topic file is incomplete');
-      assert(engine.SMART_TOPIC_DICTIONARY_STATS.previousTopics>=800,
-        'Earlier topic candidates were lost');
-      assert(engine.SMART_TOPIC_DICTIONARY_STATS.additionalTopics>=61,
-        'Earlier skill-linked topic examples were lost');
-    }],
-    ['Corrected medical titles appear ahead of older variants while typing',()=>{
-      for(const [partial,term] of [
-        ['Foley Catheter','Foley Catheterization'],
-        ['Acute Coronary Synd','Acute Coronary Syndrome'],
-        ['Glasgow Coma Scale','Glasgow Coma Scale'],
-        ['Nursing Management of Patients with Whipple','Whipple']
-      ]) {
-        const suggestions=engine.suggestCneTopics(partial,5);
-        assert(suggestions.some(item=>item.source==='Corrected Previous CNE' && item.text.includes(term)),
-          'Missing corrected historical suggestion for '+partial);
-        assert(suggestions.length<=5,'Suggestion limit exceeded');
-      }
-    }],
-    ['Historical suggestion index is de-identified and remains local to the browser',()=>{
-      const source=readFileSync(join(sourceDir,'historicalCneTopics2026.ts'),'utf8');
-      for(const name of ['Rishabh Maindola','Himanshi','Shivam','Annamaria','Reyansh','Shankar','Ansh']) {
-        assert(!source.includes(name),'Patient name leaked into corrected suggestions');
-      }
-      assert(!source.includes('fetch('),'Topic list must not call external APIs');
-      assert(!source.includes('NOT CONDUCTED'),'Non-topic entry was retained');
+    ['Master suggestion file is local and excludes deprecated status/source display',()=>{
+      assert(!dictionary.includes('fetch('),'Topic suggestions must remain local');
+      assert(!dictionary.includes('NOT CONDUCTED'),'Non-topic entry retained');
       assert.equal(engine.suggestCneTopics('A').length,0);
+      assert(!input.includes('{item.source}')&&!input.includes('Previous CNE')&&!input.includes('Recognized:'),
+        'Suggestion interface exposes source or status information');
+    }],
+    ['Preferred clinical titles replace legacy synonyms and abbreviated variants',()=>{
+      const titles=engine.suggestCneTopics('LASA',15).map(x=>x.text);
+      assert(titles.includes('Look-Alike, Sound-Alike (LASA) Medication Safety'),'Preferred LASA title missing');
+      assert(!titles.some(x=>/Look: Alike|^LASA Drugs/i.test(x)),'Unstandardized LASA title visible');
+      const mi=engine.suggestCneTopics('loading dose MI',20);
+      assert(mi.some(x=>/Myocardial Infarction \(MI\).*Loading-Dose Protocols/i.test(x.text)),
+        'Preferred loading-dose myocardial infarction title missing');
+      assert(mi.every(x=>!('source' in x)),'Source labels should not be exposed in suggestions');
+    }],
+    ['Word-by-word queries and abbreviation aliases return preferred expansions',()=>{
+      const mi=engine.suggestCneTopics('patient MI',10).map(x=>x.text);
+      assert(mi.some(t=>t==='Myocardial Infarction (MI)'),'patient MI not mapped to infarction');
+      assert(engine.suggestCneTopics('MRI',10).some(x=>x.text==='Magnetic Resonance Imaging (MRI)'),
+        'MRI expansion not in full-form-first style');
+      assert(engine.suggestCneTopics('Miocardial Infar',10).some(x=>/Myocardial Infarction/i.test(x.text)),
+        'High confidence spelling alias did not assist search');
+      const cases=engine.suggestCneTopics('ICD-11',10);
+      assert(cases.some(x=>x.text.includes('International Classification of Diseases')),
+        'ICD-11 classified incorrectly');
     }],
     ['Topic suggestions do not change saved wording or CNE scheduling forms',()=>{
       const raw='Nursing care of neonatal hyperbilirubinemia';
@@ -13031,9 +13032,9 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(input.includes('You may keep the title unchanged'));
     }],
     ['Historical and additional CNE topic suggestions share the same fast local input',()=>{
-      assert(engine.SMART_TOPIC_DICTIONARY_STATS.additionalTopics>=50);
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.preferredTopics>=1100);
       assert(engine.suggestCneTopics('Care of gastrit').some(s=>/gastritis/i.test(s.text)));
-      assert(engine.suggestCneTopics('Nursing management of neonatal hyper').some(s=>/hyperbilirubinemia/i.test(s.text)));
+      assert(engine.suggestCneTopics('neonatal hyper').some(s=>/hyperbilirubinemia/i.test(s.text)));
       assert(engine.suggestCneTopics('Soft skill').some(s=>/soft skills/i.test(s.text)));
       assert(input.includes('interpretCneTopic(value)'));
       assert(input.includes('Practical skill:'));
@@ -13070,8 +13071,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     }],
     ['Regression: approved clinical dictionary and topic suggestions are retained',()=>{
       assert(engine.SMART_TOPIC_DICTIONARY_STATS.abbreviations>=586,'ICD-10/dictionary entry was lost');
-      assert(engine.SMART_TOPIC_DICTIONARY_STATS.additionalTopics>=61,'Recent CNE topic suggestions were dropped');
-      assert(engine.suggestCneTopics('Nursing management of neonatal hyper').some(s=>/hyperbilirubinemia/i.test(s.text)),
+      assert(engine.SMART_TOPIC_DICTIONARY_STATS.preferredTopics>=1100,'Master CNE suggestions were dropped');
+      assert(engine.suggestCneTopics('neonatal hyper').some(s=>/hyperbilirubinemia/i.test(s.text)),
         'Practical-skill-linked title not suggested');
     }],
     ['Regression: Question Bank cards do not expose obsolete source fields or image status',()=>{
@@ -13088,6 +13089,96 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
         'Clinical topic and skill display regressed');
       assert(input.includes('Suggested interpretation only; your complete topic is saved as entered.'),
         'Educator control notice lost');
+    }],
+    ['Chosen full-form-first titles resolve ambiguity without silently accepting bare abbreviations',()=>{
+      assert(engine.needsTopicClarification('GBS').some(x=>x.short==='GBS'));
+      assert(!engine.needsTopicClarification('Guillain–Barré Syndrome (GBS)').some(x=>x.short==='GBS'));
+      assert(!engine.needsTopicClarification('Group B Streptococcus (GBS) Infection').some(x=>x.short==='GBS'));
+      assert(!engine.needsTopicClarification('Acute Lymphoblastic Leukemia (ALL)').some(x=>x.short==='ALL'));
+      assert(engine.needsTopicClarification('Care of GBS').some(x=>x.short==='GBS'));
+      assert(engine.needsTopicClarification('MSO4').length>0,'Unsafe dose abbreviation unblocked');
+    }],
+    ['Suggestions reopen after selecting and editing an already-focused field',()=>{
+      assert(input.includes('setSuppressSuggestions(true)'),'Selection should dismiss current suggestions');
+      assert(input.includes('setSuppressSuggestions(false)'),'Text edits must reenable suggestions');
+      assert(input.includes('onClick={()=>{setFocused(true);setSuppressSuggestions(false);}}'),
+        'Clicking an already focused input must reopen suggestions');
+      assert(!input.includes('setFocused(false);setSuppressSuggestions(true);'),
+        'Selection must not disable focused state before editing resumes');
+      assert(input.includes('onChange={e=>update(e.target.value)}'));
+      assert(input.includes('role="listbox"') && input.includes('aria-autocomplete="list"'));
+    }],
+    ['Master clinical names are unique and standardized presentation removes duplicate variants',()=>{
+      const masterModule=createRequire(SCRIPT_URL)(join(tmp,'cneMasterTerminology.js'));
+      const titles=masterModule.STANDARDIZED_CNE_MASTER_SUGGESTIONS.map(x=>x.title);
+      assert.equal(titles.length,new Set(titles.map(x=>x.toLowerCase())).size,
+        'Duplicate preferred master titles');
+      assert(titles.includes('Magnetic Resonance Imaging (MRI)'));
+      assert(titles.includes('Look-Alike, Sound-Alike (LASA) Medication Safety'));
+      assert(!titles.includes('Loading Dose in Mi Patients'));
+    }],
+    ['Hypertension and HTN offer five properly ranked nurse-education titles',()=>{
+      const expected=['Hypertension','Nursing Care of Patients with Hypertension',
+        'Nursing Care Plan for Patients with Hypertension','Case Presentation: Hypertension'];
+      for(const input of ['hypertension','HTN','HT']){
+        const r=engine.suggestCneTopics(input,5).map(v=>v.text);
+        assert.deepEqual(r.slice(0,4),expected,'Nursing search ranking failed for '+input);
+      }
+    }],
+    ['Care of gastritis prioritizes nursing care without injecting acute diagnosis',()=>{
+      const r=engine.suggestCneTopics('care of gastritis',5).map(v=>v.text);
+      assert.equal(r[0],'Nursing Care of Patients with Gastritis');
+      assert.equal(r[1],'Nursing Care Plan for Patients with Gastritis');
+      assert(!r.some(t=>/Acute Gastritis/i.test(t)),'Acute diagnosis inferred without being typed');
+      assert.equal(engine.suggestCneTopics('care of acute gastritis',5)[0].text,
+        'Nursing Care of Patients with Acute Gastritis');
+    }],
+    ['Nursing care plan and case presentation intents take priority',()=>{
+      assert.equal(engine.suggestCneTopics('ncp gastritis',5)[0].text,
+        'Nursing Care Plan for Patients with Gastritis');
+      assert.equal(engine.suggestCneTopics('case hypertension',5)[0].text,
+        'Case Presentation: Hypertension');
+      assert.equal(engine.suggestCneTopics('nursing care of MI',5)[0].text,
+        'Nursing Care of Patients with Myocardial Infarction (MI)');
+    }],
+    ['Added guide specialties produce standardized full-form-first diagnoses',()=>{
+      const cases={
+        CAD:'Coronary Artery Disease (CAD)',GERD:'Gastroesophageal Reflux Disease (GERD)',
+        PDA:'Patent Ductus Arteriosus (PDA)',PPROM:'Preterm Prelabor Rupture of Membranes (PPROM)',
+        MDD:'Major Depressive Disorder (MDD)',AML:'Acute Myeloid Leukemia (AML)',
+        MODS:'Multiple Organ Dysfunction Syndrome (MODS)',DIC:'Disseminated Intravascular Coagulation (DIC)'
+      };
+      for(const [abbr,title] of Object.entries(cases))
+        assert(engine.suggestCneTopics(abbr,10).some(v=>v.text===title),
+          `PDF clinical abbreviation ${abbr} not found: ${title}`);
+    }],
+    ['Historical NASH and NAFLD queries recognize updated MASH/MASLD titles',()=>{
+      assert(engine.suggestCneTopics('NASH',5).some(v=>v.text==='Metabolic Dysfunction-Associated Steatohepatitis (MASH)'));
+      assert(engine.suggestCneTopics('NAFLD',5).some(v=>v.text==='Metabolic Dysfunction-Associated Steatotic Liver Disease (MASLD)'));
+    }],
+    ['BPD offers competing diagnoses without silently creating inferred nursing plans',()=>{
+      const titles=engine.suggestCneTopics('BPD',10).map(v=>v.text);
+      for(const required of ['Borderline Personality Disorder','Bipolar Disorder','Bronchopulmonary Dysplasia (BPD)'])
+        assert(titles.includes(required),'Missing ambiguous BPD meaning: '+required);
+      assert(titles.every(t=>!t.startsWith('Nursing Care of Patients with')),'BPD generated nursing plan from ambiguous abbreviation');
+      assert(engine.needsTopicClarification('BPD').some(v=>v.short==='BPD'&&v.status==='ambiguous'));
+    }],
+    ['Medication record, nurse handover and drug classes do not receive disease care-plan templates',()=>{
+      for(const [short,title] of [['MAR','Medication Administration Record (MAR)'],
+        ['SBAR','Situation, Background, Assessment, Recommendation (SBAR)'],
+        ['NSAIDs','Nonsteroidal Anti-Inflammatory Drugs (NSAIDs)']]){
+        const titles=engine.suggestCneTopics(short,10).map(v=>v.text);
+        assert(titles.includes(title),'Missing nursing or pharmacology term '+short);
+        assert(titles.every(t=>!t.startsWith('Nursing Care of Patients with')),'Invalid disease care plan created for '+short);
+      }
+    }],
+    ['Nursing topic templates are distinct, capped and do not write user input',()=>{
+      const query='patient MI';
+      const results=engine.suggestCneTopics(query,5).map(v=>v.text);
+      assert(results.length<=5&&new Set(results).size===results.length);
+      assert(results.includes('Myocardial Infarction (MI)'));
+      assert.equal(query,'patient MI');
+      assert(!input.includes('Previous CNE')&&!input.includes('{item.source}'));
     }],
     ['Suggestions stay local and do not transmit topic data to external search services',()=>{
       assert(!input.includes('fetch(') && !input.includes('google.com/search') && !input.includes('ApiService.'));
@@ -13216,6 +13307,109 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     focusedChecks.push({name,test});
     try {test();focusedPassed++;console.log('✓ '+name);}
     catch(err){console.error('✗ '+name+': '+err.message);}
+  }
+}
+
+
+// Teaching Mode selection + mandatory-field UX: validate the delivered forms and
+// run the actual GAS active-mode guard with a mock authoritative status lookup.
+// The old baseline check above now expects a completely blank Departmental row.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const central = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
+  const dept = readFileSync(join(ROOT_DIR, 'src/components/cne/DepartmentalScheduleModal.tsx'), 'utf8');
+  const unscheduled = readFileSync(join(ROOT_DIR, 'src/components/cne/AddUnscheduledCneModal.tsx'), 'utf8');
+  const gas = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const checks = [
+    ['Central new-CNE mode starts blank and is reset on reopening or success',()=>{
+      assert(central.includes("const [newMode, setNewMode] = useState('')"));
+      assert(central.includes("setNewMode('');\n                  setIsAddClassOpen(true)"));
+      assert(central.includes("setNewMode('');\n        loadData();"));
+      assert(!central.includes('setNewMode(preferredTeachingMode)'));
+    }],
+    ['Central mode-master refresh cannot silently select a mode',()=>{
+      assert(!central.includes('preferredTeachingMode'));
+      assert(central.includes("if (newMode && !activeTeachingModeNames.some"));
+      assert(central.includes("setNewMode('');\n    }\n  }, [activeTeachingModeNames, newMode]);"));
+    }],
+    ['Departmental initial and added session modes are blank',()=>{
+      assert(dept.includes("createInitialRow('')"));
+      assert(dept.includes('createInitialRow(primaryWard)'));
+      assert(!dept.includes('defaultTeachingMode'));
+      assert(dept.includes('modeOfTeaching: teachingMode'));
+    }],
+    ['Unscheduled mode never chooses Lecture or first active item',()=>{
+      assert(unscheduled.includes("const [modeOfTeaching, setModeOfTeaching] = useState('')"));
+      assert(!unscheduled.includes('const preferred = teachingModes.find'));
+      assert(!unscheduled.includes('setModeOfTeaching(preferred)'));
+      assert(unscheduled.includes('if (!isOpen || !modeOfTeaching) return;'));
+    }],
+    ['All three new CNE mode selectors show a blank disabled placeholder and require selection',()=>{
+      for (const [source,field] of [[central,'newMode'],[dept,'row.modeOfTeaching'],[unscheduled,'modeOfTeaching']]) {
+        const snippet=source.slice(source.indexOf('value={' + field + '}') - 120, source.indexOf('value={' + field + '}') + 700);
+        assert.match(snippet,/required\s+value=/);
+        assert(snippet.includes('<option value="" disabled>'),field+' missing a blank placeholder');
+        assert(snippet.includes('— Select Teaching Mode —'),field+' missing prompt');
+        assert(/(?:Teaching Mode|Mode of Teaching) <span className="text-red-600">\*<\/span>/.test(source),field+' is missing the required star');
+      }
+    }],
+    ['Resource Person compulsory stars are present on the combined group heading',()=>{
+      assert.equal((central.match(/3\. Resource Persons <span className="text-red-600">\*<\/span>/g)||[]).length,2);
+      assert(dept.includes('3. Resource Persons <span className="text-red-600">*</span>'));
+      assert(unscheduled.includes('Resource Persons / Instructors <span className="text-red-600">*</span>'));
+    }],
+    ['Unscheduled attended participants have a mandatory star',()=>{
+      assert(unscheduled.includes('3. Attended Participants <span className="text-red-600">*</span>'));
+      assert(unscheduled.includes('At least one attended participant is required'));
+    }],
+    ['Frontend validation preserves Resource Person checks in each creation and Edit',()=>{
+      assert(central.includes('selectedRpEmpIds.length === 0 && newExternalRpList.length === 0'));
+      assert(central.includes('editSelectedRpEmpIds.length === 0 && editExternalRpList.length === 0'));
+      assert(dept.includes('if (!hasInternalRp && !hasExtRp)'));
+      assert(unscheduled.includes('selectedRpEmpIds.length === 0 && externalRpList.length === 0'));
+    }],
+    ['Edit CNE shows the stored mode and the required star, without a new default',()=>{
+      assert(central.includes("setEditMode(cls.modeOfTeaching || '')"));
+      assert(central.includes('value={editMode}'));
+      assert.equal((central.match(/Mode of Teaching <span className="text-red-600">\*<\/span>/g)||[]).length,2);
+      assert(central.includes('(Current — Inactive)'));
+      assert(central.includes('The selected Teaching Mode is inactive'));
+    }],
+    ['Backend creation no longer substitutes Lecture Cum Discussion for missing mode',()=>{
+      const create = gas.slice(gas.indexOf('function handleCreateCNE('),gas.indexOf('function handleUpdateCNE('));
+      const batch = gas.slice(gas.indexOf('function handleAddDepartmentalSchedule('),gas.indexOf('function departmentalSubmissionDigest_',gas.indexOf('function handleAddDepartmentalSchedule(')));
+      assert(create.includes("var modeOfTeaching = sanitizeCellInput(params.modeOfTeaching || '');"));
+      assert(batch.includes("var teachingMode = sanitizeCellInput(c.modeOfTeaching || '');"));
+      assert(!create.includes("modeOfTeaching || 'Lecture Cum Discussion'"));
+      assert(!batch.includes("modeOfTeaching || 'Lecture Cum Discussion'"));
+    }],
+    ['Authoritative backend rejects blank, inactive and accepts chosen active mode',()=>{
+      const start=gas.indexOf('function requireActiveTeachingMode_(');
+      const stop=gas.indexOf('function handleAddTeachingMode(',start);
+      assert(start>0 && stop>start);
+      const ctx={isTeachingModeActive_:(value)=>String(value||'').trim().toUpperCase()==='DEMONSTRATION'};
+      vm.createContext(ctx);
+      vm.runInContext(gas.slice(start,stop),ctx,{timeout:1000});
+      const blank=ctx.requireActiveTeachingMode_('',false);
+      assert.equal(blank.errorCode,'TEACHING_MODE_REQUIRED');
+      assert.match(blank.message,/required/i);
+      assert.equal(ctx.requireActiveTeachingMode_('No Longer Active',false).errorCode,'TEACHING_MODE_INACTIVE');
+      assert.equal(ctx.requireActiveTeachingMode_('Demonstration',true),null);
+    }],
+    ['Creation and Departmental lock-time validation still reject unapproved Teaching Modes',()=>{
+      const create = gas.slice(gas.indexOf('function handleCreateCNE('),gas.indexOf('function handleUpdateCNE('));
+      const deptCreate = gas.slice(gas.indexOf('function handleAddDepartmentalSchedule('));
+      assert(create.includes('requireActiveTeachingMode_(modeOfTeaching, false)'));
+      assert(create.includes('requireActiveTeachingMode_(modeOfTeaching, true)'));
+      assert(deptCreate.includes('requireActiveTeachingMode_(teachingMode, false)'));
+      assert(deptCreate.includes('var liveTeachingModeStatusMap = getTeachingModeStatusMap_(true);'));
+      assert(deptCreate.includes("liveTeachingModeStatusMap[normLiveTeachingMode] !== 'ACTIVE'"));
+    }]
+  ];
+  console.log('\n>>> Mandatory Teaching Mode selection and Resource Person marker checks');
+  for (const [name,test] of checks) {
+    focusedChecks.push({name,test});
+    try {test();focusedPassed++;console.log('✓ '+name);}
+    catch(e) {console.error('✗ '+name+': '+e.message);}
   }
 }
 
