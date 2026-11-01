@@ -17,6 +17,7 @@ import {
   PostTestParticipantVerificationData
 } from '../../services/api';
 import { useToast } from '../Toast';
+import { CNEQuestionImage } from './CNEQuestionImage';
 
 interface CNEPostTestModalProps {
   cneId?: string;
@@ -87,6 +88,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
   const [resolvedCneId, setResolvedCneId] = useState(cneId || '');
   const [questions, setQuestions] = useState<CNEQuestion[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [imagesReady, setImagesReady] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionResult, setSubmissionResult] = useState<PostTestSubmissionResult | null>(null);
   const [checkingSavedSubmission, setCheckingSavedSubmission] = useState(false);
@@ -188,6 +190,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
         setSubmissionResult(res.data.recoveredResult || null);
         setSubmissionUncertain(false);
         setQuestions(res.data.alreadySubmitted ? [] : (res.data.questions || []));
+        setImagesReady({});
         setAnswers({});
         if (res.data.recoveredResult) scrollContentToTop();
 
@@ -496,6 +499,11 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
     }
     if (questions.length === 0) {
       error('No questions available for this test.');
+      return;
+    }
+
+    if (questions.some(q => q.questionType==='IMAGE' && imagesReady[q.id] !== true)) {
+      error('One or more clinical images are not available. Retry image loading before submitting.');
       return;
     }
 
@@ -1043,6 +1051,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                         <p className="font-semibold text-slate-900 text-xs leading-relaxed">{q.question}</p>
                       </div>
 
+                      {q.questionType==='IMAGE' && <div className="pl-8"><CNEQuestionImage cneId={resolvedCneId} questionId={q.id} imageFileId={q.imageFileId} qrToken={qrToken} participantVerificationToken={participantVerificationToken} description={q.imageDescription} onAvailabilityChange={ready=>setImagesReady(prev=>prev[q.id]===ready?prev:{...prev,[q.id]:ready})} /></div>}
                       <div className="space-y-2 pl-8">
                         {(['A', 'B', 'C', 'D'] as const).map((optKey) => {
                           const isSelected = selectedOption === optKey;

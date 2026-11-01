@@ -15,11 +15,13 @@ import {
   History,
   ChevronDown,
   ChevronUp,
-  ArrowRight
+  ArrowRight,
+  ImageUp
 } from 'lucide-react';
 import { CNERecord, CNEQuestion, CNEAiQuotaInfo, CNEReferenceBankItem, CNEClinicalBankSearchInfo } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
+import { CNEQuestionImage } from './CNEQuestionImage';
 
 interface CNEQuestionsModalProps {
   cne: CNERecord;
@@ -48,7 +50,8 @@ const isQuestionComplete = (q: CNEQuestion) => {
     String(options.D || '').trim() &&
     ['A', 'B', 'C', 'D'].includes(String(q.correctOption || '').trim().toUpperCase()) &&
     String(q.explanation || '').trim().length >= 5 &&
-    String(q.authoritativeSource || '').trim().length >= 3
+    String(q.authoritativeSource || '').trim().length >= 3 &&
+    (q.questionType === 'TEXT' || (q.questionType === 'IMAGE' && Boolean(q.imageFileId)))
   );
 };
 
@@ -60,7 +63,7 @@ const isBlankUnsavedQuestion = (q: CNEQuestion) => {
     !String(options.C || '').trim() &&
     !String(options.D || '').trim() &&
     !String(q.explanation || '').trim() &&
-    !String(q.authoritativeSource || '').trim();
+    !String(q.authoritativeSource || '').trim() && !q.imageFileId;
 };
 
 const isClosedCne = (cne: CNERecord) => {
@@ -98,8 +101,11 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [bankSearchOverride, setBankSearchOverride] = useState('');
   const [editingBankConcept, setEditingBankConcept] = useState(false);
   const [importingBankId, setImportingBankId] = useState<string | null>(null);
+  const [bankImagePreviewIds,setBankImagePreviewIds] = useState<Set<string>>(new Set());
   const bankRequestRef = useRef(0);
   const [partialAiCount, setPartialAiCount] = useState(0);
+  const [uploadingImageId, setUploadingImageId] = useState<string | null>(null);
+  const [localImagePreviews, setLocalImagePreviews] = useState<Record<string, string>>({});
 
   // Request guards prevent an older CNE response from overwriting the currently open CNE.
   const questionsRequestRef = useRef(0);
@@ -206,7 +212,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const editableQuestionFingerprint = (q: CNEQuestion): string => JSON.stringify({
     question: q.question, options: q.options, correctOption: q.correctOption,
     explanation: q.explanation, authoritativeSource: q.authoritativeSource,
-    status: normalizeQuestionStatus(q.status), isFinalized: Boolean(q.isFinalized)
+    status: normalizeQuestionStatus(q.status), isFinalized: Boolean(q.isFinalized),
+    questionType:q.questionType||'',imageFileId:q.imageFileId||'',imageDescription:q.imageDescription||''
   });
 
   const hasUnsavedQuestionEdits = (): boolean => questions.some((q) => {
@@ -630,6 +637,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       correctOption: 'A',
       explanation: '',
       authoritativeSource: '',
+      questionType: 'TEXT',imageFileId:'',imageDescription:'',
       status: 'ACTIVE',
       isFinalized: false
     };
@@ -642,7 +650,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const targetQ = questions[idx];
     if (!targetQ || !isActiveQuestion(targetQ)) return;
 
-    const replacementId = nextVersionId(targetQ.id);
+    const replacementId = String(targetQ.id).startsWith('q_bank_') ? `q_manual_${Date.now()}_${versionSequenceRef.current++}` : nextVersionId(targetQ.id);
     const replacementQ: CNEQuestion = {
       id: replacementId,
       question: '',
@@ -650,6 +658,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       correctOption: 'A',
       explanation: '',
       authoritativeSource: targetQ.authoritativeSource || '',
+      questionType:'TEXT',imageFileId:'',imageDescription:'',
       status: 'ACTIVE',
       isFinalized: false
     };
@@ -679,6 +688,26 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   const handleUpdateQuestion = (idx: number, updated: Partial<CNEQuestion>) => {
     updateQuestionWithVersioning(idx, updated);
+  };
+
+  const handleUploadQuestionImage = async (idx: number, file: File) => {
+    const target=questions[idx];
+    if (!target || !canModify || !String(target.id).startsWith('q_manual_')) return;
+    if (!['image/jpeg','image/png','image/webp'].includes(file.type) || file.size > 5*1024*1024 || file.size < 1) {
+      error('Select a JPG, PNG or WebP image (maximum 5 MB).');return;
+    }
+    setUploadingImageId(target.id);
+    try {
+      const dataUrl = await new Promise<string>((resolve,reject) => {
+        const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||''));reader.onerror=()=>reject(new Error('Unable to read image'));reader.readAsDataURL(file);
+      });
+      const res=await ApiService.uploadCNEQuestionImage({cneId,mimeType:file.type,base64Data:dataUrl.split(',')[1]||''});
+      if(!res.success||!res.data?.imageFileId)throw new Error(res.message||'Image upload failed.');
+      setLocalImagePreviews(prev=>({...prev,[res.data!.imageFileId]:dataUrl}));
+      updateQuestionWithVersioning(idx,{questionType:'IMAGE',imageFileId:res.data.imageFileId});
+      success('Image uploaded privately. Save the question to keep its reference.');
+    }catch(e:any){error(e?.message||'Image upload failed.');}
+    finally{setUploadingImageId(null);}
   };
 
   const handleOptionChange = (idx: number, optKey: 'A' | 'B' | 'C' | 'D', value: string) => {
@@ -998,6 +1027,11 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               const alreadyImported = questions.some(item => item.id === sourceId || String(item.id || '').startsWith(sourceId + '__v'));
               return <div key={q.questionId} className="border border-indigo-100 bg-white rounded-xl p-4 space-y-3 shadow-xs">
                 <div className="font-semibold text-slate-900 text-sm">{q.question}</div>
+                <span className="text-[10px] font-bold uppercase rounded bg-indigo-50 px-2 py-1">{q.questionType}</span>
+                {q.questionType==='IMAGE' && <div className="space-y-1">
+                  <button type="button" className="text-indigo-700 font-semibold underline" onClick={()=>setBankImagePreviewIds(prev=>{const next=new Set(prev);next.has(q.questionId)?next.delete(q.questionId):next.add(q.questionId);return next;})}>{bankImagePreviewIds.has(q.questionId)?'Hide image':'Preview clinical image'}</button>
+                  {bankImagePreviewIds.has(q.questionId)&& <CNEQuestionImage cneId={cneId} sourceQuestionId={q.questionId} imageFileId={q.imageFileId} description={q.imageDescription} />}
+                </div>}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{(['A','B','C','D'] as const).map(key => <div key={key}>{key}. {q.options[key]}</div>)}</div>
                 <div><strong>Original answer:</strong> {q.correctOption} · <strong>Rationale:</strong> {q.explanation}</div>
                 {alreadyImported ? (
@@ -1177,7 +1211,26 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                         )}
                       </div>
 
-                      {/* Question Text & Options */}
+                          {/* Question type and private image support */}
+                          {isEditing && canModify && String(q.id||'').startsWith('q_manual_') && <div className="mb-3 space-y-2 rounded-lg border border-indigo-100 bg-indigo-50/50 p-3">
+                            <label className="text-xs font-semibold text-slate-700">Question Type:&nbsp;
+                              <select className="rounded border bg-white px-2 py-1" value={q.questionType||''} disabled={!!uploadingImageId}
+                                onChange={e=>handleUpdateQuestion(idx,{questionType:e.target.value as 'TEXT'|'IMAGE',imageFileId:e.target.value==='TEXT'?'':q.imageFileId})}>
+                                <option value="" disabled>Select question type</option><option value="TEXT">TEXT</option><option value="IMAGE">IMAGE</option>
+                              </select>
+                            </label>
+                            {q.questionType==='IMAGE' && <>
+                              <label className="flex items-center gap-2 text-indigo-800 font-semibold cursor-pointer"><ImageUp className="h-4 w-4" />{uploadingImageId===q.id?'Uploading…':q.imageFileId?'Replace image':'Upload image (JPG/PNG/WebP, ≤5 MB)'}
+                                <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" disabled={!!uploadingImageId}
+                                  onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(f)void handleUploadQuestionImage(idx,f);}} />
+                              </label>
+                              {q.imageFileId && <button type="button" className="text-xs underline text-rose-700" onClick={()=>handleUpdateQuestion(idx,{imageFileId:''})}>Remove image</button>}
+                              <label className="block text-xs text-slate-700">Image description
+                                <input value={q.imageDescription||''} maxLength={300} onChange={e=>handleUpdateQuestion(idx,{imageDescription:e.target.value})} className="block w-full p-2 rounded border border-slate-300" placeholder="Optional, avoid revealing the answer" />
+                              </label>
+                            </>}
+                          </div>}
+                          {/* Question Text & Options */}
                       {isEditing && canModify ? (
                         <div className="space-y-3 mt-3">
                           <div>
@@ -1192,6 +1245,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                             />
                           </div>
 
+                          {q.questionType==='IMAGE' && q.imageFileId && <CNEQuestionImage cneId={cneId} questionId={persistedQuestionIdsRef.current.has(q.id)?q.id:undefined} imageFileId={q.imageFileId} description={q.imageDescription} localPreview={localImagePreviews[q.imageFileId]} />}
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {(['A', 'B', 'C', 'D'] as const).map((optKey) => (
                               <div key={optKey} className="flex items-center gap-2">
@@ -1262,9 +1316,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                         </div>
                       ) : (
                         <div>
-                          <p className="font-semibold text-slate-900 leading-relaxed mb-2.5">
-                            {q.question}
-                          </p>
+                          <p className="font-semibold text-slate-900 leading-relaxed mb-2.5">{q.question}</p>
+                          {q.questionType==='IMAGE' && q.imageFileId && <CNEQuestionImage cneId={cneId} questionId={persistedQuestionIdsRef.current.has(q.id)?q.id:undefined} imageFileId={q.imageFileId} description={q.imageDescription} localPreview={localImagePreviews[q.imageFileId]} />}
+                          
 
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                             {(['A', 'B', 'C', 'D'] as const).map((optKey) => {

@@ -187,6 +187,8 @@ function clearMasterMemoryCache(actionOrKey?: string): void {
 const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getCNEQuestions',
   'getPostTestQuestions',
+  'getCNEQuestionImage',
+  'uploadCNEQuestionImage',
   'getPostTestSubmissionResult',
   'requestPostTestOtp',
   'verifyPostTestOtp',
@@ -459,6 +461,8 @@ export class ApiService {
       case 'getCNEQuestions':
       case 'searchCNEReferenceQuestions':
       case 'importCNEReferenceQuestion':
+      case 'uploadCNEQuestionImage':
+      case 'getCNEQuestionImage':
       case 'generateCNEQuestions':
       case 'getCNEAiMaterialStatus':
       case 'getCNEAiGenerationProgress':
@@ -1363,6 +1367,13 @@ export class ApiService {
   }
   static async importCNEReferenceQuestion(cneId:string, questionId:string): Promise<ApiResponse<{questionId:string;sourceQuestionId:string;isFinalized:boolean}>> {
     return this.executeAction('importCNEReferenceQuestion',{cneId,questionId,confirmReview:true});
+  }
+
+  static async uploadCNEQuestionImage(params: {cneId:string;mimeType:string;base64Data:string}): Promise<ApiResponse<{imageFileId:string;mimeType:string}>> {
+    return this.executeAction('uploadCNEQuestionImage', params);
+  }
+  static async getCNEQuestionImage(params: {cneId:string;questionId?:string;sourceQuestionId?:string;qrToken?:string;participantVerificationToken?:string}): Promise<ApiResponse<{mimeType:string;base64Data:string}>> {
+    return this.executeAction('getCNEQuestionImage', params);
   }
 
   static async generateCNEQuestions(cneId: string, allowLibraryOnly = false): Promise<ApiResponse<CNEQuestion[]>> {

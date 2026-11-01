@@ -219,6 +219,9 @@ export interface CNEQuestion {
   status?: 'ACTIVE' | 'INACTIVE' | 'REPLACED';
   isFinalized?: boolean;
   isLocked?: boolean;
+  questionType?: 'TEXT' | 'IMAGE';
+  imageFileId?: string;
+  imageDescription?: string;
 }
 
 export interface CNEClinicalBankSearchInfo {
@@ -241,8 +244,9 @@ export interface CNEReferenceBankItem {
   explanation: string;
   questionPdfPage?: string; // Administrator-only source location
   verificationStatus?: string; // Administrator-only clinical review state
-  imageRequired?: string; // Administrator-only image eligibility flag
-  imageTableReference?: string; // Reserved metadata; images are not supported yet
+  imageFileId?: string; // Private Google Drive image reference
+  imageDescription?: string;
+  imageTableReference?: string; // Original PDF figure reference
   matchScore: number;
   canImport: boolean;
 }
