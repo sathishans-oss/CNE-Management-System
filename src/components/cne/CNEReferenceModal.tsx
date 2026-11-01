@@ -366,13 +366,6 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
           </button>
         </div>
 
-        {loading ? (
-          <div className="py-24 flex flex-col items-center justify-center gap-2 text-slate-500">
-            <Loader2 className="w-7 h-7 animate-spin text-teal-600" />
-            <span className="text-xs font-medium">Loading CNE learning resource...</span>
-          </div>
-        ) : (
-          <div className="flex flex-col flex-1 overflow-hidden">
             {/* Guidance Banner */}
             <div className="px-6 py-2.5 bg-teal-50/70 border-b border-teal-100/80 flex items-start gap-2.5 text-xs text-teal-900 shrink-0">
               <Info className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
@@ -382,6 +375,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
               </div>
             </div>
 
+        {loading ? (
+          <div className="py-24 flex flex-col items-center justify-center gap-2 text-slate-500">
+            <Loader2 className="w-7 h-7 animate-spin text-teal-600" />
+            <span className="text-xs font-medium">Loading CNE learning resource...</span>
+          </div>
+        ) : (
+          <div className="flex flex-col flex-1 overflow-hidden">
             {isClosed && (
               <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 text-xs text-slate-700 shrink-0">
                 <Lock className="w-4 h-4 text-slate-600 shrink-0" />

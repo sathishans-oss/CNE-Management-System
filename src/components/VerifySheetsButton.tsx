@@ -76,7 +76,7 @@ export const VerifySheetsButton: React.FC<VerifySheetsButtonProps> = ({
         }}
         disabled={isVerifying}
         className={`flex items-center gap-1.5 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-colors cursor-pointer disabled:opacity-50 ${className}`}
-        title="Verify or create missing CNE tabs and headers in CNE Sheets"
+        title="Repair missing CNE headers and report extra tabs and columns (non-destructive)"
       >
         {isVerifying ? (
           <>
@@ -117,7 +117,7 @@ export const VerifySheetsButton: React.FC<VerifySheetsButtonProps> = ({
                     CNE Sheets verification completed successfully.
                   </h3>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    All 13 authoritative CNE tabs and required headers were verified. Existing records remained completely untouched.
+                    Required CNE tab headers were checked and any safe missing columns added. Extra tabs and headers are listed below for review; no existing records or columns were deleted.
                   </p>
                 </div>
                 <button
@@ -138,7 +138,7 @@ export const VerifySheetsButton: React.FC<VerifySheetsButtonProps> = ({
                   <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 uppercase tracking-wider text-[10px] sticky top-0">
                     <tr>
                       <th className="px-3 py-2.5">Tab Name</th>
-                      <th className="px-3 py-2.5">Status</th>
+                      <th className="px-3 py-2.5">Status / Extra columns</th>
                       <th className="px-3 py-2.5 text-right">Row Count</th>
                     </tr>
                   </thead>
@@ -165,6 +165,11 @@ export const VerifySheetsButton: React.FC<VerifySheetsButtonProps> = ({
                             ) : (
                               <span className="text-slate-700">{item.status}</span>
                             )}
+                            {item.extraTab && <div className="mt-1 text-amber-700 text-[11px]">Extra tab — not deleted</div>}
+                            {Boolean(item.extraColumns?.length) && <div className="mt-1 text-amber-700 text-[11px]">Extra columns: {item.extraColumns!.join(', ')}</div>}
+                            {Boolean(item.addedHeaders?.length) && <div className="mt-1 text-blue-700 text-[11px]">Added headers: {item.addedHeaders!.join(', ')}</div>}
+                            {Boolean(item.duplicateHeaders?.length) && <div className="mt-1 text-rose-700 text-[11px]">Duplicate headers: {item.duplicateHeaders!.join(', ')}</div>}
+                            {Boolean(item.blankHeaderColumns?.length) && <div className="mt-1 text-amber-700 text-[11px]">Blank header columns: {item.blankHeaderColumns!.join(', ')}</div>}
                           </td>
                           <td className="px-3 py-2.5 text-right text-slate-500 tabular-nums">
                             {item.rowCount !== undefined ? item.rowCount : '—'}
@@ -238,7 +243,7 @@ export const VerifySheetsButton: React.FC<VerifySheetsButtonProps> = ({
                   This will verify the configured CNE Sheets and create any missing tabs or required headers.
                 </p>
                 <p className="text-slate-600">
-                  Existing sheet data will not be deleted, cleared, reordered, or replaced.
+                  Existing sheet data will not be deleted, cleared, reordered, or replaced. Extra tabs and columns will be listed without automatic removal.
                 </p>
                 <p className="font-semibold text-slate-900 pt-1">
                   Continue?

@@ -221,7 +221,6 @@ export interface CNEQuestion {
   isLocked?: boolean;
   questionType?: 'TEXT' | 'IMAGE';
   imageFileId?: string;
-  imageDescription?: string;
 }
 
 export interface CNEClinicalBankSearchInfo {
@@ -245,7 +244,6 @@ export interface CNEReferenceBankItem {
   questionPdfPage?: string; // Administrator-only source location
   verificationStatus?: string; // Administrator-only clinical review state
   imageFileId?: string; // Private Google Drive image reference
-  imageDescription?: string;
   imageTableReference?: string; // Original PDF figure reference
   matchScore: number;
   canImport: boolean;
@@ -467,6 +465,12 @@ export interface SheetAuditItem {
   status: string;
   rowCount?: number;
   error?: string;
+  extraTab?: boolean;
+  extraColumns?: string[];
+  addedHeaders?: string[];
+  missingHeaders?: string[];
+  duplicateHeaders?: string[];
+  blankHeaderColumns?: number[];
 }
 
 export interface ProgramImpactStats {

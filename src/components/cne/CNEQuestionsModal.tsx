@@ -213,7 +213,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     question: q.question, options: q.options, correctOption: q.correctOption,
     explanation: q.explanation, authoritativeSource: q.authoritativeSource,
     status: normalizeQuestionStatus(q.status), isFinalized: Boolean(q.isFinalized),
-    questionType:q.questionType||'',imageFileId:q.imageFileId||'',imageDescription:q.imageDescription||''
+    questionType:q.questionType||'',imageFileId:q.imageFileId||''
   });
 
   const hasUnsavedQuestionEdits = (): boolean => questions.some((q) => {
@@ -637,7 +637,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       correctOption: 'A',
       explanation: '',
       authoritativeSource: '',
-      questionType: 'TEXT',imageFileId:'',imageDescription:'',
+      questionType: undefined,imageFileId:'',
       status: 'ACTIVE',
       isFinalized: false
     };
@@ -658,7 +658,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       correctOption: 'A',
       explanation: '',
       authoritativeSource: targetQ.authoritativeSource || '',
-      questionType:'TEXT',imageFileId:'',imageDescription:'',
+      questionType:undefined,imageFileId:'',
       status: 'ACTIVE',
       isFinalized: false
     };
@@ -690,11 +690,23 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     updateQuestionWithVersioning(idx, updated);
   };
 
+  const handleSelectManualQuestionType = (idx: number, next: 'TEXT' | 'IMAGE') => {
+    const target = questions[idx];
+    if (!target || !canModify || !String(target.id || '').startsWith('q_manual_')) return;
+    if (target.questionType === next) return;
+    if (next === 'TEXT' && target.imageFileId) {
+      if (!window.confirm('Switch to TEXT? The current image will be unlinked from this question. The Drive file will not be deleted.')) return;
+      handleUpdateQuestion(idx, {questionType:'TEXT', imageFileId:''});
+      return;
+    }
+    handleUpdateQuestion(idx, {questionType:next});
+  };
+
   const handleUploadQuestionImage = async (idx: number, file: File) => {
     const target=questions[idx];
     if (!target || !canModify || !String(target.id).startsWith('q_manual_')) return;
-    if (!['image/jpeg','image/png','image/webp'].includes(file.type) || file.size > 5*1024*1024 || file.size < 1) {
-      error('Select a JPG, PNG or WebP image (maximum 5 MB).');return;
+    if (!['image/jpeg','image/png','image/webp'].includes(file.type) || file.size > 3*1024*1024 || file.size < 1) {
+      error('Select a JPG, PNG or WebP image (maximum 3 MB).');return;
     }
     setUploadingImageId(target.id);
     try {
@@ -828,8 +840,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
       <div className="bg-white rounded-2xl w-[94vw] max-w-[1440px] max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
         {/* Header */}
-        <div className="px-6 py-3.5 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/70">
-          <div className="flex items-center gap-3 min-w-0 pr-4">
+        <div className="px-3 sm:px-6 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0 bg-slate-50/70">
+          <div className="flex items-center gap-3 min-w-0 flex-1 pr-2">
             <div className="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center shrink-0">
               <Sparkles className="w-5 h-5" />
             </div>
@@ -860,23 +872,15 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            disabled={isSaving || isGenerating || !!importingBankId}
-            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 disabled:opacity-40 cursor-pointer transition-colors shrink-0"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Permanent full-width tabs; Question Bank never shares body space with My Questions. */}
-        <div role="tablist" aria-label="Post-Test question views" className="px-6 pt-2 bg-white border-b border-slate-200 flex gap-2 shrink-0">
+          <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2" >
+            {/* Permanent full-width views; controls stay in the header during loading. */}
+        <div role="tablist" aria-label="Post-Test question views" className="flex flex-wrap items-center gap-1.5">
           <button type="button" role="tab" id="cne-my-questions-tab" aria-controls="cne-my-questions-panel"
             aria-selected={activeView === 'questions'}
             onClick={() => setActiveView('questions')}
             onKeyDown={(event) => { if (event.key === 'ArrowRight') { event.preventDefault(); openQuestionBank(); } }}
             disabled={isGenerating || isSaving || !!importingBankId}
-            className={`px-4 py-2 text-xs font-bold rounded-t-lg border-b-2 transition-colors disabled:opacity-50 ${activeView === 'questions' ? 'border-purple-700 bg-purple-50 text-purple-800' : 'border-transparent text-slate-600 hover:bg-slate-50'}`}>
+            className={`px-2.5 py-1.5 text-[11px] font-bold rounded-md border transition-colors disabled:opacity-50 ${activeView === 'questions' ? 'border-purple-600 bg-purple-50 text-purple-800' : 'border-slate-200 text-slate-600 hover:bg-white'}`}>
             My Questions ({activeQuestions.length})
           </button>
           <button type="button" role="tab" id="cne-question-bank-tab" aria-controls="cne-question-bank-panel"
@@ -884,9 +888,18 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             onClick={openQuestionBank}
             onKeyDown={(event) => { if (event.key === 'ArrowLeft') { event.preventDefault(); setActiveView('questions'); } }}
             disabled={!canModify || !isPageReady || isGenerating || isSaving || !!importingBankId}
-            className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-t-lg border-b-2 transition-colors disabled:opacity-50 ${activeView === 'bank' ? 'border-indigo-700 bg-indigo-50 text-indigo-900' : 'border-transparent text-slate-600 hover:bg-slate-50'}`}>
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-bold rounded-md border transition-colors disabled:opacity-50 ${activeView === 'bank' ? 'border-indigo-700 bg-indigo-50 text-indigo-900' : 'border-slate-200 text-slate-600 hover:bg-white'}`}>
             <BookOpen className="w-3.5 h-3.5"/> Question Bank {bankSearched ? `(${bankMatches.length})` : ''}
           </button>
+        </div>
+          <button
+            onClick={onClose}
+            disabled={isSaving || isGenerating || !!importingBankId}
+            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 disabled:opacity-40 cursor-pointer transition-colors shrink-0"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          </div>
         </div>
 
         {/* My Questions-only AI and finalization actions. */}
@@ -1030,7 +1043,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 <span className="text-[10px] font-bold uppercase rounded bg-indigo-50 px-2 py-1">{q.questionType}</span>
                 {q.questionType==='IMAGE' && <div className="space-y-1">
                   <button type="button" className="text-indigo-700 font-semibold underline" onClick={()=>setBankImagePreviewIds(prev=>{const next=new Set(prev);next.has(q.questionId)?next.delete(q.questionId):next.add(q.questionId);return next;})}>{bankImagePreviewIds.has(q.questionId)?'Hide image':'Preview clinical image'}</button>
-                  {bankImagePreviewIds.has(q.questionId)&& <CNEQuestionImage cneId={cneId} sourceQuestionId={q.questionId} imageFileId={q.imageFileId} description={q.imageDescription} />}
+                  {bankImagePreviewIds.has(q.questionId)&& <CNEQuestionImage cneId={cneId} sourceQuestionId={q.questionId} imageFileId={q.imageFileId} />}
                 </div>}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{(['A','B','C','D'] as const).map(key => <div key={key}>{key}. {q.options[key]}</div>)}</div>
                 <div><strong>Original answer:</strong> {q.correctOption} · <strong>Rationale:</strong> {q.explanation}</div>
@@ -1211,25 +1224,31 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                         )}
                       </div>
 
-                          {/* Question type and private image support */}
-                          {isEditing && canModify && String(q.id||'').startsWith('q_manual_') && <div className="mb-3 space-y-2 rounded-lg border border-indigo-100 bg-indigo-50/50 p-3">
-                            <label className="text-xs font-semibold text-slate-700">Question Type:&nbsp;
-                              <select className="rounded border bg-white px-2 py-1" value={q.questionType||''} disabled={!!uploadingImageId}
-                                onChange={e=>handleUpdateQuestion(idx,{questionType:e.target.value as 'TEXT'|'IMAGE',imageFileId:e.target.value==='TEXT'?'':q.imageFileId})}>
-                                <option value="" disabled>Select question type</option><option value="TEXT">TEXT</option><option value="IMAGE">IMAGE</option>
-                              </select>
-                            </label>
-                            {q.questionType==='IMAGE' && <>
-                              <label className="flex items-center gap-2 text-indigo-800 font-semibold cursor-pointer"><ImageUp className="h-4 w-4" />{uploadingImageId===q.id?'Uploading…':q.imageFileId?'Replace image':'Upload image (JPG/PNG/WebP, ≤5 MB)'}
-                                <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" disabled={!!uploadingImageId}
-                                  onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(f)void handleUploadQuestionImage(idx,f);}} />
-                              </label>
-                              {q.imageFileId && <button type="button" className="text-xs underline text-rose-700" onClick={()=>handleUpdateQuestion(idx,{imageFileId:''})}>Remove image</button>}
-                              <label className="block text-xs text-slate-700">Image description
-                                <input value={q.imageDescription||''} maxLength={300} onChange={e=>handleUpdateQuestion(idx,{imageDescription:e.target.value})} className="block w-full p-2 rounded border border-slate-300" placeholder="Optional, avoid revealing the answer" />
-                              </label>
-                            </>}
-                          </div>}
+                          {/* Compact one-row manual type selector + upload */}
+                          {isEditing && canModify && String(q.id || '').startsWith('q_manual_') && (
+                            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50/50 px-2.5 py-2">
+                              <span className="text-[11px] font-semibold text-slate-700">Question Type:</span>
+                              {(['TEXT','IMAGE'] as const).map(type => (
+                                <button key={type} type="button"
+                                  aria-pressed={q.questionType === type}
+                                  onClick={() => handleSelectManualQuestionType(idx,type)}
+                                  disabled={!!uploadingImageId}
+                                  className={`min-h-8 rounded-md border px-2.5 py-1 text-[11px] font-bold transition-colors disabled:opacity-50 ${q.questionType===type ? 'border-indigo-600 bg-indigo-100 text-indigo-900 ring-1 ring-indigo-500' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>{type}</button>
+                              ))}
+                              {q.questionType === 'IMAGE' && (
+                                <div className="ml-auto flex flex-wrap items-center gap-2">
+                                  <label className={`inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md border border-indigo-300 bg-white px-2.5 py-1 text-[11px] font-bold text-indigo-800 ${uploadingImageId?'opacity-50 pointer-events-none':''}`}>
+                                    <ImageUp className="h-3.5 w-3.5" />
+                                    {uploadingImageId===q.id?'Uploading…':q.imageFileId?'Replace Image':'Upload Image'}
+                                    <span className="text-[10px] font-normal text-slate-500">Max 3 MB</span>
+                                    <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" disabled={!!uploadingImageId}
+                                      onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(f)void handleUploadQuestionImage(idx,f);}} />
+                                  </label>
+                                  {q.imageFileId && <button type="button" className="text-[11px] font-semibold text-rose-700 underline" onClick={()=>handleUpdateQuestion(idx,{imageFileId:''})}>Remove</button>}
+                                </div>
+                              )}
+                            </div>
+                          )}
                           {/* Question Text & Options */}
                       {isEditing && canModify ? (
                         <div className="space-y-3 mt-3">
@@ -1245,7 +1264,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                             />
                           </div>
 
-                          {q.questionType==='IMAGE' && q.imageFileId && <CNEQuestionImage cneId={cneId} questionId={persistedQuestionIdsRef.current.has(q.id)?q.id:undefined} imageFileId={q.imageFileId} description={q.imageDescription} localPreview={localImagePreviews[q.imageFileId]} />}
+                          {q.questionType==='IMAGE' && q.imageFileId && <CNEQuestionImage cneId={cneId} questionId={persistedQuestionIdsRef.current.has(q.id)?q.id:undefined} imageFileId={q.imageFileId} localPreview={localImagePreviews[q.imageFileId]} compact />}
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {(['A', 'B', 'C', 'D'] as const).map((optKey) => (
                               <div key={optKey} className="flex items-center gap-2">
@@ -1317,7 +1336,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                       ) : (
                         <div>
                           <p className="font-semibold text-slate-900 leading-relaxed mb-2.5">{q.question}</p>
-                          {q.questionType==='IMAGE' && q.imageFileId && <CNEQuestionImage cneId={cneId} questionId={persistedQuestionIdsRef.current.has(q.id)?q.id:undefined} imageFileId={q.imageFileId} description={q.imageDescription} localPreview={localImagePreviews[q.imageFileId]} />}
+                          {q.questionType==='IMAGE' && q.imageFileId && <CNEQuestionImage cneId={cneId} questionId={persistedQuestionIdsRef.current.has(q.id)?q.id:undefined} imageFileId={q.imageFileId} localPreview={localImagePreviews[q.imageFileId]} />}
                           
 
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">

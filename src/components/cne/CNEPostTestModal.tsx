@@ -1051,7 +1051,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
                         <p className="font-semibold text-slate-900 text-xs leading-relaxed">{q.question}</p>
                       </div>
 
-                      {q.questionType==='IMAGE' && <div className="pl-8"><CNEQuestionImage cneId={resolvedCneId} questionId={q.id} imageFileId={q.imageFileId} qrToken={qrToken} participantVerificationToken={participantVerificationToken} description={q.imageDescription} onAvailabilityChange={ready=>setImagesReady(prev=>prev[q.id]===ready?prev:{...prev,[q.id]:ready})} /></div>}
+                      {q.questionType==='IMAGE' && <div className="pl-8"><CNEQuestionImage cneId={resolvedCneId} questionId={q.id} imageFileId={q.imageFileId} qrToken={qrToken} participantVerificationToken={participantVerificationToken} onAvailabilityChange={ready=>setImagesReady(prev=>prev[q.id]===ready?prev:{...prev,[q.id]:ready})} /></div>}
                       <div className="space-y-2 pl-8">
                         {(['A', 'B', 'C', 'D'] as const).map((optKey) => {
                           const isSelected = selectedOption === optKey;

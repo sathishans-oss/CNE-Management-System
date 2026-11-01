@@ -42,18 +42,18 @@ function createHybridChecks() {
 /** Smart Hybrid behavioral checks. No Google Sheets or Gemini network calls. */
 function assert(condition,reason){if(!condition)throw Error(reason);}
 function spreadsheet(rows){
-  const self={rows:rows.map(row=>row.slice()),getLastRow(){return this.rows.length;},getLastColumn(){return Math.max(...this.rows.map(row=>row.length));},
+  const self={rows:rows.map(row=>row.slice()),getLastRow(){return this.rows.length;},getLastColumn(){return Math.max(...this.rows.map(row=>row.length));},getMaxColumns(){return Math.max(26,this.getLastColumn());},getName(){return this.name||'Test';},
     getDataRange(){return {getValues:()=>self.rows.map(row=>row.slice())};},
     appendRow(row){self.rows.push(row.slice());},
-    getRange(r,c,n=1,w=1){return {getValues(){return Array.from({length:n},(_,i)=>Array.from({length:w},(_,j)=>self.rows[r-1+i]?.[c-1+j]??''));},
+    getRange(r,c,n=1,w=1){return {getValues(){return Array.from({length:n},(_,i)=>Array.from({length:w},(_,j)=>self.rows[r-1+i]?.[c-1+j]??''));},getDisplayValues(){return this.getValues();},
       getValue(){return self.rows[r-1]?.[c-1]??'';},setValue(value){while(self.rows.length<r)self.rows.push([]);self.rows[r-1][c-1]=value;},
-      setValues(values){values.forEach((row,i)=>row.forEach((v,j)=>{while(self.rows.length<r+i)self.rows.push([]);self.rows[r-1+i][c-1+j]=v;}));}};}
+      setValues(values){values.forEach((row,i)=>row.forEach((v,j)=>{while(self.rows.length<r+i)self.rows.push([]);self.rows[r-1+i][c-1+j]=v;}));},setFontWeight(){return this;}};}
   };return self;
 }
-const HEADERS=['Question ID','Unit','Topic','Subtopic','Clinical Keywords','Question Type','Question Text','Option A','Option B','Option C','Option D','Option E','Option F','Correct Answer','Explanation / Rationale','Question PDF Page','Image / Table Reference','Verification Status','Updated At','Image Drive File ID','Image Description','Original Question Format'];
-const QHEAD=['CNE ID','Question ID','Question Text','Option A','Option B','Option C','Option D','Correct Option','Explanation','Is Finalized','Is Locked','Created At','Created By','Authoritative Source','Status','Question Type','Image Drive File ID','Image Description'];
+const HEADERS=['Question ID','Unit','Topic','Subtopic','Clinical Keywords','Question Type','Question Text','Option A','Option B','Option C','Option D','Option E','Option F','Correct Answer','Explanation / Rationale','Question PDF Page','Image / Table Reference','Verification Status','Updated At','Image Drive File ID','Original Question Format'];
+const QHEAD=['CNE ID','Question ID','Question Text','Option A','Option B','Option C','Option D','Correct Option','Explanation','Is Finalized','Is Locked','Created At','Created By','Authoritative Source','Status','Question Type','Image Drive File ID'];
 function question(sourceId='REF-001'){
- const row=Array(22).fill('');
+ const row=Array(21).fill('');
  Object.assign(row,{0:sourceId,1:'Nursing Procedures',2:'IV Cannulation',3:'Site selection',4:'venipuncture, cannula insertion',5:'TEXT',6:'Which peripheral vein is appropriate for IV cannulation in this situation?',7:'Appropriate vein with intact skin',8:'Unassessed vein',9:'Inflamed vein',10:'Previous infiltration site',13:'A',14:'The clinical source explains the safe nursing assessment required for IV site selection.',15:101,16:'',17:'CLINICALLY_APPROVED',20:'Single best answer'});return row;
 }
 function fixture(){
@@ -70,7 +70,7 @@ function fixture(){
  ctx.getHeaderMap=sheet=>Object.fromEntries(sheet.rows[0].map((head,i)=>[String(head||'').toLowerCase().replace(/[^a-z0-9]/g,''),i]));
  ctx.getSpreadsheet=()=>({getSheetByName:name=>name==='CNE_Reference_Question_Index'?b:name==='CNE Post Test Questions'?q:null});
  ctx.getQuestionsSheet=()=>q;
- ctx.getQuestionColIndexes=()=>({cneId:0,qId:1,question:2,optA:3,optB:4,optC:5,optD:6,correctOption:7,explanation:8,isFinalized:9,isLocked:10,createdAt:11,createdBy:12,authoritativeSource:13,status:14,questionType:15,imageFileId:16,imageDescription:17});
+ ctx.getQuestionColIndexes=()=>({cneId:0,qId:1,question:2,optA:3,optB:4,optC:5,optD:6,correctOption:7,explanation:8,isFinalized:9,isLocked:10,createdAt:11,createdBy:12,authoritativeSource:13,status:14,questionType:15,imageFileId:16});
  ctx.getOrCreateSheet=name=>name==='CNE_AI_Quota'?quota:null;
  ctx.revalidateCneMutation_=(session,id)=>({success:true,record:{topic:'IV Cannulation'},session});
  ctx.LockService={getScriptLock:()=>({tryLock:()=>true,waitLock:()=>{},releaseLock:()=>{}})};
@@ -177,11 +177,11 @@ const hybridChecks=[
     assert(r.data.length===0&&r.clinicalSearch.requiresClarification,'Manual override bypassed relevance threshold');
   }},
  {name:'Bank refuses malformed schema rather than guess answer column positions',run(){const {ctx,b}=fixture();b.rows[0][13]='Unknown Answer';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(result.errorCode==='QUESTION_BANK_SCHEMA_INVALID','Bad schema accepted');}},
- {name:'Testing-only index schemas use 22/10/11 columns without migration or a script property',run(){
+ {name:'Testing-only index schemas use 21/10/11 columns without migration or a script property',run(){
     const {ctx}=fixture();
     assert(typeof ctx.cneAdminMigrateIndexSchemas_==='undefined'&&typeof ctx.cneEvidenceSplitReady_==='undefined','Old migration or switch still callable');
     assert(!/CNE_EVIDENCE_INDEX_V2_READY/.test(gas),'Migration property still present');
-    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===22,'Question index schema is not 22 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===21,'Question index schema is not 22 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'].length===10,'Library schema is not 10 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE_Material_Index'].length===11,'Uploaded material schema is not 11 columns');
     assert(ctx.cneIndexProjectRows_([['ID','LOCAL_REFERENCE_LIB','','DOC','Source','Gastritis','Heading',1,'Evidence','Keyword','SUCCESS','Today']],ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'])[0].length===10,'Library projection failed');
@@ -190,11 +190,11 @@ const hybridChecks=[
  {name:'Verify Sheets initializes both evidence indexes and Question Index without a migration flag',run(){
     const {ctx}=fixture(), created={};
     ctx.setupSecurityProperties=()=>{};
-    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>created[n]||null};
+    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>created[n]||null,getSheets:()=>Object.values(created)};
     ctx.getOrCreateSheet=name=>{
       if (!created[name]){
         const headers=ctx.CNE_SHEET_HEADERS[name]||[];
-        created[name]=spreadsheet([headers.slice()]);
+        created[name]=spreadsheet([headers.slice()]);created[name].name=name;
       }
       return created[name];
     };
@@ -202,7 +202,7 @@ const hybridChecks=[
     assert(result.success,'Clean index initialization failed '+result.message);
     assert(created['CNE_Reference_Index'].rows[0].length===10,'Library headers not initialized');
     assert(created['CNE_Material_Index'].rows[0].length===11,'CNE material tab not created');
-    assert(created['CNE_Reference_Question_Index'].rows[0].length===22,'Question index tab not created');
+    assert(created['CNE_Reference_Question_Index'].rows[0].length===21,'Question index tab not created');
     assert(result.auditReport.some(x=>x.tab==='CNE_Material_Index'),'Material tab missing from verification results');
   }},
  {name:'Verify Sheets flags old mixed-index columns without restoring or deleting headers',run(){
@@ -210,7 +210,7 @@ const hybridChecks=[
     const old=['Index ID','Source Type','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At'];
     existing['CNE_Reference_Index']=spreadsheet([old.slice()]);
     ctx.setupSecurityProperties=()=>{};
-    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>existing[n]||null};
+    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>existing[n]||null,getSheets:()=>Object.values(existing)};
     ctx.getOrCreateSheet=name=>existing[name]||(existing[name]=spreadsheet([(ctx.CNE_SHEET_HEADERS[name]||[]).slice()]));
     const result=ctx.setupAndVerifyCNESheets('ADMIN',null);
     assert(!result.success&&result.message.includes('CNE_Reference_Index'),'Old schema was not flagged');
@@ -266,12 +266,12 @@ const hybridChecks=[
     const adminResult=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},{employeeId:'ADMIN-1',role:'ADMIN'});
     assert(adminResult.data[0].verificationStatus&&adminResult.data[0].unit==='Nursing Procedures'&&adminResult.data[0].questionPdfPage==='101','Admin review metadata was discarded');
   }},
- {name:'Approved 22-column Question Bank with Unit, original format, and image fields remains importable',run(){
+ {name:'Approved 21-column Question Bank with Unit, original format, and image fields remains importable',run(){
     const {ctx,b,q}=fixture();
-    assert(b.rows[0].length===22&&b.rows[0][1]==='Unit'&&b.rows[0][16]==='Image / Table Reference'&&b.rows[0][21]==='Original Question Format','Expected approved 22-column schema');
+    assert(b.rows[0].length===21&&b.rows[0][1]==='Unit'&&b.rows[0][16]==='Image / Table Reference'&&b.rows[0][20]==='Original Question Format','Expected approved 21-column schema');
     assert(!b.rows[0].includes('Image / Table Required'),'Obsolete image flag remained in approved schema');
     const found=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
-    assert(found.success&&found.data.length===2&&found.data[0].canImport,'Approved 22-column Question Bank header map failed');
+    assert(found.success&&found.data.length===2&&found.data[0].canImport,'Approved 21-column Question Bank header map failed');
     const result=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);
     assert(result.success&&q.rows[1][13]==='Question Bank'&&q.rows[1][15]==='TEXT','Question Bank Draft did not save explicit TEXT and source label');
   }},
@@ -301,18 +301,18 @@ const hybridChecks=[
     row[5]='IMAGE';row[19]='';assert(!ctx.cneHybridCanImportBank_(candidate()),'IMAGE without image ID was importable');
     row[19]='badID';assert(!ctx.cneHybridCanImportBank_(candidate()),'IMAGE with malformed ID was importable');
     row[19]='1B2C3D4E5F6G7H8I9J0K1L2M';assert(ctx.cneHybridCanImportBank_(candidate()),'Approved typed IMAGE with valid-format ID was blocked');
-    row[21]='MULTIPLE_RESPONSE';assert(!ctx.cneHybridCanImportBank_(candidate()),'Legacy multi-response original format was imported');
+    row[20]='MULTIPLE_RESPONSE';assert(!ctx.cneHybridCanImportBank_(candidate()),'Legacy multi-response original format was imported');
     row[21]='SATA';assert(!ctx.cneHybridCanImportBank_(candidate()),'Select-all-that-apply question was importable');
   }},
  {name:'Old 20-column schema is refused until separately corrected',run(){
     const {ctx,b}=fixture();b.rows.forEach(row=>row.splice(16,2));
     assert(ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session).errorCode==='QUESTION_BANK_SCHEMA_INVALID','Obsolete Question Bank schema accepted');
   }},
- {name:'Old 25/29-column Question Bank sheets fail safely pending manual cleanup',run(){
+ {name:'Question Bank header mapping tolerates harmless extra legacy columns',run(){
     for(const bad of ['Resource Title','Reuse Permission']){
       const {ctx,b}=fixture();b.rows[0].splice(1,0,bad);for(let i=1;i<b.rows.length;i++)b.rows[i].splice(1,0,'legacy');
       const r=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
-      assert(r.errorCode==='QUESTION_BANK_SCHEMA_INVALID','Legacy column '+bad+' was silently accepted');
+      assert(r.success && r.data.length===2,'Harmless legacy column '+bad+' should be reported by Verify Sheets, not block imports');
     }
   }},
  {name:'Question Bank records needing review are not importable',run(){const {ctx,b}=fixture();b.rows[1][17]='NEEDS_REVIEW';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(!result.data.find(x=>x.questionId==='REF-001').canImport,'Unreviewed figure item import allowed');}},
@@ -397,6 +397,44 @@ const hybridChecks=[
   }}
  ,{name:'Uncertain partial save retains original blueprint for later authoritative status recovery',run(){
     assert(gas.includes("{state:'UNCERTAIN',message:'The result of saving requires verification.'}")&& !gas.includes("{state:'UNCERTAIN',objectives:[]}"),'Uncertain write erased recoverable objective slots');
+  }}
+ ,{name:'Image Description is absent from both Question Bank schemas and all MCQ interfaces',run(){
+    const {ctx}=fixture();
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===21,'Question Bank must have 21 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE Post Test Questions'].length===17,'Post Test must have 17 columns');
+    assert(!gas.includes('imageDescription')&&!gas.includes('Image Description'),'Removed description persists in backend');
+    assert(!MODAL.includes('imageDescription')&&!TYPES.includes('imageDescription'),'Removed description persists in frontend');
+  }}
+ ,{name:'Verify Sheets appends missing Question Bank headers while reporting extra columns and tabs',run(){
+    const {ctx}=fixture(), named={};
+    const bank=spreadsheet([HEADERS.filter(h=>h!=='Image Drive File ID').concat(['Image Description']),question().filter((_,i)=>i!==19).concat(['Legacy detail'])]);
+    bank.name='CNE_Reference_Question_Index';named[bank.name]=bank;
+    const archived=spreadsheet([['Old Data'],['Value']]);archived.name='Old Backup';named[archived.name]=archived;
+    ctx.setupSecurityProperties=()=>{};
+    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>named[n]||null,getSheets:()=>Object.values(named)};
+    ctx.getOrCreateSheet=name=>{
+      if(!named[name]){const headers=ctx.CNE_SHEET_HEADERS[name]||[];named[name]=spreadsheet([headers.slice()]);named[name].name=name;}
+      return named[name];
+    };
+    const res=ctx.setupAndVerifyCNESheets('ADMIN',null);
+    assert(res.success,'Harmless extra Question Bank column should not block verification');
+    assert(bank.rows[0].includes('Image Drive File ID'),'Missing Bank image ID header was not appended');
+    assert(bank.rows[1][bank.rows[1].length-1]==='Legacy detail','Existing record modified');
+    assert(res.auditReport.some(x=>x.tab==='Old Backup'&&x.extraTab),'Extra tab not reported');
+    assert(res.auditReport.some(x=>x.tab==='CNE_Reference_Question_Index'&&x.extraColumns.some(v=>v.includes('Image Description'))),'Extra column not reported');
+  }}
+ ,{name:'New manual image upload enforces 3MB; stored 5MB images still load',run(){
+    const start=gas.indexOf('function handleUploadCNEQuestionImage('), end=gas.indexOf('function handleGetCNEQuestionImage(',start);
+    const upload=gas.substring(start,end);
+    const validate=gas.substring(gas.indexOf('function cneQuestionImageCheck_('),start);
+    assert(upload.includes('bytes.length>3*1024*1024')&&MODAL.includes('file.size > 3*1024*1024'),'New upload cap is not 3 MB');
+    assert(validate.includes('file.getSize()>5*1024*1024'),'Historic image reading limit was reduced');
+  }}
+ ,{name:'Material instructions visible during load and compact question tools moved to header',run(){
+    const material=readFileSync(join(ROOT,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
+    assert(material.indexOf('Upload the authoritative presentation slides')<material.indexOf('{loading ? ('),'Material guidance hidden behind spinner');
+    assert(MODAL.includes('Permanent full-width views; controls stay in the header during loading.'),'Header view controls missing');
+    assert(MODAL.includes("(['TEXT','IMAGE'] as const).map")&&MODAL.includes('handleSelectManualQuestionType'),'Compact manual selection controls missing');
   }}
  ,{name:'Exactly ten valid finalized questions can be saved and reported ready',run(){
     const {ctx,q}=fixture();
@@ -4344,7 +4382,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 27,
-    sha256: "81b686b94da57fb995f66471ac013febe60516d893821e53ae15f502947cf8fa",
+    sha256: "80b092b8c5a9f3dda46d145894cbe6b75dfe8cb0634f4693dc0e37890ab1a1fe",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -4699,14 +4737,15 @@ runTest('CNE Schedule sheet architecture & no obsolete Time column', () => {
     "No case variation of 'Time' may exist in CNE Schedule headers"
   );
 
-  // Verify setupAndVerifyCNESheets does not recreate Time column and actively deletes it
+  // Admin Verify Sheets now reports unused legacy columns without deleting any data.
+  const verifyBody = codeGs.substring(codeGs.indexOf('function setupAndVerifyCNESheets('), codeGs.indexOf('function handleSetupAndVerifyCNESheets('));
   assert.ok(
-    codeGs.includes("tabName === 'CNE Schedule'") && codeGs.includes("normH === 'time'"),
-    "setupAndVerifyCNESheets must actively identify and clean up any legacy 'Time' column"
+    verifyBody.includes('extraColumns') && verifyBody.includes('extraTab:true'),
+    "Verify Sheets must report unused columns and tabs"
   );
   assert.ok(
-    codeGs.includes("sheet.deleteColumn("),
-    "setupAndVerifyCNESheets must delete legacy 'Time' column if encountered"
+    !verifyBody.includes('sheet.deleteColumn(') && !verifyBody.includes('sheet.deleteSheet('),
+    "Verify Sheets must never automatically remove columns or tabs"
   );
 });
 
@@ -5546,8 +5585,8 @@ runTest('Coordinator Desk and Quick Links use Google Sheet storage, not Script P
     "CNE_SHEET_HEADERS must define the 'Quick Links' sheet"
   );
   assert.ok(
-    codeGs.includes("'Portal Content',") && codeGs.includes("'Quick Links',"),
-    'setupAndVerifyCNESheets must include Portal Content and Quick Links tabs'
+    codeGs.includes('var required = Object.keys(CNE_SHEET_HEADERS);'),
+    'setupAndVerifyCNESheets must enumerate every registered tab including Portal Content and Quick Links'
   );
   assert.ok(
     codeGs.includes("getOrCreateSheet('Portal Content')") &&

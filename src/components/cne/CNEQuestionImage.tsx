@@ -7,12 +7,12 @@ export const CNEQuestionImage: React.FC<{
   questionId?: string;
   sourceQuestionId?: string;
   imageFileId?: string;
-  description?: string;
   qrToken?: string;
   participantVerificationToken?: string;
   localPreview?: string;
+  compact?: boolean;
   onAvailabilityChange?: (available: boolean) => void;
-}> = ({ cneId, questionId, sourceQuestionId, imageFileId, description, qrToken, participantVerificationToken, localPreview, onAvailabilityChange }) => {
+}> = ({ cneId, questionId, sourceQuestionId, imageFileId, qrToken, participantVerificationToken, localPreview, compact = false, onAvailabilityChange }) => {
   const [src, setSrc] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -46,13 +46,13 @@ export const CNEQuestionImage: React.FC<{
   if (error) return <div role="alert" className="my-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{error} <button type="button" onClick={() => setRetry(v => v + 1)} className="ml-2 underline font-semibold">Retry</button></div>;
   if (!src) return null;
   return <>
-    <button type="button" onClick={() => setExpanded(true)} className="my-3 block max-w-full rounded-xl border border-slate-200 bg-white p-2 text-left" aria-label="Enlarge clinical question image">
-      <img src={src} alt={description || 'Clinical image for this MCQ'} className="max-h-72 max-w-full w-auto object-contain rounded-md" />
+    <button type="button" onClick={() => setExpanded(true)} className={`my-2 block max-w-full rounded-xl border border-slate-200 bg-white p-2 text-left ${compact ? 'inline-block' : ''}`} aria-label="Enlarge clinical question image">
+      <img src={src} alt={'Clinical image for this MCQ'} className={`${compact ? 'max-h-24 max-w-40' : 'max-h-72 max-w-full'} w-auto object-contain rounded-md`} />
       <span className="block pt-1 text-[11px] font-medium text-indigo-700">Tap to enlarge image</span>
     </button>
     {expanded && <div role="dialog" aria-modal="true" aria-label="Enlarged clinical image" className="fixed inset-0 z-[120] bg-slate-950/90 flex flex-col items-center justify-center p-4" onClick={() => setExpanded(false)}>
       <button type="button" className="absolute right-5 top-5 text-white rounded border border-white/50 px-3 py-2" onClick={() => setExpanded(false)}>Close ✕</button>
-      <img src={src} alt={description || 'Enlarged clinical question image'} className="max-h-[85vh] max-w-[95vw] object-contain" onClick={e => e.stopPropagation()} />
+      <img src={src} alt={'Enlarged clinical question image'} className="max-h-[85vh] max-w-[95vw] object-contain" onClick={e => e.stopPropagation()} />
     </div>}
   </>;
 };
