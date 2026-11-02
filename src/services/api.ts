@@ -32,7 +32,7 @@ import {
   CneInterestStatusResponse,
   CneInterestedParticipantsResponse,
   CNEAnalytics,
-  QuizHomeData, QuizAttempt, QuizQuestion, QuizResult
+  QuizHomeData, QuizAttempt, QuizQuestion, QuizResult, QuizHistoryItem, ClinicalInsight
 } from '../types';
 import {
   INITIAL_AREAS,
@@ -397,6 +397,13 @@ export function formatDurationValue(rawValue: any, displayValue?: any): string {
 
 
 export class ApiService {
+  static getClinicalInsightsAdmin(): Promise<ApiResponse<{insights:ClinicalInsight[]}>> {return this.executeAction('getClinicalInsightsAdmin');}
+  static getClinicalInsightSources(search:string): Promise<ApiResponse<{sources:Array<{indexId:string;title:string;topic:string;section:string;preview:string}>}>> {return this.executeAction('getClinicalInsightSources',{search});}
+  static getClinicalInsightSourceDetail(sourceIndexId:string): Promise<ApiResponse<{title:string;section:string;passage:string}>> {return this.executeAction('getClinicalInsightSourceDetail',{sourceIndexId});}
+  static generateClinicalInsightDraft(topic:string,sourceIndexId:string): Promise<ApiResponse<{insightId:string;status:string}>> {return this.executeAction('generateClinicalInsightDraft',{topic,sourceIndexId});}
+  static saveClinicalInsightDraft(data:Partial<ClinicalInsight>): Promise<ApiResponse<{saved:boolean}>> {return this.executeAction('saveClinicalInsightDraft',data);}
+  static reviewClinicalInsight(insightId:string,status:'APPROVED'|'REJECTED'|'WITHDRAWN',notes:string): Promise<ApiResponse<{status:string}>> {return this.executeAction('reviewClinicalInsight',{insightId,status,notes});}
+  static getQuizMyHistory(offset:number): Promise<ApiResponse<{items:QuizHistoryItem[];hasMore:boolean}>> {return this.executeAction('getQuizMyHistory',{offset});}
   static getQuizHome(): Promise<ApiResponse<QuizHomeData>> {return this.executeAction('getQuizHome');}
   static startQuizScored(units:string[], questionCount:number): Promise<ApiResponse<QuizAttempt>> {return this.executeAction('startQuizScored',{units,questionCount});}
   static getQuizScoredQuestion(attemptId:string,index:number): Promise<ApiResponse<{question:QuizQuestion;index:number;total:number}>> {return this.executeAction('getQuizScoredQuestion',{attemptId,index});}
@@ -445,6 +452,13 @@ export class ApiService {
         };
 
       // Protected / Security-Sensitive & Mutation Actions — Fail Closed without Google Apps Script
+      case 'getClinicalInsightsAdmin':
+      case 'getClinicalInsightSourceDetail':
+      case 'getClinicalInsightSources':
+      case 'generateClinicalInsightDraft':
+      case 'saveClinicalInsightDraft':
+      case 'reviewClinicalInsight':
+      case 'getQuizMyHistory':
       case 'getQuizHome':
       case 'startQuizScored':
       case 'getQuizScoredQuestion':
@@ -639,6 +653,7 @@ export class ApiService {
       try {
         const controller = new AbortController();
         const timeoutMs = (
+          action === 'generateClinicalInsightDraft' ||
           action === 'uploadLearningResource' ||
           action === 'uploadNursingReferenceResource' ||
           action === 'indexNursingReferenceResource'

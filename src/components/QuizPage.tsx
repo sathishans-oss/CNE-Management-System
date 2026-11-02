@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Award, BookOpenCheck, CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Image as ImageIcon, Loader2, RefreshCw, Trophy, XCircle } from 'lucide-react';
+import { Activity, Award, BookOpenCheck, CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Image as ImageIcon, Loader2, RefreshCw, Trophy, XCircle, HeartPulse, Hourglass, Lightbulb, Target, ShieldCheck, Medal, CalendarDays, History } from 'lucide-react';
 import { ApiService } from '../services/api';
-import type { QuizAttempt, QuizHomeData, QuizQuestion, QuizResult, SessionUser } from '../types';
+import type { QuizAttempt, QuizHomeData, QuizQuestion, QuizResult, QuizHistoryItem, SessionUser } from '../types';
 
 type Page = 'home' | 'scored-setup' | 'practice-setup' | 'scored' | 'practice' | 'result';
 const letters: Array<'A' | 'B' | 'C' | 'D'> = ['A','B','C','D'];
@@ -53,6 +53,13 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   const [busy,setBusy] = useState(false);
   const [error,setError] = useState('');
   const [notice,setNotice] = useState('');
+  const [cancelTarget,setCancelTarget] = useState<string | null>(null);
+  const [cancelError,setCancelError] = useState('');
+  const [showHistory,setShowHistory] = useState(false);
+  const [history,setHistory] = useState<QuizHistoryItem[]>([]);
+  const [historyMore,setHistoryMore] = useState(false);
+  const [historyBusy,setHistoryBusy] = useState(false);
+  const [insightExpanded,setInsightExpanded] = useState(false);
   const scoredQuestionCache = useRef<Record<string,QuizQuestion>>({});
   const practiceUnitCounts = useRef<Record<string,number>>({});
   const imageCache = useRef<Map<string,Promise<string>>>(new Map());
@@ -131,15 +138,16 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     await loadScored(a,firstUnanswered>=0?firstUnanswered:Math.max(0,a.questionCount-1));
   };
   const cancelScored = async(id:string) => {
-    if(busy || !window.confirm('Cancel this scored quiz? It will not count toward your marks or leaderboard. This cannot be undone.'))return;
-    setBusy(true);setError('');
+    if(busy)return;
+    setBusy(true);setError('');setCancelError('');
     try{
       const res=await ApiService.cancelQuizScored(id);
       if(!res.success)throw new Error(res.message||'Could not cancel the quiz.');
       setAttempt(null);setQuestion(null);scoredQuestionCache.current={};
-      setPage('home');setNotice('Scored quiz cancelled. It will not appear in the leaderboard.');
-      await refreshHome();
-    }catch(e){setError((e as Error).message||'Cancellation failed.');}
+      setPage('home');setCancelTarget(null);setHome(prev=>prev?{...prev,activeAttempt:null}:prev);
+      setNotice('Scored quiz cancelled. It will not appear in the leaderboard.');
+      try{await refreshHome();}catch(e){setError('Quiz cancelled, but the dashboard could not refresh. Reopen Quiz to reload your data.');}
+    }catch(e){setCancelError((e as Error).message||'Cancellation failed.');}
     finally{setBusy(false);}
   };
   const previousScored = async() => {
@@ -245,6 +253,27 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     prefetchPractice([...practiceSeen,next.questionId],answered+1,next.questionType==='IMAGE'?answered+1:newImageAt,epoch,{...practiceUnitCounts.current});
   };
 
+  const fetchHistory = async (offset: number) => {
+    if(historyBusy) return;
+    setHistoryBusy(true);
+    try {
+      const response = await ApiService.getQuizMyHistory(offset);
+      if(!response.success || !response.data)throw new Error(response.message || 'Could not load scored-quiz history.');
+      setHistory(old => offset===0?response.data!.items:[...old,...response.data!.items]);
+      setHistoryMore(response.data.hasMore);
+      setShowHistory(true);
+    } catch(e) {setError((e as Error).message || 'Could not load quiz history.');}
+    finally {setHistoryBusy(false);}
+  };
+  const openCompletedResult = async (id:string) => {
+    setBusy(true);setError('');
+    try {
+      const res = await ApiService.getQuizScoredResult(id);
+      if(!res.success || !res.data)throw new Error(res.message || 'Result unavailable.');
+      setResults(res.data);setPage('result');
+    }catch(e){setError((e as Error).message||'Result unavailable.');}
+    finally{setBusy(false);}
+  };
   const resetHome=() => {practiceEpoch.current++;setPage('home');setQuestion(null);setError('');setNotice('');void refreshHome().catch(e=>setError((e as Error).message));};
   const allUnitNames=home?.units.map(u=>u.name)||[];
   const available=home?.units.reduce((n,u)=>n+(!selectedUnits.length||selectedUnits.includes(u.name)?u.available:0),0)||0;
@@ -259,7 +288,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
 
   return <section className={`mx-auto w-full min-w-0 ${quizMaxWidth} space-y-5 pb-12`} aria-label="Quiz">
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div><h1 className="text-2xl font-extrabold text-slate-900">Quiz</h1><p className="text-sm text-slate-500">CNE Cell • Clinical learning and self-assessment</p></div>
+      <div><h1 className="text-2xl font-extrabold text-slate-900">{page==='home'?'Quiz & Clinical Learning':'Quiz'}</h1><p className="text-sm text-slate-500">CNE Cell • Clinical learning and self-assessment</p></div>
       {page!=='home'&&<button type="button" onClick={resetHome} className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold text-slate-700">Back to Quiz</button>}
     </div>
     {error&&home&&<div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
@@ -277,20 +306,61 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       </>}
     </div>}
     {page==='home'&&home&&<>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <button type="button" className="rounded-2xl border border-teal-200 bg-white p-5 text-left shadow-sm hover:border-teal-500" onClick={()=>{setSelectedUnits([]);setCount(10);setPage('scored-setup');}}>
-          <ClipboardCheck className="mb-3 text-teal-700"/><h2 className="text-lg font-bold">Scored Quiz</h2><p className="mt-1 text-sm text-slate-600">1–50 questions. Marks, review and explanations after completion.</p>
-        </button>
-        <button type="button" className="rounded-2xl border border-indigo-200 bg-white p-5 text-left shadow-sm hover:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-50" disabled={!!home.activeAttempt} onClick={()=>{setSelectedUnits([]);setPage('practice-setup');}}>
-          <BookOpenCheck className="mb-3 text-indigo-700"/><h2 className="text-lg font-bold">Practice Quiz</h2><p className="mt-1 text-sm text-slate-600">One question at a time. Instant feedback. No scores saved.</p>
-        </button>
+      <div className="relative overflow-hidden rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 px-5 py-5 shadow-sm sm:px-7">
+        <div className="absolute -right-4 -top-10 h-44 w-44 rounded-full border-[24px] border-white/30" aria-hidden="true" />
+        <div className="relative flex flex-wrap items-center justify-between gap-4">
+          <div><div className="mb-2 inline-flex items-center gap-1 rounded-full bg-teal-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-teal-800"><ShieldCheck className="h-3.5 w-3.5"/> Clinical Education</div>
+            <h2 className="text-lg font-extrabold tracking-tight text-slate-900 sm:text-xl">Explore. Practise. Strengthen clinical skills.</h2>
+            <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-600 sm:text-sm">Focused assessments, your learning progress and one approved clinical insight each day.</p>
+          </div><div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/70 text-teal-700 shadow-sm"><HeartPulse className="h-7 w-7"/></div>
+        </div>
       </div>
-      {home.activeAttempt&&<div className="rounded-xl border border-amber-300 bg-amber-50 p-4"><h3 className="font-bold text-amber-900">Unfinished scored quiz</h3><p className="text-sm text-amber-800">{home.activeAttempt.answeredCount} of {home.activeAttempt.questionCount} questions saved. Resume where you left off.</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" disabled={busy} className="rounded-lg bg-amber-700 px-4 py-2 font-semibold text-white disabled:opacity-40" onClick={()=>void resume(home.activeAttempt!)}>Resume Scored Quiz</button><button type="button" disabled={busy} className="rounded-lg border border-amber-600 px-4 py-2 font-semibold text-amber-900 disabled:opacity-40" onClick={()=>void cancelScored(home.activeAttempt!.attemptId)}>Cancel Quiz</button></div></div>}
-      <div className="rounded-2xl border bg-white p-5"><div className="mb-4 flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 font-bold text-slate-900"><Trophy className="w-5 text-amber-500"/>Top 5 Leaderboard</h2><span className="text-xs text-slate-500">Last 30 days • completed scored quizzes only</span></div>
-        <div className="overflow-x-auto"><table className="w-full min-w-[440px] text-sm"><thead><tr className="border-b text-left text-slate-500"><th className="pb-2">Rank</th><th>Employee</th><th className="text-right">Unique answered</th><th className="text-right">Accuracy</th></tr></thead><tbody>{home.leaderboard.length?home.leaderboard.map(p=><tr className="border-b last:border-0" key={`${p.rank}-${p.name}`}><td className="py-3 font-bold">#{p.rank}</td><td>{p.name}</td><td className="text-right">{p.answered}</td><td className="text-right">{p.accuracy.toFixed(1)}%</td></tr>):<tr><td colSpan={4} className="py-5 text-center text-slate-500">No completed scored quizzes in the last 30 days.</td></tr>}</tbody></table></div>
-        <p className="mt-3 text-xs text-slate-500">Ranked by unique answered questions, then accuracy. Practice and email questions never count.</p>
+      <div className="grid items-start gap-4 xl:grid-cols-12">
+        <div className="min-w-0 space-y-4 xl:col-span-8">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button type="button" className="group rounded-2xl border border-teal-200 bg-white p-4 text-left shadow-sm transition hover:border-teal-500 hover:shadow-md" onClick={()=>{setSelectedUnits([]);setCount(10);setPage('scored-setup');}}>
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-teal-50 text-teal-700"><ClipboardCheck className="h-5 w-5"/></div>
+              <h2 className="font-bold text-slate-900">Scored Quiz</h2><p className="mt-1 min-h-9 text-xs leading-relaxed text-slate-500">1–50 approved questions · marks and explanations.</p>
+              <span className="mt-3 inline-flex items-center gap-1 rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white">Start Scored Quiz <ChevronRight className="h-3.5 w-3.5"/></span>
+            </button>
+            <button type="button" className="group rounded-2xl border border-violet-200 bg-white p-4 text-left shadow-sm transition hover:border-violet-500 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60" disabled={!!home.activeAttempt} onClick={()=>{setSelectedUnits([]);setPage('practice-setup');}}>
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><BookOpenCheck className="h-5 w-5"/></div>
+              <h2 className="font-bold text-slate-900">Practice Quiz</h2><p className="mt-1 min-h-9 text-xs leading-relaxed text-slate-500">Instant feedback · no scores or answers stored.</p>
+              <span className="mt-3 inline-flex items-center gap-1 rounded-lg border border-violet-500 px-3 py-2 text-xs font-bold text-violet-700">Start Practice <ChevronRight className="h-3.5 w-3.5"/></span>
+            </button>
+          </div>
+          {home.activeAttempt&&<div className="rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 to-white p-4 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700"><Hourglass className="h-5 w-5"/></div>
+              <div><h3 className="font-bold text-slate-900">Resume Unfinished Quiz</h3><p className="text-xs text-slate-600">{home.activeAttempt.answeredCount} of {home.activeAttempt.questionCount} answers saved</p></div></div>
+              <div className="flex flex-wrap gap-2"><button type="button" disabled={busy} className="rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50" onClick={()=>void resume(home.activeAttempt!)}>Resume Quiz</button>
+              <button type="button" disabled={busy} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-50" onClick={()=>{setCancelError('');setCancelTarget(home.activeAttempt!.attemptId);}}>Cancel Quiz</button></div></div>
+          </div>}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+            <div className="mb-3 flex items-center justify-between gap-3"><h2 className="flex items-center gap-2 font-bold text-slate-900"><Activity className="h-5 w-5 text-teal-700"/> My Progress</h2><span className="text-[11px] text-slate-500">Scored quizzes only</span></div>
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
+              {([{label:'Completed Tests',value:home.myProgress?.completedTests??0,Icon:Award},{label:'Questions Answered',value:home.myProgress?.questionsAnswered??0,Icon:ClipboardCheck},{label:'Overall Accuracy',value:`${(home.myProgress?.accuracy??0).toFixed(1)}%`,Icon:Target}]).map(stat=><div className="min-w-0 rounded-xl bg-slate-50 p-3" key={stat.label}><stat.Icon className="mb-2 h-4 w-4 text-teal-700"/><p className="text-lg font-extrabold text-slate-900 sm:text-2xl">{stat.value}</p><p className="text-[10px] font-medium leading-4 text-slate-500 sm:text-xs">{stat.label}</p></div>)}
+            </div>
+            <div className="mt-4 flex items-center justify-between gap-2"><h3 className="text-xs font-bold text-slate-700">Recent completed tests</h3><button type="button" className="text-xs font-bold text-teal-700 hover:underline" disabled={historyBusy||!(home.myProgress?.completedTests)} onClick={()=>showHistory?setShowHistory(false):void fetchHistory(0)}>{showHistory?'Hide history':'View history'}</button></div>
+            <div className="mt-2 space-y-2">{(showHistory?history:home.myProgress?.recent||[]).length?(showHistory?history:home.myProgress!.recent).map(r=><button type="button" key={r.attemptId} disabled={busy} onClick={()=>void openCompletedResult(r.attemptId)} className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-left text-xs hover:bg-slate-50 disabled:opacity-50"><span className="flex min-w-0 items-center gap-2"><CalendarDays className="h-4 w-4 shrink-0 text-slate-400"/><span className="truncate">{r.completedAt?new Date(r.completedAt).toLocaleDateString('en-IN'): 'Completed test'} · {r.correct}/{r.total} correct</span></span><strong className="shrink-0 text-teal-800">{r.percentage.toFixed(1)}%</strong></button>):<p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">Your completed scored quizzes will appear here.</p>}
+              {showHistory&&historyMore&&<button type="button" disabled={historyBusy} className="text-xs font-semibold text-teal-700" onClick={()=>void fetchHistory(history.length)}>{historyBusy?'Loading…':'Load more results'}</button>}
+            </div>
+          </div>
+          <div className="overflow-hidden rounded-2xl border border-teal-100 bg-white shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-teal-50/60 px-4 py-3 sm:px-5"><h2 className="flex items-center gap-2 font-bold text-slate-900"><Lightbulb className="h-5 w-5 text-teal-700"/> Today's Clinical Insight</h2><span className="rounded-full border border-teal-200 bg-white px-2 py-1 text-[10px] font-semibold text-teal-800">{home.clinicalInsight?'Admin approved':'Awaiting approval'}</span></div>
+            {home.clinicalInsight?<div className="space-y-3 p-4 sm:p-5"><div><p className="text-[10px] font-bold uppercase tracking-wide text-teal-700">{home.clinicalInsight.topic}</p><h3 className="mt-1 text-base font-extrabold text-slate-900">{home.clinicalInsight.title}</h3></div><p className="text-sm leading-relaxed text-slate-700">{home.clinicalInsight.summary}</p>
+              {insightExpanded&&<><ul className="list-disc space-y-1 pl-5 text-sm text-slate-700">{home.clinicalInsight.points.map((pt,i)=><li key={i}>{pt}</li>)}</ul><div className="rounded-lg bg-teal-50 p-3 text-sm text-teal-950"><strong>Nursing relevance:</strong> {home.clinicalInsight.nursingRelevance}</div></>}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3"><p className="max-w-full text-[11px] text-slate-500">Source: {home.clinicalInsight.referenceTitle}{home.clinicalInsight.referenceSection?` · ${home.clinicalInsight.referenceSection}`:''}</p><button type="button" className="text-xs font-bold text-teal-700" onClick={()=>setInsightExpanded(v=>!v)}>{insightExpanded?'Show less':'Read more →'}</button></div>
+            </div>:<div className="p-5 text-sm text-slate-500">Daily clinical insights will appear after an administrator reviews and approves content grounded in the Nursing Reference Library.</div>}
+          </div>
+        </div>
+        <aside className="min-w-0 space-y-4 xl:col-span-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><div className="mb-4 flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-900"><Trophy className="h-5 w-5 text-amber-500"/> Top 5 Leaderboard</h2><span className="text-[10px] text-slate-500">Last 30 days</span></div>
+            {home.leaderboard.length?<ol className="space-y-2">{home.leaderboard.map(p=><li key={`${p.rank}-${p.name}`} className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${p.rank===1?'bg-amber-100 text-amber-800':p.rank===2?'bg-slate-200 text-slate-700':p.rank===3?'bg-orange-100 text-orange-800':'bg-white text-slate-600'}`}>#{p.rank}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-slate-900">{p.name}</span><span className="block text-[10px] text-slate-500">{p.answered} unique answered</span></span><span className="shrink-0 text-xs font-bold text-teal-800">{p.accuracy.toFixed(1)}%</span></li>)}</ol>:<div className="flex flex-col items-center gap-2 py-8 text-center"><Medal className="h-9 w-9 text-slate-300"/><p className="text-sm font-semibold text-slate-700">Leaderboard awaits its first achievers</p><p className="max-w-48 text-xs text-slate-500">Completed scored quizzes will appear here.</p></div>}
+            <p className="mt-4 border-t border-slate-100 pt-3 text-[11px] leading-relaxed text-slate-500">Ranked by unique questions answered, then accuracy. Practice attempts never count.</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><h2 className="mb-3 text-sm font-bold text-slate-900">Approved Question Bank</h2><div className="grid grid-cols-3 gap-2">{[{value:home.total,label:'MCQs'},{value:home.units.length,label:'Units'},{value:home.imageCount,label:'Images'}].map(s=><div key={s.label} className="rounded-lg bg-slate-50 px-2 py-3 text-center"><p className="text-lg font-extrabold text-teal-800">{s.value}</p><p className="text-[10px] text-slate-500">{s.label}</p></div>)}</div><p className="mt-3 text-[11px] text-slate-500">Only clinically approved questions are available. Drafts are excluded.</p></div>
+        </aside>
       </div>
-      <p className="text-xs text-slate-500">{home.total} clinically approved MCQs available across {home.units.length} units ({home.imageCount} image questions). Draft questions are excluded.</p>
     </>}
     {(page==='scored-setup'||page==='practice-setup')&&home&&<div className="rounded-2xl border bg-white p-5 space-y-5">
       <div><h2 className="text-lg font-bold">{page==='scored-setup'?'Scored Quiz':'Practice Quiz'} setup</h2><p className="text-sm text-slate-500">All Units is selected by default.</p></div>
@@ -315,7 +385,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       <fieldset className="space-y-2"><legend className="sr-only">Select the correct answer</legend>{letters.map(letter=>{const checked=selected===letter;const reveal=page==='practice'&&practiceSubmitted;const isCorrect=question.correctOption===letter;return <label key={letter} className={`flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 text-sm ${reveal&&isCorrect?'border-emerald-500 bg-emerald-50':reveal&&checked&&!isCorrect?'border-rose-500 bg-rose-50':checked?'border-teal-600 bg-teal-50':'border-slate-200'}`}>
         <input type="radio" name={`quiz-${question.questionId}`} value={letter} checked={checked} disabled={reveal||busy} onChange={()=>setSelected(letter)} className="mt-1"/><span><strong>{letter}.</strong> {question.options[letter]}</span></label>;})}</fieldset>
       {page==='practice'&&practiceSubmitted&&<div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><h4 className="mb-1 font-bold text-slate-900">{selected===question.correctOption?'Correct!':'Review the correct answer'} — {question.correctOption}</h4><p className="text-sm text-slate-700">{question.explanation}</p></div>}
-      {page==='scored'?<div className="flex flex-wrap items-center gap-2"><button type="button" disabled={busy||index===0} onClick={()=>void previousScored()} className="flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-40"><ChevronLeft className="w-4"/>Previous</button><button type="button" disabled={!selected||busy} onClick={()=>void advanceScored()} className="flex items-center gap-2 rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{busy?'Saving…':index+1===attempt?.questionCount?'Save & Finish':'Save & Next'}<ChevronRight className="w-4"/></button><button type="button" disabled={busy} onClick={()=>attempt&&void cancelScored(attempt.attemptId)} className="rounded-lg px-3 py-2 text-sm font-semibold text-rose-700 disabled:opacity-40">Cancel Quiz</button></div>:
+      {page==='scored'?<div className="flex flex-wrap items-center gap-2"><button type="button" disabled={busy||index===0} onClick={()=>void previousScored()} className="flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-40"><ChevronLeft className="w-4"/>Previous</button><button type="button" disabled={!selected||busy} onClick={()=>void advanceScored()} className="flex items-center gap-2 rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{busy?'Saving…':index+1===attempt?.questionCount?'Save & Finish':'Save & Next'}<ChevronRight className="w-4"/></button><button type="button" disabled={busy} onClick={()=>{if(attempt){setCancelError('');setCancelTarget(attempt.attemptId);}}} className="rounded-lg px-3 py-2 text-sm font-semibold text-rose-700 disabled:opacity-40">Cancel Quiz</button></div>:
         <div className="flex flex-wrap gap-2">{!practiceSubmitted?<button type="button" disabled={!selected} onClick={submitPractice} className="rounded-lg bg-teal-700 px-5 py-2 text-sm font-bold text-white disabled:opacity-50">Submit Answer</button>:<button type="button" disabled={busy||(!practiceNext&&!!practiceNextMessage)} onClick={()=>void advancePractice()} className="rounded-lg bg-teal-700 px-5 py-2 text-sm font-bold text-white disabled:opacity-50">{busy?'Loading…':'Next Question'} <ChevronRight className="inline w-4"/></button>}{practiceSubmitted&&<span className="self-center text-xs text-slate-500">{practiceNext?'Next question ready':practiceNextMessage||'Preparing next question…'}</span>}</div>}
       <p className="text-xs text-slate-500">{page==='scored'?'Answers and explanations appear after completing the quiz. Your saved answers are recoverable.':'Practice answers and scores exist only in this page session.'}</p>
     </div>}
@@ -329,6 +399,14 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
         <p className="text-sm text-emerald-800">Correct answer: <strong>{r.question.correctOption}</strong> — {r.question.options[r.question.correctOption!]}</p>
         <div className="rounded-lg bg-slate-50 p-3 text-sm text-slate-700"><strong>Explanation:</strong> {r.question.explanation}</div>
       </div>)}
+    </div>}
+    {cancelTarget&&<div className="fixed inset-0 z-[160] flex items-center justify-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-label="Cancel unfinished quiz" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)setCancelTarget(null);}}>
+      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><div className="mb-3 flex items-center gap-2"><XCircle className="h-6 w-6 text-rose-600"/><h2 className="text-lg font-bold text-slate-900">Cancel unfinished quiz?</h2></div>
+        <p className="text-sm leading-relaxed text-slate-600">This scored attempt will be cancelled. Its answers will not count toward My Progress or the leaderboard. You cannot undo this action.</p>
+        {cancelError&&<div role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{cancelError}</div>}
+        <div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" disabled={busy} onClick={()=>{setCancelTarget(null);setCancelError('');}} className="rounded-lg border px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50">Keep Quiz</button>
+          <button type="button" disabled={busy} onClick={()=>void cancelScored(cancelTarget)} className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{busy?'Cancelling…':'Cancel Quiz'}</button></div>
+      </div>
     </div>}
   </section>;
 };

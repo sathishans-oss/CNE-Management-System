@@ -327,6 +327,28 @@ const hybridChecks=[
     row[20]='MULTIPLE_RESPONSE';assert(!ctx.cneHybridCanImportBank_(candidate()),'Legacy multi-response original format was imported');
     row[21]='SATA';assert(!ctx.cneHybridCanImportBank_(candidate()),'Select-all-that-apply question was importable');
   }},
+ {name:'Question Bank and Quiz use only canonical CLINICALLY_APPROVED status',run(){
+    const {ctx,b}=fixture();const row=b.rows[1],cols=ctx.cneHybridBankFields_(b).cols;
+    const candidate=()=>ctx.cneHybridBankCandidate_(row,cols,3);
+    for(const status of ['CLINICALLY_APPROVED','clinically_approved','  CLINICALLY_APPROVED  ']){
+      row[17]=status;
+      assert(ctx.cneQuestionBankClinicallyApproved_(status),'Canonical clinical approval unexpectedly rejected');
+      assert(ctx.cneHybridCanImportBank_(candidate()),'Question Bank import rejected canonical status '+status);
+      assert(ctx.cneQuizIsClinicallyApproved_({verificationStatus:status}),'Quiz rejected canonical status '+status);
+    }
+    for(const status of ['APPROVED','VERIFIED','CLINICAL_APPROVED','REVIEWED_AND_APPROVED','SOURCE_CHECKED_PENDING_EDUCATOR_APPROVAL','PENDING','REJECTED','']){
+      row[17]=status;
+      assert(!ctx.cneQuestionBankClinicallyApproved_(status),'Non-canonical status accepted by shared approval checker: '+status);
+      assert(!ctx.cneHybridCanImportBank_(candidate()),'Non-canonical Question Bank import permitted: '+status);
+      assert(!ctx.cneQuizIsClinicallyApproved_({verificationStatus:status}),'Non-canonical Quiz approval permitted: '+status);
+    }
+    row[17]='CLINICALLY_APPROVED';
+    const valid=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(valid.data.some(item=>item.questionId==='REF-001' && item.canImport),'Valid source not importable');
+    row[17]='VERIFIED';
+    const excluded=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
+    assert(excluded.data.some(item=>item.questionId==='REF-001' && !item.canImport),'Legacy status incorrectly importable in search');
+  }},
  {name:'Old 20-column schema is refused until separately corrected',run(){
     const {ctx,b}=fixture();b.rows.forEach(row=>row.splice(16,2));
     assert(ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session).errorCode==='QUESTION_BANK_SCHEMA_INVALID','Obsolete Question Bank schema accepted');
@@ -13726,6 +13748,52 @@ if (selected.some(suite => suite.id === 'integration' || suite.id === 'performan
       const invalid=ctx.findOfficerHeaders(Array.from({length:12},(_,i)=>'Unrelated '+i));
       assert.equal(invalid.empCol,-1,'Unrecognized master headers must fail closed, not guess A:L');
     }],
+    ['Officers master supports punctuation/spacing variations without position fallback',()=>{
+      const headers=['Legacy Note','EMPLOYEE ID. NO','NAME OF OFFICERS','Official E-mail ID','Designation'];
+      const parsed=ctx.findOfficerHeaders(headers);
+      assert.equal(parsed.empCol,1);assert.equal(parsed.nameCol,2);assert.equal(parsed.emailCol,3);
+      const unknown=ctx.findOfficerHeaders(['col A','col B','col C','col D','col E','col F','col G','col H','col I','col J','col K','col L']);
+      assert.equal(unknown.empCol,-1);assert.equal(unknown.emailCol,-1);
+    }],
+    ['Officers data uses row 2 as header and begins employee lookups at row 3',()=>{
+      const header=['Extra', 'Employee ID No.', 'Name of the Officers', 'EmailID', 'Designation', 'Date of Joining'];
+      const rows=[
+        ['AIIMS Rishikesh Officers data'],
+        header,
+        ['KEEP','EMP001','Nurse A','nurse@example.org','Nursing Officer','2020-01-01'],
+        ['KEEP','EMP002','Nurse B','nurse.b@example.org','Nursing Officer','2021-01-01']
+      ];
+      const sh=makeSheet(rows[0],[]);sh.rows=rows;sh.getLastColumn=()=>6;
+      ctx.getRosterSheet=()=>sh;ctx._officerHeaderMeta=null;ctx._executionRosterData=null;ctx._executionOfficerById={};
+      const match=ctx.findOfficerByIdTargeted_('EMP001');
+      assert.equal(match.name,'Nurse A');
+      assert.equal(match.email,'nurse@example.org');
+      assert.equal(ctx.getOfficerHeaderMeta_().headerRow,2);
+      assert.equal(ctx.findOfficerByIdTargeted_('not-an-id'),null);
+      const all=ctx.getExecutionRosterData();
+      assert.equal(all.byNormId['EMP002'].name,'Nurse B');
+      assert.equal(Object.keys(all.byNormId).length,2);
+    }],
+    ['Login detects actual Officers header row below title and finds employee',()=>{
+      const header=['Extra', 'Employee Id No.', 'Name of Officers', 'Official E-mail ID', 'Designation', 'Date of Joining'];
+      const records=[
+        ['Officers data — institute roster'],
+        ['Information: internal master'],
+        header,
+        ['KEEP','EMP001','Nurse A','nurse@example.org','Nurse','2020-01-01'],
+        ['KEEP','EMP002','Nurse B','nurse.b@example.org','Nurse','2021-01-01']
+      ];
+      const sh=makeSheet(records[0],[]);
+      sh.rows=records;
+      sh.getLastColumn=()=>6;
+      ctx.getRosterSheet=()=>sh;ctx._officerHeaderMeta=null;ctx._executionRosterData=null;ctx._executionOfficerById={};
+      const match=ctx.findOfficerByIdTargeted_('EMP001');
+      assert.equal(match.name,'Nurse A');assert.equal(match.email,'nurse@example.org');
+      assert.equal(ctx.getOfficerHeaderMeta_().headerRow,3);
+      const all=ctx.getExecutionRosterData();
+      assert.equal(all.byNormId['EMP002'].name,'Nurse B');
+      assert.equal(Object.keys(all.byNormId).length,2);
+    }],
     ['Authentication credential reads locate employee and fields after column shuffle',()=>{
       const headers=Array.from(ctx.CNE_SHEET_HEADERS.Auth_Credentials);
       const shuffled=[headers[7],headers[11],headers[0],headers[8],headers[2],headers[1],headers[3],headers[9],headers[4],headers[5],headers[6],headers[10],'Extra Notes'];
@@ -13886,6 +13954,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   }
 }
 
+// Approval status remains a Question Bank/Quiz eligibility rule. No Admin status audit
+// is added; other workflows' lifecycle statuses are not modified by this change.
 // Responsive wide-layout regression checks. One unified verification runner only.
 if (selected.some(item => item.id === 'performance') && passed === selected.length) {
   const appLayout = readFileSync(join(ROOT_DIR, 'src/App.tsx'), 'utf8');
@@ -13925,6 +13995,105 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     focusedChecks.push({name});
     try { check(); focusedPassed++; console.log('✓ ' + name); }
     catch (e) { console.error('✗ ' + name + ': ' + (e.stack || e.message)); }
+  }
+}
+
+// Clinical Command Center: dedicated new checks without altering existing suites.
+if (selected.some(item => item.id === 'workflows') && passed === selected.length) {
+  const gas = readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const quiz = readFileSync(join(ROOT_DIR,'src/components/QuizPage.tsx'),'utf8');
+  const admin = readFileSync(join(ROOT_DIR,'src/components/ClinicalInsightsAdmin.tsx'),'utf8');
+  const adminShell = readFileSync(join(ROOT_DIR,'src/components/AdminContent.tsx'),'utf8');
+  const api = readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+  const types = readFileSync(join(ROOT_DIR,'src/types.ts'),'utf8');
+  const tests = [
+    ['Quiz dashboard has restrained action cards, progress, insight and compact leaderboard', () => {
+      for (const label of ['My Progress','Completed Tests','Questions Answered','Overall Accuracy','Today\'s Clinical Insight','Top 5 Leaderboard','Resume Unfinished Quiz'])
+        assert(quiz.includes(label), 'Missing '+label);
+      assert(quiz.includes('xl:grid-cols-12') && quiz.includes('xl:col-span-8') && quiz.includes('xl:col-span-4'));
+    }],
+    ['Cancel scored quiz uses in-app confirmation and reports exact backend errors', () => {
+      const source=quiz.slice(quiz.indexOf('const cancelScored ='),quiz.indexOf('const previousScored ='));
+      assert(!source.includes('window.confirm'));
+      assert(source.includes('ApiService.cancelQuizScored(id)'));
+      assert(quiz.includes('role="dialog" aria-modal="true" aria-label="Cancel unfinished quiz"'));
+      assert(quiz.includes('setCancelError(') && quiz.includes('setCancelTarget(null)'));
+    }],
+    ['Personal progress is scored-only, employee-scoped and excludes cancelled attempts', () => {
+      assert(gas.includes("cneQuizCell_(row[6])==='COMPLETED'"));
+      assert(gas.includes('createTextFinder(String(employeeId)).matchEntireCell(true)'));
+      assert(gas.includes('cneQuizMyProgress_(session.employeeId)'));
+      assert(gas.includes('function handleGetQuizMyHistory(params,session)'));
+      assert(api.includes('getQuizMyHistory(offset:number)'));
+    }],
+    ['Clinical Insights has a required Google Sheet schema, not a Question Bank verification audit', () => {
+      assert(gas.includes("'CNE Clinical Insights': ['Insight ID','Topic','Title'"));
+      assert(gas.includes('function cneClinicalInsightToday_()'));
+      assert(!gas.includes('function auditCNEQuestionBankVerificationStatus_'));
+      assert(types.includes('interface ClinicalInsight'));
+    }],
+    ['Gemini clinical drafts are grounded by active Nursing Reference Library chunks', () => {
+      assert(gas.includes('function cneClinicalSourceRows_()'));
+      assert(gas.includes("'CNE_Reference_Library'"));
+      assert(gas.includes("cneQuizCell_(r[8]).toUpperCase()==='SUCCESS'"));
+      assert(gas.includes('active[cneQuizCell_(r[1])]'));
+      assert(gas.includes('function handleGenerateClinicalInsightDraft(params,session)'));
+      assert(gas.includes("'DRAFT',now,fresh.session.employeeId"));
+      assert(!gas.includes('MailApp.sendEmail(') || gas.includes('CNE_QUIZ_EMAIL_ENABLED_ = false'));
+    }],
+    ['Clinical approval is admin-only, explicit and revocable', () => {
+      for(const n of ['handleGetClinicalInsightsAdmin','handleGetClinicalInsightSources','handleGetClinicalInsightSourceDetail','handleGenerateClinicalInsightDraft','handleSaveClinicalInsightDraft','handleReviewClinicalInsight'])
+        assert(gas.includes('function '+n+'('),n);
+      assert(gas.includes("status==='WITHDRAWN'&&oldStatus!=='APPROVED'"));
+      assert(gas.includes('requireAdmin(fresh.session)'));
+      assert(admin.includes('I have reviewed the complete clinical content'));
+      assert(admin.includes('Approve for daily rotation'));
+      assert(admin.includes('Withdraw published insight'));
+      assert(admin.includes('View original source passage'));
+      assert(adminShell.includes("setActiveTab('insights')"));
+    }],
+    ['Daily insight rotation uses India date and never publishes draft/withdrawn statuses', () => {
+      const source=gas.match(/function cneClinicalInsightToday_\(\)\{[\s\S]*?\n\}\n(?=function cneClinicalInsightAdmin_)/)?.[0];
+      assert(source,'Daily selector missing');
+      const clean=JSON.stringify;
+      const today='2026-11-02';
+      const approved=(id,when)=>({insightId:id,title:'Some title',summary:'Some clinical explanatory text',points:['a','b'],status:'APPROVED',reviewedAt:when});
+      const drafts=[approved('OLD','2026-11-01T10:00:00Z'),approved('NEW','2026-11-02T11:00:00Z'),{...approved('DRAFT','2026-10-30T00:00:00Z'),status:'DRAFT'}, {...approved('WITHDRAWN','2026-10-30T00:00:00Z'),status:'WITHDRAWN'}];
+      const context={cneClinicalInsightsRead_:()=>drafts,getIndiaTodayString:()=>today,Date};
+      vm.runInNewContext(source,context);
+      const first=context.cneClinicalInsightToday_();
+      assert.equal(first.insightId,'OLD');
+      assert.equal(context.cneClinicalInsightToday_().insightId,first.insightId);
+      context.getIndiaTodayString=()=> '2026-11-03';
+      const next=context.cneClinicalInsightToday_();
+      assert(['OLD','NEW'].includes(next.insightId));
+      context.cneClinicalInsightsRead_=()=>drafts.filter(x=>x.status!=='APPROVED');
+      assert.equal(context.cneClinicalInsightToday_(),null);
+    }],
+    ['Scored progress metrics count only completed question outcomes', () => {
+      const source=gas.match(/function cneQuizMyProgress_\(employeeId\)\{[\s\S]*?\n\}\n(?=function cneQuizHistoryRow_)/)?.[0];
+      const item=gas.match(/function cneQuizHistoryRow_\(r\)\{[\s\S]*?\n\}\n(?=function handleGetQuizMyHistory)/)?.[0];
+      assert(source && item);
+      const fixture=(correct,wrong,id)=>{const r=Array(14).fill('');r[0]=id;r[5]=correct+wrong;r[9]='2026-11-01T12:00:00Z';r[10]=correct;r[11]=wrong;return r;};
+      const ctx={cneQuizMyCompleted_:()=>[fixture(8,2,'A'),fixture(3,7,'B')],cneQuizCell_:x=>String(x||'').trim(),Number,Math,Date,String};
+      vm.runInNewContext(item+'\n'+source,ctx);
+      const report=ctx.cneQuizMyProgress_('USER');
+      assert.equal(report.completedTests,2);
+      assert.equal(report.questionsAnswered,20);
+      assert.equal(report.accuracy,55);
+      assert.equal(report.recent.length,2);
+    }],
+    ['New Insight endpoints fail closed without Apps Script backend connection', () => {
+      for(const action of ['getClinicalInsightsAdmin','getClinicalInsightSources','getClinicalInsightSourceDetail','generateClinicalInsightDraft','saveClinicalInsightDraft','reviewClinicalInsight','getQuizMyHistory']) {
+        assert(api.includes("case '"+action+"':"),action);
+        assert(gas.includes("case '"+action+"':"),action);
+      }
+    }]
+  ];
+  console.log('\n>>> Clinical Command Center & reviewed insight workflow checks');
+  for(const [name, test] of tests) {
+    focusedChecks.push({name});
+    try {test();focusedPassed++;console.log('✓ '+name);}catch(e){console.error('✗ '+name+': '+(e.stack||e.message));}
   }
 }
 

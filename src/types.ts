@@ -574,12 +574,45 @@ export interface QuizAttempt {
   status: 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
   startedAt?: string;
 }
+export interface ClinicalInsight {
+  insightId: string;
+  topic: string;
+  title: string;
+  summary: string;
+  points: string[];
+  nursingRelevance: string;
+  referenceTitle: string;
+  referenceSection: string;
+  sourceIndexId: string;
+  status: 'DRAFT' | 'APPROVED' | 'REJECTED' | 'WITHDRAWN';
+  createdAt?: string;
+  createdBy?: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewNotes?: string;
+}
+export interface QuizHistoryItem {
+  attemptId: string;
+  completedAt: string;
+  total: number;
+  correct: number;
+  wrong: number;
+  percentage: number;
+}
+export interface QuizMyProgress {
+  completedTests: number;
+  questionsAnswered: number;
+  accuracy: number;
+  recent: QuizHistoryItem[];
+}
 export interface QuizHomeData {
   units: Array<{name:string;available:number}>;
   total: number;
   imageCount: number;
   leaderboard: Array<{rank:number;name:string;answered:number;correct:number;accuracy:number}>;
   activeAttempt: QuizAttempt | null;
+  myProgress: QuizMyProgress;
+  clinicalInsight: ClinicalInsight | null;
 }
 export interface QuizResult {
   attemptId: string;
