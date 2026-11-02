@@ -18,6 +18,7 @@ export type ViewMode =
   | 'cne-schedule'
   | 'learning-resources'
   | 'gallery'
+  | 'quiz'
   | 'admin-areas'
   | 'admin-roles'
   | 'admin-content'
@@ -549,4 +550,43 @@ export interface CNEAnalytics {
   resourceHours: Array<{employeeId:string;name:string;resourceHours:number;sessions:number}>;
   employeeTotal: number;
   employeeRows: CNEAnalytics['participantHours'];
+}
+
+// Standalone Quiz: uses only clinically approved Question Bank entries.
+export interface QuizQuestion {
+  questionId: string;
+  unit: string;
+  topic: string;
+  questionType: 'TEXT' | 'IMAGE';
+  question: string;
+  options: Record<'A'|'B'|'C'|'D',string>;
+  imageFileId?: string;
+  correctOption?: 'A'|'B'|'C'|'D'; // only practice or COMPLETED scored quiz
+  explanation?: string;             // never supplied for active scored questions
+}
+export interface QuizAttempt {
+  attemptId: string;
+  units: string[];
+  questionIds: string[];
+  questionCount: number;
+  answeredCount: number;
+  answers: Record<string,string>;
+  status: 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+  startedAt?: string;
+}
+export interface QuizHomeData {
+  units: Array<{name:string;available:number}>;
+  total: number;
+  imageCount: number;
+  leaderboard: Array<{rank:number;name:string;answered:number;correct:number;accuracy:number}>;
+  activeAttempt: QuizAttempt | null;
+}
+export interface QuizResult {
+  attemptId: string;
+  correct: number;
+  wrong: number;
+  total: number;
+  percentage: number;
+  review: Array<{question:QuizQuestion;selectedOption:string}>;
+  unitScores: Array<{unit:string;total:number;correct:number;wrong:number}>;
 }

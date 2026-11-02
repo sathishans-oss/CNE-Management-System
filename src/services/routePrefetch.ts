@@ -6,6 +6,7 @@ const PREFETCH_MAP: Partial<Record<ViewMode, RouteImporter>> = {
   'cne-schedule': () => import('../components/CNESchedule'),
   'my-cne-records': () => import('../components/MyCNERecords'),
   'learning-resources': () => import('../components/cne/LearningResourcesPage'),
+  'quiz': () => import('../components/QuizPage'),
   'calendar': () => import('../components/CNECalendar'),
   'gallery': () => import('../components/Gallery')
 };

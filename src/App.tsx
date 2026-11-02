@@ -18,6 +18,7 @@ const CNESchedule = lazy(() => import('./components/CNESchedule').then((m) => ({
 const LibraryIndexManagementPage = lazy(() => import('./components/cne/LibraryIndexManagementPage').then((m) => ({ default: m.LibraryIndexManagementPage })));
 const LearningResourcesPage = lazy(() => import('./components/cne/LearningResourcesPage').then((m) => ({ default: m.LearningResourcesPage })));
 const Gallery = lazy(() => import('./components/Gallery').then((m) => ({ default: m.Gallery })));
+const QuizPage = lazy(() => import('./components/QuizPage').then((m) => ({ default: m.QuizPage })));
 const AdminAreas = lazy(() => import('./components/AdminAreas').then((m) => ({ default: m.AdminAreas })));
 const AdminTeachingModes = lazy(() => import('./components/AdminTeachingModes').then((m) => ({ default: m.AdminTeachingModes })));
 const AdminRoles = lazy(() => import('./components/AdminRoles').then((m) => ({ default: m.AdminRoles })));
@@ -191,6 +192,8 @@ const AppContent: React.FC = () => {
           )}
 
           {user && user.employeeId && activeView === 'gallery' && <Gallery user={user} />}
+
+          {user && user.employeeId && activeView === 'quiz' && <QuizPage user={user} />}
 
           {/* Admin Protected Views */}
           {activeView === 'admin-areas' && user?.role === 'ADMIN' && (

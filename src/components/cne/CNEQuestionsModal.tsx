@@ -869,6 +869,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <h3 className="text-sm sm:text-base font-bold text-slate-900 mt-0.5 truncate max-w-2xl">
                 {cne.topic}
               </h3>
+              <p className="text-[11px] leading-snug text-slate-600 mt-1">
+                Review, edit and finalize AI, Question Bank and manual Drafts.
+              </p>
             </div>
           </div>
 
@@ -883,49 +886,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             className={`px-2.5 py-1.5 text-[11px] font-bold rounded-md border transition-colors disabled:opacity-50 ${activeView === 'questions' ? 'border-purple-600 bg-purple-50 text-purple-800' : 'border-slate-200 text-slate-600 hover:bg-white'}`}>
             My Questions ({activeQuestions.length})
           </button>
-          <button type="button" role="tab" id="cne-question-bank-tab" aria-controls="cne-question-bank-panel"
-            aria-selected={activeView === 'bank'}
-            onClick={openQuestionBank}
-            onKeyDown={(event) => { if (event.key === 'ArrowLeft') { event.preventDefault(); setActiveView('questions'); } }}
-            disabled={!canModify || !isPageReady || isGenerating || isSaving || !!importingBankId}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-bold rounded-md border transition-colors disabled:opacity-50 ${activeView === 'bank' ? 'border-indigo-700 bg-indigo-50 text-indigo-900' : 'border-slate-200 text-slate-600 hover:bg-white'}`}>
-            <BookOpen className="w-3.5 h-3.5"/> Question Bank {bankSearched ? `(${bankMatches.length})` : ''}
-          </button>
-        </div>
-          <button
-            onClick={onClose}
-            disabled={isSaving || isGenerating || !!importingBankId}
-            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 disabled:opacity-40 cursor-pointer transition-colors shrink-0"
-          >
-            <X className="w-5 h-5" />
-          </button>
-          </div>
-        </div>
-
-        {/* My Questions-only AI and finalization actions. */}
-        {canModify && activeView === 'questions' && (
-          <div className="px-6 py-3 bg-purple-50/60 border-b border-purple-100 flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2 text-xs text-purple-950 font-bold">
-                <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
-                <span>AI Question Synthesizer</span>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              {activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && !activeQuestions.some((q) => String(q.id || '').startsWith('q_ai_') && !q.isFinalized) && (
-                <button
-                  type="button"
-                  onClick={handleFinalizeAll}
-                  disabled={isGenerating || isSaving || !canModify}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-700 rounded-lg font-bold text-xs cursor-pointer shadow-xs transition-colors"
-                  title="Include all draft questions in post-test"
-                >
-                  <CheckCheck className="w-3.5 h-3.5" />
-                  <span>Finalize All ({completeActiveCount - validFinalizedCount} Drafts)</span>
-                </button>
-              )}
-
+          {/* Primary tools share the popup header; no separate AI action row. */}
+          {canModify && activeView === 'questions' && (
+            <>
               {/* AI Generate MCQs */}
               <button
                 type="button"
@@ -976,7 +939,25 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                   </>
                 )}
               </button>
-
+              <button type="button" onClick={handleAddManualQuestion}
+                disabled={!canInteractWithQuestionTools || !!importingBankId}
+                title="Add a manual Draft; this does not consume AI quota"
+                className="flex items-center gap-1 rounded-md border border-purple-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-purple-800 hover:bg-purple-50 disabled:opacity-50">
+                + Manual Question
+              </button>
+            </>
+          )}
+          <button type="button" role="tab" id="cne-question-bank-tab" aria-controls="cne-question-bank-panel"
+            aria-selected={activeView === 'bank'}
+            onClick={openQuestionBank}
+            onKeyDown={(event) => { if (event.key === 'ArrowLeft') { event.preventDefault(); setActiveView('questions'); } }}
+            disabled={!canModify || !isPageReady || isGenerating || isSaving || !!importingBankId}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-bold rounded-md border transition-colors disabled:opacity-50 ${activeView === 'bank' ? 'border-indigo-700 bg-indigo-50 text-indigo-900' : 'border-slate-200 text-slate-600 hover:bg-white'}`}>
+            <BookOpen className="w-3.5 h-3.5"/> Question Bank {bankSearched ? `(${bankMatches.length})` : ''}
+          </button>
+        </div>
+        {canModify && activeView === 'questions' && (
+          <div className="flex flex-wrap items-center gap-1.5">
               {pendingGenerationJob && !isAiGenerationUsed && (
                 <button
                   type="button"
@@ -987,11 +968,29 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                   <ArrowRight className="w-3.5 h-3.5" /> Resume AI Generation
                 </button>
               )}
-
-
-            </div>
+              {activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && !activeQuestions.some((q) => String(q.id || '').startsWith('q_ai_') && !q.isFinalized) && (
+                <button
+                  type="button"
+                  onClick={handleFinalizeAll}
+                  disabled={isGenerating || isSaving || !canModify}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-700 rounded-lg font-bold text-xs cursor-pointer shadow-xs transition-colors"
+                  title="Include all draft questions in post-test"
+                >
+                  <CheckCheck className="w-3.5 h-3.5" />
+                  <span>Finalize All ({completeActiveCount - validFinalizedCount} Drafts)</span>
+                </button>
+              )}
           </div>
         )}
+          <button
+            onClick={onClose}
+            disabled={isSaving || isGenerating || !!importingBankId}
+            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 disabled:opacity-40 cursor-pointer transition-colors shrink-0"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          </div>
+        </div>
 
         {activeView === 'bank' ? (
           <div role="tabpanel" id="cne-question-bank-panel" aria-labelledby="cne-question-bank-tab"
@@ -1085,18 +1084,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         {/* Question List Content - 2-Column Wide Grid on Desktop */}
         <div role="tabpanel" id="cne-my-questions-panel" aria-labelledby="cne-my-questions-tab"
           className="p-4 sm:p-6 overflow-y-auto min-h-0 flex-1 bg-slate-50/40 text-xs flex flex-col">
-          <div className="flex items-center justify-between gap-3 flex-wrap mb-4 shrink-0">
-            <div>
-              <h4 className="text-sm font-bold text-slate-900">My Questions ({activeQuestions.length})</h4>
-              <p className="text-slate-500 mt-1">Review, edit and finalize AI, Question Bank and manual Drafts.</p>
-            </div>
-            {canModify && <button type="button" onClick={handleAddManualQuestion}
-              disabled={!canInteractWithQuestionTools || !!importingBankId}
-              title="Add a manual Draft; this does not consume AI quota"
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-purple-300 bg-white text-purple-800 font-bold hover:bg-purple-50 disabled:opacity-50">
-              <Plus className="w-3.5 h-3.5" /> Add Manual Question
-            </button>}
-          </div>
           {/* Prominent Single-Stage Processing Status in Main Content Area */}
           {isGenerating ? (
             <div role="status" aria-live="polite" className="mx-auto my-auto max-w-lg w-full rounded-2xl border border-purple-200 bg-purple-50 p-5 space-y-4">

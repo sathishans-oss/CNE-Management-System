@@ -14,7 +14,8 @@ import {
   ChevronDown,
   SlidersHorizontal,
   FileSpreadsheet,
-  LibraryBig
+  LibraryBig,
+  ClipboardCheck
 } from 'lucide-react';
 import { SessionUser, ViewMode } from '../types';
 import { prefetchRoute } from '../services/routePrefetch';
@@ -45,6 +46,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
     },
     { id: 'my-cne-records' as ViewMode, label: 'My CNE Records', icon: Award },
     { id: 'learning-resources' as ViewMode, label: 'Learning Resources', icon: BookOpen },
+    { id: 'quiz' as ViewMode, label: 'Quiz', icon: ClipboardCheck },
     { id: 'gallery' as ViewMode, label: 'Class Photos', icon: Images },
     ...(isAdmin
       ? [{ id: 'admin-reports' as ViewMode, label: 'Report and Stats', icon: BarChart3 }]

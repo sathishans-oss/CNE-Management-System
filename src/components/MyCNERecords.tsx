@@ -6,8 +6,6 @@ import {
   X,
   CheckCircle2,
   Loader2,
-  ChevronLeft,
-  ChevronRight,
   Search
 } from 'lucide-react';
 import { CNERecord, SessionUser } from '../types';
@@ -89,15 +87,14 @@ const isUserResourcePersonInRecord = (user: SessionUser, record: CNERecord): boo
 };
 
 export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
-  // Only a single authorized page is held in browser memory. Hours/total counts
-  // arrive separately from the backend and cover ALL matching completed sessions.
-  const PAGE_SIZE = 25;
+  // Fetch in authorized 100-record batches, then display all matching rows together.
+  const FETCH_BATCH_SIZE = 100;
   const [records, setRecords] = useState<CNERecord[]>([]);
   const [totalRecords, setTotalRecords] = useState(0);
   const [totalParticipantSeconds, setTotalParticipantSeconds] = useState(0);
   const [totalResourceSeconds, setTotalResourceSeconds] = useState(0);
-  const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [loadProgress, setLoadProgress] = useState({ loaded: 0, total: 0 });
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const generatingPdfRef = useRef(false);
   const recordsRequestIdRef = useRef(0);
@@ -114,58 +111,84 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   useEffect(() => {
     if(previousIdentityRef.current === identity)return;
     previousIdentityRef.current=identity;
-    setCurrentPage(1);
     setSearchTerm('');setStartDate('');setEndDate('');
     setAppliedFilters({search:'',fromDate:'',toDate:''});
   },[identity]);
 
   useEffect(() => {
     const requestId = ++recordsRequestIdRef.current;
+    const requestSession = identity;
+    const isCurrent = () => requestId === recordsRequestIdRef.current && sessionGuardRef.current === requestSession;
     setLoading(true);
+    setLoadProgress({ loaded: 0, total: 0 });
     setRecords([]);
+    setTotalRecords(0); setTotalParticipantSeconds(0); setTotalResourceSeconds(0);
     setSelectedRecord(null);
     const load = async () => {
       try {
-        const res = await ApiService.getMyCNERecordsPage({
-          page:currentPage,pageSize:PAGE_SIZE,
-          search:appliedFilters.search,fromDate:appliedFilters.fromDate,toDate:appliedFilters.toDate
-        });
-        if(requestId!==recordsRequestIdRef.current)return;
-        if(res.success && res.data && Array.isArray(res.data.records)){
-          const safe=res.data.records.filter(r=>String(r.status||'').toLowerCase()==='completed');
-          // If deletions shortened history between requests, return to page one.
-          if(currentPage>1 && (currentPage-1)*PAGE_SIZE>=res.data.total){setCurrentPage(1);return;}
-          setRecords(safe);
-          setTotalRecords(res.data.total);
-          setTotalParticipantSeconds(res.data.participantSeconds);
-          setTotalResourceSeconds(res.data.resourcePersonSeconds);
-        } else {
-          setTotalRecords(0);setTotalParticipantSeconds(0);setTotalResourceSeconds(0);
-          error(res.message||'Unable to load your CNE records.');
+        const complete: CNERecord[] = [];
+        const seen = new Set<string>();
+        let total = -1;
+        let participantSeconds = 0, resourcePersonSeconds = 0;
+        for (let page = 1; ; page++) {
+          if (!isCurrent()) return;
+          const res = await ApiService.getMyCNERecordsPage({
+            page, pageSize: FETCH_BATCH_SIZE,
+            search: appliedFilters.search, fromDate: appliedFilters.fromDate, toDate: appliedFilters.toDate
+          });
+          if (!isCurrent()) return;
+          if (!res.success || !res.data || !Array.isArray(res.data.records))
+            throw new Error(res.message || 'Unable to load your CNE records.');
+          if (total === -1) {
+            total = res.data.total;
+            participantSeconds = res.data.participantSeconds;
+            resourcePersonSeconds = res.data.resourcePersonSeconds;
+          } else if (res.data.total !== total) {
+            throw new Error('CNE history changed during loading. Please refresh the records.');
+          }
+          for (const r of res.data.records) {
+            if (String(r.status || '').toLowerCase() !== 'completed') continue;
+            const id = String(r.cneId || r.dataId || '').trim().toUpperCase();
+            if (!id || seen.has(id)) throw new Error('Duplicate or invalid CNE record received. Please reload.');
+            seen.add(id);
+            complete.push(r);
+          }
+          // Show successfully retrieved rows progressively in one list while fetching
+          // the remaining batches; PDF stays disabled until the list is complete.
+          setRecords(complete.slice());
+          setTotalRecords(total);
+          setTotalParticipantSeconds(participantSeconds);
+          setTotalResourceSeconds(resourcePersonSeconds);
+          setLoadProgress({ loaded: complete.length, total: Math.max(0, total) });
+          if (complete.length >= total) break;
+          if (!res.data.hasMore || !res.data.records.length) throw new Error('Some records could not be loaded. Please retry.');
         }
-      }catch(e:any){
-        if(requestId!==recordsRequestIdRef.current)return;
-        setRecords([]);setTotalRecords(0);setTotalParticipantSeconds(0);setTotalResourceSeconds(0);
-        error(e?.message||'Error loading your CNE records.');
-      }finally{if(requestId===recordsRequestIdRef.current)setLoading(false);}
+        if (!isCurrent()) return;
+        if (complete.length !== total) throw new Error('Incomplete CNE history received. Please reload.');
+        setRecords(complete);
+        setTotalRecords(total);
+        setTotalParticipantSeconds(participantSeconds);
+        setTotalResourceSeconds(resourcePersonSeconds);
+      } catch (e: any) {
+        if (!isCurrent()) return;
+        setRecords([]); setTotalRecords(0); setTotalParticipantSeconds(0); setTotalResourceSeconds(0);
+        error(e?.message || 'Error loading your CNE records.');
+      } finally { if (isCurrent()) setLoading(false); }
     };
     void load();
-    return ()=>{if(recordsRequestIdRef.current===requestId)recordsRequestIdRef.current++;};
-  },[identity,currentPage,appliedFilters.search,appliedFilters.fromDate,appliedFilters.toDate,error]);
+    return () => { if (recordsRequestIdRef.current === requestId) recordsRequestIdRef.current++; };
+  }, [identity, appliedFilters.search, appliedFilters.fromDate, appliedFilters.toDate, error]);
 
   const applyFilters = () => {
     if(startDate && endDate && startDate>endDate){error('From Date must not be after To Date.');return;}
     const next={search:searchTerm.trim(),fromDate:startDate,toDate:endDate};
-    setCurrentPage(1);setAppliedFilters(next);
+    setAppliedFilters(next);
   };
   const clearFilters = () => {
-    setSearchTerm('');setStartDate('');setEndDate('');setCurrentPage(1);
+    setSearchTerm('');setStartDate('');setEndDate('');
     setAppliedFilters({search:'',fromDate:'',toDate:''});
   };
   const filteredRecords=records; // Already filtered and authorized on the server.
-  const totalPages=Math.max(1,Math.ceil(totalRecords/PAGE_SIZE));
-  const safeCurrentPage=Math.min(Math.max(1,currentPage),totalPages);
-  const paginatedRecords=filteredRecords;
   const formatTotalSeconds=(totalSeconds:number):string=>{
     const seconds=Math.max(0,Math.floor(Number(totalSeconds)||0));
     const hrs=Math.floor(seconds/3600),mins=Math.floor((seconds%3600)/60),secs=seconds%60;
@@ -188,41 +211,26 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   }, []);
 
   const handleGeneratePdf = async () => {
-    if(generatingPdfRef.current || isGeneratingPdf || loading)return;
-    if(totalRecords===0){error('No CNE records found for the selected filters.');return;}
-    generatingPdfRef.current=true;setIsGeneratingPdf(true);
-    const sessionAtStart=identity;
-    try{
-      // Export is deliberately independent from the 25-row UI page. Every batch
-      // is authorized by the server and uses the same applied search/date filters.
-      const complete:CNERecord[]=[];
-      const seen=new Set<string>();
-      const exportPageSize=100;
-      const pages=Math.ceil(totalRecords/exportPageSize);
-      for(let p=1;p<=pages;p++){
-        if(sessionGuardRef.current!==sessionAtStart)throw new Error('Session changed during export. Try again.');
-        const response=await ApiService.getMyCNERecordsPage({page:p,pageSize:exportPageSize,
-          search:appliedFilters.search,fromDate:appliedFilters.fromDate,toDate:appliedFilters.toDate});
-        if(!response.success||!response.data)throw new Error(response.message||'Failed to retrieve complete PDF records.');
-        if(response.data.total!==totalRecords)throw new Error('CNE records changed during export. Reload and retry.');
-        for(const r of response.data.records){
-          if(String(r.status||'').toLowerCase()!=='completed')continue;
-          const id=String(r.cneId||r.dataId||'').toUpperCase();
-          if(!id || seen.has(id))throw new Error('Duplicate or incomplete data received. Please retry.');
-          seen.add(id);complete.push(r);
-        }
-      }
-      if(complete.length!==totalRecords)throw new Error('Incomplete export. Reload and try again.');
-      if(sessionGuardRef.current!==sessionAtStart)throw new Error('Session changed during export.');
-      const {generateCNERecordsPdf}=await import('../services/pdfGenerator');
-      generateCNERecordsPdf(user,complete,{
-        fromDate:appliedFilters.fromDate||undefined,
-        toDate:appliedFilters.toDate||undefined,
-        searchTerm:appliedFilters.search||undefined
+    if (generatingPdfRef.current || isGeneratingPdf || loading) return;
+    if (!records.length || records.length !== totalRecords) {
+      error('The complete filtered CNE history is not ready. Please reload.'); return;
+    }
+    generatingPdfRef.current = true; setIsGeneratingPdf(true);
+    const sessionAtStart = identity;
+    try {
+      if (sessionGuardRef.current !== sessionAtStart) throw new Error('Session changed during PDF export.');
+      const { generateCNERecordsPdf } = await import('../services/pdfGenerator');
+      if (sessionGuardRef.current !== sessionAtStart) throw new Error('Session changed during PDF export.');
+      // Uses exactly the complete filtered records already visible on this page.
+      // No additional Apps Script requests are made when Generate PDF is clicked.
+      generateCNERecordsPdf(user, records, {
+        fromDate: appliedFilters.fromDate || undefined,
+        toDate: appliedFilters.toDate || undefined,
+        searchTerm: appliedFilters.search || undefined
       });
-      success('Complete filtered CNE record PDF downloaded.','PDF Generated');
-    }catch(e:any){error(e?.message||'Failed to generate complete PDF document.');}
-    finally{generatingPdfRef.current=false;setIsGeneratingPdf(false);}
+      success('Filtered CNE records PDF downloaded.', 'PDF Generated');
+    } catch (e: any) { error(e?.message || 'Failed to generate PDF document.'); }
+    finally { generatingPdfRef.current = false; setIsGeneratingPdf(false); }
   };
 
   const selectedRecordIsParticipant = selectedRecord
@@ -317,10 +325,10 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
 
       {/* CNE Records Data Table (Desktop) & Cards (Mobile) */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden xl:overflow-visible">
-        {loading ? (
+        {loading && records.length === 0 ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
             <Loader2 className="w-8 h-8 animate-spin text-teal-600" />
-            <span className="text-xs font-medium">Loading data</span>
+            <span className="text-xs font-medium">Loading all matching CNE records{loadProgress.total > 0 ? ` (${loadProgress.loaded}/${loadProgress.total})` : "..."}</span>
           </div>
         ) : filteredRecords.length === 0 ? (
           <div className="py-16 text-center space-y-3 px-4">
@@ -339,10 +347,10 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             {isMobile ? (
               /* Mobile Card List (Rendered only on mobile viewports) */
               <div className="divide-y divide-slate-100">
-                {paginatedRecords.map((rec, index) => {
+                {filteredRecords.map((rec, index) => {
                   const isParticipant = isUserParticipantInRecord(user, rec);
                   const isResourcePerson = isUserResourcePersonInRecord(user, rec);
-                  const globalIdx = (safeCurrentPage - 1) * PAGE_SIZE + index;
+                  const globalIdx = index;
                   return (
                     <div
                       key={rec.cneId || rec.dataId || `mob-rec-${globalIdx}`}
@@ -418,10 +426,10 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {paginatedRecords.map((rec, index) => {
+                    {filteredRecords.map((rec, index) => {
                       const isParticipant = isUserParticipantInRecord(user, rec);
                       const isResourcePerson = isUserResourcePersonInRecord(user, rec);
-                      const globalIdx = (safeCurrentPage - 1) * PAGE_SIZE + index;
+                      const globalIdx = index;
                       return (
                         <tr
                           key={rec.cneId || rec.dataId || `rec-${globalIdx}`}
@@ -490,41 +498,16 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
               </div>
             )}
 
-            {/* Pagination Controls */}
             {totalRecords > 0 && (
-              <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
-                <div className="font-medium">
-                  Showing <span className="font-bold text-slate-900">{(safeCurrentPage - 1) * PAGE_SIZE + 1}</span> to{' '}
-                  <span className="font-bold text-slate-900">{Math.min(safeCurrentPage * PAGE_SIZE, totalRecords)}</span> of{' '}
-                  <span className="font-bold text-slate-900">{totalRecords}</span> records
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-500 mr-2">
-                    Page <strong className="text-slate-900">{safeCurrentPage}</strong> of <strong className="text-slate-900">{totalPages}</strong>
+              <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 font-medium">
+                {loading ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-teal-700" />
+                    Loading all matching records ({loadProgress.loaded}/{loadProgress.total})...
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                    disabled={safeCurrentPage <= 1}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
-                    title="Previous page"
-                    aria-label="Previous page"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                    <span>Previous</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                    disabled={safeCurrentPage >= totalPages}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
-                    title="Next page"
-                    aria-label="Next page"
-                  >
-                    <span>Next</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
+                ) : (
+                  <>Showing all <strong className="text-slate-900">{totalRecords}</strong> records matching your filters.</>
+                )}
               </div>
             )}
           </>

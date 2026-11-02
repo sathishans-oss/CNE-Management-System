@@ -84,6 +84,7 @@ var _executionSpreadsheetCache = {};
 var _executionCredentialCache = {};
 var _executionOfficerById = {};
 var _executionCneScheduleSnapshot = null;
+var _executionQuizApprovedPool_ = null;
 var _roleHeaderMeta = null;
 var _areaInchargeHeaderMeta = null;
 
@@ -160,12 +161,13 @@ function setupSecurityProperties() {
  */
 function ensureRuntimeSecurityState_() {
   var props = PropertiesService.getScriptProperties();
+  var settings = props.getProperties();
   var secretsReady = Boolean(
-    String(props.getProperty('SESSION_SECRET') || '').trim() &&
-    String(props.getProperty('PASSWORD_PEPPER') || '').trim() &&
-    String(props.getProperty('OTP_SECRET') || '').trim()
+    String(settings.SESSION_SECRET || '').trim() &&
+    String(settings.PASSWORD_PEPPER || '').trim() &&
+    String(settings.OTP_SECRET || '').trim()
   );
-  var migrationReady = props.getProperty('AUTH_CREDENTIALS_V2_MIGRATED') === 'YES';
+  var migrationReady = settings.AUTH_CREDENTIALS_V2_MIGRATED === 'YES';
   if (secretsReady && migrationReady) return;
 
   var initLock = LockService.getScriptLock();
@@ -177,16 +179,17 @@ function ensureRuntimeSecurityState_() {
 
   try {
     props = PropertiesService.getScriptProperties();
+    settings = props.getProperties();
     secretsReady = Boolean(
-      String(props.getProperty('SESSION_SECRET') || '').trim() &&
-      String(props.getProperty('PASSWORD_PEPPER') || '').trim() &&
-      String(props.getProperty('OTP_SECRET') || '').trim()
+      String(settings.SESSION_SECRET || '').trim() &&
+      String(settings.PASSWORD_PEPPER || '').trim() &&
+      String(settings.OTP_SECRET || '').trim()
     );
     if (!secretsReady) {
       setupSecurityProperties();
     }
 
-    if (props.getProperty('AUTH_CREDENTIALS_V2_MIGRATED') !== 'YES') {
+    if (settings.AUTH_CREDENTIALS_V2_MIGRATED !== 'YES') {
       var authSheet = getOrCreateSheet(AUTH_CREDENTIALS_SHEET);
       migrateLegacyCredentialsToAuthCredentials(authSheet);
     }
@@ -727,6 +730,7 @@ function handleRequest(e, method) {
   _executionRosterData = null;
   _officerHeaderMeta = null;
   _executionSpreadsheetCache = {};
+  _executionQuizApprovedPool_ = null;
   _executionCredentialCache = {};
   _executionOfficerById = {};
   _executionCneScheduleSnapshot = null;
@@ -808,6 +812,41 @@ function handleRequest(e, method) {
         output = handleGetTeachingModes(params);
         break;
         
+      case 'getQuizHome':
+        output = handleGetQuizHome(params, session);
+        break;
+
+      case 'startQuizScored':
+        output = handleStartQuizScored(params, session);
+        break;
+
+      case 'getQuizScoredQuestion':
+        output = handleGetQuizScoredQuestion(params, session);
+        break;
+
+      case 'saveQuizScoredAnswer':
+        output = handleSaveQuizScoredAnswer(params, session);
+        break;
+
+      case 'completeQuizScored':
+        output = handleCompleteQuizScored(params, session);
+        break;
+
+      case 'getQuizScoredResult':
+        output = handleGetQuizScoredResult(params, session);
+        break;
+
+      case 'cancelQuizScored':
+        output = handleCancelQuizScored(params, session);
+        break;
+      case 'getQuizPracticeQuestion':
+        output = handleGetQuizPracticeQuestion(params, session);
+        break;
+
+      case 'getQuizImage':
+        output = handleGetQuizImage(params, session);
+        break;
+
       case 'getCNEAnalytics':
         output = handleGetCNEAnalytics(params, session);
         break;
@@ -1318,7 +1357,7 @@ function getUserRoleInfo(employeeId, forceFresh) {
     if (areaMeta.sheet && areaMeta.inchargeCol !== -1 && areaMeta.sheet.getLastRow() > 1) {
       var areaRowIndex = findExactEmployeeRow_(areaMeta.sheet, areaMeta.inchargeCol + 1, normId, 2);
       if (areaRowIndex >= 2) {
-        var areaName = String(areaMeta.sheet.getRange(areaRowIndex, 1).getDisplayValue() || '').trim();
+        var areaName = String(areaMeta.sheet.getRange(areaRowIndex,cneHeaderColumn_(areaMeta.sheet,'Area')).getDisplayValue() || '').trim();
         result.role = 'AREA_INCHARGE';
         result.assignedArea = areaName;
         result.assignedAreas = areaName ? [areaName] : [];
@@ -1507,21 +1546,17 @@ function checkCNEActionAuthorized(session, record) {
 function findOfficerHeaders(headers) {
   var empCol=-1,nameCol=-1,desigCol=-1,empTypeCol=-1,contactCol=-1,dojCol=-1,emailCol=-1;
   if (!headers || !headers.length) return { empCol:-1,nameCol:-1,desigCol:-1,empTypeCol:-1,contactCol:-1,dojCol:-1,emailCol:-1 };
-  var maxCols=Math.min(headers.length,12);
+  var maxCols=headers.length;
   for (var c=0;c<maxCols;c++) {
     var h=String(headers[c]||'').trim().toLowerCase().replace(/\s+/g,' ');
     if (!h) continue;
     if (empCol===-1 && (h==='employee id no.'||h==='employee id no'||h==='employee id number'||h==='employee id'||h==='emp id'||h==='emp id no.'||h==='emp id no')) empCol=c;
-    if (nameCol===-1 && (h==='name of the officers'||h==='name of the officer'||h==='officer name'||h==='employee name')) nameCol=c;
+    if (nameCol===-1 && (h==='name of the officers'||h==='name of the officer'||h==='officer name'||h==='employee name'||h==='name')) nameCol=c;
     if (empTypeCol===-1 && (h==='type of employment'||h==='employment type')) empTypeCol=c;
     if (desigCol===-1 && (h==='designation'||h.indexOf('designation')!==-1)) desigCol=c;
     if (dojCol===-1 && (h==='date of joining'||h==='joining date'||h==='doj'||h==='d.o.j'||h==='d.o.j.')) dojCol=c;
     if (contactCol===-1 && (h==='contact no.'||h==='contact no'||h==='contact number'||h==='phone no.'||h==='phone no'||h==='mobile no.'||h==='mobile no')) contactCol=c;
     if (emailCol===-1 && (h==='emailid'||h==='email id'||h==='email'||h==='e-mail'||h==='e-mail id')) emailCol=c;
-  }
-  if (headers.length>=12) {
-    if (empCol===-1) empCol=1; if (nameCol===-1) nameCol=3; if (empTypeCol===-1) empTypeCol=7;
-    if (desigCol===-1) desigCol=8; if (dojCol===-1) dojCol=9; if (contactCol===-1) contactCol=10; if (emailCol===-1) emailCol=11;
   }
   return { empCol:empCol,nameCol:nameCol,desigCol:desigCol,empTypeCol:empTypeCol,contactCol:contactCol,dojCol:dojCol,emailCol:emailCol };
 }
@@ -1726,12 +1761,13 @@ function getRosterSheet() {
 function getOfficerHeaderMeta_() {
   if (_officerHeaderMeta && _officerHeaderMeta.colMap) return _officerHeaderMeta;
   var sheet = getRosterSheet();
-  var headers = sheet.getRange(1, 1, 1, 12).getDisplayValues()[0];
+  var width = Math.max(1, sheet.getLastColumn());
+  var headers = sheet.getRange(1, 1, 1, width).getDisplayValues()[0];
   var colMap = findOfficerHeaders(headers);
   if (colMap.empCol===-1||colMap.nameCol===-1||colMap.emailCol===-1) {
-    throw new Error('System configuration error: Officers data must contain Employee ID No., Name of the Officers, and EmailID within A:L.');
+    throw new Error('System configuration error: Officers data must contain Employee ID No., Name of the Officers, and EmailID.');
   }
-  _officerHeaderMeta = { sheet: sheet, colMap: colMap };
+  _officerHeaderMeta = { sheet: sheet, colMap: colMap, width: width };
   return _officerHeaderMeta;
 }
 
@@ -1820,7 +1856,7 @@ function findOfficerByIdTargeted_(employeeId, forceFresh) {
     _executionOfficerById[normId] = null;
     return null;
   }
-  var rowRange = meta.sheet.getRange(rowIndex, 1, 1, 12);
+  var rowRange = meta.sheet.getRange(rowIndex, 1, 1, meta.width);
   var dataRow = rowRange.getValues()[0];
   var displayRow = rowRange.getDisplayValues()[0];
   var officer = buildOfficerFromRosterRow_(dataRow, displayRow, meta.colMap);
@@ -1835,11 +1871,11 @@ function getExecutionRosterData() {
   var sheet=getRosterSheet();
   var lastRow=sheet.getLastRow();
   if (lastRow<2) return null;
-  var range=sheet.getRange(1,1,lastRow,12);
+  var range=sheet.getRange(1,1,lastRow,Math.max(1,sheet.getLastColumn()));
   var data=range.getValues();
   var displayData=range.getDisplayValues();
   var colMap=findOfficerHeaders(displayData[0]);
-  if (colMap.empCol===-1||colMap.nameCol===-1||colMap.emailCol===-1) throw new Error('System configuration error: Officers data must contain Employee ID No., Name of the Officers, and EmailID within A:L.');
+  if (colMap.empCol===-1||colMap.nameCol===-1||colMap.emailCol===-1) throw new Error('System configuration error: Officers data must contain Employee ID No., Name of the Officers, and EmailID.');
   _executionRosterData={sheetName:sheet.getName(),data:data,displayData:displayData,colMap:colMap,byNormId:{}};
   for (var r=1;r<data.length;r++) {
     var officer = buildOfficerFromRosterRow_(data[r], displayData[r] || [], colMap);
@@ -2165,7 +2201,7 @@ function migrateLegacyCredentialsToAuthCredentials(authSheet) {
 
   var existing = {};
   if (authSheet.getLastRow() > 1) {
-    var existingRows = authSheet.getRange(2, 1, authSheet.getLastRow() - 1, 12).getValues();
+    var existingRows = cneReadHeaderRows_(authSheet,CNE_SHEET_HEADERS[AUTH_CREDENTIALS_SHEET],2,authSheet.getLastRow()-1);
     for (var e = 0; e < existingRows.length; e++) {
       var existingId = normalizeEmpId(existingRows[e][0]);
       if (existingId) existing[existingId] = true;
@@ -2215,7 +2251,7 @@ function migrateLegacyCredentialsToAuthCredentials(authSheet) {
   }
 
   if (toAppend.length > 0) {
-    authSheet.getRange(authSheet.getLastRow() + 1, 1, toAppend.length, 12).setValues(toAppend);
+    cneWriteHeaderRows_(authSheet,CNE_SHEET_HEADERS[AUTH_CREDENTIALS_SHEET],toAppend,authSheet.getLastRow()+1);
   }
   props.setProperty('AUTH_CREDENTIALS_V2_MIGRATED', 'YES');
 }
@@ -2231,13 +2267,14 @@ function getAuthCredentialRecord(employeeId, forceFresh) {
   }
 
   var sheet = getAuthCredentialsSheet();
-  var rowIndex = findExactEmployeeRow_(sheet, 1, cleanId, 2);
+  var layout = cneHeaderLayout_(sheet, CNE_SHEET_HEADERS[AUTH_CREDENTIALS_SHEET]);
+  var rowIndex = findExactEmployeeRow_(sheet, layout.positions[0] + 1, cleanId, 2);
   if (rowIndex < 2) {
     _executionCredentialCache[cleanId] = null;
     return null;
   }
 
-  var row = sheet.getRange(rowIndex, 1, 1, 12).getValues()[0];
+  var row = cneReadHeaderRows_(sheet, CNE_SHEET_HEADERS[AUTH_CREDENTIALS_SHEET], rowIndex, 1, layout)[0];
   if (normalizeEmpId(row[0]) !== cleanId) {
     _executionCredentialCache[cleanId] = null;
     return null;
@@ -2318,10 +2355,14 @@ function upsertPasswordCredential(employeeId, newPassword) {
     lastLoginAt, accountStatus, 0, '', createdAt, nowIso
   ];
 
+  var headers = CNE_SHEET_HEADERS[AUTH_CREDENTIALS_SHEET];
+  var layout = cneHeaderLayout_(sheet, headers);
   if (record) {
-    sheet.getRange(record.rowIndex, 1, 1, 12).setValues([row]);
+    var changes = {};
+    headers.forEach(function(header, index) { changes[header] = row[index]; });
+    cneUpdateHeaderFields_(sheet, record.rowIndex, changes, layout);
   } else {
-    sheet.appendRow(row);
+    cneWriteHeaderRows_(sheet, headers, [row], sheet.getLastRow() + 1, layout);
   }
 
   clearCredentialSecurityCache(cleanId);
@@ -2393,9 +2434,10 @@ function handleLogin(params) {
         newLockedUntil = new Date(nowMs + 15 * 60 * 1000).toISOString();
       }
       var authSheet = getAuthCredentialsSheet();
-      authSheet.getRange(record.rowIndex, 9).setValue(failures);
-      authSheet.getRange(record.rowIndex, 10).setValue(newLockedUntil);
-      authSheet.getRange(record.rowIndex, 12).setValue(new Date().toISOString());
+      cneUpdateHeaderFields_(authSheet, record.rowIndex, {
+        'Failed Login Count': failures, 'Locked Until': newLockedUntil,
+        'Updated At': new Date().toISOString()
+      });
       clearCredentialSecurityCache(employeeId);
       logAuditAction('LOGIN_FAILED', employeeId, 'Invalid credentials attempt', 'FAILED');
       return {
@@ -2407,10 +2449,10 @@ function handleLogin(params) {
 
     var authSheet = getAuthCredentialsSheet();
     var nowIso = new Date().toISOString();
-    authSheet.getRange(record.rowIndex, 7).setValue(nowIso);
-    authSheet.getRange(record.rowIndex, 9).setValue(0);
-    authSheet.getRange(record.rowIndex, 10).setValue('');
-    authSheet.getRange(record.rowIndex, 12).setValue(nowIso);
+    cneUpdateHeaderFields_(authSheet, record.rowIndex, {
+      'Last Login At': nowIso, 'Failed Login Count': 0,
+      'Locked Until': '', 'Updated At': nowIso
+    });
     clearCredentialSecurityCache(employeeId);
 
     var roleInfo = getUserRoleInfo(employeeId, true);
@@ -2534,9 +2576,10 @@ function getOtpChallengeById(challengeId) {
   if (!clean) return null;
   var sheet = getOtpVerificationSheet();
   if (sheet.getLastRow() <= 1) return null;
-  var rowIndex = findExactRowInColumn_(sheet, 0, clean, 2);
+  var layout = cneHeaderLayout_(sheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET]);
+  var rowIndex = findExactRowInColumn_(sheet, layout.positions[0], clean, 2);
   if (rowIndex < 2) return null;
-  var row = sheet.getRange(rowIndex, 1, 1, 15).getValues()[0];
+  var row = cneReadHeaderRows_(sheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET], rowIndex, 1, layout)[0];
   return {
     rowIndex: rowIndex,
     challengeId: clean,
@@ -2561,16 +2604,17 @@ function invalidateOpenOtpChallenges(purpose, principalId) {
   var sheet = getOtpVerificationSheet();
   if (sheet.getLastRow() <= 1) return;
   var normalizedPrincipal = normalizeEmpId(principalId) || String(principalId || '').trim().toLowerCase();
-  var matchingRows = findExactRowsInColumn_(sheet, 3, normalizedPrincipal, 2);
+  var layout = cneHeaderLayout_(sheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET]);
+  var matchingRows = findExactRowsInColumn_(sheet, layout.positions[3], normalizedPrincipal, 2);
   var statusRanges = [];
   var updatedRanges = [];
   for (var i = 0; i < matchingRows.length; i++) {
-    var row = sheet.getRange(matchingRows[i], 2, 1, 12).getValues()[0]; // B:M
-    var rowPurpose = String(row[0] || '').trim();
-    var status = String(row[11] || '').trim().toUpperCase();
+    var row = cneReadHeaderRows_(sheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET], matchingRows[i], 1, layout)[0];
+    var rowPurpose = String(row[1] || '').trim();
+    var status = String(row[12] || '').trim().toUpperCase();
     if (rowPurpose === purpose && (status === 'PENDING' || status === 'VERIFIED')) {
-      statusRanges.push('M' + matchingRows[i]);
-      updatedRanges.push('O' + matchingRows[i]);
+      statusRanges.push(cneColumnLetter_(layout.positions[12] + 1) + matchingRows[i]);
+      updatedRanges.push(cneColumnLetter_(layout.positions[14] + 1) + matchingRows[i]);
     }
   }
   if (statusRanges.length > 0) {
@@ -2583,13 +2627,14 @@ function countRecentOtpSends(purpose, principalId, sinceMs) {
   var sheet = getOtpVerificationSheet();
   if (sheet.getLastRow() <= 1) return 0;
   var normalizedPrincipal = normalizeEmpId(principalId) || String(principalId || '').trim().toLowerCase();
-  var matchingRows = findExactRowsInColumn_(sheet, 3, normalizedPrincipal, 2);
+  var layout = cneHeaderLayout_(sheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET]);
+  var matchingRows = findExactRowsInColumn_(sheet, layout.positions[3], normalizedPrincipal, 2);
   var count = 0;
   for (var i = 0; i < matchingRows.length; i++) {
-    var row = sheet.getRange(matchingRows[i], 2, 1, 13).getValues()[0]; // B:N
-    var rowPurpose = String(row[0] || '').trim();
+    var row = cneReadHeaderRows_(sheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET], matchingRows[i], 1, layout)[0];
+    var rowPurpose = String(row[1] || '').trim();
     if (rowPurpose !== purpose) continue;
-    var createdMs = new Date(row[12]).getTime();
+    var createdMs = new Date(row[13]).getTime();
     if (!isNaN(createdMs) && createdMs >= sinceMs) count++;
   }
   return count;
@@ -2599,11 +2644,12 @@ function getLatestOtpChallengeForPrincipal_(purpose, principalId) {
   var sheet = getOtpVerificationSheet();
   if (sheet.getLastRow() <= 1) return null;
   var normalizedPrincipal = normalizeEmpId(principalId) || String(principalId || '').trim().toLowerCase();
-  var matchingRows = findExactRowsInColumn_(sheet, 3, normalizedPrincipal, 2);
+  var layout = cneHeaderLayout_(sheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET]);
+  var matchingRows = findExactRowsInColumn_(sheet, layout.positions[3], normalizedPrincipal, 2);
   var latest = null;
   var latestMs = -1;
   for (var i = 0; i < matchingRows.length; i++) {
-    var row = sheet.getRange(matchingRows[i], 1, 1, 15).getValues()[0];
+    var row = cneReadHeaderRows_(sheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET], matchingRows[i], 1, layout)[0];
     var rowPurpose = String(row[1] || '').trim();
     if (rowPurpose !== purpose) continue;
     var createdMs = new Date(row[13]).getTime();
@@ -2731,10 +2777,10 @@ function handleRequestPasswordOtp(params) {
     var resendAt = new Date(now.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000).toISOString();
 
     otpSheet = getOtpVerificationSheet();
-    otpSheet.appendRow([
+    cneWriteHeaderRows_(otpSheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET], [[
       challengeId, OTP_PURPOSE_PASSWORD, 'INTERNAL', employeeId, email, otpHash,
       expiresAt, 0, OTP_MAX_ATTEMPTS, resendAt, '', '', 'PENDING', nowIso, nowIso
-    ]);
+    ]], otpSheet.getLastRow()+1);
 
     // Set cooldown before releasing the lock to close the concurrent-request race window.
     cache.put(cooldownKey, '1', OTP_RESEND_COOLDOWN_SECONDS);
@@ -2761,8 +2807,7 @@ function handleRequestPasswordOtp(params) {
       var latestChallenge = getLatestOtpChallengeForPrincipal_(OTP_PURPOSE_PASSWORD, employeeId);
       var failedChallengeIsLatest = Boolean(latestChallenge && latestChallenge.challengeId === challengeId);
       if (challenge && challenge.status === 'PENDING' && otpSheet && failedChallengeIsLatest) {
-        otpSheet.getRange(challenge.rowIndex, 13).setValue('SEND_FAILED');
-        otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+        cneUpdateHeaderFields_(otpSheet, challenge.rowIndex, {'Status':'SEND_FAILED','Updated At':new Date().toISOString()});
         // Remove cooldown only for the challenge whose email actually failed. Never
         // erase a newer request's cooldown if this older email completes/fails late.
         try { cache.remove(cooldownKey); } catch (cacheErr) {}
@@ -2819,8 +2864,7 @@ function handleVerifyPasswordOtp(params) {
     var liveEmail = liveOfficer ? String(liveOfficer.email || '').trim().toLowerCase() : '';
     if (!liveOfficer || !isValidEmailAddress(liveEmail) || liveEmail !== String(challenge.email || '').trim().toLowerCase()) {
       var changedSheet = getOtpVerificationSheet();
-      changedSheet.getRange(challenge.rowIndex, 13).setValue('INVALIDATED');
-      changedSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      cneUpdateHeaderFields_(changedSheet, challenge.rowIndex, {'Status':'INVALIDATED','Updated At':new Date().toISOString()});
       return { success: false, errorCode: 'OTP_IDENTITY_CHANGED', message: 'Registered employee/email details changed. Request a new verification code.' };
     }
     if (liveCredential && liveCredential.accountStatus === 'INACTIVE') {
@@ -2830,8 +2874,7 @@ function handleVerifyPasswordOtp(params) {
     var expiresMs = new Date(challenge.expiresAt).getTime();
     if (isNaN(expiresMs) || Date.now() > expiresMs) {
       var otpSheet = getOtpVerificationSheet();
-      otpSheet.getRange(challenge.rowIndex, 13).setValue('EXPIRED');
-      otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      cneUpdateHeaderFields_(otpSheet, challenge.rowIndex, {'Status':'EXPIRED','Updated At':new Date().toISOString()});
       return { success: false, errorCode: 'OTP_EXPIRED', message: 'Verification code has expired. Request a new code.' };
     }
 
@@ -2843,9 +2886,7 @@ function handleVerifyPasswordOtp(params) {
     if (!timingSafeEqual(suppliedHash, challenge.otpHash)) {
       var attempts = challenge.attempts + 1;
       var otpSheet2 = getOtpVerificationSheet();
-      otpSheet2.getRange(challenge.rowIndex, 8).setValue(attempts);
-      otpSheet2.getRange(challenge.rowIndex, 13).setValue(attempts >= challenge.maxAttempts ? 'LOCKED' : 'PENDING');
-      otpSheet2.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      cneUpdateHeaderFields_(otpSheet2, challenge.rowIndex, {'Attempts':attempts,'Status':attempts >= challenge.maxAttempts ? 'LOCKED' : 'PENDING','Updated At':new Date().toISOString()});
       logAuditAction('PASSWORD_OTP_FAILED', employeeId, 'Incorrect OTP attempt ' + attempts, 'FAILED');
       return {
         success: false,
@@ -2856,10 +2897,7 @@ function handleVerifyPasswordOtp(params) {
 
     var verifiedAt = new Date().toISOString();
     var otpSheet3 = getOtpVerificationSheet();
-    otpSheet3.getRange(challenge.rowIndex, 6).setValue('');
-    otpSheet3.getRange(challenge.rowIndex, 11).setValue(verifiedAt);
-    otpSheet3.getRange(challenge.rowIndex, 13).setValue('VERIFIED');
-    otpSheet3.getRange(challenge.rowIndex, 15).setValue(verifiedAt);
+    cneUpdateHeaderFields_(otpSheet3, challenge.rowIndex, {'OTP Hash':'','Verified At':verifiedAt,'Status':'VERIFIED','Updated At':verifiedAt});
 
     var verificationToken = generateOtpVerificationToken(challengeId, OTP_PURPOSE_PASSWORD, employeeId);
     logAuditAction('PASSWORD_OTP_VERIFIED', employeeId, 'Registered email verified', 'SUCCESS');
@@ -2913,9 +2951,7 @@ function handleSetPasswordWithOtp(params) {
     // later fails, the OTP remains non-replayable and the user must request a fresh code.
     var consumedAt = new Date().toISOString();
     var otpSheet = getOtpVerificationSheet();
-    otpSheet.getRange(challenge.rowIndex, 12).setValue(consumedAt);
-    otpSheet.getRange(challenge.rowIndex, 13).setValue('CONSUMED');
-    otpSheet.getRange(challenge.rowIndex, 15).setValue(consumedAt);
+    cneUpdateHeaderFields_(otpSheet, challenge.rowIndex, {'Consumed At':consumedAt,'Status':'CONSUMED','Updated At':consumedAt});
 
     var result = upsertPasswordCredential(employeeId, newPassword);
 
@@ -2990,15 +3026,9 @@ function handleAdminResetPassword(params, session) {
 
     if (record) {
       var nextVersion = Math.max(1, record.passwordVersion + 1);
-      sheet.getRange(record.rowIndex, 2).setValue('');
-      sheet.getRange(record.rowIndex, 3).setValue('');
-      sheet.getRange(record.rowIndex, 4).setValue(nextVersion);
-      sheet.getRange(record.rowIndex, 6).setValue(nowIso);
-      sheet.getRange(record.rowIndex, 9).setValue(0);
-      sheet.getRange(record.rowIndex, 10).setValue('');
-      sheet.getRange(record.rowIndex, 12).setValue(nowIso);
+      cneUpdateHeaderFields_(sheet, record.rowIndex, {'Password Hash':'','Password Salt':'','Password Version':nextVersion,'Password Changed At':nowIso,'Failed Login Count':0,'Locked Until':'','Updated At':nowIso});
     } else {
-      sheet.appendRow([targetEmpId, '', '', 1, '', nowIso, '', 'ACTIVE', 0, '', nowIso, nowIso]);
+      cneWriteHeaderRows_(sheet, CNE_SHEET_HEADERS[AUTH_CREDENTIALS_SHEET], [[targetEmpId, '', '', 1, '', nowIso, '', 'ACTIVE', 0, '', nowIso, nowIso]], sheet.getLastRow()+1);
     }
 
     clearCredentialSecurityCache(targetEmpId);
@@ -6352,19 +6382,11 @@ function handleUploadImage(params, session) {
   
   if (!base64Data) return { success: false, message: 'Image data is required.' };
   
-  var driveFolderId = PropertiesService.getScriptProperties().getProperty('DRIVE_FOLDER_ID');
-  if (!driveFolderId || driveFolderId.trim() === '') {
-    return {
-      success: false,
-      message: 'Google Drive upload error: Gallery Drive folder is not configured. Please configure DRIVE_FOLDER_ID in Script Properties.'
-    };
-  }
-  
   var folder;
   try {
-    folder = DriveApp.getFolderById(driveFolderId.trim());
+    folder = cneRootDriveChildFolder_('Gallery');
   } catch (e) {
-    return { success: false, message: 'Google Drive upload error: Invalid DRIVE_FOLDER_ID configured.' };
+    return { success: false, message: 'Google Drive upload error: ' + (e && e.message ? e.message : String(e)) };
   }
   
   var contentType = 'image/jpeg';
@@ -8216,6 +8238,8 @@ var CNE_SHEET_HEADERS = {
     'Consumed At', 'Status', 'Created At', 'Updated At'
   ],
   'Audit Log': ['Timestamp', 'Action', 'Employee ID', 'Details', 'Status'],
+  'CNE Quiz Attempts': ['Attempt ID','Employee ID','Employee Name','Units JSON','Question IDs JSON','Question Count','Status','Started At','Updated At','Completed At','Correct Count','Wrong Count','Percentage','Result JSON'],
+  'CNE Quiz Answers': ['Attempt ID','Question ID','Selected Option','Saved At'],
   'CNE Post Test Questions': ['CNE ID', 'Question ID', 'Question Text', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option', 'Explanation', 'Is Finalized', 'Is Locked', 'Created At', 'Created By', 'Authoritative Source', 'Status', 'Question Type', 'Image Drive File ID'],
   'CNE Post Test Responses': ['Response ID', 'CNE ID', 'Employee ID', 'Employee Name', 'Designation', 'Department', 'Score', 'Total Questions', 'Percentage', 'Source', 'Submitted At', 'Answers JSON', 'Status', 'Remarks'],
   'CNE_Reference': ['CNE ID', 'Topic', 'Reference Text / Clinical Guides', 'Updated At', 'Updated By', 'Drive File ID', 'File Name', 'File Type', 'Resource Person Name', 'File Size', 'Indexing Status', 'Indexing Error Code', 'Indexing Message', 'Chunks Count', 'Indexed At'],
@@ -8303,6 +8327,102 @@ var CNE_HEADER_ALIASES = {
   'indexedat': ['indexedat']
 };
 
+
+/**
+ * Header-directed Sheets I/O (read one header row and map data in memory).
+ * Uses strict normalized header names and rejects missing / duplicate required
+ * headers. No dependence on physical column positions; extra columns survive.
+ * Indexes inside returned canonical arrays are logical, NOT sheet coordinates.
+ * Do not use a fallback physical column for a required field.
+ */
+function cneHeaderLayout_(sheet, names) {
+  if (!sheet) throw new Error('HEADER_SHEET_MISSING');
+  var width=Math.max(1,sheet.getLastColumn());
+  var row=sheet.getRange(1,1,1,width).getValues()[0];
+  var keys={},duplicates={};
+  for(var i=0;i<row.length;i++){
+    var key=String(row[i]===null||row[i]===undefined?'':row[i]).trim().toLowerCase().replace(/[^a-z0-9]/g,'');
+    if(!key)continue;
+    if(Object.prototype.hasOwnProperty.call(keys,key))duplicates[key]=true;
+    else keys[key]=i;
+  }
+  var physical=names.map(function(name){
+    var key=String(name).trim().toLowerCase().replace(/[^a-z0-9]/g,'');
+    if(duplicates[key])throw new Error('DUPLICATE_HEADER: '+sheet.getName()+': '+name);
+    if(Object.prototype.hasOwnProperty.call(keys,key))return keys[key];
+    // Same explicit aliases recognized by Verify Sheets; fail closed when
+    // more than one existing column could represent a required field.
+    var aliases=(CNE_HEADER_ALIASES&&CNE_HEADER_ALIASES[key])||[];
+    var found=[];
+    aliases.forEach(function(alias){
+      if(duplicates[alias])throw new Error('DUPLICATE_HEADER: '+sheet.getName()+': '+alias);
+      if(Object.prototype.hasOwnProperty.call(keys,alias)&&found.indexOf(keys[alias])<0)found.push(keys[alias]);
+    });
+    if(found.length>1)throw new Error('AMBIGUOUS_HEADER: '+sheet.getName()+': '+name);
+    if(!found.length)throw new Error('MISSING_HEADER: '+sheet.getName()+': '+name+'. Run Verify Sheets.');
+    return found[0];
+  });
+  return {width:width,positions:physical,names:names};
+}
+/** Project actual physical values to canonical header order in memory. */
+function cneReadHeaderRows_(sheet,names,startRow,rowCount,layout){
+  if(!rowCount)return [];
+  var m=layout||cneHeaderLayout_(sheet,names);
+  return sheet.getRange(startRow,1,rowCount,m.width).getValues().map(function(row){
+    return m.positions.map(function(col){return row[col];});
+  });
+}
+/** Header-projected full data for compatibility with quota/status loops. */
+function cneCanonicalSheetData_(sheet,names){
+  var layout=cneHeaderLayout_(sheet,names);
+  var count=sheet.getLastRow();
+  return [names.slice()].concat(count>1?cneReadHeaderRows_(sheet,names,2,count-1,layout):[]);
+}
+/** Batch insert canonical rows in actual header order. One Sheets write call. */
+function cneWriteHeaderRows_(sheet,names,canonicalRows,startRow,layout){
+  if(!canonicalRows.length)return;
+  var m=layout||cneHeaderLayout_(sheet,names),rows=canonicalRows.map(function(row){
+    if(row.length!==names.length)throw new Error('HEADER_ROW_WIDTH: '+sheet.getName());
+    var physical=Array(m.width).fill('');
+    m.positions.forEach(function(col,i){physical[col]=row[i];});
+    return physical;
+  });
+  sheet.getRange(startRow,1,rows.length,m.width).setValues(rows);
+}
+/** Update only named fields while preserving extra columns and other data. */
+function cneUpdateHeaderFields_(sheet,rowNum,changes,layout){
+  var names=Object.keys(changes);
+  if(!names.length)return;
+  var m=layout||cneHeaderLayout_(sheet,names);
+  var rowRange=sheet.getRange(rowNum,1,1,m.width);
+  var existing=rowRange.getValues()[0];
+  // Reinsert formulas in untouched columns rather than replacing them with
+  // their evaluated values when a full-row batch update is used.
+  if(typeof rowRange.getFormulas==='function'){
+    var formulas=rowRange.getFormulas()[0]||[];
+    formulas.forEach(function(formula,index){if(formula)existing[index]=formula;});
+  }
+  names.forEach(function(name){
+    var i=m.names.indexOf(name);
+    if(i<0)throw new Error('HEADER_NOT_REQUESTED: '+name);
+    existing[m.positions[i]]=changes[name];
+  });
+  rowRange.setValues([existing]);
+}
+/** 1-based column number to A1 notation, for header-directed range lists. */
+function cneColumnLetter_(number){
+  if(!Number.isInteger(number)||number<1)throw new Error('INVALID_COLUMN');
+  var text='';
+  while(number>0){number--;text=String.fromCharCode(65+number%26)+text;number=Math.floor(number/26);}
+  return text;
+}
+function cneHeaderColumn_(sheet,name,layout){
+  var m=layout||cneHeaderLayout_(sheet,[name]);
+  var idx=m.names.indexOf(name);
+  if(idx<0)throw new Error('HEADER_NOT_REQUESTED: '+name);
+  return m.positions[idx]+1;
+}
+
 /**
  * Single Standardized Generic Sheet Helper:
  * Strictly NON-DESTRUCTIVE Sheet Tab & Header Resolver
@@ -8362,7 +8482,6 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
     var createdTabs = 0;
     var extras = 0;
     var normalize = function(h) { return String(h || '').trim().toLowerCase().replace(/[^a-z0-9]/g,''); };
-    var fixedPosition = {'CNE_Reference_Index':true,'CNE_Material_Index':true};
 
     for (var i = 0; i < required.length; i++) {
       var tabName = required[i];
@@ -8419,24 +8538,6 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
         if (!matchedExisting[k] && actual[k]) extraColumns.push(actual[k]+' (column '+(k+1)+')');
       }
       extras+=extraColumns.length;
-
-      // The evidence indexes have positional write operations. A missing header
-      // can safely be appended only when the existing columns are an exact prefix.
-      // Extra trailing headers are safe to REPORT; existing data is never rearranged.
-      if (fixedPosition[tabName]) {
-        var prefixOk=true;
-        for (var p=0;p<Math.min(actual.length,expected.length);p++) {
-          if (actual[p]!==expected[p]) {prefixOk=false;break;}
-        }
-        if (!prefixOk || duplicateHeaders.length || blankHeaders.length) {
-          unsafe.push(tabName);
-          report.push({tab:tabName,status:'Needs manual review: fixed-position index cannot be safely repaired',rowCount:sheet.getLastRow(),error:'Required headers must appear in their original order. No data were changed.',missingHeaders:missing,extraColumns:extraColumns,duplicateHeaders:duplicateHeaders,blankHeaderColumns:blankHeaders});
-          continue;
-        }
-        // Only trailing missing headers (when all pre-existing columns are canonical).
-        if (actual.length<expected.length) missing=expected.slice(actual.length);
-        else missing=[];
-      }
 
       if (duplicateHeaders.length) {
         unsafe.push(tabName);
@@ -8633,13 +8734,21 @@ function handleSaveReferenceMaterial(params, session) {
     var updatedAt = new Date().toISOString();
     var updatedBy = session.employeeId;
     
-    // Exactly 5 columns: CNE ID, Topic, Reference Text / Clinical Guides, Updated At, Updated By
-    var rowValues = [cneId, record.topic, unifiedContent, updatedAt, updatedBy];
-    
+    // Persist by matching headers, preserving all other reference/file metadata.
+    var referenceChanges = {
+      'CNE ID': cneId,
+      'Topic': record.topic,
+      'Reference Text / Clinical Guides': unifiedContent,
+      'Updated At': updatedAt,
+      'Updated By': updatedBy
+    };
     if (existingRow > 0) {
-      sheet.getRange(existingRow, 1, 1, 5).setValues([rowValues]);
+      cneUpdateHeaderFields_(sheet,existingRow,referenceChanges);
     } else {
-      sheet.appendRow(rowValues);
+      var referenceLayout=cneHeaderLayout_(sheet,Object.keys(referenceChanges));
+      var newReferenceRow=Array(referenceLayout.width).fill('');
+      referenceLayout.positions.forEach(function(col,i){newReferenceRow[col]=referenceChanges[referenceLayout.names[i]];});
+      sheet.getRange(sheet.getLastRow()+1,1,1,referenceLayout.width).setValues([newReferenceRow]);
     }
 
     // Resolve employee name for frontend display response - never expose employee ID
@@ -8745,16 +8854,12 @@ function cneMaterialIndexSheet_(){
 function cneIndexProjectRows_(rows,headers){
   return rows.map(function(row){return headers.map(function(h){return row[CNE_INDEX_CANONICAL_HEADERS_.indexOf(h)];});});
 }
-/** Fail closed on obsolete or reordered indexes instead of writing into wrong columns. */
+/** Fail closed on missing/ambiguous required index names, never on reorder alone. */
 function cneRequireIndexHeaders_(sheet, headers) {
   if (!sheet) throw new Error('Required CNE index tab not found. Use Verify / Initialize CNE Sheets.');
-  if (sheet.getLastRow() === 0) {
-    ensureSheetHeadersSafe_(sheet, headers, true);
-  }
-  var actual = sheet.getRange(1,1,1,Math.max(sheet.getLastColumn(),1)).getValues()[0];
-  if (actual.length < headers.length || headers.some(function(h,i){return String(actual[i]||'').trim()!==h;})) {
-    throw new Error('INDEX_SCHEMA_MISMATCH: '+sheet.getName()+' requires its '+headers.length+' positional headers first. Verify CNE Sheets and review any missing/reordered headers.');
-  }
+  if (sheet.getLastRow() === 0) ensureSheetHeadersSafe_(sheet, headers, true);
+  try { return cneHeaderLayout_(sheet,headers); }
+  catch (e) { throw new Error('INDEX_SCHEMA_MISMATCH: '+e.message); }
 }
 /** Verify the permanent library-only 10-column evidence index schema. */
 function ensureReferenceIndexSheetHeaders(sheet, lockAlreadyHeld) {
@@ -8780,72 +8885,51 @@ function ensureReferenceLibrarySheetHeaders(sheet, lockAlreadyHeld) {
 }
 
 /**
- * Helper: Obtain or create the 'Learning Resources' subfolder inside the configured DRIVE_FOLDER_ID.
- * Strictly non-destructive, idempotent, and authoritative.
- * Uses ONLY DRIVE_FOLDER_ID from ScriptProperties; ignores any client folder IDs.
+ * The only Drive-folder Script Property is LEARNING_RESOURCES_ROOT_FOLDER_ID.
+ * Exactly five pre-existing direct children are allowed. Never create folders,
+ * silently fall back to My Drive, or pick an arbitrary duplicate name.
+ * The short-lived cache avoids a Drive name search on every quiz image request;
+ * a missing/stale cache is transparently resolved afresh.
  */
+function cneRootDriveChildFolder_(folderName) {
+  var names = ['CNE Class Material', 'Nursing Reference Library', 'Gallery',
+    'Question Bank Images', 'Manual Question Images'];
+  if (names.indexOf(folderName) < 0) throw new Error('Unapproved Drive folder name: ' + folderName);
+  var rootId = String(PropertiesService.getScriptProperties().getProperty('LEARNING_RESOURCES_ROOT_FOLDER_ID') || '').trim();
+  if (!/^[a-zA-Z0-9_-]{15,128}$/.test(rootId))
+    throw new Error('Configure LEARNING_RESOURCES_ROOT_FOLDER_ID with the AIIMS CNE Management System root folder ID.');
+  var root = DriveApp.getFolderById(rootId);
+  var cache = null, cacheKey = 'CNE_DRIVE_CHILD_V1_' + rootId + '_' + names.indexOf(folderName);
+  try { cache = CacheService.getScriptCache(); } catch (ignored) {}
+  var cachedId = '';
+  try { cachedId = cache ? String(cache.get(cacheKey) || '') : ''; } catch (ignored2) {}
+  if (cachedId) {
+    try {
+      var cached = DriveApp.getFolderById(cachedId);
+      if (cached.getName() === folderName && (!cached.isTrashed || !cached.isTrashed())) return cached;
+    } catch (stale) {}
+    try { if (cache) cache.remove(cacheKey); } catch (ignored3) {}
+  }
+  var matches = root.getFoldersByName(folderName);
+  if (!matches.hasNext()) throw new Error('Missing folder "' + folderName + '" inside AIIMS CNE Management System root. Create it manually.');
+  var folder = matches.next();
+  if (matches.hasNext()) throw new Error('Duplicate folders named "' + folderName + '" inside the configured Drive root. Resolve the duplicates.');
+  try { if (cache) cache.put(cacheKey, folder.getId(), 180); } catch (ignored4) {}
+  return folder;
+}
+
+// Keep existing helper names for compatibility with current CNE/reference handlers.
 function getOrCreateLearningResourcesFolder() {
-  try {
-    var rootId = PropertiesService.getScriptProperties().getProperty('LEARNING_RESOURCES_ROOT_FOLDER_ID');
-    var rootFolder = rootId ? DriveApp.getFolderById(rootId) : DriveApp.getRootFolder();
-    return { success: true, folder: getOrCreateChildFolderSafe_(rootFolder, 'CNE Learning Resources') };
-  } catch (e) {
-    return { success: false, message: 'Unable to access CNE Learning Resources folder: ' + e.message };
-  }
+  try { return {success:true,folder:cneRootDriveChildFolder_('CNE Class Material')}; }
+  catch(e) {return {success:false,message:'Unable to access CNE Class Material folder: ' + e.message};}
 }
-
-/**
- * Helper: Obtain or create the 'Nursing Reference Library' subfolder inside 'Learning Resources'.
- */
-function getOrCreateChildFolderSafe_(parentFolder, folderName) {
-  var existing = parentFolder.getFoldersByName(folderName);
-  if (existing.hasNext()) return existing.next();
-
-  var lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(10000);
-  } catch (e) {
-    throw new Error('Server is busy creating the Drive folder. Please try again.');
-  }
-  try {
-    // Re-check while serialized so two first-use requests cannot create duplicate folders.
-    var latest = parentFolder.getFoldersByName(folderName);
-    if (latest.hasNext()) return latest.next();
-    return parentFolder.createFolder(folderName);
-  } finally {
-    lock.releaseLock();
-  }
+function getOrCreateNursingRefLibraryFolder(unusedParentFolder) {
+  try {return {success:true,folder:cneRootDriveChildFolder_('Nursing Reference Library')};}
+  catch(e) {return {success:false,message:'Unable to access Nursing Reference Library folder: ' + e.message};}
 }
-
-function getOrCreateNursingRefLibraryFolder(learningResourcesFolder) {
-  try {
-    if (!learningResourcesFolder) {
-      var parentResult = getOrCreateLearningResourcesFolder();
-      if (!parentResult.success) return parentResult;
-      learningResourcesFolder = parentResult.folder;
-    }
-    return { success: true, folder: getOrCreateChildFolderSafe_(learningResourcesFolder, 'Nursing Reference Library') };
-  } catch (e) {
-    return { success: false, message: 'Unable to access Nursing Reference Library folder: ' + e.message };
-  }
-}
-
-/**
- * Helper: Obtain or create the 'Open RN' subfolder inside 'Nursing Reference Library'.
- * Hierarchy: DRIVE_FOLDER_ID -> Learning Resources -> Nursing Reference Library -> Open RN
- * Strict Server-Authoritative: resolves ONLY from configured DRIVE_FOLDER_ID. Never accepts client folder IDs.
- */
-function getOrCreateOpenRnFolder() {
-  var lrResult = getOrCreateLearningResourcesFolder();
-  if (!lrResult.success) return lrResult;
-  var nrlResult = getOrCreateNursingRefLibraryFolder(lrResult.folder);
-  if (!nrlResult.success) return nrlResult;
-  try {
-    return { success: true, folder: getOrCreateChildFolderSafe_(nrlResult.folder, 'Open RN') };
-  } catch (e) {
-    return { success: false, message: 'Unable to access Open RN folder: ' + e.message };
-  }
-}
+// Legacy function name is retained only to avoid disturbing existing call sites;
+// the returned folder is now the root-level Nursing Reference Library.
+function getOrCreateOpenRnFolder() { return getOrCreateNursingRefLibraryFolder(); }
 
 /**
  * Server-side validation: Verifies whether a Drive File is strictly located within the Open RN folder.
@@ -8898,7 +8982,7 @@ function getFileExtension(fileName) {
  * Upload and Store CNE Learning Resource File
  * Document Policy: Strictly PDF only (.pdf)
  * Maximum Size: 3 MB (MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024)
- * Authoritative storage: DRIVE_FOLDER_ID -> Learning Resources subfolder
+ * Authoritative storage: configured root -> CNE Class Material direct child
  * Access: Completely PRIVATE (No ANYONE_WITH_LINK)
  * Metadata: Appended non-destructively to CNE_Reference
  */
@@ -9230,7 +9314,7 @@ function handleDeleteLearningResource(params, session) {
     };
   }
 
-  // 4. Verify the file belongs to the configured DRIVE_FOLDER_ID / Learning Resources folder
+  // 4. Verify the file belongs to the configured root / CNE Class Material folder
   var folderRes = getOrCreateLearningResourcesFolder();
   if (!folderRes.success || !folderRes.folder) {
     return {
@@ -10449,7 +10533,7 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
       // Safe replacement: write the new batch first. If the write fails, old index rows remain intact.
       if (rowsToInsert.length > 0) {
         var startRow = sheet.getLastRow() + 1;
-        sheet.getRange(startRow, 1, rowsToInsert.length, 11).setValues(cneIndexProjectRows_(rowsToInsert,CNE_SHEET_HEADERS['CNE_Material_Index']));
+        cneWriteHeaderRows_(sheet,CNE_SHEET_HEADERS['CNE_Material_Index'],cneIndexProjectRows_(rowsToInsert,CNE_SHEET_HEADERS['CNE_Material_Index']),startRow);
       }
       if (rowsToDelete.length > 0) deleteSheetRowsByIndices(sheet, rowsToDelete);
     }
@@ -10830,7 +10914,7 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
   }
   var cleanDriveFileId = driveFileId.trim();
 
-  // 1. Resolve Open RN folder strictly from DRIVE_FOLDER_ID
+  // 1. Resolve the root-level Nursing Reference Library folder by name
   var folderResult = getOrCreateOpenRnFolder();
   if (!folderResult.success || !folderResult.folder) {
     return {
@@ -10858,13 +10942,13 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
     logAuditAction(
       'REFERENCE_LIBRARY_SECURITY_ALERT',
       session ? session.employeeId : 'UNKNOWN',
-      'Attempt to index file outside approved Open RN folder: ' + cleanDriveFileId,
+      'Attempt to index file outside approved Nursing Reference Library folder: ' + cleanDriveFileId,
       'FORBIDDEN'
     );
     return {
       success: false,
       errorCode: 'FILE_OUTSIDE_APPROVED_FOLDER',
-      message: 'Access denied. The specified file is not inside the approved Open RN folder.'
+      message: 'Access denied. The specified file is not inside the approved Nursing Reference Library folder.'
     };
   }
 
@@ -11135,7 +11219,7 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
       if (rowsToInsert.length > 0) {
         var startRow = indexSheet.getLastRow() + 1;
         try {
-          indexSheet.getRange(startRow, 1, rowsToInsert.length, 10).setValues(cneIndexProjectRows_(rowsToInsert,CNE_SHEET_HEADERS['CNE_Reference_Index']));
+          cneWriteHeaderRows_(indexSheet,CNE_SHEET_HEADERS['CNE_Reference_Index'],cneIndexProjectRows_(rowsToInsert,CNE_SHEET_HEADERS['CNE_Reference_Index']),startRow);
         } catch (writeErr) {
           // If the new batch write fails, existing index rows were NOT deleted and remain intact
           logAuditAction(
@@ -11399,7 +11483,7 @@ function listNursingReferenceResources(session) {
     // Non-blocking
   }
 
-  // 2. Scan Open RN Drive folder (Admin only)
+  // 2. Scan Nursing Reference Library Drive folder (Admin only)
   if (isAdmin) {
     try {
       var folderResult = getOrCreateOpenRnFolder();
@@ -11582,7 +11666,7 @@ function getNursingReferenceIndexStatus(driveFileId, session) {
 }
 
 /**
- * Upload an Open RN reference resource directly into the approved Open RN folder.
+ * Upload a nursing reference PDF directly into the approved Nursing Reference Library folder.
  * Strictly Admin-only.
  * Document Policy: PDF only (.pdf). No application-defined size limit.
  *
@@ -11614,7 +11698,7 @@ function uploadNursingReferenceResource(params, session) {
     return {
       success: false,
       errorCode: folderResult.errorCode || 'FOLDER_ERROR',
-      message: folderResult.message || 'Failed to access Open RN folder.'
+      message: folderResult.message || 'Failed to access Nursing Reference Library folder.'
     };
   }
 
@@ -11678,7 +11762,7 @@ function uploadNursingReferenceResource(params, session) {
     return {
       success: false,
       errorCode: 'FILE_CREATION_FAILED',
-      message: 'Failed to create private file in Open RN folder: ' + (createErr && createErr.message ? createErr.message : String(createErr))
+      message: 'Failed to create private file in Nursing Reference Library folder: ' + (createErr && createErr.message ? createErr.message : String(createErr))
     };
   }
 
@@ -11852,17 +11936,8 @@ function cneLibraryIndexHealthSummary_(driveFiles, registry, indexEntries) {
 
 /** Folder inspection does not create missing Drive folders. */
 function cneLibraryFindFolderForHealth_() {
-  try {
-    var rootId = PropertiesService.getScriptProperties().getProperty('LEARNING_RESOURCES_ROOT_FOLDER_ID');
-    var current = rootId ? DriveApp.getFolderById(rootId) : DriveApp.getRootFolder();
-    var names = ['CNE Learning Resources','Nursing Reference Library','Open RN'];
-    for (var n=0;n<names.length;n++) {
-      var folders = current.getFoldersByName(names[n]);
-      if (!folders.hasNext()) return {success:true,folder:null};
-      current = folders.next();
-    }
-    return {success:true,folder:current};
-  } catch(e) {return {success:false,message:'Could not inspect reference-library folder: '+(e && e.message ? e.message : String(e))};}
+  try { return {success:true,folder:cneRootDriveChildFolder_('Nursing Reference Library')}; }
+  catch(e) {return {success:false,message:'Could not inspect reference-library folder: ' + (e && e.message ? e.message : String(e))};}
 }
 
 function getNursingReferenceLibraryHealth(params, session) {
@@ -13869,7 +13944,7 @@ function handleGetAiQuota(params, session) {
   var isClosed = quotaLifecycleStatus === 'Completed' || quotaLifecycleStatus === 'Canceled';
   var isLocked = isCNEQuestionsLocked(cneId) || isClosed;
   var sheet = getOrCreateSheet('CNE_AI_Quota');
-  var data = sheet.getDataRange().getValues();
+  var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['CNE_AI_Quota']);
   var attemptsUsed = 0;
   var maxQuota = 1;
   var lastAttemptAt = '';
@@ -13925,32 +14000,43 @@ function findPersistedAiBatchInfo(cneId, questionsSheet, qCols) {
   }
   
   var cols = qCols || getQuestionColIndexes(sheet);
-  var data = sheet.getDataRange().getValues();
   var tokenCounts = {};
   var tokenRows = {};
   var allAiRows = [];
   var allAiCount = 0;
-  
-  for (var r = 1; r < data.length; r++) {
-    var rCne = String(data[r][cols.cneId] || '').trim().toUpperCase();
+  var candidateRows = [];
+  // Find only questions belonging to this CNE instead of transferring every
+  // post-test question in the institute. Fallback supports older test stubs.
+  try {
+    var idRange = sheet.getRange(2, cols.cneId + 1, sheet.getLastRow() - 1, 1);
+    var cells = idRange.createTextFinder(normCne).matchEntireCell(true).matchCase(false).findAll();
+    for (var c = 0; c < cells.length; c++) candidateRows.push(cells[c].getRow());
+  } catch (e) {
+    var legacyRows = sheet.getDataRange().getValues();
+    for (var r = 1; r < legacyRows.length; r++) {
+      if (String(legacyRows[r][cols.cneId] || '').trim().toUpperCase() === normCne) candidateRows.push(r+1);
+    }
+  }
+  for (var i = 0; i < candidateRows.length; i++) {
+    var rowNum = candidateRows[i];
+    var row = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var rCne = String(row[cols.cneId] || '').trim().toUpperCase();
     if (rCne !== normCne) continue;
-    
-    var rStatus = String(data[r][cols.status] || 'ACTIVE').trim().toUpperCase();
+    var rStatus = String(row[cols.status] || 'ACTIVE').trim().toUpperCase();
     if (rStatus !== 'ACTIVE') continue;
-    
-    var rCreatedBy = String(data[r][cols.createdBy] || '').trim();
-    var rQId = String(data[r][cols.qId] || '').trim().toLowerCase();
+    var rCreatedBy = String(row[cols.createdBy] || '').trim();
+    var rQId = String(row[cols.qId] || '').trim().toLowerCase();
     
     var match = rCreatedBy.match(/\[AI:([^\]]+)\]/);
     var token = match ? match[1].trim() : '';
     
     if (token || rCreatedBy.indexOf('[AI:') !== -1 || rQId.indexOf('q_ai_') === 0) {
       allAiCount++;
-      allAiRows.push(r + 1);
+      allAiRows.push(rowNum);
       var key = token || '__NO_TOKEN__';
       tokenCounts[key] = (tokenCounts[key] || 0) + 1;
       if (!tokenRows[key]) tokenRows[key] = [];
-      tokenRows[key].push(r + 1);
+      tokenRows[key].push(rowNum);
     }
   }
   
@@ -14077,7 +14163,7 @@ function handleReserveAiQuota(params, session) {
       return { success: false, errorCode: 'QUESTIONS_LOCKED', message: 'Questions are permanently locked because post-test submissions have begun.' };
     }
     var sheet = getOrCreateSheet('CNE_AI_Quota');
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['CNE_AI_Quota']);
     var rowIndex = -1;
     var attemptsUsed = 0;
     var maxQuota = 1;
@@ -14128,9 +14214,9 @@ function handleReserveAiQuota(params, session) {
       var committedToken = aiBatchInfo.primaryToken || existingToken || 'RECONCILED_BATCH';
       var nowIso = new Date().toISOString();
       if (rowIndex > 0) {
-        sheet.getRange(rowIndex, 3, 1, 7).setValues([[1, 1, nowIso, session.employeeId, '', '0', committedToken]]);
+        cneUpdateHeaderFields_(sheet,rowIndex,{"Attempts Used":1,"Max Quota":1,"Last Attempt At":nowIso,"Last Generated By":session.employeeId,"Reservation Token":'',"Reserved Until":'0',"Last Committed Token":committedToken});
       } else {
-        sheet.appendRow([cneId, record.topic, 1, 1, nowIso, session.employeeId, '', '0', committedToken]);
+        cneWriteHeaderRows_(sheet,CNE_SHEET_HEADERS['CNE_AI_Quota'],[[cneId, record.topic, 1, 1, nowIso, session.employeeId, '', '0', committedToken]],sheet.getLastRow()+1);
       }
       SpreadsheetApp.flush();
 
@@ -14181,9 +14267,9 @@ function handleReserveAiQuota(params, session) {
     var newReservedUntil = now + AI_QUOTA_RESERVATION_MS;
     
     if (rowIndex > 0) {
-      sheet.getRange(rowIndex, 7, 1, 2).setValues([[reservationToken, String(newReservedUntil)]]);
+      cneUpdateHeaderFields_(sheet,rowIndex,{'Reservation Token':reservationToken,'Reserved Until':String(newReservedUntil)});
     } else {
-      sheet.appendRow([cneId, record.topic, 0, 1, '', '', reservationToken, String(newReservedUntil), '']);
+      cneWriteHeaderRows_(sheet,CNE_SHEET_HEADERS['CNE_AI_Quota'],[[cneId, record.topic, 0, 1, '', '', reservationToken, String(newReservedUntil), '']],sheet.getLastRow()+1);
     }
     
     return {
@@ -14258,7 +14344,7 @@ function handleCommitAiQuota(params, session) {
       return { success: false, errorCode: 'QUESTIONS_LOCKED', message: 'Questions are permanently locked because post-test submissions have begun.' };
     }
     var quotaSheet = getOrCreateSheet('CNE_AI_Quota');
-    var qData = quotaSheet.getDataRange().getValues();
+    var qData = cneCanonicalSheetData_(quotaSheet,CNE_SHEET_HEADERS['CNE_AI_Quota']);
     var rowIndex = -1;
     var attemptsUsed = 0;
     var maxQuota = 1;
@@ -14306,7 +14392,7 @@ function handleCommitAiQuota(params, session) {
     // If an AI batch was already persisted for this CNE under another reservation token:
     if (aiBatchInfo.hasPersistedBatch && aiBatchInfo.primaryToken && aiBatchInfo.primaryToken !== reservationToken) {
       if (rowIndex > 0) {
-        quotaSheet.getRange(rowIndex, 3, 1, 7).setValues([[1, 1, new Date().toISOString(), session.employeeId, '', '0', aiBatchInfo.primaryToken]]);
+        cneUpdateHeaderFields_(quotaSheet,rowIndex,{"Attempts Used":1,"Max Quota":1,"Last Attempt At":new Date().toISOString(),"Last Generated By":session.employeeId,"Reservation Token":'',"Reserved Until":'0',"Last Committed Token":aiBatchInfo.primaryToken});
         SpreadsheetApp.flush();
       }
       return {
@@ -14560,9 +14646,9 @@ function handleCommitAiQuota(params, session) {
     var quotaCommitSuccess = false;
     for (var retry = 1; retry <= 3; retry++) {
       try {
-        quotaSheet.getRange(rowIndex, 3, 1, 7).setValues([[1, 1, nowIso, session.employeeId, '', '0', reservationToken]]);
+        cneUpdateHeaderFields_(quotaSheet,rowIndex,{"Attempts Used":1,"Max Quota":1,"Last Attempt At":nowIso,"Last Generated By":session.employeeId,"Reservation Token":'',"Reserved Until":'0',"Last Committed Token":reservationToken});
         SpreadsheetApp.flush();
-        var recheckVal = quotaSheet.getRange(rowIndex, 3).getValue();
+        var recheckVal = quotaSheet.getRange(rowIndex,cneHeaderColumn_(quotaSheet,'Attempts Used')).getValue();
         if (parseInt(recheckVal, 10) >= 1) {
           quotaCommitSuccess = true;
           break;
@@ -14635,7 +14721,7 @@ function handleReleaseAiQuota(params, session) {
       return { success: false, errorCode: 'QUESTIONS_LOCKED', message: 'Questions are permanently locked because post-test submissions have begun.' };
     }
     var sheet = getOrCreateSheet('CNE_AI_Quota');
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['CNE_AI_Quota']);
     var rowIndex = -1;
     var storedToken = '';
     
@@ -14662,7 +14748,7 @@ function handleReleaseAiQuota(params, session) {
     if (aiBatchInfo.hasPersistedBatch) {
       var committedToken = aiBatchInfo.primaryToken || storedToken || 'RECONCILED_BATCH';
       if (rowIndex > 0) {
-        sheet.getRange(rowIndex, 3, 1, 7).setValues([[1, 1, new Date().toISOString(), session.employeeId, '', '0', committedToken]]);
+        cneUpdateHeaderFields_(sheet,rowIndex,{"Attempts Used":1,"Max Quota":1,"Last Attempt At":new Date().toISOString(),"Last Generated By":session.employeeId,"Reservation Token":'',"Reserved Until":'0',"Last Committed Token":committedToken});
         SpreadsheetApp.flush();
       }
       return {
@@ -14689,7 +14775,7 @@ function handleReleaseAiQuota(params, session) {
     }
     
     // ONLY when the token matches, clear the reservation token and reservation expiry
-    sheet.getRange(rowIndex, 7, 1, 2).setValues([['', '0']]);
+    cneUpdateHeaderFields_(sheet,rowIndex,{'Reservation Token':'','Reserved Until':'0'});
     return { success: true, message: 'Reservation released. Allowance remains AVAILABLE.' };
   } finally {
     lock.releaseLock();
@@ -14850,7 +14936,7 @@ function handleValidateAiQuotaReservation(params, session) {
       return { success: false, errorCode: 'QUESTIONS_LOCKED', message: 'Questions are permanently locked because post-test submissions have begun.' };
     }
     var sheet = getOrCreateSheet('CNE_AI_Quota');
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['CNE_AI_Quota']);
     var storedToken = '';
     var reservedUntil = 0;
     var attemptsUsed = 0;
@@ -14902,7 +14988,7 @@ function handleValidateAiQuotaReservation(params, session) {
     if (aiBatchInfo.hasPersistedBatch) {
       var committedToken = aiBatchInfo.primaryToken || storedToken || 'RECONCILED_BATCH';
       if (rowIndex > 0) {
-        sheet.getRange(rowIndex, 3, 1, 7).setValues([[1, 1, new Date().toISOString(), session.employeeId, '', '0', committedToken]]);
+        cneUpdateHeaderFields_(sheet,rowIndex,{"Attempts Used":1,"Max Quota":1,"Last Attempt At":new Date().toISOString(),"Last Generated By":session.employeeId,"Reservation Token":'',"Reserved Until":'0',"Last Committed Token":committedToken});
         SpreadsheetApp.flush();
       }
       return {
@@ -16343,11 +16429,11 @@ function cneHybridRenewReservation_(cneId,token,session) {
   try{
     var live=revalidateCneMutation_(session,cneId,'QUESTION',false);if(!live.success)return live;
     if(isCNEQuestionsLocked(cneId))return {success:false,errorCode:'QUESTIONS_LOCKED'};
-    var sheet=getOrCreateSheet('CNE_AI_Quota'),rows=sheet.getDataRange().getValues();
+    var sheet=getOrCreateSheet('CNE_AI_Quota'),rows=cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['CNE_AI_Quota']);
     for(var i=1;i<rows.length;i++)if(String(rows[i][0]||'').toUpperCase()===cneId.toUpperCase()) {
       if(Number(rows[i][2]||0)>=1)return {success:false,errorCode:'QUOTA_EXHAUSTED'};
       if(String(rows[i][6]||'')!==token)return {success:false,errorCode:'INVALID_RESERVATION'};
-      sheet.getRange(i+1,8).setValue(String(Date.now()+600000));SpreadsheetApp.flush();
+      cneUpdateHeaderFields_(sheet,i+1,{'Reserved Until':String(Date.now()+600000)});SpreadsheetApp.flush();
       return {success:true};
     }
     return {success:false,errorCode:'INVALID_RESERVATION'};
@@ -16362,7 +16448,7 @@ function cneHybridPersistPartial_(cneId,token,questions,session) {
   try {
     var live=revalidateCneMutation_(session,cneId,'QUESTION',false);if(!live.success)return live;
     if(isCNEQuestionsLocked(cneId))return {success:false,errorCode:'QUESTIONS_LOCKED'};
-    var quota=getOrCreateSheet('CNE_AI_Quota'),data=quota.getDataRange().getValues(),quotaRow=-1;
+    var quota=getOrCreateSheet('CNE_AI_Quota'),data=cneCanonicalSheetData_(quota,CNE_SHEET_HEADERS['CNE_AI_Quota']),quotaRow=-1;
     for(var qi=1;qi<data.length;qi++)if(String(data[qi][0]||'').toUpperCase()===cneId.toUpperCase()){quotaRow=qi+1;break;}
     if(quotaRow<2 || String(data[quotaRow-1][6]||'')!==token)return {success:false,errorCode:'INVALID_RESERVATION'};
     var used=Number(data[quotaRow-1][2]||0)>=1;
@@ -17684,10 +17770,10 @@ function handleRequestPostTestOtp(params, session) {
     var expiresAt = new Date(now.getTime() + OTP_TTL_MS).toISOString();
     var resendAt = new Date(now.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000).toISOString();
     otpSheet = getOtpVerificationSheet();
-    otpSheet.appendRow([
+    cneWriteHeaderRows_(otpSheet, CNE_SHEET_HEADERS[OTP_VERIFICATION_SHEET], [[
       challengeId, purpose, participantType, principal, email, otpHash,
       expiresAt, 0, OTP_MAX_ATTEMPTS, resendAt, '', '', 'PENDING', nowIso, nowIso
-    ]);
+    ]], otpSheet.getLastRow()+1);
 
     // Set cooldown before releasing the lock to close the concurrent-request race window.
     cache.put(cooldownKey, '1', OTP_RESEND_COOLDOWN_SECONDS);
@@ -17705,8 +17791,7 @@ function handleRequestPostTestOtp(params, session) {
       var latestPostTestChallenge = getLatestOtpChallengeForPrincipal_(purpose, principal);
       var failedPostTestChallengeIsLatest = Boolean(latestPostTestChallenge && latestPostTestChallenge.challengeId === challengeId);
       if (failedChallenge && failedChallenge.status === 'PENDING' && otpSheet && failedPostTestChallengeIsLatest) {
-        otpSheet.getRange(failedChallenge.rowIndex, 13).setValue('SEND_FAILED');
-        otpSheet.getRange(failedChallenge.rowIndex, 15).setValue(new Date().toISOString());
+        cneUpdateHeaderFields_(otpSheet,failedChallenge.rowIndex,{'Status':'SEND_FAILED','Updated At':new Date().toISOString()});
         try { cache.remove(cooldownKey); } catch (cacheErr) {}
       }
     } finally {
@@ -17845,22 +17930,20 @@ function handleVerifyPostTestOtp(params, session) {
     var otpSheet = getOtpVerificationSheet();
     var expiresMs = new Date(challenge.expiresAt).getTime();
     if (isNaN(expiresMs) || Date.now() > expiresMs) {
-      otpSheet.getRange(challenge.rowIndex, 13).setValue('EXPIRED');
-      otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      cneUpdateHeaderFields_(otpSheet, challenge.rowIndex, {'Status':'EXPIRED','Updated At':new Date().toISOString()});
       return { success: false, errorCode: 'OTP_EXPIRED', message: 'Verification code has expired. Request a new code.' };
     }
     if (challenge.attempts >= challenge.maxAttempts) {
-      otpSheet.getRange(challenge.rowIndex, 13).setValue('LOCKED');
-      otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
+      cneUpdateHeaderFields_(otpSheet, challenge.rowIndex, {'Status':'LOCKED','Updated At':new Date().toISOString()});
       return { success: false, errorCode: 'OTP_LOCKED', message: 'Too many incorrect verification attempts. Request a new code.' };
     }
 
     var submittedHash = computeOtpHash(challengeId, otp);
     if (!timingSafeEqual(submittedHash, challenge.otpHash)) {
       var newAttempts = challenge.attempts + 1;
-      otpSheet.getRange(challenge.rowIndex, 8).setValue(newAttempts);
-      otpSheet.getRange(challenge.rowIndex, 15).setValue(new Date().toISOString());
-      if (newAttempts >= challenge.maxAttempts) otpSheet.getRange(challenge.rowIndex, 13).setValue('LOCKED');
+      var otpChanges={'Attempts':newAttempts,'Updated At':new Date().toISOString()};
+      if(newAttempts >= challenge.maxAttempts)otpChanges['Status']='LOCKED';
+      cneUpdateHeaderFields_(otpSheet, challenge.rowIndex, otpChanges);
       return {
         success: false,
         errorCode: newAttempts >= challenge.maxAttempts ? 'OTP_LOCKED' : 'OTP_MISMATCH',
@@ -17872,11 +17955,7 @@ function handleVerifyPostTestOtp(params, session) {
     // Consume the challenge before any registration/token side effect. A partial failure
     // can require a new OTP, but can never leave a successfully verified OTP replayable.
     var verifiedAt = new Date().toISOString();
-    otpSheet.getRange(challenge.rowIndex, 6).setValue('');
-    otpSheet.getRange(challenge.rowIndex, 11).setValue(verifiedAt);
-    otpSheet.getRange(challenge.rowIndex, 12).setValue(verifiedAt);
-    otpSheet.getRange(challenge.rowIndex, 13).setValue('CONSUMED');
-    otpSheet.getRange(challenge.rowIndex, 15).setValue(verifiedAt);
+    cneUpdateHeaderFields_(otpSheet, challenge.rowIndex, {'OTP Hash':'','Verified At':verifiedAt,'Consumed At':verifiedAt,'Status':'CONSUMED','Updated At':verifiedAt});
 
     // For external participants, persist registration only after successful email ownership verification.
     if (participantType === 'EXTERNAL') {
@@ -21236,17 +21315,15 @@ function handleGetCNEAnalytics(params, session) {
 }
 
 // === TEXT / IMAGE MCQ support (manual upload + referenced Question Bank images) ===
-// Required Script Properties: CNE_MANUAL_QUESTION_IMAGES_FOLDER_ID and
-// CNE_QUESTION_BANK_IMAGES_FOLDER_ID. Never enable public Drive link sharing.
+// Images are stored in two pre-existing root-level private folders.
+// Only LEARNING_RESOURCES_ROOT_FOLDER_ID is needed in Script Properties.
 function cneQuestionImageFileId_(value) {
   var id=String(value||'').trim();
   return /^[a-zA-Z0-9_-]{20,128}$/.test(id)?id:'';
 }
 function cneQuestionImageFolder_(kind) {
-  var key=kind==='BANK'?'CNE_QUESTION_BANK_IMAGES_FOLDER_ID':'CNE_MANUAL_QUESTION_IMAGES_FOLDER_ID';
-  var id=cneQuestionImageFileId_(PropertiesService.getScriptProperties().getProperty(key));
-  if(!id)throw new Error(key+' is missing or invalid in Script Properties.');
-  return DriveApp.getFolderById(id);
+  if (kind!=='BANK' && kind!=='MANUAL') throw new Error('Invalid clinical question image category.');
+  return cneRootDriveChildFolder_(kind==='BANK'?'Question Bank Images':'Manual Question Images');
 }
 function cneQuestionImageMime_(bytes) {
   if(bytes.length>=8 && [137,80,78,71,13,10,26,10].every(function(x,i){return (bytes[i]&255)===x;}))return 'image/png';
@@ -21344,3 +21421,382 @@ function handleGetCNEQuestionImage(params,session) {
   if(!checked.success)return checked;
   return {success:true,data:{mimeType:checked.mimeType,base64Data:Utilities.base64Encode(checked.bytes)}};
 }
+
+
+/**
+ * CNE Quiz (2026-11) - scored assessments and unsaved practice.
+ * Only CLINICALLY APPROVED single-best-answer Question Bank entries are eligible.
+ * Monthly outreach is deliberately DISABLED; no email action or trigger is installed.
+ * Employee identity is ALWAYS taken from the verified session, never from request data.
+ */
+var CNE_QUIZ_EMAIL_ENABLED_ = false;
+var CNE_QUIZ_ATTEMPTS_HEADERS_ = ['Attempt ID','Employee ID','Employee Name','Units JSON','Question IDs JSON','Question Count','Status','Started At','Updated At','Completed At','Correct Count','Wrong Count','Percentage','Result JSON'];
+var CNE_QUIZ_ANSWERS_HEADERS_ = ['Attempt ID','Question ID','Selected Option','Saved At'];
+
+function cneQuizSheet_(name) {
+  return getOrCreateSheet(name, CNE_SHEET_HEADERS[name]);
+}
+function cneQuizResponseError_(code, message) { return {success:false,errorCode:code,message:message}; }
+function cneQuizSession_(session) { return session && session.employeeId ? '' : 'Sign in with Employee ID to use Quiz.'; }
+function cneQuizCell_(value) { return String(value === null || value === undefined ? '' : value).trim(); }
+function cneQuizParseJson_(text, fallback) { try { return JSON.parse(String(text || '')); } catch(e) { return fallback; } }
+function cneQuizIsClinicallyApproved_(q){return /^(CLINICALLY_APPROVED|CLINICAL_APPROVED|REVIEWED_AND_APPROVED)$/i.test(cneQuizCell_(q.verificationStatus));}
+function cneQuizApprovedPool_() {
+  if (_executionQuizApprovedPool_) return _executionQuizApprovedPool_;
+  var sh=cneHybridQuestionBankSheet_();
+  if (!sh || sh.getLastRow()<2) return {success:true,questions:[]};
+  var fields=cneHybridBankFields_(sh);
+  if (!fields.success) return cneQuizResponseError_('QUIZ_BANK_SCHEMA','Question Bank missing: '+fields.missing.join(', '));
+  var rows=sh.getDataRange().getValues(), cols=fields.cols, list=[],idCounts={};
+  for(var n=1;n<rows.length;n++){
+    var id=cneQuizCell_(rows[n][cols.questionId]);if(id)idCounts[id]=(idCounts[id]||0)+1;
+  }
+  for (var i=1;i<rows.length;i++) {
+    var row=rows[i], q=cneHybridBankCandidate_(row,cols,0), key=q.questionId;
+    if (!key || idCounts[key]!==1 || !cneQuizIsClinicallyApproved_(q) || !cneHybridCanImportBank_(q)) continue;
+    if (cols.extraE!==undefined && cneQuizCell_(row[cols.extraE])) continue;
+    if (cols.extraF!==undefined && cneQuizCell_(row[cols.extraF])) continue;
+    list.push(q);
+  }
+  _executionQuizApprovedPool_ = {success:true,questions:list};
+  return _executionQuizApprovedPool_;
+}
+function cneQuizShuffle_(items) {
+  for (var i=items.length-1;i>0;i--) {
+    var j=Math.floor(Math.random()*(i+1)),temp=items[i];items[i]=items[j];items[j]=temp;
+  }
+  return items;
+}
+/** Equal allocation among selected units, with shortage redistribution and image spacing. */
+function cneQuizPick_(pool,units,count) {
+  var filtered=pool.filter(function(q){return !units.length||units.indexOf(cneQuizCell_(q.unit)||'Unspecified Unit')!==-1;});
+  var groups={},names=[];
+  filtered.forEach(function(q){
+    var name=cneQuizCell_(q.unit)||'Unspecified Unit';
+    if(!Object.prototype.hasOwnProperty.call(groups,name)){groups[name]={text:[],image:[],quota:0,chosen:[],served:0};names.push(name);}
+    groups[name][q.questionType==='IMAGE'?'image':'text'].push(q);
+  });
+  cneQuizShuffle_(names);
+  names.forEach(function(name){cneQuizShuffle_(groups[name].text);cneQuizShuffle_(groups[name].image);});
+  var total=Math.min(count,filtered.length);
+  // The next question goes to a unit with the smallest allocation that still has capacity.
+  for(var i=0;i<total;i++){
+    var available=names.filter(function(name){var g=groups[name];return g.quota<g.text.length+g.image.length;});
+    if(!available.length)break;
+    var min=Math.min.apply(null,available.map(function(name){return groups[name].quota;}));
+    var eligible=available.filter(function(name){return groups[name].quota===min;});
+    groups[eligible[Math.floor(Math.random()*eligible.length)]].quota++;
+  }
+  var imagesSelected=0,imagesAvailable=0;
+  names.forEach(function(name){
+    var g=groups[name],texts=g.text.slice(0,g.quota),images=g.image.slice(0,Math.max(0,g.quota-texts.length));
+    g.chosen=texts.concat(images);imagesSelected+=images.length;imagesAvailable+=g.image.length;
+  });
+  // Aim for an image about every eight questions, preserving the unit quotas.
+  var target=Math.max(imagesSelected,Math.min(imagesAvailable,Math.ceil(total/8)));
+  while(imagesSelected<target){
+    var replaceable=names.filter(function(name){
+      var g=groups[name],chosenImages=g.chosen.filter(function(q){return q.questionType==='IMAGE';}).length;
+      return chosenImages<g.image.length && g.chosen.some(function(q){return q.questionType==='TEXT';});
+    });
+    if(!replaceable.length)break;
+    cneQuizShuffle_(replaceable);
+    replaceable.sort(function(a,b){
+      var aa=groups[a],bb=groups[b];
+      return aa.chosen.filter(function(q){return q.questionType==='IMAGE';}).length/aa.quota-
+        bb.chosen.filter(function(q){return q.questionType==='IMAGE';}).length/bb.quota;
+    });
+    var g=groups[replaceable[0]],imageUsed=g.chosen.filter(function(q){return q.questionType==='IMAGE';}).length;
+    var textIndex=g.chosen.findIndex(function(q){return q.questionType==='TEXT';});
+    g.chosen.splice(textIndex,1,g.image[imageUsed]);imagesSelected++;
+  }
+  var slots={};for(var k=0;k<imagesSelected;k++)slots[Math.floor((k+0.5)*total/imagesSelected)]=true;
+  var result=[],previous='';
+  for(var pos=0;pos<total;pos++){
+    var wantImage=Boolean(slots[pos]);
+    var candidates=names.filter(function(name){return groups[name].chosen.some(function(q){return (q.questionType==='IMAGE')===wantImage;});});
+    if(!candidates.length)candidates=names.filter(function(name){return groups[name].chosen.length>0;});
+    if(!candidates.length)break;
+    cneQuizShuffle_(candidates);
+    var least=Math.min.apply(null,candidates.map(function(name){return groups[name].served;}));
+    var choices=candidates.filter(function(name){return groups[name].served===least;});
+    var alternate=choices.filter(function(name){return name!==previous;});if(alternate.length)choices=alternate;
+    var selectedUnit=choices[0],group=groups[selectedUnit];
+    var at=group.chosen.findIndex(function(q){return (q.questionType==='IMAGE')===wantImage;});
+    if(at<0)at=0;
+    result.push(group.chosen.splice(at,1)[0]);group.served++;previous=selectedUnit;
+  }
+  return result;
+}
+function cneQuizSafeQuestion_(q, includeAnswer) {
+  var result={questionId:q.questionId,unit:q.unit,topic:q.topic,questionType:q.questionType,
+    question:q.question,options:q.options,imageFileId:q.questionType==='IMAGE'?q.imageFileId:''};
+  if (includeAnswer) {result.correctOption=q.correctOption;result.explanation=q.explanation;}
+  return result;
+}
+function cneQuizFindQuestion_(id) {
+  var sh=cneHybridQuestionBankSheet_(); if (!sh || sh.getLastRow()<2) return null;
+  var fields=cneHybridBankFields_(sh); if(!fields.success) return null;
+  var cols=fields.cols, idColumn=cols.questionId+1;
+  var matches=sh.getRange(2,idColumn,sh.getLastRow()-1,1).createTextFinder(String(id)).matchEntireCell(true).findAll();
+  if (matches.length!==1) return null;
+  var row=sh.getRange(matches[0].getRow(),1,1,sh.getLastColumn()).getValues()[0];
+  var q=cneHybridBankCandidate_(row,cols,0);
+  if(!cneQuizIsClinicallyApproved_(q) || !cneHybridCanImportBank_(q) || (cols.extraE!==undefined && cneQuizCell_(row[cols.extraE])) || (cols.extraF!==undefined && cneQuizCell_(row[cols.extraF]))) return null;
+  return q;
+}
+function cneQuizFindAttempt_(id,employeeId) {
+  var sh=cneQuizSheet_('CNE Quiz Attempts');
+  if(sh.getLastRow()<2)return null;
+  var layout=cneHeaderLayout_(sh,CNE_QUIZ_ATTEMPTS_HEADERS_);
+  var hits=sh.getRange(2,layout.positions[0]+1,sh.getLastRow()-1,1).createTextFinder(String(id)).matchEntireCell(true).findAll();
+  if(hits.length!==1)return null;
+  var rowNum=hits[0].getRow(),row=cneReadHeaderRows_(sh,CNE_QUIZ_ATTEMPTS_HEADERS_,rowNum,1,layout)[0];
+  if(cneQuizCell_(row[1])!==cneQuizCell_(employeeId))return null;
+  return {sheet:sh,rowNum:rowNum,row:row,ids:cneQuizParseJson_(row[4],[]),layout:layout};
+}
+function cneQuizSavedAnswers_(attemptId) {
+  var sh=cneQuizSheet_('CNE Quiz Answers'),answers={};
+  if(sh.getLastRow()<2)return answers;
+  var layout=cneHeaderLayout_(sh,CNE_QUIZ_ANSWERS_HEADERS_);
+  var matches=sh.getRange(2,layout.positions[0]+1,sh.getLastRow()-1,1).createTextFinder(attemptId).matchEntireCell(true).findAll();
+  matches.forEach(function(cell){
+    var pair=cneReadHeaderRows_(sh,CNE_QUIZ_ANSWERS_HEADERS_,cell.getRow(),1,layout)[0];
+    answers[cneQuizCell_(pair[1])]=cneQuizCell_(pair[2]);
+  });
+  return answers;
+}
+function cneQuizAttemptPayload_(a) {
+  var answers=cneQuizSavedAnswers_(cneQuizCell_(a.row[0]));
+  return {attemptId:cneQuizCell_(a.row[0]),units:cneQuizParseJson_(a.row[3],[]),questionIds:a.ids,
+    questionCount:Number(a.row[5])||a.ids.length,answeredCount:Object.keys(answers).length,answers:answers,
+    status:cneQuizCell_(a.row[6]),startedAt:String(a.row[7]||'')};
+}
+/** Short-lived shared cache for non-sensitive approved unit counts only.
+ * Question details/answer keys are never put in ScriptCache; quiz start validates fresh rows.
+ */
+function cneQuizUnitSummary_(){
+  var key='cne_quiz_unit_summary_v2',cache=null,cached=null;
+  try {cache=CacheService.getScriptCache();cached=cache.get(key);if(cached)return JSON.parse(cached);}catch(e){}
+  var pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+  var units={},images=0;
+  pool.questions.forEach(function(q){
+    var unit=cneQuizCell_(q.unit)||'Unspecified Unit';
+    units[unit]=(units[unit]||0)+1;if(q.questionType==='IMAGE')images++;
+  });
+  var summary={success:true,data:{units:Object.keys(units).sort().map(function(u){return {name:u,available:units[u]};}),total:pool.questions.length,imageCount:images}};
+  try {if(cache)cache.put(key,JSON.stringify(summary),40);}catch(e){}
+  return summary;
+}
+/** Quiz leaderboard cache is brief and invalidated immediately after completion. */
+function cneQuizClearHomeCaches_(){
+  try{CacheService.getScriptCache().remove('cne_quiz_leaderboard_30_v2');}catch(e){}
+}
+function cneQuizLeaderboard_(days) {
+  var cache=null,key='cne_quiz_leaderboard_'+days+'_v2';
+  try{cache=CacheService.getScriptCache();var cached=cache.get(key);if(cached)return JSON.parse(cached);}catch(e){}
+  var sh=cneQuizSheet_('CNE Quiz Attempts'); if(sh.getLastRow()<2)return [];
+  var rows=cneReadHeaderRows_(sh,CNE_QUIZ_ATTEMPTS_HEADERS_,2,sh.getLastRow()-1);
+  var now=Date.now(),since=now-days*86400000,bucket={};
+  rows.filter(function(r){return cneQuizCell_(r[6])==='COMPLETED' && new Date(r[9]).getTime()>=since;})
+    .sort(function(a,b){return new Date(a[9]).getTime()-new Date(b[9]).getTime();})
+    .forEach(function(r){
+      var employee=cneQuizCell_(r[1]); if(!employee)return;
+      if(!bucket[employee])bucket[employee]={employeeId:employee,name:cneQuizCell_(r[2]),questions:{}};
+      var results=cneQuizParseJson_(r[13],{});
+      Object.keys(results).forEach(function(qid){
+        if(bucket[employee].questions[qid]===undefined)bucket[employee].questions[qid]=Boolean(results[qid]);
+      });
+    });
+  var ranked=Object.keys(bucket).map(function(key){
+    var b=bucket[key],ids=Object.keys(b.questions),correct=ids.filter(function(q){return b.questions[q];}).length;
+    return {name:b.name||'Staff Member',answered:ids.length,correct:correct,accuracy:ids.length?Math.round(correct/ids.length*1000)/10:0};
+  }).sort(function(a,b){return b.answered-a.answered || b.accuracy-a.accuracy || b.correct-a.correct || a.name.localeCompare(b.name);}).slice(0,5)
+    .map(function(row,index){row.rank=index+1;return row;});
+  try{if(cache)cache.put(key,JSON.stringify(ranked),25);}catch(e){}
+  return ranked;
+}
+function handleGetQuizHome(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED',cneQuizSession_(session));
+  var summary=cneQuizUnitSummary_();if(!summary.success)return summary;
+  var activeRecord=cneQuizFindActiveAttempt_(session.employeeId);
+  var active=activeRecord?cneQuizAttemptPayload_(activeRecord):null;
+  return {success:true,data:{units:summary.data.units,total:summary.data.total,imageCount:summary.data.imageCount,
+    leaderboard:cneQuizLeaderboard_(30),activeAttempt:active}};
+}
+function handleStartQuizScored(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Sign in to start a scored quiz.');
+  var count=Number(params.questionCount),units=Array.isArray(params.units)?params.units.map(cneQuizCell_):[];
+  if(!Number.isInteger(count)||count<1||count>50)return cneQuizResponseError_('INVALID_COUNT','Select 1 to 50 questions.');
+  if(units.length>100||units.some(function(u){return u.length>150;}))return cneQuizResponseError_('INVALID_UNIT','Invalid unit selection.');
+  // Prepare immutable IDs and question allocation before acquiring the global lock.
+  // The original Question Bank remains authoritative; no answer-key snapshot is stored.
+  var pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+  var valid={};pool.questions.forEach(function(q){valid[cneQuizCell_(q.unit)||'Unspecified Unit']=true;});
+  if(units.some(function(u){return !valid[u];}))return cneQuizResponseError_('INVALID_UNIT','Selected unit is no longer available.');
+  var picked=cneQuizPick_(pool.questions,units,count);
+  if(picked.length<count)return cneQuizResponseError_('NOT_ENOUGH_QUESTIONS','Only '+picked.length+' approved questions are available for this selection. Select fewer questions.');
+  var ids=picked.map(function(q){return q.questionId;});
+  var lock=LockService.getScriptLock();if(!lock.tryLock(10000))return cneQuizResponseError_('SERVER_BUSY','Try again.');
+  try {
+    var fresh=refreshMutationSession(session);if(!fresh.success)return fresh;
+    var sh=cneQuizSheet_('CNE Quiz Attempts');
+    // Repeat the active-attempt check INSIDE the lock to prevent concurrent starts.
+    if(cneQuizFindActiveAttempt_(session.employeeId))
+      return cneQuizResponseError_('QUIZ_ACTIVE','You have an unfinished scored quiz. Resume or finish it before starting another.');
+    var now=new Date(),id='QUIZ-'+Utilities.getUuid();
+    cneWriteHeaderRows_(sh,CNE_QUIZ_ATTEMPTS_HEADERS_,[[id,session.employeeId,cneQuizEmployeeName_(session.employeeId),JSON.stringify(units),JSON.stringify(ids),picked.length,'IN_PROGRESS',now,now,'','','','','']],sh.getLastRow()+1);
+    return {success:true,data:{attemptId:id,questionCount:picked.length,questionIds:ids,answeredCount:0,answers:{},status:'IN_PROGRESS',units:units}};
+  }finally{lock.releaseLock();}
+}
+function cneQuizEmployeeName_(employeeId){
+  try{var officer=findOfficerByIdFresh_(employeeId);return String((officer&&(officer.name||officer.fullName||officer.officerName))||employeeId);}catch(e){return employeeId;}
+}
+function handleGetQuizScoredQuestion(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Login required.');
+  var a=cneQuizFindAttempt_(params.attemptId,session.employeeId);
+  if(!a)return cneQuizResponseError_('NOT_FOUND','Quiz attempt not found.');
+  var index=Number(params.index);
+  if(!Number.isInteger(index)||index<0||index>=a.ids.length)return cneQuizResponseError_('INVALID_INDEX','Invalid question number.');
+  var q=cneQuizFindQuestion_(a.ids[index]);if(!q)return cneQuizResponseError_('QUESTION_UNAVAILABLE','An approved question is unavailable. Contact the administrator.');
+  return {success:true,data:{question:cneQuizSafeQuestion_(q,false),index:index,total:a.ids.length}};
+}
+function handleSaveQuizScoredAnswer(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Login required.');
+  var option=cneQuizCell_(params.selectedOption).toUpperCase(),questionId=cneQuizCell_(params.questionId);
+  if(!/^[A-D]$/.test(option))return cneQuizResponseError_('INVALID_ANSWER','Select one of A–D.');
+  var lock=LockService.getScriptLock();if(!lock.tryLock(10000))return cneQuizResponseError_('SERVER_BUSY','Try again.');
+  try{
+    var fresh=refreshMutationSession(session);if(!fresh.success)return fresh;
+    var a=cneQuizFindAttempt_(params.attemptId,session.employeeId);
+    if(!a)return cneQuizResponseError_('NOT_FOUND','Quiz attempt not found.');
+    if(cneQuizCell_(a.row[6])!=='IN_PROGRESS')return cneQuizResponseError_('QUIZ_CLOSED','This quiz is already completed.');
+    if(a.ids.indexOf(questionId)===-1)return cneQuizResponseError_('INVALID_QUESTION','Question does not belong to this quiz.');
+    var sh=cneQuizSheet_('CNE Quiz Answers');
+    var answerLayout=cneHeaderLayout_(sh,CNE_QUIZ_ANSWERS_HEADERS_);
+    var hits=sh.getLastRow()>1?sh.getRange(2,answerLayout.positions[0]+1,sh.getLastRow()-1,1).createTextFinder(a.row[0]).matchEntireCell(true).findAll():[];
+    var rowNum=-1;
+    for(var i=0;i<hits.length;i++)if(cneQuizCell_(sh.getRange(hits[i].getRow(),answerLayout.positions[1]+1).getValue())===questionId){rowNum=hits[i].getRow();break;}
+    var saved=[a.row[0],questionId,option,new Date()];
+    if(rowNum>0)cneUpdateHeaderFields_(sh,rowNum,{'Attempt ID':saved[0],'Question ID':saved[1],'Selected Option':saved[2],'Saved At':saved[3]},answerLayout);
+    else cneWriteHeaderRows_(sh,CNE_QUIZ_ANSWERS_HEADERS_,[saved],sh.getLastRow()+1,answerLayout);
+    a.sheet.getRange(a.rowNum,cneHeaderColumn_(a.sheet,'Updated At',a.layout)).setValue(new Date());
+    return {success:true,data:{saved:true,answeredCount:hits.length+(rowNum>0?0:1)}};
+  }finally{lock.releaseLock();}
+}
+function handleCompleteQuizScored(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Login required.');
+  var lock=LockService.getScriptLock();if(!lock.tryLock(10000))return cneQuizResponseError_('SERVER_BUSY','Try again.');
+  try{
+    var fresh=refreshMutationSession(session);if(!fresh.success)return fresh;
+    var a=cneQuizFindAttempt_(params.attemptId,session.employeeId);
+    if(!a)return cneQuizResponseError_('NOT_FOUND','Quiz attempt not found.');
+    if(cneQuizCell_(a.row[6])==='COMPLETED')return handleGetQuizScoredResult(params,session);
+    if(cneQuizCell_(a.row[6])!=='IN_PROGRESS')return cneQuizResponseError_('QUIZ_CLOSED','Attempt not open.');
+    var answers=cneQuizSavedAnswers_(a.row[0]),missing=a.ids.filter(function(id){return !/^[A-D]$/.test(answers[id]||'');});
+    if(missing.length)return cneQuizResponseError_('INCOMPLETE','Answer all '+a.ids.length+' questions before completing. '+missing.length+' unanswered.');
+    var pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+    var byId={};pool.questions.forEach(function(q){byId[q.questionId]=q;});
+    var results={},correct=0;
+    for(var i=0;i<a.ids.length;i++){
+      var q=byId[a.ids[i]];if(!q)return cneQuizResponseError_('QUESTION_UNAVAILABLE','Question Bank changed; one approved question is unavailable. Contact the administrator.');
+      var match=answers[a.ids[i]].toUpperCase()===cneQuizCell_(q.correctOption).toUpperCase();results[a.ids[i]]=match;
+      if(match)correct++;
+    }
+    var now=new Date(),n=a.ids.length;
+    cneUpdateHeaderFields_(a.sheet,a.rowNum,{'Status':'COMPLETED','Updated At':now,'Completed At':now,'Correct Count':correct,'Wrong Count':n-correct,'Percentage':Math.round(correct/n*1000)/10,'Result JSON':JSON.stringify(results)},a.layout);
+    cneQuizClearHomeCaches_();
+    return handleGetQuizScoredResult(params,session);
+  }finally{lock.releaseLock();}
+}
+function handleGetQuizScoredResult(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Login required.');
+  var a=cneQuizFindAttempt_(params.attemptId,session.employeeId);
+  if(!a)return cneQuizResponseError_('NOT_FOUND','Quiz attempt not found.');
+  if(cneQuizCell_(a.row[6])!=='COMPLETED')return cneQuizResponseError_('QUIZ_NOT_COMPLETED','Answer key is available only after completing the scored quiz.');
+  var pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+  var byId={};pool.questions.forEach(function(q){byId[q.questionId]=q;});
+  var answers=cneQuizSavedAnswers_(a.row[0]),review=[];
+  var unitScores={};
+  for(var i=0;i<a.ids.length;i++){
+    var id=a.ids[i],q=byId[id];
+    if(!q)return cneQuizResponseError_('QUESTION_UNAVAILABLE','A completed quiz question is no longer in the approved Question Bank. Contact the administrator.');
+    var answer=answers[id]||'',unit=cneQuizCell_(q.unit)||'Unspecified Unit';
+    if(!Object.prototype.hasOwnProperty.call(unitScores,unit))unitScores[unit]={unit:unit,total:0,correct:0,wrong:0};
+    unitScores[unit].total++;
+    if(answer.toUpperCase()===cneQuizCell_(q.correctOption).toUpperCase())unitScores[unit].correct++;else unitScores[unit].wrong++;
+    review.push({question:cneQuizSafeQuestion_(q,true),selectedOption:answer});
+  }
+  return {success:true,data:{attemptId:a.row[0],correct:Number(a.row[10])||0,wrong:Number(a.row[11])||0,
+    total:a.ids.length,percentage:Number(a.row[12])||0,review:review,
+    unitScores:Object.keys(unitScores).sort().map(function(u){return unitScores[u];})}};
+}
+function cneQuizFindActiveAttempt_(employeeId){
+  var sh=cneQuizSheet_('CNE Quiz Attempts');if(sh.getLastRow()<2)return null;
+  // Find only this employee's entries, rather than transferring the full attempts table.
+  var layout=cneHeaderLayout_(sh,CNE_QUIZ_ATTEMPTS_HEADERS_);
+  var cells=sh.getRange(2,layout.positions[1]+1,sh.getLastRow()-1,1).createTextFinder(String(employeeId)).matchEntireCell(true).findAll();
+  for(var i=cells.length-1;i>=0;i--){
+    var row=cells[i].getRow();
+    if(cneQuizCell_(sh.getRange(row,layout.positions[6]+1).getValue())==='IN_PROGRESS'){
+      return cneQuizFindAttempt_(sh.getRange(row,layout.positions[0]+1).getValue(),employeeId);
+    }
+  }
+  return null;
+}
+function cneQuizHasActiveScored_(employeeId){return Boolean(cneQuizFindActiveAttempt_(employeeId));}
+function handleCancelQuizScored(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Login required.');
+  var lock=LockService.getScriptLock();if(!lock.tryLock(10000))return cneQuizResponseError_('SERVER_BUSY','Try again.');
+  try{
+    var fresh=refreshMutationSession(session);if(!fresh.success)return fresh;
+    var a=cneQuizFindAttempt_(params.attemptId,session.employeeId);
+    if(!a)return cneQuizResponseError_('NOT_FOUND','Quiz attempt not found.');
+    var status=cneQuizCell_(a.row[6]);
+    if(status==='COMPLETED')return cneQuizResponseError_('QUIZ_CLOSED','A completed quiz cannot be cancelled.');
+    if(status==='CANCELLED')return {success:true,data:{cancelled:true}};
+    if(status!=='IN_PROGRESS')return cneQuizResponseError_('QUIZ_CLOSED','Attempt is no longer open.');
+    cneUpdateHeaderFields_(a.sheet,a.rowNum,{'Status':'CANCELLED','Updated At':new Date()},a.layout);
+    // Retain the cancelled attempt for audit; cancelled answers never enter rankings.
+    return {success:true,data:{cancelled:true}};
+  }finally{lock.releaseLock();}
+}
+function handleGetQuizPracticeQuestion(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Login required.');
+  if(cneQuizHasActiveScored_(session.employeeId))return cneQuizResponseError_('QUIZ_ACTIVE','Complete or cancel your scored quiz before opening Practice Quiz.');
+  var units=Array.isArray(params.units)?params.units.map(cneQuizCell_):[];
+  var exclude=Array.isArray(params.exclude)?params.exclude.slice(-400).map(cneQuizCell_):[];
+  if(units.length>100||exclude.length>400)return cneQuizResponseError_('INVALID_PARAMS','Invalid unit selection.');
+  var pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+  var candidates=pool.questions.filter(function(q){return (!units.length||units.indexOf(cneQuizCell_(q.unit)||'Unspecified Unit')!==-1)&&exclude.indexOf(q.questionId)===-1;});
+  if(!candidates.length)return cneQuizResponseError_('NO_MORE_QUESTIONS','No unused approved questions remain in this selection.');
+  var answeredCount=Math.max(0,Number(params.answeredCount)||0),lastImageAt=Math.max(0,Number(params.lastImageAt)||0);
+  // Prefer an image every 5-10 questions when the selected units contain one.
+  if(answeredCount-lastImageAt>=7){var imageCandidates=candidates.filter(function(q){return q.questionType==='IMAGE';});if(imageCandidates.length)candidates=imageCandidates;}
+  var counts=params.unitCounts&&typeof params.unitCounts==='object'&&!Array.isArray(params.unitCounts)?params.unitCounts:{};
+  var byUnit={},unitsAvailable=[];
+  candidates.forEach(function(q){var u=cneQuizCell_(q.unit)||'Unspecified Unit';if(!Object.prototype.hasOwnProperty.call(byUnit,u)){byUnit[u]=[];unitsAvailable.push(u);}byUnit[u].push(q);});
+  // Choose among the least-seen available units: randomized unit rotation, no persistent practice history.
+  var lowest=Math.min.apply(null,unitsAvailable.map(function(u){
+    return Object.prototype.hasOwnProperty.call(counts,u)&&Number.isFinite(Number(counts[u]))?Math.max(0,Math.min(100000,Number(counts[u]))):0;
+  }));
+  var least=unitsAvailable.filter(function(u){var n=Object.prototype.hasOwnProperty.call(counts,u)?Number(counts[u]):0;return (Number.isFinite(n)?Math.max(0,Math.min(100000,n)):0)===lowest;});
+  var chosenUnit=least[Math.floor(Math.random()*least.length)],questions=byUnit[chosenUnit];
+  var q=questions[Math.floor(Math.random()*questions.length)];
+  // Practice is ephemeral: answers and explanations travel with the question, but are hidden until Submit.
+  return {success:true,data:cneQuizSafeQuestion_(q,true)};
+}
+function handleGetQuizImage(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Login required.');
+  var q=cneQuizFindQuestion_(cneQuizCell_(params.questionId));
+  if(!q||q.questionType!=='IMAGE')return cneQuizResponseError_('NOT_FOUND','Approved image question not available.');
+  if(params.attemptId){
+    var a=cneQuizFindAttempt_(params.attemptId,session.employeeId);
+    if(!a||a.ids.indexOf(q.questionId)===-1)return cneQuizResponseError_('FORBIDDEN','Image is not part of your scored quiz.');
+  }
+  var checked=cneQuestionImageCheck_(q.imageFileId,'BANK');
+  if(!checked.success)return checked;
+  return {success:true,data:{mimeType:checked.mimeType,base64Data:Utilities.base64Encode(checked.bytes)}};
+}
+/** No MailApp call, daily trigger, scheduled job, or dispatch endpoint until admin approval. */
+function cneQuizMonthlyEmailPlanDisabled_(){return {enabled:CNE_QUIZ_EMAIL_ENABLED_,message:'Monthly quiz email sending has not been activated.'};}

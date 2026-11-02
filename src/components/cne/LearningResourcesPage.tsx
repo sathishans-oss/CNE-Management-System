@@ -4,7 +4,6 @@ import {
   Library,
   Search,
   Download,
-  Eye,
   Loader2,
   Calendar,
   Building2,
@@ -76,14 +75,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
   const [itemToDelete, setItemToDelete] = useState<UnifiedResourceItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // PDF In-App Preview Modal State
-  const [previewItem, setPreviewItem] = useState<{
-    id: string;
-    title: string;
-    fileName: string;
-    blobUrl: string;
-  } | null>(null);
-
   const { success, error } = useToast();
   const resourceRequestRef = useRef(0);
   const sessionKey = `${user?.employeeId || ''}:${user?.role || ''}:${user?.token || ''}`;
@@ -94,10 +85,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
     setCneResources([]);
     setNursingResources([]);
     setDriveFiles([]);
-    setPreviewItem((current) => {
-      if (current?.blobUrl) URL.revokeObjectURL(current.blobUrl);
-      return null;
-    });
     if (user?.employeeId) loadAllResources();
     else setLoading(false);
 
@@ -105,10 +92,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
       resourceRequestRef.current += 1;
     };
   }, [sessionKey]);
-
-  useEffect(() => () => {
-    if (previewItem?.blobUrl) URL.revokeObjectURL(previewItem.blobUrl);
-  }, [previewItem?.blobUrl]);
 
   const loadAllResources = async () => {
     const requestId = ++resourceRequestRef.current;
@@ -310,68 +293,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
     } finally {
       setDownloadingId(null);
     }
-  };
-
-  // Preview Handler (for PDF files)
-  const handlePreview = async (item: UnifiedResourceItem) => {
-    if (downloadingId) return;
-    setDownloadingId(item.id);
-
-    try {
-      if (item.sourceType === 'CNE_LEARNING_MATERIAL' && item.cneId) {
-        const res = await ApiService.downloadLearningResource(item.cneId);
-        if (res.success && res.data?.fileBase64) {
-          const mimeType = res.data.mimeType || 'application/pdf';
-          const blob = base64ToBlob(res.data.fileBase64, mimeType);
-          const blobUrl = URL.createObjectURL(blob);
-
-          setPreviewItem((current) => {
-            if (current?.blobUrl) URL.revokeObjectURL(current.blobUrl);
-            return {
-              id: item.id,
-              title: item.title,
-              fileName: res.data.fileName || item.fileName || 'Resource.pdf',
-              blobUrl: blobUrl
-            };
-          });
-        } else {
-          error(res.message || 'Failed to load PDF preview.');
-        }
-      } else if (item.sourceType === 'NURSING_REFERENCE_LIB') {
-        const res = await ApiService.downloadNursingReferenceResource({
-          driveFileId: item.driveFileId,
-          resourceId: item.resourceId
-        });
-        if (res.success && res.data?.fileBase64) {
-          const mimeType = res.data.mimeType || 'application/pdf';
-          const blob = base64ToBlob(res.data.fileBase64, mimeType);
-          const blobUrl = URL.createObjectURL(blob);
-
-          setPreviewItem((current) => {
-            if (current?.blobUrl) URL.revokeObjectURL(current.blobUrl);
-            return {
-              id: item.id,
-              title: item.title,
-              fileName: res.data.fileName || item.fileName || 'Reference.pdf',
-              blobUrl: blobUrl
-            };
-          });
-        } else {
-          error(res.message || 'Failed to load reference preview.');
-        }
-      }
-    } catch (e: any) {
-      error(e?.message || 'Error loading preview.');
-    } finally {
-      setDownloadingId(null);
-    }
-  };
-
-  const handleClosePreview = () => {
-    if (previewItem?.blobUrl) {
-      URL.revokeObjectURL(previewItem.blobUrl);
-    }
-    setPreviewItem(null);
   };
 
   // Admin: Delete confirmation and execution
@@ -587,9 +508,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
               <tbody className="divide-y divide-slate-100 text-xs">
                 {filteredResources.map((item) => {
                   const badge = getFileTypeBadge(item.fileType, item.fileName);
-                  const isPdf =
-                    (item.fileType || '').toLowerCase().includes('pdf') ||
-                    (item.fileName || '').toLowerCase().endsWith('.pdf');
                   const isBusyDownload = downloadingId === item.id;
                   const indexingDisplay = getIndexingDisplay(item);
 
@@ -683,23 +601,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                       {/* Actions */}
                       <td className="py-4 px-4 sm:px-6 text-right">
                         <div className="flex items-center justify-end gap-1.5">
-                          {isPdf && (
-                            <button
-                              type="button"
-                              onClick={() => handlePreview(item)}
-                              disabled={isBusyDownload}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded-lg text-xs font-bold cursor-pointer transition-colors disabled:opacity-50"
-                              title="Preview PDF document in app"
-                            >
-                              {isBusyDownload ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              ) : (
-                                <Eye className="w-3.5 h-3.5" />
-                              )}
-                              <span>Preview</span>
-                            </button>
-                          )}
-
                           <button
                             type="button"
                             onClick={() => handleDownload(item)}
@@ -758,53 +659,6 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
           onSuccess={loadAllResources}
           initialType={activeCategory === 'NURSING_REFERENCE_LIB' ? 'NURSING_REFERENCE_LIB' : 'CNE_LEARNING_MATERIAL'}
         />
-      )}
-
-      {/* PDF In-App Preview Modal */}
-      {previewItem && (
-        <div className="fixed inset-0 z-[70] bg-slate-900/80 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-2 sm:p-5">
-          <div className="bg-white rounded-2xl w-full max-w-5xl h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-            {/* Modal Header */}
-            <div className="px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2.5 min-w-0 pr-4">
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-600 text-white uppercase tracking-wider">
-                  PDF Preview
-                </span>
-                <span className="font-bold text-xs sm:text-sm truncate">
-                  {previewItem.title}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <a
-                  href={previewItem.blobUrl}
-                  download={previewItem.fileName}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors"
-                  title="Download PDF"
-                >
-                  <Download className="w-4 h-4" />
-                </a>
-                <button
-                  type="button"
-                  onClick={handleClosePreview}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer transition-colors"
-                  title="Close preview"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Embedded PDF Viewer */}
-            <div className="flex-1 w-full h-full bg-slate-100 relative">
-              <iframe
-                src={previewItem.blobUrl}
-                title={previewItem.fileName}
-                className="w-full h-full border-none"
-              />
-            </div>
-          </div>
-        </div>
       )}
 
       {/* Delete Confirmation Modal */}

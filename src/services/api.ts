@@ -31,7 +31,8 @@ import {
   CneInterestRegistration,
   CneInterestStatusResponse,
   CneInterestedParticipantsResponse,
-  CNEAnalytics
+  CNEAnalytics,
+  QuizHomeData, QuizAttempt, QuizQuestion, QuizResult
 } from '../types';
 import {
   INITIAL_AREAS,
@@ -396,6 +397,16 @@ export function formatDurationValue(rawValue: any, displayValue?: any): string {
 
 
 export class ApiService {
+  static getQuizHome(): Promise<ApiResponse<QuizHomeData>> {return this.executeAction('getQuizHome');}
+  static startQuizScored(units:string[], questionCount:number): Promise<ApiResponse<QuizAttempt>> {return this.executeAction('startQuizScored',{units,questionCount});}
+  static getQuizScoredQuestion(attemptId:string,index:number): Promise<ApiResponse<{question:QuizQuestion;index:number;total:number}>> {return this.executeAction('getQuizScoredQuestion',{attemptId,index});}
+  static saveQuizScoredAnswer(attemptId:string,questionId:string,selectedOption:string): Promise<ApiResponse<{saved:boolean;answeredCount:number}>> {return this.executeAction('saveQuizScoredAnswer',{attemptId,questionId,selectedOption});}
+  static cancelQuizScored(attemptId:string): Promise<ApiResponse<{cancelled:boolean}>> {return this.executeAction('cancelQuizScored',{attemptId});}
+  static completeQuizScored(attemptId:string): Promise<ApiResponse<QuizResult>> {return this.executeAction('completeQuizScored',{attemptId});}
+  static getQuizScoredResult(attemptId:string): Promise<ApiResponse<QuizResult>> {return this.executeAction('getQuizScoredResult',{attemptId});}
+  static getQuizPracticeQuestion(units:string[],exclude:string[],answeredCount:number,lastImageAt:number,unitCounts:Record<string,number>): Promise<ApiResponse<QuizQuestion>> {return this.executeAction('getQuizPracticeQuestion',{units,exclude,answeredCount,lastImageAt,unitCounts});}
+  static getQuizImage(questionId:string,attemptId?:string): Promise<ApiResponse<{mimeType:string;base64Data:string}>> {return this.executeAction('getQuizImage',{questionId,attemptId});}
+
   /**
    * Get configured Google Apps Script Web App URL
    */
@@ -434,6 +445,15 @@ export class ApiService {
         };
 
       // Protected / Security-Sensitive & Mutation Actions — Fail Closed without Google Apps Script
+      case 'getQuizHome':
+      case 'startQuizScored':
+      case 'getQuizScoredQuestion':
+      case 'saveQuizScoredAnswer':
+      case 'cancelQuizScored':
+      case 'completeQuizScored':
+      case 'getQuizScoredResult':
+      case 'getQuizPracticeQuestion':
+      case 'getQuizImage':
       case 'getWardStaffCounts':
       case 'getOfficersDropdown':
       case 'getRoles':

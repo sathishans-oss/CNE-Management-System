@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, Download, Printer, Search } from 'lucide-react';
+import { AlertCircle, BarChart3, Download, Loader2, Printer, RefreshCw, Search } from 'lucide-react';
 import type { CNEAnalytics, SessionUser } from '../types';
 import { ApiService } from '../services/api';
 import { getIndiaTodayIsoDate } from '../utils';
@@ -149,8 +149,17 @@ export const AdminReports:React.FC<{user:SessionUser}> = ({user}) => {
       </div>
       <p className="hidden print:block text-xs text-slate-600 mt-1">From {applied.fromDate} to {applied.toDate}{applied.search?` · Search: ${applied.search}`:''}</p>
     </header>
-    {error && <div role="alert" className="border border-red-200 bg-red-50 text-red-800 rounded-xl p-4 text-sm">{error} <button className="underline ml-2" onClick={()=>setReload(v=>v+1)}>Retry</button></div>}
-    {busy && <div className="bg-white border rounded-xl p-9 text-center" role="status"><span className="inline-block animate-spin h-6 w-6 rounded-full border-2 border-emerald-600 border-t-transparent mr-2 align-middle"/> Generating CNE analytics for the selected period...</div>}
+    {error && !busy && <div role="alert" className="flex flex-col items-center justify-center gap-2 py-6 text-center print:hidden">
+      <AlertCircle className="h-6 w-6 text-rose-600" aria-hidden="true" />
+      <p className="max-w-lg text-sm font-medium text-slate-700">{error}</p>
+      {error !== 'Select a valid From and To date.' && error !== 'Administrator access is required.' && <button type="button" className="mt-1 inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={()=>{setError('');setReload(v=>v+1);}}>
+        <RefreshCw className="h-4 w-4" aria-hidden="true" /> Retry
+      </button>}
+    </div>}
+    {busy && <div className="flex min-h-[180px] flex-col items-center justify-center gap-3 py-10 text-center print:hidden" role="status" aria-live="polite">
+      <Loader2 className="h-8 w-8 animate-spin text-teal-600" aria-hidden="true" />
+      <span className="text-xs font-medium text-slate-500">Loading report data...</span>
+    </div>}
     {data && !busy && <>
       <nav className="flex gap-2 flex-wrap print:hidden" aria-label="Report sections">
         {([['overview','Overview'],['participation','Participation & Outcomes'],['training','Training Hours'],['planning','Planning Insights']] as const).map(([key,name])=><button key={key} onClick={()=>setActive(key)} className={`px-3 py-2 rounded-lg border text-xs font-semibold ${active===key?'bg-slate-900 text-white border-slate-900':'bg-white text-slate-700 border-slate-200'}`}>{name}</button>)}
