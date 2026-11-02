@@ -1543,22 +1543,42 @@ function checkCNEActionAuthorized(session, record) {
  * Expected positions: B Employee ID, D Name, H Type of employment, I Designation,
  * J Date of Joining, K Contact No., L EmailID.
  */
+function normalizeOfficerHeader_(value) {
+  // Normalize punctuation, Unicode spacing and line breaks, not row data.
+  var valueText = String(value === null || value === undefined ? '' : value);
+  try { if (typeof valueText.normalize === 'function') valueText = valueText.normalize('NFKC'); } catch (e) {}
+  return valueText.replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Detect Officers data by header name, without any positional fallback. */
 function findOfficerHeaders(headers) {
-  var empCol=-1,nameCol=-1,desigCol=-1,empTypeCol=-1,contactCol=-1,dojCol=-1,emailCol=-1;
-  if (!headers || !headers.length) return { empCol:-1,nameCol:-1,desigCol:-1,empTypeCol:-1,contactCol:-1,dojCol:-1,emailCol:-1 };
-  var maxCols=headers.length;
-  for (var c=0;c<maxCols;c++) {
-    var h=String(headers[c]||'').trim().toLowerCase().replace(/\s+/g,' ');
+  var map={empCol:-1,nameCol:-1,desigCol:-1,empTypeCol:-1,contactCol:-1,dojCol:-1,emailCol:-1};
+  if (!headers || !headers.length) return map;
+  var aliases={
+    empCol:['employee id no','employee id number','employee id','employee number','employee no','employee code','emp id no','emp id number','emp id','emp code','staff id'],
+    nameCol:['name of the officers','name of the officer','name of officers','name of officer','officer name','officers name','name of employee','name of the employee','employee name','staff name','full name','name'],
+    desigCol:['designation','employee designation','staff designation','designation of officers'],
+    empTypeCol:['type of employment','employment type','employee type'],
+    contactCol:['contact no','contact number','phone no','phone number','mobile no','mobile number','contact'],
+    dojCol:['date of joining','joining date','doj','d o j'],
+    emailCol:['emailid','email id','email address','email','e mail','e mail id','e mail address','official email','official email id','official email address','official e mail','official e mail id','email id official','email address official']
+  };
+  var fields=Object.keys(aliases);
+  for (var c=0;c<headers.length;c++) {
+    var h=normalizeOfficerHeader_(headers[c]);
     if (!h) continue;
-    if (empCol===-1 && (h==='employee id no.'||h==='employee id no'||h==='employee id number'||h==='employee id'||h==='emp id'||h==='emp id no.'||h==='emp id no')) empCol=c;
-    if (nameCol===-1 && (h==='name of the officers'||h==='name of the officer'||h==='officer name'||h==='employee name'||h==='name')) nameCol=c;
-    if (empTypeCol===-1 && (h==='type of employment'||h==='employment type')) empTypeCol=c;
-    if (desigCol===-1 && (h==='designation'||h.indexOf('designation')!==-1)) desigCol=c;
-    if (dojCol===-1 && (h==='date of joining'||h==='joining date'||h==='doj'||h==='d.o.j'||h==='d.o.j.')) dojCol=c;
-    if (contactCol===-1 && (h==='contact no.'||h==='contact no'||h==='contact number'||h==='phone no.'||h==='phone no'||h==='mobile no.'||h==='mobile no')) contactCol=c;
-    if (emailCol===-1 && (h==='emailid'||h==='email id'||h==='email'||h==='e-mail'||h==='e-mail id')) emailCol=c;
+    for (var i=0;i<fields.length;i++) {
+      var key=fields[i];
+      if (aliases[key].indexOf(h)!==-1 ||
+          (key==='desigCol' && /^designation(?: of (?:the )?officers)?$/.test(h))) {
+        // Ambiguous duplicate matching headers are unsafe: require manual review.
+        if (map[key]!==-1) throw new Error('Officers data has duplicate '+key+' headers. Keep exactly one matching column.');
+        map[key]=c;
+      }
+    }
   }
-  return { empCol:empCol,nameCol:nameCol,desigCol:desigCol,empTypeCol:empTypeCol,contactCol:contactCol,dojCol:dojCol,emailCol:emailCol };
+  return map;
 }
 
 /**
@@ -1760,14 +1780,28 @@ function getRosterSheet() {
  */
 function getOfficerHeaderMeta_() {
   if (_officerHeaderMeta && _officerHeaderMeta.colMap) return _officerHeaderMeta;
-  var sheet = getRosterSheet();
-  var width = Math.max(1, sheet.getLastColumn());
-  var headers = sheet.getRange(1, 1, 1, width).getDisplayValues()[0];
-  var colMap = findOfficerHeaders(headers);
-  if (colMap.empCol===-1||colMap.nameCol===-1||colMap.emailCol===-1) {
-    throw new Error('System configuration error: Officers data must contain Employee ID No., Name of the Officers, and EmailID.');
+  var sheet=getRosterSheet();
+  var width=Math.max(1,sheet.getLastColumn());
+  var lastRow=sheet.getLastRow();
+  if (lastRow<1) throw new Error('Officers data sheet is empty; required column headers were not found.');
+  var first=sheet.getRange(1,1,1,width).getDisplayValues()[0];
+  var colMap=findOfficerHeaders(first);
+  var headerRow=1;
+  function hasRequired(map) { return map.empCol>=0 && map.nameCol>=0 && map.emailCol>=0; }
+  // Some institute rosters contain title/notes rows above the actual header.
+  // Search only a small bounded prefix of this external read-only master.
+  if (!hasRequired(colMap) && lastRow>1) {
+    var rowsToInspect=Math.min(lastRow-1,9);
+    var candidates=sheet.getRange(2,1,rowsToInspect,width).getDisplayValues();
+    for (var i=0;i<candidates.length;i++) {
+      var candidate=findOfficerHeaders(candidates[i]);
+      if (hasRequired(candidate)) { colMap=candidate; headerRow=i+2; break; }
+    }
   }
-  _officerHeaderMeta = { sheet: sheet, colMap: colMap, width: width };
+  if (!hasRequired(colMap)) {
+    throw new Error('System configuration error: Officers data header matching failed. Required: Employee ID No., Name of the Officers, EmailID. Check header spellings and DROPDOWN_SPREADSHEET_ID; headers can be in rows 1-10. No employee records were changed.');
+  }
+  _officerHeaderMeta={sheet:sheet,colMap:colMap,width:width,headerRow:headerRow};
   return _officerHeaderMeta;
 }
 
@@ -1851,8 +1885,8 @@ function findOfficerByIdTargeted_(employeeId, forceFresh) {
     }
   }
   var meta = getOfficerHeaderMeta_();
-  var rowIndex = findExactEmployeeRow_(meta.sheet, meta.colMap.empCol + 1, normId, 2);
-  if (rowIndex < 2) {
+  var rowIndex = findExactEmployeeRow_(meta.sheet, meta.colMap.empCol + 1, normId, meta.headerRow + 1);
+  if (rowIndex <= meta.headerRow) {
     _executionOfficerById[normId] = null;
     return null;
   }
@@ -1868,20 +1902,20 @@ function findOfficerByIdTargeted_(employeeId, forceFresh) {
 /** Execution employee-directory cache. Reads ONLY A:L. */
 function getExecutionRosterData() {
   if (_executionRosterData) return _executionRosterData;
-  var sheet=getRosterSheet();
+  var meta=getOfficerHeaderMeta_();
+  var sheet=meta.sheet;
   var lastRow=sheet.getLastRow();
-  if (lastRow<2) return null;
-  var range=sheet.getRange(1,1,lastRow,Math.max(1,sheet.getLastColumn()));
+  if (lastRow<=meta.headerRow) return null;
+  var range=sheet.getRange(meta.headerRow,1,lastRow-meta.headerRow+1,meta.width);
   var data=range.getValues();
   var displayData=range.getDisplayValues();
-  var colMap=findOfficerHeaders(displayData[0]);
-  if (colMap.empCol===-1||colMap.nameCol===-1||colMap.emailCol===-1) throw new Error('System configuration error: Officers data must contain Employee ID No., Name of the Officers, and EmailID.');
+  var colMap=meta.colMap;
   _executionRosterData={sheetName:sheet.getName(),data:data,displayData:displayData,colMap:colMap,byNormId:{}};
   for (var r=1;r<data.length;r++) {
-    var officer = buildOfficerFromRosterRow_(data[r], displayData[r] || [], colMap);
+    var officer=buildOfficerFromRosterRow_(data[r],displayData[r]||[],colMap);
     if (!officer) continue;
-    var rowEmpId = normalizeEmpId(officer.employeeId);
-    if (!rowEmpId||_executionRosterData.byNormId[rowEmpId]) continue;
+    var rowEmpId=normalizeEmpId(officer.employeeId);
+    if (!rowEmpId || _executionRosterData.byNormId[rowEmpId]) continue;
     _executionRosterData.byNormId[rowEmpId]=officer;
   }
   return _executionRosterData;
@@ -2056,7 +2090,7 @@ function getOfficerNameMap() {
     var meta = getOfficerHeaderMeta_();
     var sheet = meta.sheet;
     var lastRow = sheet.getLastRow();
-    if (lastRow >= 2) {
+    if (lastRow > meta.headerRow) {
       var empCol = meta.colMap.empCol + 1;
       var nameCol = meta.colMap.nameCol + 1;
       var minCol = Math.min(empCol, nameCol);
@@ -2064,7 +2098,7 @@ function getOfficerNameMap() {
       var width = maxCol - minCol + 1;
       // Names need only Employee ID + Name, not the full A:L roster. One compact
       // display-value read is substantially cheaper on cold Apps Script executions.
-      var rows = sheet.getRange(2, minCol, lastRow - 1, width).getDisplayValues();
+      var rows = sheet.getRange(meta.headerRow+1, minCol, lastRow-meta.headerRow, width).getDisplayValues();
       var empOffset = empCol - minCol;
       var nameOffset = nameCol - minCol;
       for (var r = 0; r < rows.length; r++) {
@@ -8566,21 +8600,19 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
       }
     }
 
-    // Officers is an external read-only master; preserve its safety diagnostics.
+    // Officers is an external, read-only master. Validate the same detected
+    // header row used by login, without assuming the first 12 columns.
     try {
-      var officerSheet=getSpreadsheet('OFFICERS').getSheetByName('Officers data');
-      if (!officerSheet) {
-        report.push({tab:'Officers data',status:'External master tab missing',error:'Required Officers data tab was not found.'});
+      var officerMeta=getOfficerHeaderMeta_();
+      var officerCols=officerMeta.colMap;
+      if (officerCols.desigCol<0 || officerCols.dojCol<0) {
+        report.push({tab:'Officers data',status:'External master optional headers need attention',error:'Designation and/or Date of Joining could not be matched.',headerRow:officerMeta.headerRow});
       } else {
-        var officerHeaders=officerSheet.getRange(1,1,1,12).getDisplayValues()[0];
-        var officerCols=findOfficerHeaders(officerHeaders);
-        if (officerCols.empCol<0 || officerCols.nameCol<0 || officerCols.desigCol<0 || officerCols.dojCol<0 || officerCols.emailCol<0) {
-          report.push({tab:'Officers data',status:'External master headers need attention',error:'Expected Employee ID, Name, Designation, Date of Joining and EmailID within A:L.'});
-        } else {
-          report.push({tab:'Officers data',status:'External A:L master headers verified (read-only)',rowCount:officerSheet.getLastRow()});
-        }
+        report.push({tab:'Officers data',status:'External master headers verified (read-only)',rowCount:officerMeta.sheet.getLastRow(),headerRow:officerMeta.headerRow});
       }
-    } catch (e) { report.push({tab:'Officers data',status:'External master check unavailable',error:String(e.message||e)}); }
+    } catch(e) {
+      report.push({tab:'Officers data',status:'External master check unavailable',error:String(e.message||e)});
+    }
 
     var msg=unsafe.length
       ? 'Verification needs attention in fixed-position or duplicate-header tabs: '+unsafe.join(', ')+'. No existing data were deleted or reordered.'
