@@ -248,7 +248,16 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   const resetHome=() => {practiceEpoch.current++;setPage('home');setQuestion(null);setError('');setNotice('');void refreshHome().catch(e=>setError((e as Error).message));};
   const allUnitNames=home?.units.map(u=>u.name)||[];
   const available=home?.units.reduce((n,u)=>n+(!selectedUnits.length||selectedUnits.includes(u.name)?u.available:0),0)||0;
-  return <section className="mx-auto max-w-5xl space-y-5 pb-12" aria-label="Quiz">
+  const quizMaxWidth =
+    page === 'home'
+      ? 'max-w-[1440px]'
+      : page === 'scored-setup' || page === 'practice-setup'
+      ? 'max-w-[1200px]'
+      : page === 'scored' || page === 'practice'
+      ? 'max-w-[1100px]'
+      : 'max-w-[1300px]';
+
+  return <section className={`mx-auto w-full min-w-0 ${quizMaxWidth} space-y-5 pb-12`} aria-label="Quiz">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div><h1 className="text-2xl font-extrabold text-slate-900">Quiz</h1><p className="text-sm text-slate-500">CNE Cell • Clinical learning and self-assessment</p></div>
       {page!=='home'&&<button type="button" onClick={resetHome} className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold text-slate-700">Back to Quiz</button>}

@@ -13886,6 +13886,48 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   }
 }
 
+// Responsive wide-layout regression checks. One unified verification runner only.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const appLayout = readFileSync(join(ROOT_DIR, 'src/App.tsx'), 'utf8');
+  const navbarLayout = readFileSync(join(ROOT_DIR, 'src/components/Navbar.tsx'), 'utf8');
+  const toolbarLayout = readFileSync(join(ROOT_DIR, 'src/components/TopToolbar.tsx'), 'utf8');
+  const quizLayout = readFileSync(join(ROOT_DIR, 'src/components/QuizPage.tsx'), 'utf8');
+  const resourcesLayout = readFileSync(join(ROOT_DIR, 'src/components/cne/LearningResourcesPage.tsx'), 'utf8');
+  const libraryAdminLayout = readFileSync(join(ROOT_DIR, 'src/components/cne/LibraryIndexManagementPage.tsx'), 'utf8');
+  const departmentalReportLayout = readFileSync(join(ROOT_DIR, 'src/components/AdminDepartmentalCneOutcome.tsx'), 'utf8');
+  const checks = [
+    ['App, navigation and footer use consistent 1720px desktop maximum width', () => {
+      assert.equal(appLayout.split('max-w-[1720px]').length - 1, 2);
+      assert(navbarLayout.includes('max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8'));
+      assert(toolbarLayout.includes('max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8'));
+      assert(!appLayout.includes('max-w-[1600px]') && !navbarLayout.includes('max-w-[1600px]'));
+    }],
+    ['Quiz home, setup, questions and results retain responsive distinct width caps', () => {
+      for (const cls of ['max-w-[1440px]', 'max-w-[1200px]', 'max-w-[1100px]', 'max-w-[1300px]'])
+        assert(quizLayout.includes(cls), 'Missing Quiz layout width '+cls);
+      assert(quizLayout.includes('w-full min-w-0 ${quizMaxWidth}'));
+      assert(quizLayout.includes("page === 'home'") && quizLayout.includes("page === 'scored'"));
+    }],
+    ['Resource and report pages inherit shell gutters rather than stacking horizontal padding', () => {
+      for (const component of [resourcesLayout, libraryAdminLayout, departmentalReportLayout]) {
+        assert(component.includes('w-full min-w-0 py-2 sm:py-4'));
+        assert(!component.includes('max-w-[1600px]'));
+      }
+    }],
+    ['Responsive width changes do not alter backend, forms or scoring', () => {
+      assert(quizLayout.includes('Top 5 Leaderboard'));
+      assert(quizLayout.includes('Save & Next'));
+      assert(resourcesLayout.includes('handleDownload(item)'));
+    }],
+  ];
+  console.log('\n>>> Wide responsive page layout checks');
+  for (const [name, check] of checks) {
+    focusedChecks.push({name});
+    try { check(); focusedPassed++; console.log('✓ ' + name); }
+    catch (e) { console.error('✗ ' + name + ': ' + (e.stack || e.message)); }
+  }
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');

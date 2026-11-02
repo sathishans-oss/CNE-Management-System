@@ -162,7 +162,7 @@ const AppContent: React.FC = () => {
         />
       )}
 
-      <div className="flex-1 w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-12">
+      <div className="flex-1 w-full max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-12">
         {/* Main Content Area */}
         <main className="w-full">
           <Suspense fallback={<PageLoadingFallback />}>
@@ -229,7 +229,7 @@ const AppContent: React.FC = () => {
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-6 text-center text-xs text-slate-500 mt-auto">
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2">
+        <div className="max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>© 2026 Nursing Informatics | Nursing Services | AIIMS Rishikesh</span>
           
         </div>

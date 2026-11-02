@@ -16334,8 +16334,14 @@ function cneHybridBankCandidate_(row,cols,score) {
     verificationStatus:String(row[cols.status]||''),matchScore:score
   };
 }
+/** Canonical clinical approval for source Question Bank MCQs.
+ * Shared by CNE Question Bank import and Scored/Practice Quiz eligibility.
+ * Do not treat generic verification or indexing states as clinical approval.
+ */
+function cneQuestionBankClinicallyApproved_(status) {
+  return String(status||'').trim().toUpperCase()==='CLINICALLY_APPROVED';
+}
 function cneHybridCanImportBank_(candidate) {
-  var state=String(candidate.verificationStatus||'').toUpperCase();
   var answer=/^[A-D]$/.test(String(candidate.correctOption||'').trim().toUpperCase());
   var options=candidate.options||{};
   var texts=['A','B','C','D'].map(function(key){return String(options[key]||'').trim();});
@@ -16343,7 +16349,7 @@ function cneHybridCanImportBank_(candidate) {
   var original=String(candidate.originalQuestionFormat||'').trim().toUpperCase();
   var supportedOriginal=!/(MULTIPLE[_ -]?RESPONSE|MULTIPLE[_ -]?ANSWERS?|SELECT[_ -]?ALL|SATA|MULTI[._ -]?SELECT|TRUE[._ -]?FALSE|MATCHING)/.test(original);
   var imageReady=type==='TEXT'?!String(candidate.imageFileId||'').trim():cneQuestionImageFileId_(candidate.imageFileId)!=='';
-  var clinicallyApproved=/^(?:CLINICALLY_APPROVED|CLINICAL_APPROVED|APPROVED|VERIFIED|REVIEWED_AND_APPROVED)$/i.test(state.trim());
+  var clinicallyApproved=cneQuestionBankClinicallyApproved_(candidate.verificationStatus);
   return Boolean(clinicallyApproved && (type==='TEXT'||type==='IMAGE') && supportedOriginal && imageReady &&
     candidate.question.length>=8 && candidate.explanation.trim().length>=5 && answer &&
     texts.every(Boolean) && new Set(texts.map(function(t){return t.toLowerCase();})).size===4);
@@ -21472,7 +21478,7 @@ function cneQuizResponseError_(code, message) { return {success:false,errorCode:
 function cneQuizSession_(session) { return session && session.employeeId ? '' : 'Sign in with Employee ID to use Quiz.'; }
 function cneQuizCell_(value) { return String(value === null || value === undefined ? '' : value).trim(); }
 function cneQuizParseJson_(text, fallback) { try { return JSON.parse(String(text || '')); } catch(e) { return fallback; } }
-function cneQuizIsClinicallyApproved_(q){return /^(CLINICALLY_APPROVED|CLINICAL_APPROVED|REVIEWED_AND_APPROVED)$/i.test(cneQuizCell_(q.verificationStatus));}
+function cneQuizIsClinicallyApproved_(q){return cneQuestionBankClinicallyApproved_(q&&q.verificationStatus);}
 function cneQuizApprovedPool_() {
   if (_executionQuizApprovedPool_) return _executionQuizApprovedPool_;
   var sh=cneHybridQuestionBankSheet_();

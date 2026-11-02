@@ -356,7 +356,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
   const totalCount = unifiedResources.length;
 
   return (
-    <div id="cne-unified-learning-resources-page" className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <div id="cne-unified-learning-resources-page" className="w-full min-w-0 py-2 sm:py-4 space-y-6">
       {/* Filters, Search & Action Toolbar */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3.5 sm:p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
         {/* Category Tabs */}

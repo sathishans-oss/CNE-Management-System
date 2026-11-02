@@ -172,7 +172,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
   };
 
   return (
-    <div className="max-w-[1600px] mx-auto px-3 sm:px-6 lg:px-8 py-6">
+    <div className="w-full min-w-0 py-2 sm:py-4">
       {/* Print-Only Header (Strict Institutional Requirement) */}
       <div className="hidden print:block mb-6 text-center">
         <h1 className="text-xl font-bold uppercase tracking-wider text-slate-900 leading-tight">

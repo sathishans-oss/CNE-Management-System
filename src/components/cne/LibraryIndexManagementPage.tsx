@@ -369,7 +369,7 @@ export const LibraryIndexManagementPage: React.FC<LibraryIndexManagementPageProp
   );
 
   return (
-    <div id="cne-library-index-management-page" className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-5">
+    <div id="cne-library-index-management-page" className="w-full min-w-0 py-2 sm:py-4 space-y-5">
       <div inert={showOverlay} aria-busy={showOverlay} className="space-y-5">
         <header className="rounded-2xl bg-white border border-slate-200 p-5">
           <h1 className="flex items-center gap-2 text-lg font-bold text-slate-900">
