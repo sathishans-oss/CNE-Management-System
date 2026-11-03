@@ -411,6 +411,7 @@ export class ApiService {
   static completeQuizScored(attemptId:string): Promise<ApiResponse<QuizResult>> {return this.executeAction('completeQuizScored',{attemptId});}
   static getQuizScoredResult(attemptId:string): Promise<ApiResponse<QuizResult>> {return this.executeAction('getQuizScoredResult',{attemptId});}
   static getQuizPracticeQuestion(units:string[],exclude:string[],answeredCount:number,lastImageAt:number,unitCounts:Record<string,number>): Promise<ApiResponse<QuizQuestion>> {return this.executeAction('getQuizPracticeQuestion',{units,exclude,answeredCount,lastImageAt,unitCounts});}
+  static getQuizPracticeBatch(units:string[],exclude:string[],answeredCount:number,lastImageAt:number,unitCounts:Record<string,number>): Promise<ApiResponse<{questions:QuizQuestion[];exhausted:boolean;lastImageAt:number;unitCounts:Record<string,number>}>> {return this.executeAction('getQuizPracticeBatch',{units,exclude,answeredCount,lastImageAt,unitCounts});}
   static getQuizImage(questionId:string,attemptId?:string): Promise<ApiResponse<{mimeType:string;base64Data:string}>> {return this.executeAction('getQuizImage',{questionId,attemptId});}
 
   /**
@@ -464,6 +465,7 @@ export class ApiService {
       case 'cancelQuizScored':
       case 'completeQuizScored':
       case 'getQuizScoredResult':
+      case 'getQuizPracticeBatch':
       case 'getQuizPracticeQuestion':
       case 'getQuizImage':
       case 'getWardStaffCounts':

@@ -13670,6 +13670,33 @@ function runQuizChecksIntegrated() {
   ok(imagePractice.success&&imagePractice.data.questionType==='IMAGE','Practice favors image after seven text questions, if available');
   ok(!sheets['CNE Quiz Answers'],'Practice quiz and scored quiz do not create a separate answer tab');
   ok(context.handleGetQuizPracticeQuestion({},null).errorCode==='UNAUTHORIZED','Practice restricted to logged in users');
+
+  // Practice uses one server read per group of ten; no per-question Apps Script calls.
+  const practiceGroup=context.handleGetQuizPracticeBatch({units:[],exclude:[],answeredCount:0,lastImageAt:0,unitCounts:{}},user);
+  ok(practiceGroup.success&&practiceGroup.data.questions.length===10,'Practice batch fetches ten questions in one request');
+  equals(new Set(practiceGroup.data.questions.map(q=>q.questionId)).size,10,'Practice group has ten unique Question IDs');
+  ok(practiceGroup.data.questions.every(q=>q.correctOption==='B'&&q.explanation),'Practice group contains answer feedback');
+  const firstPracticeIds=practiceGroup.data.questions.map(q=>q.questionId);
+  const subsequentPractice=context.handleGetQuizPracticeBatch({units:[],exclude:firstPracticeIds,answeredCount:10,lastImageAt:practiceGroup.data.lastImageAt,unitCounts:practiceGroup.data.unitCounts},user);
+  ok(subsequentPractice.success&&subsequentPractice.data.questions.length===10,'Second practice group preloads ten questions');
+  ok(subsequentPractice.data.questions.every(q=>!firstPracticeIds.includes(q.questionId)),'Next practice group excludes previously loaded questions');
+  const unitPractice=context.handleGetQuizPracticeBatch({units:['Pediatric Nursing'],exclude:[],answeredCount:0,lastImageAt:0,unitCounts:{}},user);
+  ok(unitPractice.success&&unitPractice.data.questions.every(q=>q.unit==='Pediatric Nursing'),'Practice batch honors selected units');
+  const exhaustedPractice=context.handleGetQuizPracticeBatch({units:[],exclude:bank.map(q=>q.questionId),answeredCount:100,lastImageAt:0,unitCounts:{}},user);
+  ok(exhaustedPractice.success&&exhaustedPractice.data.questions.length===0&&exhaustedPractice.data.exhausted,'Practice batch safely reports exhausted question pool');
+  const biasedPractice=context.handleGetQuizPracticeBatch({units:[],exclude:[],answeredCount:10,lastImageAt:10,unitCounts:{'Medical-Surgical Nursing':50,'Pediatric Nursing':0}},user);
+  ok(biasedPractice.success&&biasedPractice.data.questions[0].unit==='Pediatric Nursing','Practice batch balances underrepresented units');
+  ok(context.handleGetQuizPracticeBatch({units:[],exclude:[],answeredCount:0,lastImageAt:0,unitCounts:{}},null).errorCode==='UNAUTHORIZED','Practice batch requires login');
+  ok(context.handleGetQuizPracticeBatch({units:[],exclude:[],answeredCount:100001,lastImageAt:0,unitCounts:{}},user).errorCode==='INVALID_PARAMS','Practice batch bounds loaded question history');
+  ok(source.includes("case 'getQuizPracticeBatch':"),'Practice batch action routed in Apps Script');
+  const quizUI=readFileSync(join(ROOT_DIR,'src/components/QuizPage.tsx'),'utf8');
+  ok(quizUI.includes('Quiz & Clinical Learning')&&!quizUI.includes('Clinical Education')&&quizUI.indexOf('Quiz & Clinical Learning')<quizUI.indexOf('!home&&'),'Compact single-title Quiz banner renders before loading state');
+  equals((quizUI.match(/Quiz & Clinical Learning/g)||[]).length,1,'Quiz heading is displayed exactly once');
+  equals((quizUI.match(/Back to Quiz/g)||[]).length,1,'Back to Quiz appears only in banner');
+  ok(quizUI.includes('Resuming Quiz…')&&quizUI.includes('Cancelling Quiz…'),'Both resume and cancel actions display their own spinners');
+  ok(quizUI.includes('disabled={!!home.activeAttempt||busy}'),'Unfinished scored Quiz disables both quiz-mode launch cards');
+  ok(quizUI.includes('Finish Practice')&&quizUI.includes('getQuizPracticeBatch'),'Practice has Finish control and a ten-question backend API');
+
   // Reorder attempt tab and add an unrelated column: every read/write must
   // match actual header names, preserving extras instead of assuming offsets.
   function reorderSheet(sheet,order){
@@ -14023,6 +14050,39 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     focusedChecks.push({name});
     try { check(); focusedPassed++; console.log('✓ ' + name); }
     catch (e) { console.error('✗ ' + name + ': ' + (e.stack || e.message)); }
+  }
+}
+
+// Quiz setup, transient feedback and scored result presentation checks.
+if (selected.some(item => item.id === 'workflows') && passed === selected.length) {
+  const quizUi = readFileSync(join(ROOT_DIR, 'src/components/QuizPage.tsx'), 'utf8');
+  const checks = [
+    ['Setup-page Start buttons are compact, right aligned and display loading spinners', () => {
+      const setup=quizUi.slice(quizUi.indexOf("(page==='scored-setup'||page==='practice-setup')&&home"),quizUi.indexOf("page==='scored'&&attempt&&!question"));
+      assert(setup.includes('flex justify-end border-t border-slate-100 pt-4'));
+      assert(setup.includes('inline-flex min-w-[175px]') && !setup.includes('flex w-full items-center justify-center'));
+      assert(setup.includes('Preparing Quiz…') && setup.includes('Loading Questions…'));
+      assert(setup.includes('animate-spin') && setup.includes('aria-busy={busy}'));
+    }],
+    ['Finished Practice notification is a temporary fixed bottom toast', () => {
+      assert(quizUi.includes("setNotice('Practice finished. No practice answers or scores were saved.')"));
+      assert(quizUi.includes("window.setTimeout(() => setNotice(''), 4500)"));
+      assert(quizUi.includes('fixed bottom-5 right-4 z-[140]'));
+      assert(!quizUi.includes('notice&&<div className="rounded-lg bg-teal-50'));
+    }],
+    ['Results use styled score tiles, unit accuracy bars and full-answer review cards', () => {
+      const result=quizUi.slice(quizUi.indexOf("page==='result'&&results"),quizUi.indexOf('confirmBack&&'));
+      for(const expected of ['Scored Quiz Results','Overall Score','Correct','Incorrect','Overall Accuracy','Unit-wise Performance','Question Review & Explanations','Clinical Explanation','results.review.map','letters.map'])
+        assert(result.includes(expected),expected);
+      assert(result.includes('role="progressbar"'));
+      assert(result.includes('QuizImage question={r.question}'));
+    }],
+  ];
+  console.log('\n>>> Quiz setup and results interface checks');
+  for (const [name, check] of checks) {
+    focusedChecks.push({name});
+    try { check(); focusedPassed++; console.log('✓ '+name); }
+    catch (e) { console.error('✗ '+name+': '+(e.stack||e.message)); }
   }
 }
 

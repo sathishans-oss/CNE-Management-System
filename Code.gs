@@ -861,6 +861,9 @@ function handleRequest(e, method) {
       case 'getQuizPracticeQuestion':
         output = handleGetQuizPracticeQuestion(params, session);
         break;
+      case 'getQuizPracticeBatch':
+        output = handleGetQuizPracticeBatch(params, session);
+        break;
 
       case 'getQuizImage':
         output = handleGetQuizImage(params, session);
@@ -22054,6 +22057,59 @@ function handleGetQuizPracticeQuestion(params,session){
   var q=questions[Math.floor(Math.random()*questions.length)];
   // Practice is ephemeral: answers and explanations travel with the question, but are hidden until Submit.
   return {success:true,data:cneQuizSafeQuestion_(q,true)};
+}
+/** Fetch up to ten independent practice questions in one authenticated request.
+ * No attempt, answer, score or practice history is written to Google Sheets.
+ * Return the rolling unit counts and image position so the client can prefetch
+ * the next group while maintaining balanced unit selection and image spacing.
+ */
+function handleGetQuizPracticeBatch(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Login required.');
+  if(cneQuizHasActiveScored_(session.employeeId))return cneQuizResponseError_('QUIZ_ACTIVE','Complete or cancel your scored quiz before opening Practice Quiz.');
+  params=params||{};
+  var units=Array.isArray(params.units)?params.units.map(cneQuizCell_):[];
+  var exclude=Array.isArray(params.exclude)?params.exclude.map(cneQuizCell_):[];
+  if(units.length>100||exclude.length>400||units.some(function(u){return u.length>150;})||exclude.some(function(id){return id.length>150;}))
+    return cneQuizResponseError_('INVALID_PARAMS','Invalid practice question selection.');
+  var requested=Number(params.answeredCount);
+  if(!Number.isInteger(requested)||requested<0||requested>100000)return cneQuizResponseError_('INVALID_PARAMS','Invalid practice position.');
+  var lastImageAt=Number(params.lastImageAt)||0;
+  if(!Number.isInteger(lastImageAt)||lastImageAt<0||lastImageAt>requested)return cneQuizResponseError_('INVALID_PARAMS','Invalid image spacing position.');
+  var supplied=params.unitCounts&&typeof params.unitCounts==='object'&&!Array.isArray(params.unitCounts)?params.unitCounts:{};
+  var counts=Object.create(null);
+  Object.keys(supplied).forEach(function(key){
+    var value=Number(supplied[key]);
+    if(key.length<=150&&Number.isInteger(value)&&value>=0&&value<=100000)counts[key]=value;
+  });
+  var pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+  var excluded=Object.create(null);exclude.forEach(function(id){if(id)excluded[id]=true;});
+  var remaining=pool.questions.filter(function(q){return (!units.length||units.indexOf(cneQuizCell_(q.unit)||'Unspecified Unit')!==-1)&&!excluded[q.questionId];});
+  var items=[],limit=10;
+  for(var i=0;i<limit&&remaining.length;i++){
+    var candidates=remaining;
+    // Prefer a clinical image after seven question positions without one.
+    if(requested+i-lastImageAt>=7){
+      var images=remaining.filter(function(q){return q.questionType==='IMAGE';});
+      if(images.length)candidates=images;
+    }
+    var byUnit=Object.create(null),names=[];
+    candidates.forEach(function(q){
+      var u=cneQuizCell_(q.unit)||'Unspecified Unit';
+      if(!Object.prototype.hasOwnProperty.call(byUnit,u)){byUnit[u]=[];names.push(u);}
+      byUnit[u].push(q);
+    });
+    var lowest=Math.min.apply(null,names.map(function(name){return counts[name]||0;}));
+    var least=names.filter(function(name){return (counts[name]||0)===lowest;});
+    var chosenUnit=least[Math.floor(Math.random()*least.length)];
+    var group=byUnit[chosenUnit];
+    var q=group[Math.floor(Math.random()*group.length)];
+    items.push(cneQuizSafeQuestion_(q,true));
+    remaining=remaining.filter(function(candidate){return candidate.questionId!==q.questionId;});
+    counts[chosenUnit]=(counts[chosenUnit]||0)+1;
+    if(q.questionType==='IMAGE')lastImageAt=requested+i+1;
+  }
+  return {success:true,data:{questions:items,exhausted:items.length<limit,
+    lastImageAt:lastImageAt,unitCounts:counts}};
 }
 function handleGetQuizImage(params,session){
   if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED','Login required.');
