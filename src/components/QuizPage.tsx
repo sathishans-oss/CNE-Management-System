@@ -5,6 +5,8 @@ import type { QuizAttempt, QuizHomeData, QuizQuestion, QuizResult, QuizHistoryIt
 
 type Page = 'home' | 'scored-setup' | 'practice-setup' | 'scored' | 'practice' | 'result';
 const letters: Array<'A' | 'B' | 'C' | 'D'> = ['A','B','C','D'];
+const SCORED_BATCH_SIZE = 10;
+const batchMessages = ['Great progress — giving your neurons a moment to recharge!', 'Your answers are being saved securely. Stay sharp!', 'Clinical knowledge grows one question at a time.', 'Mental stretch! Your next set of questions is almost ready.'];
 
 const QuizImage: React.FC<{ question: QuizQuestion; attemptId?: string; getImage: (q: QuizQuestion, attemptId?: string) => Promise<string> }> = ({ question, attemptId, getImage }) => {
   const [source, setSource] = useState('');
@@ -42,6 +44,10 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   const [question,setQuestion] = useState<QuizQuestion | null>(null);
   const [index,setIndex] = useState(0);
   const [selected,setSelected] = useState('');
+  const [scoredBatch,setScoredBatch] = useState<QuizQuestion[]>([]);
+  const [batchAnswers,setBatchAnswers] = useState<Record<string,string>>({});
+  const [batchMessage,setBatchMessage] = useState('');
+  const prefetchedBatches = useRef<Record<string,Promise<QuizQuestion[]>>>({});
   const [practiceCorrect,setPracticeCorrect] = useState(0);
   const [practiceWrong,setPracticeWrong] = useState(0);
   const [practiceSubmitted,setPracticeSubmitted] = useState(false);
@@ -59,13 +65,27 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   const [history,setHistory] = useState<QuizHistoryItem[]>([]);
   const [historyMore,setHistoryMore] = useState(false);
   const [historyBusy,setHistoryBusy] = useState(false);
-  const [insightExpanded,setInsightExpanded] = useState(false);
-  const scoredQuestionCache = useRef<Record<string,QuizQuestion>>({});
+  const [insightImage,setInsightImage] = useState('');
+  const [insightImageError,setInsightImageError] = useState('');
+  const [insightImageExpanded,setInsightImageExpanded] = useState(false);
+
   const practiceUnitCounts = useRef<Record<string,number>>({});
   const imageCache = useRef<Map<string,Promise<string>>>(new Map());
   const mounted = useRef(true);
   const practiceEpoch = useRef(0);
   const practicePrefetchSerial = useRef(0);
+
+  useEffect(() => {
+    const insightId=home?.clinicalInsight?.insightId;
+    let valid=true;
+    setInsightImage('');setInsightImageError('');
+    if(insightId) void ApiService.getClinicalInsightImage(insightId).then(res=>{
+      if(!valid)return;
+      if(res.success&&res.data?.base64Data&&res.data?.mimeType) setInsightImage(`data:${res.data.mimeType};base64,${res.data.base64Data}`);
+      else setInsightImageError(res.message||'Unable to load clinical insight image.');
+    }).catch(e=>{if(valid)setInsightImageError(e instanceof Error?e.message:'Unable to load clinical insight image.');});
+    return ()=>{valid=false;};
+  }, [home?.clinicalInsight?.insightId]);
 
   const getImage = useCallback(async (q: QuizQuestion, id?: string): Promise<string> => {
     const key = `${user.employeeId}|${id || 'practice'}|${q.questionId}`;
@@ -97,45 +117,66 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     return () => { mounted.current=false;practiceEpoch.current+=1;imageCache.current.clear(); };
   },[refreshHome]);
 
-  const setNextScoredPreview = useCallback((a:QuizAttempt, nextIndex:number) => {
-    if(nextIndex>=a.questionCount)return;
-    const key=`${a.attemptId}:${nextIndex}`;
-    if(scoredQuestionCache.current[key])return;
-    void ApiService.getQuizScoredQuestion(a.attemptId,nextIndex).then(res=>{
-      if(res.success && res.data && mounted.current){
-        scoredQuestionCache.current[key]=res.data.question;
-        if(res.data.question.questionType==='IMAGE')void getImage(res.data.question,a.attemptId).catch(()=>{});
-      }
-    });
-  },[getImage]);
+  const draftKey = (a:QuizAttempt) => `cne.quiz.batch.v1:${user.employeeId}:${a.attemptId}`;
+  const clearDraft = (a:QuizAttempt) => {try{window.sessionStorage.removeItem(draftKey(a));}catch(_ignored){/* private-mode storage */}};
 
-  const loadScored = useCallback(async(a:QuizAttempt,position:number) => {
+  const fetchBatch = useCallback((a:QuizAttempt,start:number):Promise<QuizQuestion[]> => {
+    const key=`${a.attemptId}:${start}`;
+    if(!prefetchedBatches.current[key]){
+      prefetchedBatches.current[key]=ApiService.getQuizScoredBatch(a.attemptId,start).then(res=>{
+        if(!res.success||!res.data||res.data.start!==start||res.data.questions.length!==Math.min(SCORED_BATCH_SIZE,a.questionCount-start))
+          throw new Error(res.message||'Could not load scored questions.');
+        return res.data.questions;
+      }).catch(e=>{delete prefetchedBatches.current[key];throw e;});
+    }
+    return prefetchedBatches.current[key];
+  },[]);
+
+  const loadScoredBatch = useCallback(async(a:QuizAttempt) => {
+    const start=a.committedCount;
+    setAttempt(a);
     setBusy(true);setError('');
-    try {
-      const key=`${a.attemptId}:${position}`;
-      const q=scoredQuestionCache.current[key] || (await ApiService.getQuizScoredQuestion(a.attemptId,position)).data?.question;
-      if(!q)throw new Error('Could not load scored question.');
-      scoredQuestionCache.current[key]=q;
-      setAttempt(a);setQuestion(q);setIndex(position);setSelected(a.answers[q.questionId]||'');setPage('scored');
-      setNextScoredPreview(a,position+1);
-    }catch(e){setError(String((e as Error).message||e));}
+    try{
+      if(start>=a.questionCount){
+        const completed=await ApiService.completeQuizScored(a.attemptId);
+        if(!completed.success||!completed.data)throw new Error(completed.message||'Could not finish the saved quiz.');
+        setResults(completed.data);setAttempt(null);setScoredBatch([]);setQuestion(null);setPage('result');
+        clearDraft(a);void refreshHome().catch(()=>{});return;
+      }
+      const questions=await fetchBatch(a,start);
+      const draft:Record<string,string>={};
+      try{
+        const raw=window.sessionStorage.getItem(draftKey(a));
+        if(raw){const data=JSON.parse(raw);if(data.start===start && data.answers && typeof data.answers==='object'){
+          questions.forEach(q=>{const answer=data.answers[q.questionId];if(typeof answer==='string'&&letters.includes(answer as 'A'|'B'|'C'|'D'))draft[q.questionId]=answer;});
+        }}
+      }catch(_ignored){/* storage unavailable */}
+      setAttempt(a);setScoredBatch(questions);setBatchAnswers(draft);
+      setIndex(start);setQuestion(questions[0]);setSelected(draft[questions[0].questionId]||'');setPage('scored');setBatchMessage('');
+      if(start+questions.length<a.questionCount){void fetchBatch(a,start+questions.length).catch(()=>{});}
+    }catch(e){setError(String((e as Error).message||e));setQuestion(null);setScoredBatch([]);setPage('scored');}
     finally{setBusy(false);}
-  },[setNextScoredPreview]);
+  },[fetchBatch,refreshHome,user.employeeId]);
+
+  useEffect(()=>{
+    if(page!=='scored'||!attempt||!scoredBatch.length)return;
+    try{window.sessionStorage.setItem(draftKey(attempt),JSON.stringify({start:attempt.committedCount,answers:batchAnswers}));}
+    catch(_ignored){/* session storage can be disabled; backend commits remain safe */}
+  },[page,attempt,scoredBatch,batchAnswers,user.employeeId]);
 
   const beginScored = async() => {
     setBusy(true);setError('');
-    try {
+    try{
       const res=await ApiService.startQuizScored(selectedUnits,count);
       if(!res.success||!res.data)throw new Error(res.message || 'Could not start quiz.');
-      scoredQuestionCache.current={};
-      await loadScored(res.data,0);
+      prefetchedBatches.current={};
+      await loadScoredBatch(res.data);
     }catch(e){setError(String((e as Error).message||e));}
     finally{setBusy(false);}
   };
   const resume = async(a:QuizAttempt) => {
-    const firstUnanswered=a.questionIds.findIndex(id=>!a.answers[id]);
-    scoredQuestionCache.current={};
-    await loadScored(a,firstUnanswered>=0?firstUnanswered:Math.max(0,a.questionCount-1));
+    prefetchedBatches.current={};
+    await loadScoredBatch(a);
   };
   const cancelScored = async(id:string) => {
     if(busy)return;
@@ -143,54 +184,43 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     try{
       const res=await ApiService.cancelQuizScored(id);
       if(!res.success)throw new Error(res.message||'Could not cancel the quiz.');
-      setAttempt(null);setQuestion(null);scoredQuestionCache.current={};
+      clearDraft({attemptId:id} as QuizAttempt);
+      setAttempt(null);setQuestion(null);setScoredBatch([]);setBatchAnswers({});prefetchedBatches.current={};
       setPage('home');setCancelTarget(null);setHome(prev=>prev?{...prev,activeAttempt:null}:prev);
       setNotice('Scored quiz cancelled. It will not appear in the leaderboard.');
       try{await refreshHome();}catch(e){setError('Quiz cancelled, but the dashboard could not refresh. Reopen Quiz to reload your data.');}
     }catch(e){setCancelError((e as Error).message||'Cancellation failed.');}
     finally{setBusy(false);}
   };
-  const previousScored = async() => {
-    if(!attempt||!question||index<=0||busy)return;
-    setBusy(true);setError('');
-    try{
-      let updated=attempt;
-      if(selected && attempt.answers[question.questionId]!==selected){
-        const saved=await ApiService.saveQuizScoredAnswer(attempt.attemptId,question.questionId,selected);
-        if(!saved.success)throw new Error(saved.message||'Could not save the answer.');
-        updated={...attempt,answers:{...attempt.answers,[question.questionId]:selected}};
-        setAttempt(updated);
-      }
-      await loadScored(updated,index-1);
-    }catch(e){setError((e as Error).message||'Previous question unavailable.');}
-    finally{setBusy(false);}
+  const chooseScored = (choice:string) => {
+    if(!question||busy)return;
+    setSelected(choice);
+    setBatchAnswers(prev=>({...prev,[question.questionId]:choice}));
   };
-  const advanceScored = async() => {
-    if(!attempt||!question||!selected||busy)return;
+  const changeScoredQuestion = (position:number) => {
+    if(!attempt||busy)return;
+    const relative=position-attempt.committedCount;
+    if(relative<0||relative>=scoredBatch.length)return;
+    const q=scoredBatch[relative];setQuestion(q);setIndex(position);setSelected(batchAnswers[q.questionId]||'');
+    setError('');
+  };
+  const submitScoredBatch = async() => {
+    if(!attempt||busy||scoredBatch.length===0)return;
+    const answers=scoredBatch.map(q=>batchAnswers[q.questionId]||'');
+    if(answers.some(x=>!letters.includes(x as 'A'|'B'|'C'|'D'))){
+      setError('Answer all questions in this batch before submitting.');return;
+    }
     setBusy(true);setError('');
+    setBatchMessage(batchMessages[Math.floor(attempt.committedCount/SCORED_BATCH_SIZE)%batchMessages.length]);
     try{
-      const save=await ApiService.saveQuizScoredAnswer(attempt.attemptId,question.questionId,selected);
-      if(!save.success)throw new Error(save.message||'Answer could not be saved.');
-      const updated={...attempt,answers:{...attempt.answers,[question.questionId]:selected}};
-      setAttempt(updated);
-      if(index+1<attempt.questionCount){await loadScored(updated,index+1);}
-      else {
-        const missing=updated.questionIds.findIndex(id=>!updated.answers[id]);
-        if(missing>=0){
-          setNotice('Your last answer was saved. Please answer the remaining questions before completing.');
-          await loadScored(updated,missing);
-          return;
-        }
-        if(!window.confirm('Submit all '+attempt.questionCount+' answers and finish your Scored Quiz? You cannot change answers after completion.')){
-          setNotice('All answers are saved. Finish the quiz when you are ready.');
-          return;
-        }
-        const completed=await ApiService.completeQuizScored(attempt.attemptId);
-        if(!completed.success||!completed.data)throw new Error(completed.message||'Quiz could not be completed.');
-        setResults(completed.data);setPage('result');setQuestion(null);setNotice('');
-        void refreshHome().catch(()=>{});
-      }
-    }catch(e){setError(String((e as Error).message||e));}
+      const res=await ApiService.saveQuizScoredBatch(attempt.attemptId,attempt.committedCount,answers);
+      if(!res.success||!res.data)throw new Error(res.message||'Your answers could not be saved. Retry without changing pages.');
+      const committed=res.data.committedCount;
+      const updated={...attempt,committedCount:committed,answeredCount:committed,
+        answers:{...attempt.answers,...Object.fromEntries(scoredBatch.map((q,i)=>[q.questionId,answers[i]]))}};
+      clearDraft(attempt);setAttempt(updated);setBatchAnswers({});
+      await loadScoredBatch(updated);
+    }catch(e){setError(String((e as Error).message||e));setBatchMessage('');}
     finally{setBusy(false);}
   };
   const loadPractice = useCallback(async(exclude:string[],answeredCount:number,imageAt:number,epoch:number,unitCounts:Record<string,number>) => {
@@ -346,12 +376,14 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
             </div>
           </div>
           <div className="overflow-hidden rounded-2xl border border-teal-100 bg-white shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-teal-50/60 px-4 py-3 sm:px-5"><h2 className="flex items-center gap-2 font-bold text-slate-900"><Lightbulb className="h-5 w-5 text-teal-700"/> Today's Clinical Insight</h2><span className="rounded-full border border-teal-200 bg-white px-2 py-1 text-[10px] font-semibold text-teal-800">{home.clinicalInsight?'Admin approved':'Awaiting approval'}</span></div>
-            {home.clinicalInsight?<div className="space-y-3 p-4 sm:p-5"><div><p className="text-[10px] font-bold uppercase tracking-wide text-teal-700">{home.clinicalInsight.topic}</p><h3 className="mt-1 text-base font-extrabold text-slate-900">{home.clinicalInsight.title}</h3></div><p className="text-sm leading-relaxed text-slate-700">{home.clinicalInsight.summary}</p>
-              {insightExpanded&&<><ul className="list-disc space-y-1 pl-5 text-sm text-slate-700">{home.clinicalInsight.points.map((pt,i)=><li key={i}>{pt}</li>)}</ul><div className="rounded-lg bg-teal-50 p-3 text-sm text-teal-950"><strong>Nursing relevance:</strong> {home.clinicalInsight.nursingRelevance}</div></>}
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3"><p className="max-w-full text-[11px] text-slate-500">Source: {home.clinicalInsight.referenceTitle}{home.clinicalInsight.referenceSection?` · ${home.clinicalInsight.referenceSection}`:''}</p><button type="button" className="text-xs font-bold text-teal-700" onClick={()=>setInsightExpanded(v=>!v)}>{insightExpanded?'Show less':'Read more →'}</button></div>
-            </div>:<div className="p-5 text-sm text-slate-500">Daily clinical insights will appear after an administrator reviews and approves content grounded in the Nursing Reference Library.</div>}
+            <div className="border-b border-teal-100 bg-teal-50/60 px-4 py-3 sm:px-5"><h2 className="flex items-center gap-2 font-bold text-slate-900"><Lightbulb className="h-5 w-5 text-teal-700"/>Today's Clinical Insight</h2></div>
+            {home.clinicalInsight ? <div className="p-3 sm:p-4">
+              {insightImage ? <button type="button" className="block w-full overflow-hidden rounded-xl border border-teal-100 bg-slate-50" aria-label="Enlarge today's clinical insight poster" onClick={()=>setInsightImageExpanded(true)}><img src={insightImage} alt="Today's clinical nursing educational poster with embedded explanation" className="mx-auto max-h-[510px] w-full object-contain"/></button>
+                : insightImageError ? <div role="alert" className="rounded-lg bg-rose-50 p-4 text-sm text-rose-700">{insightImageError}</div>
+                  : <div role="status" className="flex flex-col items-center gap-2 py-16 text-slate-500"><Loader2 className="h-7 w-7 animate-spin text-teal-600"/><span className="text-xs">Loading today's insight…</span></div>}
+            </div> : <p className="p-5 text-sm text-slate-500">Today's image will appear after the admin activates an insight in the image library.</p>}
           </div>
+          {insightImageExpanded&&insightImage&&<div role="dialog" aria-modal="true" aria-label="Enlarged daily clinical insight" className="fixed inset-0 z-[160] flex items-center justify-center bg-slate-950/90 p-4" onClick={()=>setInsightImageExpanded(false)}><button type="button" onClick={()=>setInsightImageExpanded(false)} className="absolute right-4 top-4 rounded-lg bg-white px-3 py-2 text-sm font-bold">Close ✕</button><img src={insightImage} alt="Enlarged clinical nursing infographic" className="max-h-[90vh] max-w-[97vw] object-contain" onClick={e=>e.stopPropagation()}/></div>}
         </div>
         <aside className="min-w-0 space-y-4 xl:col-span-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><div className="mb-4 flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-900"><Trophy className="h-5 w-5 text-amber-500"/> Top 5 Leaderboard</h2><span className="text-[10px] text-slate-500">Last 30 days</span></div>
@@ -362,32 +394,53 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
         </aside>
       </div>
     </>}
-    {(page==='scored-setup'||page==='practice-setup')&&home&&<div className="rounded-2xl border bg-white p-5 space-y-5">
-      <div><h2 className="text-lg font-bold">{page==='scored-setup'?'Scored Quiz':'Practice Quiz'} setup</h2><p className="text-sm text-slate-500">All Units is selected by default.</p></div>
-      <fieldset className="space-y-2"><legend className="mb-2 font-semibold text-sm">Select units</legend>
-        <label className="flex items-center gap-2 rounded-lg bg-slate-50 p-2 font-semibold text-sm"><input type="checkbox" checked={!selectedUnits.length} onChange={()=>setSelectedUnits([])} /> All Units</label>
-        <div className="grid gap-1 sm:grid-cols-2">{home.units.map(u=><label key={u.name} className="flex items-center gap-2 rounded p-2 text-sm"><input type="checkbox" checked={selectedUnits.includes(u.name)} onChange={e=>setSelectedUnits(prev=>e.target.checked?(prev.length===allUnitNames.length-1?[]:[...prev,u.name]):prev.length===0?allUnitNames.filter(x=>x!==u.name):prev.filter(x=>x!==u.name))}/><span className="flex-1">{u.name}</span><span className="text-xs text-slate-400">{u.available}</span></label>)}</div>
-      </fieldset>
-      {page==='scored-setup'&&<label className="block text-sm font-semibold">Number of questions (1–50)
-        <input className="ml-3 w-20 rounded-lg border px-2 py-1" type="number" min={1} max={50} value={count} onChange={e=>setCount(Math.max(1,Math.min(50,Number(e.target.value)||1)))}/><input className="mt-3 block w-full accent-teal-700" type="range" min={1} max={50} value={count} onChange={e=>setCount(Number(e.target.value))}/>
-      </label>}
-      <p className="text-xs text-slate-500">{available} approved questions available for the selected units. {page==='practice-setup'?'No Practice answers or results are stored.':'Scored answers are saved and unfinished attempts may be resumed.'}</p>
-      <p className="text-xs text-teal-800">Questions rotate evenly across the selected units, with random questions inside each unit. Where a unit has too few approved MCQs, other units share the remainder. Image questions are spaced when available.</p>
-      <button type="button" disabled={busy||!available||!!home.activeAttempt||(page==='scored-setup'&&available<count)} onClick={()=>void(page==='scored-setup'?beginScored():beginPractice())} className="rounded-lg bg-teal-700 px-5 py-2.5 text-sm font-bold text-white disabled:opacity-40">{busy?'Opening…':page==='scored-setup'?'Start Scored Quiz':'Start Practice'}</button>
-      {home.activeAttempt&&<p className="text-sm text-amber-700">Resume or cancel your unfinished scored quiz on the Quiz home page before starting a new session.</p>}
+    {(page==='scored-setup'||page==='practice-setup')&&home&&<div className="mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-teal-100 bg-gradient-to-r from-teal-50 via-white to-sky-50 px-5 py-5 sm:px-7">
+        <div className="flex items-center gap-3"><span className="rounded-xl bg-teal-700 p-2.5 text-white">{page==='scored-setup'?<ClipboardCheck className="h-5 w-5"/>:<BookOpenCheck className="h-5 w-5"/>}</span><div><h2 className="text-lg font-extrabold text-slate-900">{page==='scored-setup'?'Scored Quiz':'Practice Quiz'} Setup</h2><p className="text-sm text-slate-600">Choose your preferred clinical learning units.</p></div></div>
+      </div>
+      <div className="space-y-5 px-5 py-6 sm:px-7">
+        {page==='scored-setup'&&<section className="space-y-3" aria-label="Step 1 - Number of questions">
+          <h3 className="text-sm font-bold text-slate-900"><span className="mr-2 rounded-full bg-teal-100 px-2 py-1 text-xs text-teal-700">1</span>Number of Questions</h3>
+          <div className="grid grid-cols-5 gap-2">{[10,20,30,40,50].map(n=><button type="button" key={n} onClick={()=>setCount(n)} aria-pressed={count===n} className={`rounded-xl border py-3 text-sm font-bold transition ${count===n?'border-teal-600 bg-teal-50 text-teal-800 ring-1 ring-teal-600':'border-slate-200 bg-slate-50 text-slate-600 hover:border-teal-300'}`}>{n}</button>)}</div>
+          <label className="flex items-center gap-3 text-xs font-medium text-slate-600">Custom (1–50)<input className="w-20 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900" type="number" min={1} max={50} value={count} onChange={e=>setCount(Math.max(1,Math.min(50,Number(e.target.value)||1)))}/></label>
+        </section>}
+        <fieldset className="space-y-3"><legend className="mb-2 text-sm font-bold text-slate-900">{page==='scored-setup'&&<span className="mr-2 rounded-full bg-teal-100 px-2 py-1 text-xs text-teal-700">2</span>}Select Units</legend>
+          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-teal-100 bg-teal-50 p-3 text-sm font-semibold text-slate-800"><input type="checkbox" className="accent-teal-700" checked={!selectedUnits.length} onChange={()=>setSelectedUnits([])}/> All Units <span className="ml-auto text-xs font-normal text-teal-700">Default</span></label>
+          <div className="grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2">{home.units.map(u=><label key={u.name} className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-100 bg-white p-3 text-sm hover:bg-slate-50"><input type="checkbox" className="accent-teal-700" checked={selectedUnits.includes(u.name)} onChange={e=>setSelectedUnits(prev=>e.target.checked?(prev.length===allUnitNames.length-1?[]:[...prev,u.name]):prev.length===0?allUnitNames.filter(x=>x!==u.name):prev.filter(x=>x!==u.name))}/><span className="min-w-0 flex-1 text-slate-700">{u.name}</span><span className="text-xs text-slate-500">{u.available}</span></label>)}</div>
+        </fieldset>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><div className="flex items-center justify-between gap-2 text-sm"><span className="font-bold text-slate-800">Your assessment</span><span className="font-bold text-teal-700">{page==='scored-setup'?`${count} questions`:'Practice mode'}</span></div>
+          <p className="mt-1 text-xs leading-relaxed text-slate-600">{available} clinically approved questions available. {page==='practice-setup'?'Answers and scores are not stored.':'Answer locally, then permanently submit each batch of up to 10 questions. Submitted answers cannot be changed.'}</p>
+          <p className="mt-2 text-xs text-slate-500">Units are balanced with shortage redistribution. Image MCQs are spaced when available.</p>
+        </div>
+        {home.activeAttempt&&<p role="alert" className="text-sm text-amber-700">Resume or cancel your unfinished Scored Quiz on the dashboard first.</p>}
+        <button type="button" disabled={busy||!available||!!home.activeAttempt||(page==='scored-setup'&&available<count)} onClick={()=>void(page==='scored-setup'?beginScored():beginPractice())} className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-teal-800 disabled:opacity-40">{busy?'Opening…':page==='scored-setup'?'Start Scored Quiz':'Start Practice'} <ChevronRight className="h-4 w-4"/></button>
+      </div>
+    </div>}
+    {page==='scored'&&attempt&&!question&&<div className="mx-auto max-w-2xl space-y-3 rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+      <Loader2 className={`mx-auto h-8 w-8 text-teal-600 ${busy?'animate-spin':''}`}/>
+      <h2 className="text-base font-bold text-slate-900">{busy?'Loading your quiz…':'Your submitted answers are safe'}</h2>
+      <p className="text-sm text-slate-600">{busy?'Preparing your next group of questions.':'The last saved batch remains locked. Retry to open the next batch or finish your quiz.'}</p>
+      {!busy&&<button type="button" onClick={()=>void loadScoredBatch(attempt)} className="rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-bold text-white">Retry loading quiz</button>}
     </div>}
     {(page==='scored'||page==='practice')&&question&&<div className="rounded-2xl border bg-white p-5 sm:p-7 space-y-4">
       <div className="flex flex-wrap justify-between gap-2 text-sm"><span className="font-bold text-slate-800">{page==='scored'?`Question ${index+1} of ${attempt?.questionCount}`:`Question ${practiceCorrect+practiceWrong+1}`}</span><span className="text-slate-500">{question.unit} · {question.questionType}</span></div>
-      {page==='scored'&&attempt&&<div className="space-y-2"><div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-teal-600 transition-all" style={{width:`${Math.round(Object.keys(attempt.answers).length/attempt.questionCount*100)}%`}}/></div><div className="flex flex-wrap justify-between gap-2 text-xs text-slate-500"><span>{Object.keys(attempt.answers).length} of {attempt.questionCount} answers saved</span><span>{attempt.answers[question.questionId]===selected&&selected?'✓ Answer saved':selected?'Not yet saved':'Choose an answer'}</span></div></div>}
+      {page==='scored'&&attempt&&<div className="space-y-3"><div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-teal-600 transition-all" style={{width:`${Math.round((attempt.committedCount+Object.keys(batchAnswers).length)/attempt.questionCount*100)}%`}}/></div><div className="flex flex-wrap justify-between gap-2 text-xs text-slate-500"><span>{attempt.committedCount} of {attempt.questionCount} permanently saved</span><span>{Object.keys(batchAnswers).length} of {scoredBatch.length} answered in current batch</span></div>
+        <div className="flex flex-wrap gap-1.5" aria-label="Questions in current batch">{scoredBatch.map((q,n)=><button type="button" key={q.questionId} disabled={busy} onClick={()=>changeScoredQuestion(attempt.committedCount+n)} aria-label={`Question ${attempt.committedCount+n+1}`} aria-current={question.questionId===q.questionId?'step':undefined} className={`h-9 min-w-9 rounded-lg border text-xs font-bold ${question.questionId===q.questionId?'border-teal-700 bg-teal-700 text-white':batchAnswers[q.questionId]?'border-teal-300 bg-teal-50 text-teal-800':'border-slate-200 bg-white text-slate-500'}`}>{attempt.committedCount+n+1}</button>)}</div>
+        <p className="text-xs text-amber-800">Batch {Math.floor(attempt.committedCount/SCORED_BATCH_SIZE)+1} of {Math.ceil(attempt.questionCount/SCORED_BATCH_SIZE)} · You may edit answers within this batch. Submitted batches are permanently locked.</p>
+      </div>}
       {page==='practice'&&<div className="flex gap-3 text-xs font-semibold"><span>Answered: {practiceCorrect+practiceWrong}</span><span className="text-emerald-700">Correct: {practiceCorrect}</span><span className="text-rose-700">Wrong: {practiceWrong}</span></div>}
       <h3 className="whitespace-pre-wrap text-base font-bold text-slate-900">{question.question}</h3>
       <QuizImage question={question} attemptId={page==='scored'?attempt?.attemptId:undefined} getImage={getImage}/>
       <fieldset className="space-y-2"><legend className="sr-only">Select the correct answer</legend>{letters.map(letter=>{const checked=selected===letter;const reveal=page==='practice'&&practiceSubmitted;const isCorrect=question.correctOption===letter;return <label key={letter} className={`flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 text-sm ${reveal&&isCorrect?'border-emerald-500 bg-emerald-50':reveal&&checked&&!isCorrect?'border-rose-500 bg-rose-50':checked?'border-teal-600 bg-teal-50':'border-slate-200'}`}>
-        <input type="radio" name={`quiz-${question.questionId}`} value={letter} checked={checked} disabled={reveal||busy} onChange={()=>setSelected(letter)} className="mt-1"/><span><strong>{letter}.</strong> {question.options[letter]}</span></label>;})}</fieldset>
+        <input type="radio" name={`quiz-${question.questionId}`} value={letter} checked={checked} disabled={reveal||busy} onChange={()=>page==='scored'?chooseScored(letter):setSelected(letter)} className="mt-1"/><span><strong>{letter}.</strong> {question.options[letter]}</span></label>;})}</fieldset>
       {page==='practice'&&practiceSubmitted&&<div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><h4 className="mb-1 font-bold text-slate-900">{selected===question.correctOption?'Correct!':'Review the correct answer'} — {question.correctOption}</h4><p className="text-sm text-slate-700">{question.explanation}</p></div>}
-      {page==='scored'?<div className="flex flex-wrap items-center gap-2"><button type="button" disabled={busy||index===0} onClick={()=>void previousScored()} className="flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-40"><ChevronLeft className="w-4"/>Previous</button><button type="button" disabled={!selected||busy} onClick={()=>void advanceScored()} className="flex items-center gap-2 rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{busy?'Saving…':index+1===attempt?.questionCount?'Save & Finish':'Save & Next'}<ChevronRight className="w-4"/></button><button type="button" disabled={busy} onClick={()=>{if(attempt){setCancelError('');setCancelTarget(attempt.attemptId);}}} className="rounded-lg px-3 py-2 text-sm font-semibold text-rose-700 disabled:opacity-40">Cancel Quiz</button></div>:
+      {page==='scored'?<div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><button type="button" disabled={busy||!attempt||index<=attempt.committedCount} onClick={()=>changeScoredQuestion(index-1)} className="flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-40"><ChevronLeft className="w-4"/>Previous</button><button type="button" disabled={busy||!attempt||index>=attempt.committedCount+scoredBatch.length-1} onClick={()=>changeScoredQuestion(index+1)} className="flex items-center gap-1 rounded-lg border border-teal-200 px-4 py-2.5 text-sm font-bold text-teal-700 disabled:opacity-40">Next Question <ChevronRight className="w-4"/></button><button type="button" disabled={busy} onClick={()=>{if(attempt){setCancelError('');setCancelTarget(attempt.attemptId);}}} className="rounded-lg px-3 py-2 text-sm font-semibold text-rose-700 disabled:opacity-40">Cancel Quiz</button></div>
+        <button type="button" disabled={busy||scoredBatch.length===0||scoredBatch.some(q=>!batchAnswers[q.questionId])} onClick={()=>void submitScoredBatch()} className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 py-3 text-sm font-bold text-white disabled:opacity-40">{busy?'Saving answers securely…':attempt&&attempt.committedCount+scoredBatch.length>=attempt.questionCount?'Save & Finish':'Save & Next Batch'} <ChevronRight className="h-4 w-4"/></button>
+        {busy&&batchMessage&&<div role="status" className="rounded-xl border border-teal-100 bg-teal-50 p-3 text-center text-sm font-medium text-teal-800"><Loader2 className="mr-2 inline h-4 w-4 animate-spin"/>{batchMessage}</div>}
+        <p className="text-xs text-slate-500">All {scoredBatch.length} answers are required before saving. Once submitted, this batch cannot be changed. Your unsent answers are kept temporarily in this browser tab.</p>
+      </div>:
         <div className="flex flex-wrap gap-2">{!practiceSubmitted?<button type="button" disabled={!selected} onClick={submitPractice} className="rounded-lg bg-teal-700 px-5 py-2 text-sm font-bold text-white disabled:opacity-50">Submit Answer</button>:<button type="button" disabled={busy||(!practiceNext&&!!practiceNextMessage)} onClick={()=>void advancePractice()} className="rounded-lg bg-teal-700 px-5 py-2 text-sm font-bold text-white disabled:opacity-50">{busy?'Loading…':'Next Question'} <ChevronRight className="inline w-4"/></button>}{practiceSubmitted&&<span className="self-center text-xs text-slate-500">{practiceNext?'Next question ready':practiceNextMessage||'Preparing next question…'}</span>}</div>}
-      <p className="text-xs text-slate-500">{page==='scored'?'Answers and explanations appear after completing the quiz. Your saved answers are recoverable.':'Practice answers and scores exist only in this page session.'}</p>
+      <p className="text-xs text-slate-500">{page==='scored'?'Answers and explanations appear only after completing the quiz. Submitted batches are recoverable.':'Practice answers and scores exist only in this page session.'}</p>
     </div>}
     {page==='result'&&results&&<div className="space-y-5"><div className="rounded-2xl border bg-white p-6"><h2 className="flex items-center gap-2 text-xl font-bold"><Award className="text-amber-500"/> Scored Quiz Results</h2><p className="mt-3 text-lg font-bold">{results.correct} / {results.total} marks · {results.percentage.toFixed(1)}%</p><p className="text-sm text-slate-600">Correct: {results.correct} | Wrong: {results.wrong}</p></div>
       {results.unitScores?.length>0&&<div className="rounded-2xl border bg-white p-5"><h3 className="mb-3 font-bold text-slate-900">Unit-wise performance</h3><div className="grid gap-2 sm:grid-cols-2">{results.unitScores.map(u=><div key={u.unit} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 p-3 text-sm"><span className="font-medium">{u.unit}</span><span className="shrink-0 font-bold text-teal-800">{u.correct}/{u.total}</span></div>)}</div></div>}

@@ -398,16 +398,15 @@ export function formatDurationValue(rawValue: any, displayValue?: any): string {
 
 export class ApiService {
   static getClinicalInsightsAdmin(): Promise<ApiResponse<{insights:ClinicalInsight[]}>> {return this.executeAction('getClinicalInsightsAdmin');}
-  static getClinicalInsightSources(search:string): Promise<ApiResponse<{sources:Array<{indexId:string;title:string;topic:string;section:string;preview:string}>}>> {return this.executeAction('getClinicalInsightSources',{search});}
-  static getClinicalInsightSourceDetail(sourceIndexId:string): Promise<ApiResponse<{title:string;section:string;passage:string}>> {return this.executeAction('getClinicalInsightSourceDetail',{sourceIndexId});}
-  static generateClinicalInsightDraft(topic:string,sourceIndexId:string): Promise<ApiResponse<{insightId:string;status:string}>> {return this.executeAction('generateClinicalInsightDraft',{topic,sourceIndexId});}
-  static saveClinicalInsightDraft(data:Partial<ClinicalInsight>): Promise<ApiResponse<{saved:boolean}>> {return this.executeAction('saveClinicalInsightDraft',data);}
-  static reviewClinicalInsight(insightId:string,status:'APPROVED'|'REJECTED'|'WITHDRAWN',notes:string): Promise<ApiResponse<{status:string}>> {return this.executeAction('reviewClinicalInsight',{insightId,status,notes});}
+  static getClinicalInsightImage(insightId:string): Promise<ApiResponse<{insightId:string;mimeType:string;base64Data:string}>> {return this.executeAction('getClinicalInsightImage',{insightId});}
+  static uploadClinicalInsightImage(base64Data:string,mimeType:string): Promise<ApiResponse<{imageFileId:string}>> {return this.executeAction('uploadClinicalInsightImage',{base64Data,mimeType});}
+  static saveClinicalInsight(data:{insightId?:string;imageFileId:string;displayOrder:number;active:boolean;mode?:string;overrideDate?:string}): Promise<ApiResponse<{insightId:string;saved:boolean}>> {return this.executeAction('saveClinicalInsight',data);}
+  static syncClinicalInsightFolder(): Promise<ApiResponse<{added:number;scanned:number;requiresReview:boolean}>> {return this.executeAction('syncClinicalInsightFolder');}
   static getQuizMyHistory(offset:number): Promise<ApiResponse<{items:QuizHistoryItem[];hasMore:boolean}>> {return this.executeAction('getQuizMyHistory',{offset});}
   static getQuizHome(): Promise<ApiResponse<QuizHomeData>> {return this.executeAction('getQuizHome');}
   static startQuizScored(units:string[], questionCount:number): Promise<ApiResponse<QuizAttempt>> {return this.executeAction('startQuizScored',{units,questionCount});}
-  static getQuizScoredQuestion(attemptId:string,index:number): Promise<ApiResponse<{question:QuizQuestion;index:number;total:number}>> {return this.executeAction('getQuizScoredQuestion',{attemptId,index});}
-  static saveQuizScoredAnswer(attemptId:string,questionId:string,selectedOption:string): Promise<ApiResponse<{saved:boolean;answeredCount:number}>> {return this.executeAction('saveQuizScoredAnswer',{attemptId,questionId,selectedOption});}
+  static getQuizScoredBatch(attemptId:string,start:number): Promise<ApiResponse<{questions:QuizQuestion[];start:number;total:number}>> {return this.executeAction('getQuizScoredBatch',{attemptId,start});}
+  static saveQuizScoredBatch(attemptId:string,start:number,answers:string[]): Promise<ApiResponse<{saved:boolean;committedCount:number;alreadySaved:boolean}>> {return this.executeAction('saveQuizScoredBatch',{attemptId,start,answers});}
   static cancelQuizScored(attemptId:string): Promise<ApiResponse<{cancelled:boolean}>> {return this.executeAction('cancelQuizScored',{attemptId});}
   static completeQuizScored(attemptId:string): Promise<ApiResponse<QuizResult>> {return this.executeAction('completeQuizScored',{attemptId});}
   static getQuizScoredResult(attemptId:string): Promise<ApiResponse<QuizResult>> {return this.executeAction('getQuizScoredResult',{attemptId});}
@@ -453,16 +452,15 @@ export class ApiService {
 
       // Protected / Security-Sensitive & Mutation Actions — Fail Closed without Google Apps Script
       case 'getClinicalInsightsAdmin':
-      case 'getClinicalInsightSourceDetail':
-      case 'getClinicalInsightSources':
-      case 'generateClinicalInsightDraft':
-      case 'saveClinicalInsightDraft':
-      case 'reviewClinicalInsight':
+      case 'getClinicalInsightImage':
+      case 'uploadClinicalInsightImage':
+      case 'saveClinicalInsight':
+      case 'syncClinicalInsightFolder':
       case 'getQuizMyHistory':
       case 'getQuizHome':
       case 'startQuizScored':
-      case 'getQuizScoredQuestion':
-      case 'saveQuizScoredAnswer':
+      case 'getQuizScoredBatch':
+      case 'saveQuizScoredBatch':
       case 'cancelQuizScored':
       case 'completeQuizScored':
       case 'getQuizScoredResult':
@@ -653,7 +651,7 @@ export class ApiService {
       try {
         const controller = new AbortController();
         const timeoutMs = (
-          action === 'generateClinicalInsightDraft' ||
+          action === 'uploadClinicalInsightImage' ||
           action === 'uploadLearningResource' ||
           action === 'uploadNursingReferenceResource' ||
           action === 'indexNursingReferenceResource'

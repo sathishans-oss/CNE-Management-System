@@ -570,26 +570,20 @@ export interface QuizAttempt {
   questionIds: string[];
   questionCount: number;
   answeredCount: number;
+  committedCount: number;
   answers: Record<string,string>;
   status: 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
   startedAt?: string;
 }
 export interface ClinicalInsight {
   insightId: string;
-  topic: string;
-  title: string;
-  summary: string;
-  points: string[];
-  nursingRelevance: string;
-  referenceTitle: string;
-  referenceSection: string;
-  sourceIndexId: string;
-  status: 'DRAFT' | 'APPROVED' | 'REJECTED' | 'WITHDRAWN';
+  imageFileId: string;
+  displayOrder: number;
+  active: boolean;
+  overrideDate: string;
   createdAt?: string;
   createdBy?: string;
-  reviewedAt?: string;
-  reviewedBy?: string;
-  reviewNotes?: string;
+  updatedAt?: string;
 }
 export interface QuizHistoryItem {
   attemptId: string;

@@ -13570,8 +13570,8 @@ function runQuizChecksIntegrated() {
   ok(!('correctOption' in safe)&&!('explanation' in safe),'Scored questions do not disclose key');
   const open=context.cneQuizSafeQuestion_(bank[0],true);
   ok(open.correctOption==='B'&&open.explanation,'Practice can show explanation');
-  ok(context.CNE_SHEET_HEADERS['CNE Quiz Attempts'].length===14,'Attempt sheet has 14 headers');
-  ok(context.CNE_SHEET_HEADERS['CNE Quiz Answers'].length===4,'Answer sheet has 4 headers');
+  ok(context.CNE_SHEET_HEADERS['CNE Quiz Attempts'].length===16,'Attempt sheet has 16 headers with compact answers');
+  ok(!context.CNE_SHEET_HEADERS['CNE Quiz Answers'],'No redundant per-answer sheet in new schema');
   ok(context.cneQuizIsClinicallyApproved_({verificationStatus:'CLINICALLY_APPROVED'}),'Explicit clinical approval eligible');
   ok(!context.cneQuizIsClinicallyApproved_({verificationStatus:'VERIFIED'}),'Generic VERIFIED not sufficient for public quiz');
   ok(!context.cneQuizIsClinicallyApproved_({verificationStatus:'SOURCE_CHECKED_PENDING_EDUCATOR_APPROVAL'}),'Pending educator review excluded');
@@ -13595,8 +13595,7 @@ function runQuizChecksIntegrated() {
     appendRow(row){this.grid.push([...row]);}
   }
   const sheets={
-    'CNE Quiz Attempts':new Sheet(context.CNE_SHEET_HEADERS['CNE Quiz Attempts']),
-    'CNE Quiz Answers':new Sheet(context.CNE_SHEET_HEADERS['CNE Quiz Answers'])
+    'CNE Quiz Attempts':new Sheet(context.CNE_SHEET_HEADERS['CNE Quiz Attempts'])
   };
   let uuid=0;
   context.cneQuizSheet_=(name)=>sheets[name];
@@ -13618,16 +13617,22 @@ function runQuizChecksIntegrated() {
   equals(ids.length,10,'Ten questions selected');
   ok(context.handleStartQuizScored({questionCount:10,units:[]},user).errorCode==='QUIZ_ACTIVE','Active quiz cannot be duplicated');
   equals(context.handleGetQuizHome({},user).data.activeAttempt.attemptId,id,'In-progress scored quiz can be resumed from Quiz home');
-  const first=context.handleGetQuizScoredQuestion({attemptId:id,index:0},user);
-  ok(first.success&&!('correctOption' in first.data.question),'Question load without key');
-  ok(context.handleGetQuizScoredQuestion({attemptId:id,index:0},{employeeId:'OTHER'}).errorCode==='NOT_FOUND','Employee isolation');
+  const first=context.handleGetQuizScoredBatch({attemptId:id,start:0},user);
+  ok(first.success&&first.data.questions.length===10&&!('correctOption' in first.data.questions[0]),'Batch loads 10 questions without answer key');
+  ok(context.handleGetQuizScoredBatch({attemptId:id,start:0},{employeeId:'OTHER'}).errorCode==='NOT_FOUND','Employee isolation');
+  ok(context.handleGetQuizScoredBatch({attemptId:id,start:20},user).errorCode==='INVALID_BATCH','Cannot preload beyond the next batch');
   ok(context.handleGetQuizScoredResult({attemptId:id},user).errorCode==='QUIZ_NOT_COMPLETED','No results before completion');
-  ok(context.handleSaveQuizScoredAnswer({attemptId:id,questionId:ids[0],selectedOption:'E'},user).errorCode==='INVALID_ANSWER','Rejects out-of-range option');
-  ok(context.handleSaveQuizScoredAnswer({attemptId:id,questionId:'NOT_IN_QUIZ',selectedOption:'A'},user).errorCode==='INVALID_QUESTION','Rejects foreign question');
-  for(let i=0;i<ids.length;i++){
-    const save=context.handleSaveQuizScoredAnswer({attemptId:id,questionId:ids[i],selectedOption:i===0?'A':'B'},user);
-    ok(save.success,'Answer '+i+' saved');
-  }
+  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:['E',...Array(9).fill('B')]},user).errorCode==='INVALID_BATCH','Rejects out-of-range options');
+  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:['B']},user).errorCode==='INVALID_BATCH','Rejects incomplete batch');
+  const answerArray=['A',...Array(9).fill('B')];
+  const save=context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:answerArray},user);
+  ok(save.success&&save.data.committedCount===10,'Ten answers committed in one write');
+  equals(sheets['CNE Quiz Attempts'].getLastRow(),2,'One attempt row after ten answers');
+  equals(context.handleGetQuizHome({},user).data.activeAttempt.committedCount,10,'Resume knows saved batch length');
+  equals(context.handleGetQuizHome({},user).data.activeAttempt.answers[ids[0]],'A','Resume reconstructs answers from compact sequence');
+  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:answerArray},user).data.alreadySaved,'Identical retry acknowledged');
+  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:Array(10).fill('B')},user).errorCode==='BATCH_LOCKED','Submitted answers cannot change');
+  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:10,answers:Array(10).fill('B')},user).errorCode==='INVALID_BATCH','Cannot submit past quiz length');
   res=context.handleCompleteQuizScored({attemptId:id},user);
   ok(res.success,'Quiz finalized');
   equals(res.data.correct,9,'Grade correct count');
@@ -13637,7 +13642,7 @@ function runQuizChecksIntegrated() {
   equals(res.data.unitScores.length,2,'Completed quiz reports both attempted units');
   equals(res.data.unitScores.reduce((sum,u)=>sum+u.total,0),10,'Unit result totals match attempt');
   equals(res.data.unitScores.reduce((sum,u)=>sum+u.correct,0),9,'Unit correct totals match score');
-  ok(context.handleSaveQuizScoredAnswer({attemptId:id,questionId:ids[0],selectedOption:'B'},user).errorCode==='QUIZ_CLOSED','Completed attempt immutable');
+  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:Array(10).fill('B')},user).errorCode==='BATCH_LOCKED','Completed attempt immutable');
   ok(context.handleCompleteQuizScored({attemptId:id},user).success,'Completion idempotent');
   const home=context.handleGetQuizHome({},user);
   equals(home.data.leaderboard.length,1,'Leaderboard includes completed attempt');
@@ -13653,8 +13658,8 @@ function runQuizChecksIntegrated() {
   ok(context.handleCancelQuizScored({attemptId:secondId},user).success,'Owner can cancel unfinished scored quiz');
   ok(!context.handleGetQuizHome({},user).data.activeAttempt,'Cancelled quiz no longer blocks quiz home');
   ok(context.handleCancelQuizScored({attemptId:secondId},user).success,'Cancellation is idempotent');
-  ok(context.handleGetQuizScoredQuestion({attemptId:secondId,index:0},user).success,'Cancelled attempt remains auditable but exposes no correct key');
-  ok(context.handleSaveQuizScoredAnswer({attemptId:secondId,questionId:second.data.questionIds[0],selectedOption:'A'},user).errorCode==='QUIZ_CLOSED','Cancelled scored attempt rejects answers');
+  ok(context.handleGetQuizScoredBatch({attemptId:secondId,start:0},user).errorCode==='QUIZ_CLOSED','Cancelled attempt exposes no question batch');
+  ok(context.handleSaveQuizScoredBatch({attemptId:secondId,start:0,answers:Array(3).fill('A')},user).errorCode==='QUIZ_CLOSED','Cancelled scored attempt rejects answers');
   ok(context.handleCancelQuizScored({attemptId:id},user).errorCode==='QUIZ_CLOSED','Completed scored attempt cannot be cancelled');
   equals(context.handleGetQuizHome({},user).data.leaderboard[0].answered,10,'Cancelled attempt does not increase leaderboard totals');
   const practice=context.handleGetQuizPracticeQuestion({units:[],exclude:ids,answeredCount:0,lastImageAt:0,unitCounts:{}},user);
@@ -13663,15 +13668,14 @@ function runQuizChecksIntegrated() {
   ok(balancedPractice.success&&balancedPractice.data.unit==='Pediatric Nursing','Practice rotates toward least-seen available unit');
   const imagePractice=context.handleGetQuizPracticeQuestion({units:[],exclude:[],answeredCount:9,lastImageAt:1,unitCounts:{}},user);
   ok(imagePractice.success&&imagePractice.data.questionType==='IMAGE','Practice favors image after seven text questions, if available');
-  ok(!sheets['CNE Quiz Answers'].grid.some(r=>r[0]==='PRACTICE'),'No practice answer records');
+  ok(!sheets['CNE Quiz Answers'],'Practice quiz and scored quiz do not create a separate answer tab');
   ok(context.handleGetQuizPracticeQuestion({},null).errorCode==='UNAUTHORIZED','Practice restricted to logged in users');
-  // Reorder both quiz tabs and add an unrelated column: every read/write must
+  // Reorder attempt tab and add an unrelated column: every read/write must
   // match actual header names, preserving extras instead of assuming offsets.
   function reorderSheet(sheet,order){
     sheet.grid=sheet.grid.map(row=>order.map(index=>row[index]??''));
   }
-  reorderSheet(sheets['CNE Quiz Attempts'],[5,0,13,3,1,7,6,2,10,11,8,9,12,4]);
-  reorderSheet(sheets['CNE Quiz Answers'],[2,0,3,1]);
+  reorderSheet(sheets['CNE Quiz Attempts'],[5,0,13,3,1,7,6,2,10,11,8,9,12,4,15,14]);
   sheets['CNE Quiz Attempts'].grid.forEach((row,i)=>row.push(i===0?'Additional Notes':i===1?'Keep this note':''));
   const reorderedHome=context.handleGetQuizHome({},user);
   equals(reorderedHome.data.leaderboard[0].answered,10,'Leaderboard survives physically reordered attempt columns');
@@ -13679,15 +13683,38 @@ function runQuizChecksIntegrated() {
   ok(resumed.success,'Scored quiz starts after physical column reorder');
   equals(sheets['CNE Quiz Attempts'].grid.at(-1)[1],resumed.data.attemptId,'New attempt ID lands under its header');
   equals(sheets['CNE Quiz Attempts'].grid.at(-1)[4],'TEST-REORDER','New employee ID lands under its header');
-  for(let i=0;i<resumed.data.questionIds.length;i++) {
-    const saved=context.handleSaveQuizScoredAnswer({attemptId:resumed.data.attemptId,questionId:resumed.data.questionIds[i],selectedOption:'B'},{employeeId:'TEST-REORDER'});
-    ok(saved.success,'Answer saved correctly with shuffled physical columns');
-  }
+  const shortBatch=context.handleGetQuizScoredBatch({attemptId:resumed.data.attemptId,start:0},{employeeId:'TEST-REORDER'});
+  ok(shortBatch.success&&shortBatch.data.questions.length===5,'Last partial batch returns remaining five questions');
+  const shortSave=context.handleSaveQuizScoredBatch({attemptId:resumed.data.attemptId,start:0,answers:Array(5).fill('B')},{employeeId:'TEST-REORDER'});
+  ok(shortSave.success&&shortSave.data.committedCount===5,'Final partial batch saved');
   const completed=context.handleCompleteQuizScored({attemptId:resumed.data.attemptId},{employeeId:'TEST-REORDER'});
   ok(completed.success&&completed.data.correct===5,'Quiz graded after shuffled physical columns');
   equals(sheets['CNE Quiz Attempts'].grid.at(-1)[6],'COMPLETED','Completion status lands under its header');
-  equals(sheets['CNE Quiz Attempts'].grid.at(-1)[14],'','Extra-column data not replaced on insert');
+  equals(sheets['CNE Quiz Attempts'].grid.at(-1)[16],'','Extra-column data not replaced on insert');
   equals(context.handleGetQuizHome({},user).data.leaderboard.length,2,'Leaderboard includes reordered completed scores');
+  // Multi-batch 23-question quiz: 10 + 10 + 3. Back-to-back saves never add rows.
+  const user23={employeeId:'TEST-TWENTY-THREE'};
+  const twentyThree=context.handleStartQuizScored({questionCount:23,units:[]},user23);
+  ok(twentyThree.success,'Can create 23-question quiz');
+  const tid=twentyThree.data.attemptId;
+  ok(context.handleGetQuizScoredBatch({attemptId:tid,start:10},user23).success,'Second batch can be prefetched during first');
+  ok(context.handleGetQuizScoredBatch({attemptId:tid,start:20},user23).errorCode==='INVALID_BATCH','Third batch cannot be prefetched prematurely');
+  ok(context.handleSaveQuizScoredBatch({attemptId:tid,start:10,answers:Array(10).fill('B')},user23).errorCode==='OUT_OF_ORDER','Cannot skip the first batch');
+  ok(context.handleSaveQuizScoredBatch({attemptId:tid,start:0,answers:Array(10).fill('B')},user23).success,'First batch committed');
+  ok(context.handleGetQuizScoredBatch({attemptId:tid,start:0},user23).errorCode==='INVALID_BATCH','Earlier locked batch cannot be loaded');
+  ok(context.handleGetQuizScoredBatch({attemptId:tid,start:20},user23).success,'Third batch prefetch allowed when second is current');
+  ok(context.handleSaveQuizScoredBatch({attemptId:tid,start:10,answers:Array(10).fill('B')},user23).success,'Second batch committed');
+  ok(context.handleSaveQuizScoredBatch({attemptId:tid,start:20,answers:Array(3).fill('B')},user23).success,'Final 3-question batch committed');
+  equals(context.handleGetQuizHome({},user23).data.activeAttempt.committedCount,23,'All 23 answers recover in a single attempt row');
+  ok(context.handleCompleteQuizScored({attemptId:tid},user23).success,'23-question attempt completed');
+  equals(context.handleGetQuizScoredResult({attemptId:tid},user23).data.review.length,23,'23-question result review complete');
+  const cancelledWithAnswers=context.handleStartQuizScored({questionCount:10,units:[]},user23);
+  ok(cancelledWithAnswers.success,'Can begin new quiz after completion');
+  const cancelledID=cancelledWithAnswers.data.attemptId;
+  ok(context.handleSaveQuizScoredBatch({attemptId:cancelledID,start:0,answers:Array(10).fill('B')},user23).success,'Saves batch before cancellation');
+  ok(context.handleCancelQuizScored({attemptId:cancelledID},user23).success,'Can cancel saved but unfinished quiz');
+  ok(context.handleSaveQuizScoredBatch({attemptId:cancelledID,start:0,answers:Array(10).fill('B')},user23).errorCode==='QUIZ_CLOSED','No save acknowledgements on cancelled quiz');
+
 
   console.log('PASS: '+checks+' Quiz-specific tests: balanced unit quotas, redistribution, practice rotation, image spacing, cancellation, unit results, answer secrecy, leaderboard, no-practice-storage and inactive email.');
   return checks;
@@ -13852,8 +13879,9 @@ if (selected.some(suite => suite.id === 'integration' || suite.id === 'performan
       const start=code.slice(code.indexOf('function handleStartQuizScored('),code.indexOf('function cneQuizEmployeeName_('));
       assert(start.indexOf('cneQuizPick_(')<start.indexOf('getScriptLock()'),'Selection must occur before lock');
       assert(start.indexOf('cneQuizFindActiveAttempt_(')>start.indexOf('getScriptLock()'),'Duplicate check must remain inside lock');
-      const save=code.slice(code.indexOf('function handleSaveQuizScoredAnswer('),code.indexOf('function handleCompleteQuizScored('));
-      assert(save.includes('hits.length+(rowNum>0?0:1)'),'Save must not rescan all answers after persistence');
+      const save=code.slice(code.indexOf('function handleSaveQuizScoredBatch('),code.indexOf('function handleCompleteQuizScored('));
+      assert(save.includes("'Answers Encoded':next") && save.includes("'Committed Count':next.length"),'Batch save updates only compact attempt fields');
+      assert(!save.includes("'CNE Quiz Answers'"),'Batch save never uses redundant answer sheet');
     }]
   ];
   console.log('\n>>> Additional header-permutation and efficiency checks');
@@ -13986,7 +14014,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     }],
     ['Responsive width changes do not alter backend, forms or scoring', () => {
       assert(quizLayout.includes('Top 5 Leaderboard'));
-      assert(quizLayout.includes('Save & Next'));
+      assert(quizLayout.includes('Save & Next Batch'));
       assert(resourcesLayout.includes('handleDownload(item)'));
     }],
   ];
@@ -14012,6 +14040,16 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
         assert(quiz.includes(label), 'Missing '+label);
       assert(quiz.includes('xl:grid-cols-12') && quiz.includes('xl:col-span-8') && quiz.includes('xl:col-span-4'));
     }],
+    ['Scored quiz uses instant local navigation and 10-answer batch commit', () => {
+      assert(quiz.includes('SCORED_BATCH_SIZE = 10'));
+      assert(quiz.includes('ApiService.getQuizScoredBatch('));
+      assert(quiz.includes('ApiService.saveQuizScoredBatch('));
+      assert(quiz.includes('changeScoredQuestion(index+1)'));
+      assert(quiz.includes('Save & Next Batch'));
+      assert(!quiz.includes('saveQuizScoredAnswer('));
+      assert(gas.includes('function handleSaveQuizScoredBatch(') && gas.includes('function handleGetQuizScoredBatch('));
+      assert(!gas.includes("'CNE Quiz Answers'"));
+    }],
     ['Cancel scored quiz uses in-app confirmation and reports exact backend errors', () => {
       const source=quiz.slice(quiz.indexOf('const cancelScored ='),quiz.indexOf('const previousScored ='));
       assert(!source.includes('window.confirm'));
@@ -14026,49 +14064,55 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(gas.includes('function handleGetQuizMyHistory(params,session)'));
       assert(api.includes('getQuizMyHistory(offset:number)'));
     }],
-    ['Clinical Insights has a required Google Sheet schema, not a Question Bank verification audit', () => {
-      assert(gas.includes("'CNE Clinical Insights': ['Insight ID','Topic','Title'"));
-      assert(gas.includes('function cneClinicalInsightToday_()'));
+    ['Single-image Clinical Insight schema replaces the Gemini draft workflow', () => {
+      assert(gas.includes("'CNE Clinical Insights': ['Insight ID','Image Drive File ID','Display Order','Active','Override Date'"));
+      assert(!gas.includes('function handleGenerateClinicalInsightDraft('));
+      assert(!gas.includes('function cneClinicalSourceRows_('));
+      assert(!api.includes('generateClinicalInsightDraft('));
+      assert(types.includes('imageFileId: string;') && types.includes('overrideDate: string;'));
+      assert(admin.includes('One complete poster with embedded explanation'));
       assert(!gas.includes('function auditCNEQuestionBankVerificationStatus_'));
-      assert(types.includes('interface ClinicalInsight'));
     }],
-    ['Gemini clinical drafts are grounded by active Nursing Reference Library chunks', () => {
-      assert(gas.includes('function cneClinicalSourceRows_()'));
-      assert(gas.includes("'CNE_Reference_Library'"));
-      assert(gas.includes("cneQuizCell_(r[8]).toUpperCase()==='SUCCESS'"));
-      assert(gas.includes('active[cneQuizCell_(r[1])]'));
-      assert(gas.includes('function handleGenerateClinicalInsightDraft(params,session)'));
-      assert(gas.includes("'DRAFT',now,fresh.session.employeeId"));
-      assert(!gas.includes('MailApp.sendEmail(') || gas.includes('CNE_QUIZ_EMAIL_ENABLED_ = false'));
+    ['Clinical insight Drive image folder is private and authenticated', () => {
+      assert(gas.includes("'Manual Question Images', 'Clinical Insight Images'"));
+      assert(gas.includes("cneRootDriveChildFolder_('Clinical Insight Images')"));
+      assert(gas.includes('function handleGetClinicalInsightImage('));
+      assert(gas.includes('function cneClinicalImageCheck_('));
+      assert(gas.includes("'IMAGE_FOLDER_INVALID'"));
+      assert(gas.includes('cneQuestionImageMime_(bytes)'));
+      assert(gas.includes('if(cneQuizSession_(session))return'));
+      assert(gas.includes('file.setSharing(DriveApp.Access.PRIVATE'));
     }],
-    ['Clinical approval is admin-only, explicit and revocable', () => {
-      for(const n of ['handleGetClinicalInsightsAdmin','handleGetClinicalInsightSources','handleGetClinicalInsightSourceDetail','handleGenerateClinicalInsightDraft','handleSaveClinicalInsightDraft','handleReviewClinicalInsight'])
-        assert(gas.includes('function '+n+'('),n);
-      assert(gas.includes("status==='WITHDRAWN'&&oldStatus!=='APPROVED'"));
-      assert(gas.includes('requireAdmin(fresh.session)'));
-      assert(admin.includes('I have reviewed the complete clinical content'));
-      assert(admin.includes('Approve for daily rotation'));
-      assert(admin.includes('Withdraw published insight'));
-      assert(admin.includes('View original source passage'));
-      assert(adminShell.includes("setActiveTab('insights')"));
-    }],
-    ['Daily insight rotation uses India date and never publishes draft/withdrawn statuses', () => {
+    ['Daily insight rotation uses India date and manual override first', () => {
       const source=gas.match(/function cneClinicalInsightToday_\(\)\{[\s\S]*?\n\}\n(?=function cneClinicalInsightAdmin_)/)?.[0];
-      assert(source,'Daily selector missing');
-      const clean=JSON.stringify;
-      const today='2026-11-02';
-      const approved=(id,when)=>({insightId:id,title:'Some title',summary:'Some clinical explanatory text',points:['a','b'],status:'APPROVED',reviewedAt:when});
-      const drafts=[approved('OLD','2026-11-01T10:00:00Z'),approved('NEW','2026-11-02T11:00:00Z'),{...approved('DRAFT','2026-10-30T00:00:00Z'),status:'DRAFT'}, {...approved('WITHDRAWN','2026-10-30T00:00:00Z'),status:'WITHDRAWN'}];
-      const context={cneClinicalInsightsRead_:()=>drafts,getIndiaTodayString:()=>today,Date};
-      vm.runInNewContext(source,context);
-      const first=context.cneClinicalInsightToday_();
-      assert.equal(first.insightId,'OLD');
-      assert.equal(context.cneClinicalInsightToday_().insightId,first.insightId);
-      context.getIndiaTodayString=()=> '2026-11-03';
-      const next=context.cneClinicalInsightToday_();
-      assert(['OLD','NEW'].includes(next.insightId));
-      context.cneClinicalInsightsRead_=()=>drafts.filter(x=>x.status!=='APPROVED');
-      assert.equal(context.cneClinicalInsightToday_(),null);
+      assert(source,'Missing daily selector');
+      const make=(id,order,active,overrideDate='')=>({insightId:id,imageFileId:'a'.repeat(28),displayOrder:order,active,overrideDate,updatedAt:'2026-11-01T00:00:00Z'});
+      const rows=[make('R1',1,true),make('R2',2,true),make('R3',3,false),make('OV',99,true,'2026-11-02')];
+      const ctx={cneClinicalInsightsRead_:()=>rows,getIndiaTodayString:()=> '2026-11-02',cneQuestionImageFileId_:x=>x,Date,Math,String,Number};
+      vm.runInNewContext(source,ctx);
+      assert.equal(ctx.cneClinicalInsightToday_().insightId,'OV');
+      ctx.getIndiaTodayString=()=> '2026-11-03';
+      const next=ctx.cneClinicalInsightToday_();
+      assert(['R1','R2'].includes(next.insightId));
+      assert.equal(ctx.cneClinicalInsightToday_().insightId,next.insightId);
+      ctx.cneClinicalInsightsRead_=()=>rows.filter(x=>!x.active);
+      assert.equal(ctx.cneClinicalInsightToday_(),null);
+    }],
+    ['Bulk Drive import is idempotent and imported insights require clinical review', () => {
+      assert(gas.includes('function handleSyncClinicalInsightFolder('));
+      assert(gas.includes("newRows.push(['CI-'+Utilities.getUuid(),v.id,v.n,'NO'"));
+      assert(gas.includes('seen[item.imageFileId]=true'));
+      assert(gas.includes('orders[item.displayOrder]=true'));
+      assert(admin.includes('Sync Drive Folder'));
+      assert(admin.includes('New imports are INACTIVE'));
+    }],
+    ['Manual upload supports private image and TODAY override, without Gemini', () => {
+      assert(gas.includes('function handleUploadClinicalInsightImage('));
+      assert(gas.includes('function handleSaveClinicalInsight('));
+      assert(gas.includes("mode==='TODAY'?getIndiaTodayString()"));
+      assert(admin.includes('Show today only'));
+      assert(quiz.includes('ApiService.getClinicalInsightImage(insightId)'));
+      assert(quiz.includes('alt="Enlarged clinical nursing infographic"'));
     }],
     ['Scored progress metrics count only completed question outcomes', () => {
       const source=gas.match(/function cneQuizMyProgress_\(employeeId\)\{[\s\S]*?\n\}\n(?=function cneQuizHistoryRow_)/)?.[0];
@@ -14083,11 +14127,13 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert.equal(report.accuracy,55);
       assert.equal(report.recent.length,2);
     }],
-    ['New Insight endpoints fail closed without Apps Script backend connection', () => {
-      for(const action of ['getClinicalInsightsAdmin','getClinicalInsightSources','getClinicalInsightSourceDetail','generateClinicalInsightDraft','saveClinicalInsightDraft','reviewClinicalInsight','getQuizMyHistory']) {
+    ['Simplified Clinical Insight actions fail closed without backend', () => {
+      for(const action of ['getClinicalInsightsAdmin','getClinicalInsightImage','uploadClinicalInsightImage','saveClinicalInsight','syncClinicalInsightFolder','getQuizMyHistory']) {
         assert(api.includes("case '"+action+"':"),action);
         assert(gas.includes("case '"+action+"':"),action);
       }
+      for(const obsolete of ['generateClinicalInsightDraft','getClinicalInsightSources','reviewClinicalInsight'])
+        assert(!api.includes("case '"+obsolete+"':"),obsolete);
     }]
   ];
   console.log('\n>>> Clinical Command Center & reviewed insight workflow checks');
