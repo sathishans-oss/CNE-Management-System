@@ -1082,6 +1082,26 @@ function handleRequest(e, method) {
         output = handleGetNursingReferenceIndexStatus(params, session);
         break;
 
+      case 'getNursingReferenceLibraryHealth':
+        output = handleGetNursingReferenceLibraryHealth(params, session);
+        break;
+
+      case 'startNursingReferenceReindexAll':
+        output = handleStartNursingReferenceReindexAll(params, session);
+        break;
+
+      case 'advanceNursingReferenceReindexAll':
+        output = handleAdvanceNursingReferenceReindexAll(params, session);
+        break;
+
+      case 'getNursingReferenceReindexJob':
+        output = handleGetNursingReferenceReindexJob(params, session);
+        break;
+
+      case 'cancelNursingReferenceReindexAll':
+        output = handleCancelNursingReferenceReindexAll(params, session);
+        break;
+
       case 'uploadNursingReferenceResource':
         output = handleUploadNursingReferenceResource(params, session);
         break;
@@ -10903,6 +10923,9 @@ function indexReferenceLibraryResource(driveFileId, metadata, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
 
+  var claimErr = cneLibraryIndexJobPermission_(driveFileId, metadata);
+  if (claimErr) return claimErr;
+
   if (!driveFileId || typeof driveFileId !== 'string' || !driveFileId.trim()) {
     return {
       success: false,
@@ -11911,6 +11934,356 @@ function handleGetNursingReferenceIndexStatus(params, session) {
   return getNursingReferenceIndexStatus(driveFileId, session);
 }
 
+function cneLibraryIndexHealthSummary_(files, registry, rows) {
+  files = files || [];
+  registry = registry || [];
+  rows = rows || [];
+  var totalResources = files.length;
+  var healthyResources = 0;
+  var needsAttention = 0;
+  var regByFile = {};
+  for (var i = 0; i < registry.length; i++) {
+    var reg = registry[i];
+    if (reg && reg.driveFileId) regByFile[String(reg.driveFileId)] = reg;
+  }
+  var rowsByFile = {};
+  var allLibRows = [];
+  var orphanIndexRows = 0;
+  for (var j = 0; j < rows.length; j++) {
+    var r = rows[j];
+    if (r && r.sourceType === 'LOCAL_REFERENCE_LIB') {
+      var dId = String(r.driveFileId || '');
+      if (!rowsByFile[dId]) rowsByFile[dId] = [];
+      rowsByFile[dId].push(r);
+      allLibRows.push(r);
+    }
+  }
+  var fileIdSet = {};
+  for (var f = 0; f < files.length; f++) {
+    fileIdSet[String(files[f].driveFileId)] = true;
+  }
+  for (var k = 0; k < allLibRows.length; k++) {
+    if (!fileIdSet[String(allLibRows[k].driveFileId)]) {
+      orphanIndexRows++;
+    }
+  }
+
+  function isChunkUnreadable(text) {
+    if (!text || String(text).trim().length < 50) return true;
+    if (/(?:endobj|xref|_x001f_|%%EOF)/i.test(text)) return true;
+    return false;
+  }
+
+  var resources = [];
+  for (var x = 0; x < files.length; x++) {
+    var file = files[x];
+    var fileId = String(file.driveFileId);
+    var regEntry = regByFile[fileId] || null;
+    var fileChunks = rowsByFile[fileId] || [];
+    var issues = [];
+
+    var unreadableCount = 0;
+    var failedCount = 0;
+    var duplicateCount = 0;
+    var indexCounts = {};
+
+    for (var c = 0; c < fileChunks.length; c++) {
+      var chk = fileChunks[c];
+      if (isChunkUnreadable(chk.chunkText)) unreadableCount++;
+      if (String(chk.extractionStatus || '').toUpperCase() === 'FAILED') failedCount++;
+      var idxVal = Number(chk.chunkIndex);
+      if (!isNaN(idxVal)) {
+        indexCounts[idxVal] = (indexCounts[idxVal] || 0) + 1;
+      }
+    }
+    for (var key in indexCounts) {
+      if (indexCounts[key] > 1) {
+        duplicateCount += (indexCounts[key] - 1);
+      }
+    }
+
+    if (!regEntry || !regEntry.active || fileChunks.length === 0) {
+      issues.push('NOT_INDEXED');
+    }
+    if (unreadableCount > 0) {
+      issues.push('UNREADABLE_CHUNKS');
+    }
+    if (duplicateCount > 0) {
+      issues.push('DUPLICATE_CHUNKS');
+    }
+    if (failedCount > 0) {
+      issues.push('FAILED_EXTRACTION');
+    }
+
+    var isHealthy = issues.length === 0;
+    if (isHealthy) {
+      healthyResources++;
+    } else {
+      needsAttention++;
+    }
+
+    resources.push({
+      driveFileId: fileId,
+      fileName: file.fileName || '',
+      resourceTitle: (regEntry && regEntry.resourceTitle) || file.fileName || '',
+      active: Boolean(regEntry && regEntry.active),
+      chunksCount: fileChunks.length,
+      unreadableChunks: unreadableCount,
+      failedChunks: failedCount,
+      duplicateChunks: duplicateCount,
+      indexedAt: (regEntry && regEntry.indexedAt) || '',
+      fileUpdatedAt: file.lastUpdated || '',
+      indexStatus: isHealthy ? 'HEALTHY' : 'NEEDS_ATTENTION',
+      issues: issues
+    });
+  }
+
+  return {
+    totalResources: totalResources,
+    healthyResources: healthyResources,
+    needsAttention: needsAttention,
+    orphanIndexRows: orphanIndexRows,
+    resources: resources
+  };
+}
+
+function cneLibraryIndexJobPermission_(driveFileId, meta) {
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty('CNE_LIBRARY_REINDEX_JOB');
+  if (!raw) return null;
+  var job;
+  try { job = JSON.parse(raw); } catch (e) { return null; }
+  if (!job || job.status !== 'RUNNING') return null;
+
+  if (meta && meta.batchJobId) {
+    if (meta.batchJobId !== job.jobId || meta.batchClaimToken !== job.claimToken) {
+      return { success: false, errorCode: 'LIBRARY_JOB_CLAIM_MISMATCH', message: 'Accepted invalid batch claim.' };
+    }
+    return null;
+  }
+  return { success: false, errorCode: 'LIBRARY_JOB_ACTIVE', message: 'A library reindex batch job is currently active.' };
+}
+
+function cneLibraryBatchMetadata_(driveFileId) {
+  var ss = getSpreadsheet('CNE');
+  var regSheet = ss ? (ss.getSheetByName('CNE_Reference_Library') || ss.getSheetByName('Nursing Reference Library')) : null;
+  if (!regSheet || regSheet.getLastRow() <= 1) {
+    return {
+      resourceTitle: 'Nursing Reference ' + driveFileId,
+      authorOrganization: 'Open RN Project',
+      license: 'CC BY 4.0',
+      version: '1.0'
+    };
+  }
+  var map = getHeaderMap(regSheet);
+  var dCol = map['drivefileid'] !== undefined ? map['drivefileid'] : 3;
+  var tCol = map['resourcetitle'] !== undefined ? map['resourcetitle'] : 2;
+  var aCol = map['authororganization'] !== undefined ? map['authororganization'] : 4;
+  var lCol = map['license'] !== undefined ? map['license'] : 6;
+  var vCol = map['version'] !== undefined ? map['version'] : 7;
+  var data = regSheet.getDataRange().getValues();
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][dCol] || '').trim() === String(driveFileId).trim()) {
+      return {
+        resourceTitle: String(data[r][tCol] || ('Nursing Reference ' + driveFileId)),
+        authorOrganization: String(data[r][aCol] || 'Open RN Project'),
+        license: String(data[r][lCol] || 'CC BY 4.0'),
+        version: String(data[r][vCol] || '1.0')
+      };
+    }
+  }
+  return {
+    resourceTitle: 'Nursing Reference ' + driveFileId,
+    authorOrganization: 'Open RN Project',
+    license: 'CC BY 4.0',
+    version: '1.0'
+  };
+}
+
+function handleGetNursingReferenceLibraryHealth(params, session) {
+  var adminError = requireAdmin(session);
+  if (adminError) return adminError;
+
+  var listRes = listNursingReferenceResources(session);
+  var files = [];
+  var registry = [];
+  if (listRes && listRes.success && listRes.data) {
+    files = (listRes.data.driveFiles || []).map(function(df) {
+      return { driveFileId: df.driveFileId, fileName: df.fileName, lastUpdated: df.lastUpdated };
+    });
+    registry = listRes.data.resources || [];
+  }
+
+  var ss = getSpreadsheet('CNE');
+  var indexSheet = ss ? ss.getSheetByName('CNE_Reference_Index') : null;
+  var rows = [];
+  if (indexSheet && indexSheet.getLastRow() > 1) {
+    var map = getHeaderMap(indexSheet);
+    var srcCol = map['sourcetype'];
+    var dCol = map['drivefileid'];
+    var idxCol = map['chunkindex'];
+    var txtCol = map['chunktext'];
+    var stCol = map['extractionstatus'];
+    var rawValues = indexSheet.getDataRange().getValues();
+    for (var r = 1; r < rawValues.length; r++) {
+      var row = rawValues[r];
+      rows.push({
+        sourceType: srcCol !== undefined ? String(row[srcCol] || '') : 'LOCAL_REFERENCE_LIB',
+        driveFileId: dCol !== undefined ? String(row[dCol] || '') : '',
+        chunkIndex: idxCol !== undefined ? Number(row[idxCol]) : 1,
+        chunkText: txtCol !== undefined ? String(row[txtCol] || '') : '',
+        extractionStatus: stCol !== undefined ? String(row[stCol] || '') : 'SUCCESS'
+      });
+    }
+  }
+
+  var summary = cneLibraryIndexHealthSummary_(files, registry, rows);
+  return { success: true, data: summary };
+}
+function getNursingReferenceLibraryHealth(params, session) {
+  return handleGetNursingReferenceLibraryHealth(params, session);
+}
+
+function handleStartNursingReferenceReindexAll(params, session) {
+  var authErr = typeof requireFreshAdminMutation === 'function' ? requireFreshAdminMutation(session) : (session && String(session.role || '').toUpperCase() === 'ADMIN' ? null : { success: false, errorCode: 'FORBIDDEN', message: 'Admin required.' });
+  if (authErr && !authErr.success) return authErr;
+
+  var props = PropertiesService.getScriptProperties();
+  var existingRaw = props.getProperty('CNE_LIBRARY_REINDEX_JOB');
+  if (existingRaw) {
+    try {
+      var existing = JSON.parse(existingRaw);
+      if (existing && existing.status === 'RUNNING') {
+        return { success: true, data: existing };
+      }
+    } catch (e) {}
+  }
+
+  var healthRes = getNursingReferenceLibraryHealth(params, session);
+  var filesList = [];
+  if (healthRes && healthRes.success && healthRes.data && Array.isArray(healthRes.data.resources)) {
+    filesList = healthRes.data.resources.map(function(r) { return r.driveFileId; });
+  }
+
+  var jobId = 'job_' + Utilities.getUuid();
+  var claimToken = 'claim_' + Utilities.getUuid();
+  var job = {
+    jobId: jobId,
+    claimToken: claimToken,
+    status: 'RUNNING',
+    total: filesList.length,
+    completed: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+    currentDriveFileId: filesList[0] || '',
+    files: filesList,
+    processing: false,
+    cancelRequested: false,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    failures: []
+  };
+
+  props.setProperty('CNE_LIBRARY_REINDEX_JOB', JSON.stringify(job));
+  if (typeof logAuditAction === 'function') logAuditAction('START_LIBRARY_REINDEX_JOB', session, { jobId: jobId, total: filesList.length });
+  return { success: true, data: job };
+}
+function startNursingReferenceReindexAll(params, session) {
+  return handleStartNursingReferenceReindexAll(params, session);
+}
+
+function handleAdvanceNursingReferenceReindexAll(params, session) {
+  var authErr = typeof requireFreshAdminMutation === 'function' ? requireFreshAdminMutation(session) : (session && String(session.role || '').toUpperCase() === 'ADMIN' ? null : { success: false, errorCode: 'FORBIDDEN', message: 'Admin required.' });
+  if (authErr && !authErr.success) return authErr;
+
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty('CNE_LIBRARY_REINDEX_JOB');
+  if (!raw) return { success: false, errorCode: 'JOB_NOT_FOUND', message: 'No active job.' };
+  var job;
+  try { job = JSON.parse(raw); } catch (e) { return { success: false, errorCode: 'JOB_NOT_FOUND', message: 'Corrupt job data.' }; }
+
+  if (params && params.jobId && params.jobId !== job.jobId) {
+    return { success: false, errorCode: 'JOB_NOT_FOUND', message: 'Job ID mismatch.' };
+  }
+
+  if (job.status === 'CANCELLED' || job.status === 'COMPLETED') {
+    return { success: true, data: job };
+  }
+
+  if (job.completed >= job.total) {
+    job.status = 'COMPLETED';
+    job.processing = false;
+    job.updatedAt = new Date().toISOString();
+    props.setProperty('CNE_LIBRARY_REINDEX_JOB', JSON.stringify(job));
+    return { success: true, data: job };
+  }
+
+  var nextFileId = job.files[job.completed];
+  var meta = cneLibraryBatchMetadata_(nextFileId);
+  meta.batchJobId = job.jobId;
+  meta.batchClaimToken = job.claimToken;
+
+  var idxRes = indexReferenceLibraryResource(nextFileId, meta, session);
+  if (idxRes && idxRes.success) {
+    job.succeeded++;
+  } else {
+    job.failed++;
+    job.failures.push({
+      driveFileId: nextFileId,
+      errorCode: (idxRes && idxRes.errorCode) || 'FAILED',
+      message: (idxRes && idxRes.message) || 'Indexing failed'
+    });
+  }
+  job.completed++;
+  if (job.completed >= job.total) {
+    job.status = 'COMPLETED';
+  }
+  job.processing = false;
+  job.currentDriveFileId = job.files[job.completed] || '';
+  job.updatedAt = new Date().toISOString();
+  props.setProperty('CNE_LIBRARY_REINDEX_JOB', JSON.stringify(job));
+  return { success: true, data: job };
+}
+function advanceNursingReferenceReindexAll(params, session) {
+  return handleAdvanceNursingReferenceReindexAll(params, session);
+}
+
+function handleCancelNursingReferenceReindexAll(params, session) {
+  var authErr = typeof requireFreshAdminMutation === 'function' ? requireFreshAdminMutation(session) : (session && String(session.role || '').toUpperCase() === 'ADMIN' ? null : { success: false, errorCode: 'FORBIDDEN', message: 'Admin required.' });
+  if (authErr && !authErr.success) return authErr;
+
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty('CNE_LIBRARY_REINDEX_JOB');
+  if (!raw) return { success: true, data: null };
+  var job;
+  try { job = JSON.parse(raw); } catch (e) { return { success: true, data: null }; }
+
+  job.status = 'CANCELLED';
+  job.cancelRequested = true;
+  job.processing = false;
+  job.updatedAt = new Date().toISOString();
+  props.setProperty('CNE_LIBRARY_REINDEX_JOB', JSON.stringify(job));
+  return { success: true, data: job };
+}
+function cancelNursingReferenceReindexAll(params, session) {
+  return handleCancelNursingReferenceReindexAll(params, session);
+}
+
+function handleGetNursingReferenceReindexJob(params, session) {
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty('CNE_LIBRARY_REINDEX_JOB');
+  if (!raw) return { success: true, data: null };
+  try {
+    return { success: true, data: JSON.parse(raw) };
+  } catch (e) {
+    return { success: true, data: null };
+  }
+}
+function getNursingReferenceReindexJob(params, session) {
+  return handleGetNursingReferenceReindexJob(params, session);
+}
+
 function handleUploadNursingReferenceResource(params, session) {
   return handleAdminAction(params, session, function(p, s) {
     return uploadNursingReferenceResource(p, s);
@@ -12772,65 +13145,128 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
     };
   }
 
-  // Evidence is retrieved exclusively from CNE_Material_Index for this specific CNE.
   var ss = getSpreadsheet('CNE');
-  var materialIndexSheet = ss.getSheetByName('CNE_Material_Index');
-  if (materialIndexSheet) cneRequireIndexHeaders_(materialIndexSheet, CNE_SHEET_HEADERS['CNE_Material_Index']);
-  if (!materialIndexSheet || materialIndexSheet.getLastRow() <= 1) {
+  var materialIndexSheet = ss ? ss.getSheetByName('CNE_Material_Index') : null;
+  var refIndexSheet = ss ? ss.getSheetByName('CNE_Reference_Index') : null;
+
+  var readiness = typeof cneAiMaterialReadiness_ === 'function' ? cneAiMaterialReadiness_(cleanCneId) : null;
+  if (materialIndexSheet && readiness && !readiness.hasOwnMaterial) {
     return {
       success: false,
-      errorCode: 'INSUFFICIENT_TOPIC_MATERIAL',
-      message: 'No relevant material related to this topic is available on the server. Kindly upload the relevant topic material and try again.',
+      errorCode: 'MATERIAL_NOT_INDEXED',
+      message: readiness.message || 'CNE learning material has not been indexed.',
       evidence: []
     };
   }
 
-  var readiness=cneAiMaterialReadiness_(cleanCneId);
-  if(!readiness.hasOwnMaterial)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:readiness.message,evidence:[]};
-  var currentDriveId=readiness.driveFileId;
-  var map = getHeaderMap(materialIndexSheet);
-  var idCol = map['indexid'] !== undefined ? map['indexid'] : 0;
-  var srcTypeCol = map['sourcetype'];
-  var cneIdCol = map['cneid'] !== undefined ? map['cneid'] : 2;
-  var driveCol = map['drivefileid'] !== undefined ? map['drivefileid'] : 3;
-  var fileNameCol = map['filename'] !== undefined ? map['filename'] : 4;
-  var topicCol = map['topic'] !== undefined ? map['topic'] : 5;
-  var secCol = map['sectionheading'] !== undefined ? map['sectionheading'] : 6;
-  var chunkIdxCol = map['chunkindex'] !== undefined ? map['chunkindex'] : 7;
-  var textCol = map['chunktext'] !== undefined ? map['chunktext'] : 8;
-  var keywordsCol = map['clinicalkeywords'];
-  var statusCol = map['extractionstatus'] !== undefined ? map['extractionstatus'] : 10;
-
   var upperCneId = cleanCneId.toUpperCase();
-  var rows = materialIndexSheet.getDataRange().getValues();
   var uploadedCandidates = [];
+  var libraryCandidates = [];
+  var searchMode = 'UPLOADED_CNE_MATERIAL';
 
-  for (var r = 1; r < rows.length; r++) {
-    var row = rows[r];
-    var rowCneId = String(row[cneIdCol] || '').trim().toUpperCase();
-    if (rowCneId !== upperCneId || String(row[driveCol] || '').trim() !== currentDriveId) continue;
+  if (materialIndexSheet && readiness && readiness.hasOwnMaterial) {
+    cneRequireIndexHeaders_(materialIndexSheet, CNE_SHEET_HEADERS['CNE_Material_Index']);
+    var currentDriveId = readiness.driveFileId;
+    var map = getHeaderMap(materialIndexSheet);
+    var idCol = map['indexid'] !== undefined ? map['indexid'] : 0;
+    var cneIdCol = map['cneid'] !== undefined ? map['cneid'] : 1;
+    var driveCol = map['drivefileid'] !== undefined ? map['drivefileid'] : 2;
+    var fileNameCol = map['resourcetitle'] !== undefined ? map['resourcetitle'] : (map['filename'] !== undefined ? map['filename'] : 3);
+    var topicCol = map['topic'] !== undefined ? map['topic'] : 4;
+    var secCol = map['sectionheading'] !== undefined ? map['sectionheading'] : 5;
+    var chunkIdxCol = map['chunkindex'] !== undefined ? map['chunkindex'] : 6;
+    var textCol = map['chunktext'] !== undefined ? map['chunktext'] : 7;
+    var keywordsCol = map['clinicalkeywords'];
+    var statusCol = map['extractionstatus'] !== undefined ? map['extractionstatus'] : 9;
 
-    var status = String(row[statusCol] || '').trim().toUpperCase();
-    if (status !== 'SUCCESS') continue;
+    var rows = materialIndexSheet.getDataRange().getValues();
+    for (var r = 1; r < rows.length; r++) {
+      var row = rows[r];
+      var rowCneId = String(row[cneIdCol] || '').trim().toUpperCase();
+      if (rowCneId !== upperCneId || String(row[driveCol] || '').trim() !== currentDriveId) continue;
+      var status = String(row[statusCol] || '').trim().toUpperCase();
+      if (status !== 'SUCCESS') continue;
+      var chunkText = String(row[textCol] || '').trim();
+      if (chunkText.length < 15) continue;
 
-    var chunkText = String(row[textCol] || '').trim();
-    if (chunkText.length < 15) continue;
+      uploadedCandidates.push({
+        indexId: String(row[idCol] || ('IDX_' + cleanCneId + '_R' + (r + 1))),
+        sourceType: 'UPLOADED_CNE',
+        resourceTitle: String(row[fileNameCol] || ('CNE ' + cleanCneId + ' Material')),
+        topic: String(row[topicCol] || cleanTopic),
+        sectionHeading: String(row[secCol] || 'Clinical Guidance'),
+        chunkIndex: Number(row[chunkIdxCol]) || (uploadedCandidates.length + 1),
+        chunkText: chunkText,
+        clinicalKeywords: keywordsCol !== undefined ? String(row[keywordsCol] || '') : '',
+        relevanceScore: 0
+      });
+    }
+  } else if (refIndexSheet && refIndexSheet.getLastRow() > 1) {
+    cneRequireIndexHeaders_(refIndexSheet, CNE_SHEET_HEADERS['CNE_Reference_Index']);
+    var map = getHeaderMap(refIndexSheet);
+    var idCol = map['indexid'] !== undefined ? map['indexid'] : 0;
+    var srcTypeCol = map['sourcetype'];
+    var cneIdCol = map['cneid'] !== undefined ? map['cneid'] : 2;
+    var driveCol = map['drivefileid'] !== undefined ? map['drivefileid'] : 3;
+    var fileNameCol = map['resourcetitle'] !== undefined ? map['resourcetitle'] : (map['filename'] !== undefined ? map['filename'] : 4);
+    var topicCol = map['topic'] !== undefined ? map['topic'] : 5;
+    var secCol = map['sectionheading'] !== undefined ? map['sectionheading'] : 6;
+    var chunkIdxCol = map['chunkindex'] !== undefined ? map['chunkindex'] : 7;
+    var textCol = map['chunktext'] !== undefined ? map['chunktext'] : 8;
+    var keywordsCol = map['clinicalkeywords'];
+    var statusCol = map['extractionstatus'] !== undefined ? map['extractionstatus'] : 10;
 
-    var candidate = {
-      indexId: String(row[idCol] || ('IDX_' + cleanCneId + '_R' + (r + 1))),
-      sourceType: 'UPLOADED_CNE',
-      resourceTitle: String(row[fileNameCol] || ('CNE ' + cleanCneId + ' Material')),
-      topic: String(row[topicCol] || cleanTopic),
-      sectionHeading: String(row[secCol] || 'Clinical Guidance'),
-      chunkIndex: Number(row[chunkIdxCol]) || (uploadedCandidates.length + 1),
-      chunkText: chunkText,
-      clinicalKeywords: keywordsCol !== undefined ? String(row[keywordsCol] || '') : '',
-      relevanceScore: 0
-    };
-    uploadedCandidates.push(candidate);
+    var activeLibFiles = {};
+    var libSheet = ss ? (ss.getSheetByName('Nursing Reference Library') || ss.getSheetByName('Nursing_Reference_Library') || ss.getSheetByName('CNE_Reference_Library')) : null;
+    if (libSheet && typeof libSheet.getDataRange === 'function') {
+      var libMap = getHeaderMap(libSheet);
+      var libDriveCol = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
+      var libActiveCol = libMap['active'] !== undefined ? libMap['active'] : 8;
+      var libRows = libSheet.getDataRange().getValues();
+      for (var lr = 1; lr < libRows.length; lr++) {
+        var lRow = libRows[lr];
+        if (lRow[libActiveCol] === true || String(lRow[libActiveCol]).toUpperCase() === 'TRUE' || String(lRow[libActiveCol]).toUpperCase() === 'ACTIVE') {
+          activeLibFiles[String(lRow[libDriveCol] || '').trim()] = true;
+        }
+      }
+    }
+
+    var readResult = cneAiReadTopicIndexRows_(refIndexSheet, map, cleanTopic, cleanCneId, activeLibFiles, options);
+    var rows = readResult.rows;
+    searchMode = readResult.mode === 'SPARSE' ? 'SPARSE' : 'FULL_RECALL_FALLBACK';
+
+    var startRow = readResult.mode === 'SPARSE' ? 0 : 1;
+    for (var r = startRow; r < rows.length; r++) {
+      var row = rows[r];
+      var rowDriveId = String(row[driveCol] || '').trim();
+      var rowCneId = String(row[cneIdCol] || '').trim().toUpperCase();
+      var status = String(row[statusCol] || '').trim().toUpperCase();
+      if (status !== 'SUCCESS') continue;
+      var chunkText = String(row[textCol] || '').trim();
+      if (chunkText.length < 15) continue;
+      if (typeof cneReferenceChunkReadable_ === 'function' && !cneReferenceChunkReadable_(chunkText)) continue;
+
+      var candidate = {
+        indexId: String(row[idCol] || ('IDX_' + cleanCneId + '_R' + (r + 1))),
+        sourceType: (srcTypeCol !== undefined && String(row[srcTypeCol])) ? String(row[srcTypeCol]) : (rowCneId === upperCneId ? 'UPLOADED_CNE' : 'LOCAL_REFERENCE_LIB'),
+        resourceTitle: String(row[fileNameCol] || ('CNE ' + cleanCneId + ' Material')),
+        topic: String(row[topicCol] || cleanTopic),
+        sectionHeading: String(row[secCol] || 'Clinical Guidance'),
+        chunkIndex: Number(row[chunkIdxCol]) || (uploadedCandidates.length + libraryCandidates.length + 1),
+        chunkText: chunkText,
+        clinicalKeywords: keywordsCol !== undefined ? String(row[keywordsCol] || '') : '',
+        relevanceScore: 0
+      };
+
+      if (rowCneId === upperCneId) {
+        uploadedCandidates.push(candidate);
+      } else if (activeLibFiles[rowDriveId]) {
+        libraryCandidates.push(candidate);
+      }
+    }
   }
 
-  if (uploadedCandidates.length === 0) {
+  if (uploadedCandidates.length === 0 && libraryCandidates.length === 0) {
     return {
       success: false,
       errorCode: 'INSUFFICIENT_TOPIC_MATERIAL',
@@ -12844,20 +13280,30 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
   for (var u = 0; u < uploadedCandidates.length; u++) {
     var uc = uploadedCandidates[u];
     var score = calculateTopicRelevanceScore(cleanTopic, uc);
-    if (score <= 0 || !passesClinicalRelevanceGate(cleanTopic, {resourceTitle:'',topic:'',sectionHeading:uc.sectionHeading,clinicalKeywords:uc.clinicalKeywords,chunkText:uc.chunkText})) continue;
+    if (score <= 0 || !passesClinicalRelevanceGate(cleanTopic, uc)) continue;
     uc.relevanceScore = cneAiClinicalPassageScore_(cleanTopic, uc, score);
     scoredUploaded.push(uc);
   }
-
-  // Sort descending by relevance score
   scoredUploaded.sort(function(a, b) {
     return b.relevanceScore - a.relevanceScore;
   });
 
-  var totalEvidence = cneAiSelectTopicEvidence_(scoredUploaded, true, cleanTopic);
+  var scoredLibrary = [];
+  for (var l = 0; l < libraryCandidates.length; l++) {
+    var lc = libraryCandidates[l];
+    var scoreL = calculateTopicRelevanceScore(cleanTopic, lc);
+    if (scoreL <= 0 || !passesClinicalRelevanceGate(cleanTopic, lc)) continue;
+    lc.relevanceScore = cneAiClinicalPassageScore_(cleanTopic, lc, scoreL);
+    scoredLibrary.push(lc);
+  }
+  scoredLibrary.sort(function(a, b) {
+    return b.relevanceScore - a.relevanceScore;
+  });
+
+  var totalEvidence = cneAiSelectTopicEvidence_(scoredUploaded.concat(scoredLibrary), true, cleanTopic);
   var expansion = null;
   if (options && Array.isArray(options.objectives) && options.objectives.length === 5 && totalEvidence.length) {
-    expansion = cneAiExpandObjectiveEvidence_(totalEvidence, scoredUploaded, options.objectives);
+    expansion = cneAiExpandObjectiveEvidence_(totalEvidence,scoredUploaded.concat(scoredLibrary),options.objectives);
     totalEvidence = expansion.evidence;
   }
 
@@ -12875,14 +13321,14 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
     cneId: cleanCneId,
     topic: cleanTopic,
     totalEvidenceChunks: totalEvidence.length,
-    indexSearchMode: 'UPLOADED_CNE_MATERIAL',
+    indexSearchMode: searchMode,
     expansionAudit: expansion ? { addedCount: expansion.addedCount, perObjective: expansion.perObjective } : null,
-    uploadedCount: totalEvidence.length,
-    libraryCount: 0,
+    uploadedCount: scoredUploaded.length,
+    libraryCount: scoredLibrary.length,
     evidence: totalEvidence.map(function(c) {
       return {
         indexId: c.indexId,
-        sourceType: 'UPLOADED_CNE',
+        sourceType: c.sourceType || 'UPLOADED_CNE',
         resourceTitle: c.resourceTitle,
         sectionHeading: c.sectionHeading,
         chunkIndex: c.chunkIndex,
@@ -14500,7 +14946,10 @@ function handleValidateAiQuotaReservation(params, session) {
   }
 
   var validatedMaterial=cneAiMaterialReadiness_(cneId);
-  if(!validatedMaterial.hasOwnMaterial)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:validatedMaterial.message};
+  var hasOwnMaterial = typeof cneAiHasOwnMaterial_ === 'function' ? cneAiHasOwnMaterial_(cneId) : validatedMaterial.hasOwnMaterial;
+  if (!hasOwnMaterial) {
+    if (params.allowLibraryOnly !== true) return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED',message:'Explicit consent is required to generate AI questions using the Nursing Reference Library.'};
+  }
 
   var learningMaterial = '';
   var authoritativeExtracted = null;
@@ -16219,9 +16668,11 @@ function handleGenerateCNEQuestions(params, session) {
     };
   }
 
-  var readiness=cneAiMaterialReadiness_(cneId);
-  var hasOwnMaterial=readiness.hasOwnMaterial;
-  if(!hasOwnMaterial)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:readiness.message};
+  var hasOwnMaterial = typeof cneAiHasOwnMaterial_ === 'function' ? cneAiHasOwnMaterial_(cneId) : false;
+  var readiness = cneAiMaterialReadiness_(cneId);
+  if (!hasOwnMaterial) {
+    if (params.allowLibraryOnly !== true) return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED',message:'Explicit consent is required to generate AI questions using the Nursing Reference Library.'};
+  }
   updateCNEAiProgress_(cneId, session, 1, 'Checking CNE permissions and topic.');
 
   // The normal UI uses two short, recoverable stages. The legacy single-request
@@ -16303,6 +16754,7 @@ function handleGenerateCNEQuestions(params, session) {
       cneId: cneId,
       reservationToken: reservationToken,
       generationSource: 'MATERIAL',
+      allowLibraryOnly: params.allowLibraryOnly === true,
       planOnly: phase==='PLAN', preparedBlueprint: phase==='FINISH'?savedJob.objectives:null, phaseStartMs:phaseStartedAt,
       missingObjectiveIds:phase==='FINISH'?savedJob.objectives.map(function(obj){return obj.objectiveId;}).filter(function(id){return !existingAiSlots.some(function(slot){return slot.objectiveId===id;});}):null,
       existingQuestionTexts:existingAiSlots.map(function(slot){return slot.question;}).concat(bankContext.map(function(q){return q.stem;})),

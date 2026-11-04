@@ -411,14 +411,14 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   const requestAiGeneration = async () => {
     if (!canInteractWithQuestionTools || materialCheckRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
-    // Recheck the server so a newly replaced or indexed file cannot use stale page state.
-    // The backend revalidates permissions and indexed CNE material during generation.
     setFailureDialog(null);
-    // Question Bank discovery is a separate user-selected view, not part of AI startup.
-    const own = await loadMaterialStatus(++materialRequestRef.current, cneId);
-    if (own === null || currentCneIdRef.current !== cneId) return;
+    let own = initialMaterialPresenceRef.current;
+    if (own === null) {
+      own = await loadMaterialStatus(++materialRequestRef.current, cneId);
+      if (own === null || currentCneIdRef.current !== cneId) return;
+    }
     if (!own) { setMaterialChoice('confirm'); return; }
-    await handleGenerateAi();
+    await handleGenerateAi(false);
   };
 
   const handleGenerateAi = async (resumePlanned = false) => {
@@ -504,7 +504,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           'MISSING_OPTIONS', 'DUPLICATE_OPTIONS'
         ];
         const validationFailure = validationCodes.includes(code);
-        if (code === 'MATERIAL_NOT_INDEXED' || code === 'MATERIAL_CHANGED') {
+        if (code === 'LIBRARY_CONSENT_REQUIRED') {
+          setMaterialChoice('confirm');
+        } else if (code === 'MATERIAL_NOT_INDEXED' || code === 'MATERIAL_CHANGED') {
           setMaterialChoice('confirm');
         } else if (missing) {
           setFailureDialog({title: 'Learning Material Required', message: msg, type: 'material', retrySafe: false});

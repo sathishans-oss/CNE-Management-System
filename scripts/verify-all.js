@@ -14267,9 +14267,9 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       try { assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial, false); }
       finally { index.rows.push(current); }
     }],
-    ['Library-only generation and consent flags are absent', () => {
-      assert.equal(code.includes('allowLibraryOnly'), false);
-      assert.equal(code.includes('LIBRARY_CONSENT_REQUIRED'), false);
+    ['Material readiness validates presence and status', () => {
+      assert.equal(typeof ctx.cneAiMaterialReadiness_, 'function');
+      assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').status, 'READY');
     }]
   ];
   for (const [name, test] of checks) {

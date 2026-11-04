@@ -504,6 +504,7 @@ export class ApiService {
       case 'saveReferenceMaterial':
       case 'uploadLearningResource':
       case 'deleteLearningResource':
+      case 'reindexLearningResource':
       case 'indexNursingReferenceResource':
       case 'getNursingReferenceLibraryHealth':
       case 'startNursingReferenceReindexAll':
@@ -1430,7 +1431,13 @@ export class ApiService {
     return this.executeAction('getCNEAiJobStatus', {cneId});
   }
 
-  static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{cneId: string; hasOwnMaterial: boolean}>> {
+  static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{
+    cneId: string;
+    hasOwnMaterial: boolean;
+    status?: string;
+    message?: string;
+    indexCount?: number;
+  }>> {
     return this.executeAction('getCNEAiMaterialStatus', { cneId });
   }
 
@@ -1532,6 +1539,17 @@ export class ApiService {
   }
 
   /**
+   * Reindex uploaded CNE learning material for a specific CNE.
+   */
+  static async reindexLearningResource(cneId: string): Promise<ApiResponse<{
+    cneId?: string;
+    chunksCount?: number;
+    message?: string;
+  }>> {
+    return this.executeAction('reindexLearningResource', { cneId });
+  }
+
+  /**
    * Phase 4B: List all registered nursing reference library resources (Open RN)
    * and available Drive files in the approved Open RN reference folder.
    */
@@ -1589,17 +1607,18 @@ export class ApiService {
   }
 
   /** Admin-only durable sequential reindex job; one PDF processed per request. */
-  static async startNursingReferenceReindexAll(): Promise<ApiResponse<CNENursingLibraryReindexJob>> {
-    return this.executeAction<CNENursingLibraryReindexJob>('startNursingReferenceReindexAll');
+  static async startNursingReferenceReindexAll(params?: { force?: boolean }): Promise<ApiResponse<CNENursingLibraryReindexJob>> {
+    return this.executeAction<CNENursingLibraryReindexJob>('startNursingReferenceReindexAll', params || {});
   }
-  static async advanceNursingReferenceReindexAll(jobId: string): Promise<ApiResponse<CNENursingLibraryReindexJob>> {
-    return this.executeAction<CNENursingLibraryReindexJob>('advanceNursingReferenceReindexAll', { jobId });
+  static async advanceNursingReferenceReindexAll(params: { jobId: string } | string): Promise<ApiResponse<CNENursingLibraryReindexJob>> {
+    const payload = typeof params === 'string' ? { jobId: params } : params;
+    return this.executeAction<CNENursingLibraryReindexJob>('advanceNursingReferenceReindexAll', payload);
   }
   static async getNursingReferenceReindexJob(): Promise<ApiResponse<CNENursingLibraryReindexJob | null>> {
     return this.executeAction<CNENursingLibraryReindexJob | null>('getNursingReferenceReindexJob');
   }
-  static async cancelNursingReferenceReindexAll(): Promise<ApiResponse<CNENursingLibraryReindexJob | null>> {
-    return this.executeAction<CNENursingLibraryReindexJob | null>('cancelNursingReferenceReindexAll');
+  static async cancelNursingReferenceReindexAll(params?: { jobId?: string }): Promise<ApiResponse<CNENursingLibraryReindexJob | null>> {
+    return this.executeAction<CNENursingLibraryReindexJob | null>('cancelNursingReferenceReindexAll', params || {});
   }
 
   /**
