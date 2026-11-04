@@ -20,8 +20,6 @@ import {
   CNENursingReferenceResource,
   CNENursingReferenceDriveFile,
   CNENursingReferenceIndexStatus,
-  CNENursingLibraryHealth,
-  CNENursingLibraryReindexJob,
   CNEAiQuotaInfo,
   CNEParticipantsSummary,
   CNEActivityProgress,
@@ -504,13 +502,7 @@ export class ApiService {
       case 'saveReferenceMaterial':
       case 'uploadLearningResource':
       case 'deleteLearningResource':
-      case 'reindexLearningResource':
       case 'indexNursingReferenceResource':
-      case 'getNursingReferenceLibraryHealth':
-      case 'startNursingReferenceReindexAll':
-      case 'advanceNursingReferenceReindexAll':
-      case 'getNursingReferenceReindexJob':
-      case 'cancelNursingReferenceReindexAll':
       case 'getNursingReferenceIndexStatus':
       case 'uploadNursingReferenceResource':
       case 'deleteNursingReferenceResource':
@@ -1412,15 +1404,15 @@ export class ApiService {
     return this.executeAction('getCNEQuestionImage', params);
   }
 
-  static async generateCNEQuestions(cneId: string, allowLibraryOnly = false): Promise<ApiResponse<CNEQuestion[]>> {
-    return this.executeAction<CNEQuestion[]>('generateCNEQuestions', { cneId, allowLibraryOnly });
+  static async generateCNEQuestions(cneId: string): Promise<ApiResponse<CNEQuestion[]>> {
+    return this.executeAction<CNEQuestion[]>('generateCNEQuestions', { cneId });
   }
 
   // Planning and final generation are deliberately separate network requests.
   // The server holds the reservation/blueprint; the client never supplies evidence,
   // answer keys, or the quota reservation token for a resumed job.
-  static async planCNEAiGeneration(cneId: string, allowLibraryOnly = false): Promise<ApiResponse<{phase: string}>> {
-    return this.executeAction<{phase: string}>('generateCNEQuestions', {cneId, allowLibraryOnly, phase: 'PLAN'});
+  static async planCNEAiGeneration(cneId: string): Promise<ApiResponse<{phase: string}>> {
+    return this.executeAction<{phase: string}>('generateCNEQuestions', {cneId, phase: 'PLAN'});
   }
 
   static async finishCNEAiGeneration(cneId: string): Promise<ApiResponse<CNEQuestion[]>> {
@@ -1431,14 +1423,12 @@ export class ApiService {
     return this.executeAction('getCNEAiJobStatus', {cneId});
   }
 
-  static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{
-    cneId: string;
-    hasOwnMaterial: boolean;
-    status?: string;
-    message?: string;
-    indexCount?: number;
-  }>> {
+  static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{cneId: string; hasOwnMaterial: boolean; status: string; message: string; indexCount: number}>> {
     return this.executeAction('getCNEAiMaterialStatus', { cneId });
+  }
+
+  static async reindexLearningResource(cneId: string): Promise<ApiResponse<{chunksCount?: number}>> {
+    return this.executeAction('reindexLearningResource', { cneId });
   }
 
   static async getCNEAiGenerationProgress(cneId: string): Promise<ApiResponse<{stage: number; message: string; updatedAt?: number}>> {
@@ -1539,17 +1529,6 @@ export class ApiService {
   }
 
   /**
-   * Reindex uploaded CNE learning material for a specific CNE.
-   */
-  static async reindexLearningResource(cneId: string): Promise<ApiResponse<{
-    cneId?: string;
-    chunksCount?: number;
-    message?: string;
-  }>> {
-    return this.executeAction('reindexLearningResource', { cneId });
-  }
-
-  /**
    * Phase 4B: List all registered nursing reference library resources (Open RN)
    * and available Drive files in the approved Open RN reference folder.
    */
@@ -1599,26 +1578,6 @@ export class ApiService {
       'getNursingReferenceIndexStatus',
       { driveFileId }
     );
-  }
-
-  /** Read-only admin index quality assessment, including uploaded but unindexed PDFs. */
-  static async getNursingReferenceLibraryHealth(): Promise<ApiResponse<CNENursingLibraryHealth>> {
-    return this.executeAction<CNENursingLibraryHealth>('getNursingReferenceLibraryHealth');
-  }
-
-  /** Admin-only durable sequential reindex job; one PDF processed per request. */
-  static async startNursingReferenceReindexAll(params?: { force?: boolean }): Promise<ApiResponse<CNENursingLibraryReindexJob>> {
-    return this.executeAction<CNENursingLibraryReindexJob>('startNursingReferenceReindexAll', params || {});
-  }
-  static async advanceNursingReferenceReindexAll(params: { jobId: string } | string): Promise<ApiResponse<CNENursingLibraryReindexJob>> {
-    const payload = typeof params === 'string' ? { jobId: params } : params;
-    return this.executeAction<CNENursingLibraryReindexJob>('advanceNursingReferenceReindexAll', payload);
-  }
-  static async getNursingReferenceReindexJob(): Promise<ApiResponse<CNENursingLibraryReindexJob | null>> {
-    return this.executeAction<CNENursingLibraryReindexJob | null>('getNursingReferenceReindexJob');
-  }
-  static async cancelNursingReferenceReindexAll(params?: { jobId?: string }): Promise<ApiResponse<CNENursingLibraryReindexJob | null>> {
-    return this.executeAction<CNENursingLibraryReindexJob | null>('cancelNursingReferenceReindexAll', params || {});
   }
 
   /**

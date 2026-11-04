@@ -24,7 +24,6 @@ const AdminRoles = lazy(() => import('./components/AdminRoles').then((m) => ({ d
 const AdminReports = lazy(() => import('./components/AdminReports').then((m) => ({ default: m.AdminReports })));
 const AdminContent = lazy(() => import('./components/AdminContent').then((m) => ({ default: m.AdminContent })));
 const AdminDepartmentalCneOutcome = lazy(() => import('./components/AdminDepartmentalCneOutcome').then((m) => ({ default: m.AdminDepartmentalCneOutcome })));
-const LibraryIndexManagementPage = lazy(() => import('./components/cne/LibraryIndexManagementPage').then((m) => ({ default: m.LibraryIndexManagementPage })));
 
 const PageLoadingFallback: React.FC = () => (
   <div className="min-h-[220px] flex items-center justify-center text-sm font-medium text-slate-500">
@@ -116,7 +115,7 @@ const AppContent: React.FC = () => {
         setIsLoginOpen(true);
         return;
       }
-      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports', 'admin-departmental-cne-outcome', 'admin-library-index-management'].includes(view)) {
+      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports', 'admin-departmental-cne-outcome'].includes(view)) {
         setPendingGuestView(null);
         info('Please log in with your Employee ID to access this section.', 'Authentication Required');
         setIsLoginOpen(true);
@@ -218,10 +217,6 @@ const AppContent: React.FC = () => {
 
           {activeView === 'admin-departmental-cne-outcome' && user?.role === 'ADMIN' && (
             <AdminDepartmentalCneOutcome user={user} />
-          )}
-
-          {activeView === 'admin-library-index-management' && user?.role === 'ADMIN' && (
-            <LibraryIndexManagementPage user={user} />
           )}
           </Suspense>
         </main>
