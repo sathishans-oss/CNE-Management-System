@@ -422,6 +422,16 @@ export class ApiService {
       try {
         const parsed = new URL(trimmed);
         if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+          // Guard against Apps Script editor links (/edit or /projects/) which cannot serve as executable Web App endpoints (/exec)
+          if (
+            parsed.hostname.includes('script.google.com') &&
+            (parsed.pathname.includes('/edit') || parsed.pathname.includes('/projects/'))
+          ) {
+            console.warn(
+              '[CNE Service] Invalid VITE_APPS_SCRIPT_URL: Configured URL is an Apps Script editor URL. Web apps must use the deployment endpoint ending with /exec.'
+            );
+            return '';
+          }
           return trimmed;
         }
       } catch {
