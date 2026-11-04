@@ -15,7 +15,6 @@ const CNEPostTestModal = lazy(() => import('./components/cne/CNEPostTestModal').
 const MyCNERecords = lazy(() => import('./components/MyCNERecords').then((m) => ({ default: m.MyCNERecords })));
 const CNECalendar = lazy(() => import('./components/CNECalendar').then((m) => ({ default: m.CNECalendar })));
 const CNESchedule = lazy(() => import('./components/CNESchedule').then((m) => ({ default: m.CNESchedule })));
-const LibraryIndexManagementPage = lazy(() => import('./components/cne/LibraryIndexManagementPage').then((m) => ({ default: m.LibraryIndexManagementPage })));
 const LearningResourcesPage = lazy(() => import('./components/cne/LearningResourcesPage').then((m) => ({ default: m.LearningResourcesPage })));
 const Gallery = lazy(() => import('./components/Gallery').then((m) => ({ default: m.Gallery })));
 const QuizPage = lazy(() => import('./components/QuizPage').then((m) => ({ default: m.QuizPage })));
@@ -116,7 +115,7 @@ const AppContent: React.FC = () => {
         setIsLoginOpen(true);
         return;
       }
-      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports', 'admin-departmental-cne-outcome', 'admin-library-index-management'].includes(view)) {
+      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports', 'admin-departmental-cne-outcome'].includes(view)) {
         setPendingGuestView(null);
         info('Please log in with your Employee ID to access this section.', 'Authentication Required');
         setIsLoginOpen(true);
@@ -214,10 +213,6 @@ const AppContent: React.FC = () => {
 
           {activeView === 'admin-reports' && user?.role === 'ADMIN' && (
             <AdminReports user={user} />
-          )}
-
-          {activeView === 'admin-library-index-management' && user?.role === 'ADMIN' && (
-            <LibraryIndexManagementPage user={user} />
           )}
 
           {activeView === 'admin-departmental-cne-outcome' && user?.role === 'ADMIN' && (

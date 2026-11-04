@@ -24,8 +24,7 @@ export type ViewMode =
   | 'admin-content'
   | 'admin-reports'
   | 'admin-teaching-modes'
-  | 'admin-departmental-cne-outcome'
-  | 'admin-library-index-management';
+  | 'admin-departmental-cne-outcome';
 
 export interface NewsEventItem {
   id: string;

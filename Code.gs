@@ -12780,6 +12780,9 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
     };
   }
 
+  var readiness=cneAiMaterialReadiness_(cleanCneId);
+  if(!readiness.hasOwnMaterial)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:readiness.message,evidence:[]};
+  var currentDriveId=readiness.driveFileId;
   var map = getHeaderMap(materialIndexSheet);
   var idCol = map['indexid'] !== undefined ? map['indexid'] : 0;
   var srcTypeCol = map['sourcetype'];
@@ -12800,7 +12803,7 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
   for (var r = 1; r < rows.length; r++) {
     var row = rows[r];
     var rowCneId = String(row[cneIdCol] || '').trim().toUpperCase();
-    if (rowCneId !== upperCneId) continue;
+    if (rowCneId !== upperCneId || String(row[driveCol] || '').trim() !== currentDriveId) continue;
 
     var status = String(row[statusCol] || '').trim().toUpperCase();
     if (status !== 'SUCCESS') continue;
@@ -12836,8 +12839,7 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
   for (var u = 0; u < uploadedCandidates.length; u++) {
     var uc = uploadedCandidates[u];
     var score = calculateTopicRelevanceScore(cleanTopic, uc);
-    // Chunks from uploaded CNE material are authoritative topic evidence. If verbatim token match is 0, give base clinical score.
-    if (score <= 0) score = 10;
+    if (score <= 0 || !passesClinicalRelevanceGate(cleanTopic, {resourceTitle:'',topic:'',sectionHeading:uc.sectionHeading,clinicalKeywords:uc.clinicalKeywords,chunkText:uc.chunkText})) continue;
     uc.relevanceScore = cneAiClinicalPassageScore_(cleanTopic, uc, score);
     scoredUploaded.push(uc);
   }
@@ -13755,11 +13757,13 @@ function handleReserveAiQuota(params, session) {
     return {
       success: false,
       errorCode: 'EXTERNAL_SOURCE_PROHIBITED',
-      message: 'External or online clinical sources are not permitted. Question generation must use locally stored CNE or Nursing Reference Library material.'
+      message: 'External or online clinical sources are not permitted. Question generation must use indexed material uploaded for this CNE.'
     };
   }
 
-  // Material-First rule: Learning Material must exist in Drive learning resource, reference text, or reference library index (minimum 15 characters)
+  var readyForQuota=cneAiMaterialReadiness_(cneId);
+  if(!readyForQuota.hasOwnMaterial)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:readyForQuota.message};
+  // Material-only quota reservation: only verified current CNE index is eligible.
   var learningMaterial = getCNELearningMaterial(cneId);
   var hasDriveResource = false;
   try {
@@ -14490,6 +14494,9 @@ function handleValidateAiQuotaReservation(params, session) {
     };
   }
 
+  var validatedMaterial=cneAiMaterialReadiness_(cneId);
+  if(!validatedMaterial.hasOwnMaterial)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:validatedMaterial.message};
+
   var learningMaterial = '';
   var authoritativeExtracted = null;
   var hasLearningResource = false;
@@ -14519,53 +14526,23 @@ function handleValidateAiQuotaReservation(params, session) {
     }
   }
 
-  // 2. If a CNE has an associated Learning Resource / Drive File ID:
-  if (dFileId) {
-    hasLearningResource = true;
-    var extResult = extractLearningResourceContentCore(cneId, session);
-    if (!extResult || !extResult.success) {
-      return extResult || {
-        success: false,
-        errorCode: 'CONTENT_EXTRACTION_FAILED',
-        message: 'Failed to extract content from authoritative learning resource.'
-      };
-    }
-    authoritativeExtracted = extResult.data;
-    learningMaterial = extResult.data.extractedText;
-    if (extResult.data.resourcePersonName) {
-      authoritativeRpName = extResult.data.resourcePersonName;
-    }
-  } else {
-    learningMaterial = refTxt || getCNELearningMaterial(cneId);
-  }
+  // Uploaded content was already extracted and indexed during material upload.
+  // Do not re-extract the Drive PDF during each AI generation request.
+  hasLearningResource=Boolean(dFileId);
 
   // Retrieve relevant topic evidence using the approved Phase 4C/4D.1 pipeline:
-  // Priority 1: UPLOADED_CNE, Priority 2: LOCAL_REFERENCE_LIB
+  // Current CNE material index only; no library fallback
   var topicEvidenceResult = params.preparedBlueprint && Array.isArray(params.preparedBlueprint) && params.preparedBlueprint.length === 5
     ? retrieveCNETopicEvidence(cneId,record.topic,session,{objectives:params.preparedBlueprint})
     : retrieveCNETopicEvidence(cneId, record.topic, session);
   var retrievedEvidenceChunks = (topicEvidenceResult && topicEvidenceResult.success && topicEvidenceResult.evidence)
     ? topicEvidenceResult.evidence
     : [];
+  if(!topicEvidenceResult || !topicEvidenceResult.success || !retrievedEvidenceChunks.length)return {success:false,errorCode:'INSUFFICIENT_TOPIC_MATERIAL',message:(topicEvidenceResult&&topicEvidenceResult.message)||'No clinically relevant material was indexed for this CNE.'};
 
-  if ((!learningMaterial || learningMaterial.length < 15) && params.allowLibraryOnly !== true) {
-    return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED',message:'Please confirm library-only AI generation first.'};
-  }
-  // If direct extracted material is missing or too short, synthesize from retrieved local evidence chunks
-  if ((!learningMaterial || learningMaterial.length < 15) && retrievedEvidenceChunks.length > 0) {
-    learningMaterial = retrievedEvidenceChunks.map(function(ev) {
-      return '[' + ev.sourceType + ': ' + (ev.resourceTitle || '') + (ev.sectionHeading ? ' - ' + ev.sectionHeading : '') + ']\n' + ev.chunkText;
-    }).join('\n\n');
-  }
-
-  // If STILL no relevant local material can be found, STOP. No general knowledge fallback.
-  if (!learningMaterial || learningMaterial.length < 15) {
-    return {
-      success: false,
-      errorCode: 'NO_RELEVANT_LIBRARY_CONTENT',
-      message: 'No sufficiently relevant library content was found. Upload topic material to continue.'
-    };
-  }
+  // The only authorized grounding is the current CNE's successful material-index evidence.
+  learningMaterial = retrievedEvidenceChunks.map(function(ev) {return String(ev.chunkText||'');}).join('\n\n');
+  if(learningMaterial.length<15)return {success:false,errorCode:'INSUFFICIENT_TOPIC_MATERIAL',message:'Uploaded CNE material has insufficient indexed clinical content.'};
 
   var lock = LockService.getScriptLock();
   try {
@@ -14656,10 +14633,10 @@ function handleValidateAiQuotaReservation(params, session) {
         role: session.role,
         reservationToken: reservationToken,
         remaining: 1,
-        authoritativeLearningContent: authoritativeExtracted ? authoritativeExtracted.extractedText : (learningMaterial || ''),
+        authoritativeLearningContent: retrievedEvidenceChunks.map(function(ev){return String(ev.chunkText||'');}).join('\n\n'),
         resourcePersonName: authoritativeRpName || '',
         hasLearningResource: hasLearningResource,
-        hasOwnMaterial: Boolean(dFileId || refTxt.length >= 15),
+        hasOwnMaterial: true,
         learningResourceMetadata: authoritativeExtracted || null,
         generationSource: 'MATERIAL',
         retrievedEvidence: retrievedEvidenceChunks,
@@ -14673,7 +14650,7 @@ function handleValidateAiQuotaReservation(params, session) {
 
 /**
  * Direct Gemini Clinical MCQ Generation in Google Apps Script (Internal Helper)
- * Grounded strictly in local CNE Material and Nursing Reference Library.
+ * Grounded strictly in indexed learning material uploaded for the specific CNE.
  * Authoritatively verifies session, question management authorization, and active quota reservation.
  * Invokes Google Gemini API directly using UrlFetchApp.
  * Never uses paid models or external online knowledge fallback.
@@ -14992,30 +14969,12 @@ function generateAiQuestionsInternal(params, session) {
   var directMaterial = valData.hasOwnMaterial ? String(valData.authoritativeLearningContent || '').trim() : '';
   var retrievedEvidence = Array.isArray(valData.retrievedEvidence) ? valData.retrievedEvidence : [];
 
-  var authoritativeMaterial = directMaterial;
-  if (retrievedEvidence.length > 0) {
-    var formattedChunks = retrievedEvidence.map(function(ev, idx) {
-      return '[Evidence ID: ' + String(ev.indexId || ('UNIDENTIFIED_' + idx)) + ']\n' +
-        'Source: ' + (ev.resourceTitle || 'Authoritative Clinical Guide') + (ev.sectionHeading ? ' - ' + ev.sectionHeading : '') + '\n' +
-        ev.chunkText;
-    }).join('\n\n---\n\n');
-
-    if (directMaterial && directMaterial.indexOf(retrievedEvidence[0] && retrievedEvidence[0].chunkText ? retrievedEvidence[0].chunkText.substring(0, 40) : '___NOMATCH___') === -1) {
-      authoritativeMaterial = '=== CNE SESSION LEARNING MATERIAL ===\n' + directMaterial + '\n\n=== RETRIEVED REFERENCE EVIDENCE ===\n' + formattedChunks;
-    } else {
-      authoritativeMaterial = formattedChunks;
-    }
-  }
-
-  if (!directMaterial || directMaterial.length < 15) {
-    if (valData.hasOwnMaterial) return {success:false,errorCode:'NO_EXTRACTABLE_CONTENT',message:'The uploaded CNE material has no readable topic content. Please replace the material and try again.'};
-    if (params.allowLibraryOnly !== true) return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED',message:'Library-only generation requires explicit confirmation.'};
-    var goodEvidence = retrievedEvidence.filter(function(ev) {return passesClinicalRelevanceGate(authoritativeTopic, ev);});
-    if (!goodEvidence.length) return {success:false,errorCode:'NO_RELEVANT_LIBRARY_CONTENT',message:'No sufficiently relevant content is available in the CNE Reference Library. Upload material to continue.'};
-    retrievedEvidence = goodEvidence;
-    authoritativeMaterial = goodEvidence.map(function(ev) {return '[Evidence ID: ' + ev.indexId + ']\nSource: ' + ev.resourceTitle + ' - ' + ev.sectionHeading + '\n' + ev.chunkText;}).join('\n\n');
-  }
-  if (!authoritativeMaterial || authoritativeMaterial.length < 15) return {success:false,errorCode:'NO_RELEVANT_LIBRARY_CONTENT',message:'No sufficiently relevant learning material was found. Upload topic material to continue.'};
+  if(!valData.hasOwnMaterial || !retrievedEvidence.length)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:'Indexed learning material is required to generate AI questions.'};
+  var approvedEvidence=retrievedEvidence.filter(function(ev){return ev.sourceType==='UPLOADED_CNE' && passesClinicalRelevanceGate(authoritativeTopic,ev);});
+  if(!approvedEvidence.length)return {success:false,errorCode:'INSUFFICIENT_TOPIC_MATERIAL',message:'Indexed material does not provide sufficient clinically relevant topic evidence.'};
+  var authoritativeMaterial=approvedEvidence.map(function(ev){
+    return '[Evidence ID: '+String(ev.indexId||'')+']\nSource: '+String(ev.resourceTitle||'Uploaded CNE material')+' - '+String(ev.sectionHeading||'')+'\n'+String(ev.chunkText||'');
+  }).join('\n\n');
   updateCNEAiProgress_(cneId, session, 3, params.preparedBlueprint ? 'Searching additional indexed passages for five objectives.' : 'Checking evidence against the exact CNE topic.');
 
   // 2. Resolve Gemini API Key from Script Properties
@@ -15280,28 +15239,58 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
  * AI generation safety: never use a general reference library without the operator's
  * affirmative, CNE-specific consent. These endpoints never return the resource text.
  */
-function cneAiHasOwnMaterial_(cneId) {
-  var ref = getSpreadsheet('CNE').getSheetByName('CNE_Reference');
-  if (!ref || ref.getLastRow() < 2) return false;
-  var columns = getHeaderMap(ref);
-  var idCol = columns['cneid'] !== undefined ? columns['cneid'] : 0;
-  var textCol = columns['referencetextclinicalguides'] !== undefined ? columns['referencetextclinicalguides'] : (columns['referencetext'] !== undefined ? columns['referencetext'] : 2);
-  var fileCol = columns['drivefileid'];
-  var row = findExactRowInColumn_(ref, idCol, String(cneId).trim(), 2);
-  if (row < 2) return false;
-  var cells = ref.getRange(row, 1, 1, ref.getLastColumn()).getValues()[0];
-  return String(cells[textCol] || '').trim().length >= 15 || (fileCol !== undefined && !!String(cells[fileCol] || '').trim());
+/** Material readiness is based on the current uploaded Drive file AND its successful index. */
+function cneAiMaterialReadiness_(cneId) {
+  var result={hasOwnMaterial:false,status:'NOT_UPLOADED',message:'Upload CNE learning material to enable AI question generation.',driveFileId:'',indexCount:0};
+  var ss=getSpreadsheet('CNE'),ref=ss.getSheetByName('CNE_Reference');
+  if(!ref || ref.getLastRow()<2)return result;
+  var cols=getHeaderMap(ref),idCol=cols['cneid']!==undefined?cols['cneid']:0;
+  var row=findExactRowInColumn_(ref,idCol,String(cneId).trim().toUpperCase(),2);
+  if(row<2)return result;
+  var values=ref.getRange(row,1,1,ref.getLastColumn()).getValues()[0];
+  var drive=cols['drivefileid']===undefined?'':String(values[cols['drivefileid']]||'').trim();
+  if(!drive)return result;
+  result.driveFileId=drive;
+  result.indexedAt=cols['indexedat']===undefined?'':String(values[cols['indexedat']]||'').trim();
+  var refStatus=cols['indexingstatus']===undefined?'':String(values[cols['indexingstatus']]||'').trim().toUpperCase();
+  var refMessage=cols['indexingmessage']===undefined?'':String(values[cols['indexingmessage']]||'').trim();
+  var sheet=ss.getSheetByName('CNE_Material_Index');
+  if(!sheet || sheet.getLastRow()<2) {
+    result.status=refStatus==='FAILED'?'FAILED':'INDEXING';
+    result.message=refMessage||'Learning material must be indexed successfully before AI generation.';
+    return result;
+  }
+  var m=getHeaderMap(sheet),cid=m['cneid'],fid=m['drivefileid'],st=m['extractionstatus'],txt=m['chunktext'];
+  if([cid,fid,st,txt].some(function(x){return x===undefined;})) {
+    result.status='FAILED';result.message='Material index headers are incomplete. Run Verify Sheets Admin.';return result;
+  }
+  // Read only columns needed for readiness, rather than fetching large chunk text for every opening.
+  var n=sheet.getLastRow()-1;
+  var ids=sheet.getRange(2,cid+1,n,1).getValues(),files=sheet.getRange(2,fid+1,n,1).getValues();
+  var states=sheet.getRange(2,st+1,n,1).getValues();
+  var upper=String(cneId).trim().toUpperCase(),rows=[];
+  for(var i=0;i<n;i++)if(String(ids[i][0]||'').trim().toUpperCase()===upper && String(files[i][0]||'').trim()===drive && String(states[i][0]||'').trim().toUpperCase()==='SUCCESS')rows.push(i+2);
+  // The header-based extracted chunk is checked to avoid treating empty index records as usable evidence.
+  var valid=0;
+  for(var j=0;j<rows.length;j++)if(String(sheet.getRange(rows[j],txt+1).getValue()||'').trim().length>=15)valid++;
+  result.indexCount=valid;
+  if(refStatus==='SUCCESS' && valid>0){result.hasOwnMaterial=true;result.status='READY';result.message='Learning material is ready for AI question generation.';}
+  else if(refStatus==='FAILED'){result.status='FAILED';result.message=refMessage||'Material indexing failed. Retry indexing or upload a readable document.';}
+  else {result.status='INDEXING';result.message='Learning material indexing is incomplete. Retry indexing if it has stopped.';}
+  return result;
 }
+function cneAiHasOwnMaterial_(cneId) {return cneAiMaterialReadiness_(cneId).hasOwnMaterial;}
 function handleGetCNEAiMaterialStatus(params, session) {
-  var cneId = sanitizeCellInput(params.cneId);
-  if (!session || !session.employeeId) return {success:false,errorCode:'UNAUTHORIZED',message:'Sign in required.'};
-  var record = cneId ? getCNEScheduleRecord(cneId) : null;
-  if (!record) return {success:false,errorCode:'CNE_NOT_FOUND',message:'CNE not found.'};
-  var auth = checkQuestionManagementAuthorized(session, record);
-  if (auth) return auth;
-  var state = normalizeCNEStatus(record.status);
-  if (state === 'Completed' || state === 'Canceled' || isCNEQuestionsLocked(cneId)) return {success:false,errorCode:'CNE_CLOSED',message:'Question generation is not available for this CNE.'};
-  return {success:true,data:{cneId:cneId,hasOwnMaterial:cneAiHasOwnMaterial_(cneId)}};
+  var cneId=sanitizeCellInput(params.cneId);
+  if(!session || !session.employeeId)return {success:false,errorCode:'UNAUTHORIZED',message:'Sign in required.'};
+  var record=cneId?getCNEScheduleRecord(cneId):null;
+  if(!record)return {success:false,errorCode:'CNE_NOT_FOUND',message:'CNE not found.'};
+  var auth=checkQuestionManagementAuthorized(session,record);
+  if(auth)return auth;
+  var state=normalizeCNEStatus(record.status);
+  if(state==='Completed'||state==='Canceled'||isCNEQuestionsLocked(cneId))return {success:false,errorCode:'CNE_CLOSED',message:'Question generation is not available for this CNE.'};
+  var readiness=cneAiMaterialReadiness_(cneId);
+  return {success:true,data:{cneId:cneId,hasOwnMaterial:readiness.hasOwnMaterial,status:readiness.status,message:readiness.message,indexCount:readiness.indexCount}};
 }
 function cneAiProgressKey_(cneId, employeeId) {
   var safe = String(cneId || '').toUpperCase() + ':' + String(employeeId || '').toUpperCase();
@@ -15336,6 +15325,8 @@ function handleGetCNEAiJobStatus(params,session) {
   var auth=checkQuestionManagementAuthorized(session,record);if(auth)return auth;
   var job=cneAiReadJob_(cneId,session);
   if(!job)return {success:true,data:{state:'NONE'}};
+  var ready=cneAiMaterialReadiness_(cneId);
+  if(!ready.hasOwnMaterial || job.materialDriveFileId!==ready.driveFileId || job.materialIndexedAt!==ready.indexedAt)return {success:true,data:{state:'STALE',message:'Learning material changed or requires indexing; start generation again.',canResume:false}};
   // GAS execution max is 6 minutes: after this no old in-flight execution
   // can safely remain active. Never re-run or consume quota on a stale poll.
   var state=job.state;
@@ -16223,10 +16214,9 @@ function handleGenerateCNEQuestions(params, session) {
     };
   }
 
-  var hasOwnMaterial = cneAiHasOwnMaterial_(cneId);
-  if (!hasOwnMaterial && params.allowLibraryOnly !== true && !(String(params.phase||'').toUpperCase()==='FINISH' && (cneAiReadJob_(cneId,session)||{}).allowLibraryOnly===true)) {
-    return {success:false,errorCode:'LIBRARY_CONSENT_REQUIRED',message:'No CNE material is uploaded. Confirm whether to search the CNE Reference Library.'};
-  }
+  var readiness=cneAiMaterialReadiness_(cneId);
+  var hasOwnMaterial=readiness.hasOwnMaterial;
+  if(!hasOwnMaterial)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:readiness.message};
   updateCNEAiProgress_(cneId, session, 1, 'Checking CNE permissions and topic.');
 
   // The normal UI uses two short, recoverable stages. The legacy single-request
@@ -16234,6 +16224,12 @@ function handleGenerateCNEQuestions(params, session) {
   var phase=String(params.phase||'').toUpperCase();
   if (phase && phase!=='PLAN' && phase!=='FINISH') return {success:false,errorCode:'INVALID_PHASE'};
   var savedJob=phase?cneAiReadJob_(cneId,session):null;
+  if(phase==='FINISH' && (!savedJob || savedJob.materialDriveFileId!==readiness.driveFileId || savedJob.materialIndexedAt!==readiness.indexedAt))return {success:false,errorCode:'MATERIAL_CHANGED',message:'Uploaded material has changed since AI planning. Start generation again.'};
+  if(phase==='PLAN' && savedJob && (savedJob.materialDriveFileId!==readiness.driveFileId || savedJob.materialIndexedAt!==readiness.indexedAt)) {
+    if(savedJob.reservationToken)try{handleReleaseAiQuota({cneId:cneId,reservationToken:savedJob.reservationToken},session);}catch(ignore){}
+    cneAiWriteJob_(cneId,session,{state:'STALE',reservationToken:'',objectives:[]});
+    savedJob=null;
+  }
   if(phase==='PLAN' && savedJob && ['PLANNING','PLANNED','GENERATING','PARTIAL_SUCCESS','UNCERTAIN'].indexOf(savedJob.state)!==-1 && Date.now()-Number(savedJob.updatedAt||0)<370000)
     return {success:false,errorCode:'GENERATION_IN_PROGRESS',message:'A generation job is already active for this CNE; check the job status before retrying.'};
   if(phase==='FINISH') {
@@ -16265,7 +16261,7 @@ function handleGenerateCNEQuestions(params, session) {
   }
 
   if (phase==='PLAN') {
-    try { cneAiWriteJob_(cneId,session,{state:'PLANNING',reservationToken:reservationToken,objectives:[],allowLibraryOnly:!hasOwnMaterial && params.allowLibraryOnly===true,message:'Planning clinical learning objectives.'}); }
+    try { cneAiWriteJob_(cneId,session,{state:'PLANNING',reservationToken:reservationToken,objectives:[],materialDriveFileId:readiness.driveFileId,materialIndexedAt:readiness.indexedAt,message:'Planning clinical learning objectives.'}); }
     catch (jobError) {
       try {handleReleaseAiQuota({cneId:cneId,reservationToken:reservationToken},session);} catch(ignore) {}
       return {success:false,errorCode:'JOB_STATE_UNAVAILABLE',message:'Unable to store recoverable generation state. No Gemini request was made.'};
@@ -16293,7 +16289,7 @@ function handleGenerateCNEQuestions(params, session) {
     }
   }
   var bankContext=cneHybridSelectedBankContext_(cneId);
-  updateCNEAiProgress_(cneId, session, 2, hasOwnMaterial ? 'Reading uploaded CNE learning material.' : 'Searching the approved CNE Reference Library.');
+  updateCNEAiProgress_(cneId, session, 2, 'Reading indexed uploaded CNE learning material.');
   // Direct Gemini network call and validation (OUTSIDE ScriptLock)
   var phaseStartedAt=Date.now();
   var genRes = null;
@@ -16302,7 +16298,6 @@ function handleGenerateCNEQuestions(params, session) {
       cneId: cneId,
       reservationToken: reservationToken,
       generationSource: 'MATERIAL',
-      allowLibraryOnly: !hasOwnMaterial && (phase==='FINISH'?savedJob.allowLibraryOnly:params.allowLibraryOnly===true),
       planOnly: phase==='PLAN', preparedBlueprint: phase==='FINISH'?savedJob.objectives:null, phaseStartMs:phaseStartedAt,
       missingObjectiveIds:phase==='FINISH'?savedJob.objectives.map(function(obj){return obj.objectiveId;}).filter(function(id){return !existingAiSlots.some(function(slot){return slot.objectiveId===id;});}):null,
       existingQuestionTexts:existingAiSlots.map(function(slot){return slot.question;}).concat(bankContext.map(function(q){return q.stem;})),

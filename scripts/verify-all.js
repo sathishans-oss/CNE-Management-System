@@ -10,7 +10,7 @@
  * source before execution to detect an incomplete manual paste.
  *
  * Usage:
- *   node scripts/verify-all.js                  # all 7 core suites
+ *   node scripts/verify-all.js                  # core suites + integrated material-only checks
  *   node scripts/verify-all.js --suite security  # one named suite
  *   node scripts/verify-timezone-cross-module.cjs # timezone regression
  *
@@ -14200,6 +14200,82 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   for(const [name, test] of tests) {
     focusedChecks.push({name});
     try {test();focusedPassed++;console.log('✓ '+name);}catch(e){console.error('✗ '+name+': '+(e.stack||e.message));}
+  }
+}
+
+
+// Integrated material-only generation verification. This belongs to verify-all;
+// do not create or invoke a separate verify-material-only script.
+{
+  console.log('\n>>> Integrated material-only generation verification');
+  const code = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const ctx = { console, Date, Math, JSON, Array, Number, String, Set, Map, Utilities: {} };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx, { timeout: 15000 });
+  const makeSheet = (name, rows) => ({
+    name, rows,
+    getLastRow() { return rows.length; },
+    getLastColumn() { return rows[0].length; },
+    getRange(r, c, h = 1, w = 1) { return {
+      getValues() { return rows.slice(r - 1, r - 1 + h).map(row => row.slice(c - 1, c - 1 + w)); },
+      getValue() { return rows[r - 1][c - 1]; }
+    }; },
+    getDataRange() { return { getValues() { return rows; } }; }
+  });
+  const refHeaders = ['CNE ID', 'Drive File ID', 'Indexing Status', 'Indexing Message', 'Indexed At'];
+  const idxHeaders = ['Index ID', 'CNE ID', 'Drive File ID', 'Resource Title', 'Topic', 'Section / Heading', 'Chunk Index', 'Chunk Text', 'Clinical Keywords', 'Extraction Status', 'Updated At'];
+  const ref = makeSheet('CNE_Reference', [refHeaders, ['CNE-1', 'FILE-A', 'SUCCESS', '', '2026-11-04T08:00:00Z']]);
+  const index = makeSheet('CNE_Material_Index', [idxHeaders,
+    ['IDX-OLD', 'CNE-1', 'FILE-OLD', 'Old material', 'Sepsis', 'Clinical', '1', 'Sepsis treatment source content', 'sepsis', 'SUCCESS', 'now'],
+    ['IDX-OK', 'CNE-1', 'FILE-A', 'Current material', 'Sepsis', 'Clinical', '1', 'Sepsis nursing management from this uploaded document', 'sepsis', 'SUCCESS', 'now']
+  ]);
+  ctx.getSpreadsheet = () => ({ getSheetByName(n) { return n === 'CNE_Reference' ? ref : n === 'CNE_Material_Index' ? index : null; } });
+  ctx.getHeaderMap = sh => Object.fromEntries(sh.rows[0].map((v, i) => [v.toLowerCase().replace(/[^a-z0-9]/g, ''), i]));
+  ctx.findExactRowInColumn_ = (sh, col, id) => sh.rows.findIndex((r, i) => i > 0 && String(r[col]).toUpperCase() === id.toUpperCase()) + 1;
+  ctx.cneRequireIndexHeaders_ = () => {};
+  ctx.getCNEScheduleRecord = id => ({ cneId: id, topic: 'Sepsis' });
+  ctx.checkCNEActionAuthorized = () => null;
+  ctx.sanitizeCellInput = v => String(v || '');
+  ctx.calculateTopicRelevanceScore = () => 50;
+  ctx.passesClinicalRelevanceGate = () => true;
+  ctx.cneAiClinicalPassageScore_ = (_, __, score) => score;
+  const session = { employeeId: 'USER-1' };
+  const checks = [
+    ['Current successfully indexed material is ready', () => {
+      assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial, true);
+    }],
+    ['Evidence excludes a different Drive file even for the same CNE', () => {
+      const result = ctx.retrieveCNETopicEvidence('CNE-1', 'Sepsis', session);
+      assert.equal(result.success, true);
+      assert.equal(result.evidence.length, 1);
+      assert.equal(result.evidence[0].indexId, 'IDX-OK');
+    }],
+    ['Material replacement invalidates old index', () => {
+      ref.rows[1][1] = 'FILE-NEW';
+      try {
+        assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial, false);
+        assert.equal(ctx.retrieveCNETopicEvidence('CNE-1', 'Sepsis', session).success, false);
+      } finally { ref.rows[1][1] = 'FILE-A'; }
+    }],
+    ['Failed indexing disables AI generation', () => {
+      ref.rows[1][2] = 'FAILED';
+      try { assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').status, 'FAILED'); }
+      finally { ref.rows[1][2] = 'SUCCESS'; }
+    }],
+    ['Missing successful index prevents AI generation', () => {
+      const current = index.rows.pop();
+      try { assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial, false); }
+      finally { index.rows.push(current); }
+    }],
+    ['Library-only generation and consent flags are absent', () => {
+      assert.equal(code.includes('allowLibraryOnly'), false);
+      assert.equal(code.includes('LIBRARY_CONSENT_REQUIRED'), false);
+    }]
+  ];
+  for (const [name, test] of checks) {
+    focusedChecks.push({ name: 'Material-only: ' + name });
+    try { test(); focusedPassed++; console.log('✓ ' + name); }
+    catch (e) { console.error('✗ ' + name + ': ' + (e.stack || e.message)); }
   }
 }
 

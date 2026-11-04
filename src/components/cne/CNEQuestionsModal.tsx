@@ -126,6 +126,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [generationStage, setGenerationStage] = useState<{ title: string; subtitle: string } | null>(null);
   const [generationStep, setGenerationStep] = useState(0);
   const [materialChoice, setMaterialChoice] = useState<'confirm' | 'missing' | null>(null);
+  const [materialStatusCode, setMaterialStatusCode] = useState('NOT_UPLOADED');
+  const [materialStatusMessage, setMaterialStatusMessage] = useState('Upload CNE learning material to enable AI question generation.');
+  const [reindexingMaterial, setReindexingMaterial] = useState(false);
   const [checkingMaterial, setCheckingMaterial] = useState(false);
   const materialRequestRef = useRef(0);
   const materialCheckRef = useRef(false);
@@ -137,7 +140,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const progressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const generationSteps = [
     'Verifying CNE and permissions',
-    'Reading uploaded material / searching library',
+    'Reading indexed CNE learning material',
     'Checking topic-relevant evidence',
     'Generating five clinical MCQs',
     'Validating questions and sources',
@@ -175,6 +178,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setGenerationStage(null);
     setGenerationStep(0);
     setMaterialChoice(null);
+    setMaterialStatusCode('NOT_UPLOADED');
+    setMaterialStatusMessage('Upload CNE learning material to enable AI question generation.');
+    setReindexingMaterial(false);
     setCheckingMaterial(false);
     setGenerationElapsedSeconds(0);
     setIsGenerating(false);
@@ -272,7 +278,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   };
 
   // Lightweight material presence check at page opening; detailed extraction is deferred.
-  // The backend remains authoritative for permission, evidence and library consent.
+  // The backend verifies that the current CNE material was indexed successfully.
   const loadMaterialStatus = async (requestId = ++materialRequestRef.current, targetCneId = cneId): Promise<boolean | null> => {
     materialCheckRef.current = true;
     setCheckingMaterial(true);
@@ -289,6 +295,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         });
         return null;
       }
+      setMaterialStatusCode(status.data.status || 'NOT_UPLOADED');
+      setMaterialStatusMessage(status.data.message || 'Material indexing is required.');
       initialMaterialPresenceRef.current = Boolean(status.data.hasOwnMaterial);
       return initialMaterialPresenceRef.current;
     } catch (e: any) {
@@ -403,19 +411,17 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   const requestAiGeneration = async () => {
     if (!canInteractWithQuestionTools || materialCheckRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
-    // Reuse the lightweight initial presence check; retry only if it failed.
-    // The backend revalidates permissions, sources and library consent during generation.
+    // Recheck the server so a newly replaced or indexed file cannot use stale page state.
+    // The backend revalidates permissions and indexed CNE material during generation.
     setFailureDialog(null);
     // Question Bank discovery is a separate user-selected view, not part of AI startup.
-    const own = initialMaterialPresenceRef.current !== null
-      ? initialMaterialPresenceRef.current
-      : await loadMaterialStatus(++materialRequestRef.current, cneId);
+    const own = await loadMaterialStatus(++materialRequestRef.current, cneId);
     if (own === null || currentCneIdRef.current !== cneId) return;
     if (!own) { setMaterialChoice('confirm'); return; }
-    await handleGenerateAi(false);
+    await handleGenerateAi();
   };
 
-  const handleGenerateAi = async (allowLibraryOnly = false, resumePlanned = false) => {
+  const handleGenerateAi = async (resumePlanned = false) => {
     if (
       generatingRef.current ||
       isGenerating ||
@@ -462,7 +468,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     try {
       let res;
       if (!resumePlanned) {
-        const planned = await ApiService.planCNEAiGeneration(requestCneId, allowLibraryOnly);
+        const planned = await ApiService.planCNEAiGeneration(requestCneId);
         if (!isCurrent()) return;
         if (!planned.success) {
           res = planned;
@@ -489,7 +495,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       } else {
         const code = res?.errorCode || 'UNKNOWN_GENERATION_FAILURE';
         const msg = res?.message || 'AI question generation could not be completed.';
-        const missing = ['NO_RELEVANT_LIBRARY_CONTENT', 'INSUFFICIENT_TOPIC_MATERIAL', 'NO_EXTRACTABLE_CONTENT'].includes(code);
+        const missing = ['MATERIAL_NOT_INDEXED', 'INSUFFICIENT_TOPIC_MATERIAL', 'NO_EXTRACTABLE_CONTENT'].includes(code);
         const validationCodes = [
           'OFF_TOPIC_QUESTION', 'UNSUPPORTED_SOURCE_EVIDENCE', 'DUPLICATE_QUESTION',
           'INVALID_QUESTION_TEXT', 'INSUFFICIENT_QUESTIONS', 'INVALID_CORRECT_OPTION',
@@ -498,7 +504,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           'MISSING_OPTIONS', 'DUPLICATE_OPTIONS'
         ];
         const validationFailure = validationCodes.includes(code);
-        if (code === 'LIBRARY_CONSENT_REQUIRED') {
+        if (code === 'MATERIAL_NOT_INDEXED' || code === 'MATERIAL_CHANGED') {
           setMaterialChoice('confirm');
         } else if (missing) {
           setFailureDialog({title: 'Learning Material Required', message: msg, type: 'material', retrySafe: false});
@@ -507,7 +513,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           // Only suggest more material for insufficient evidence, not formatting failures.
           const materialAdvice = code === 'UNSUPPORTED_SOURCE_EVIDENCE'
             ? 'If the source passage is insufficient, you may upload additional relevant material.'
-            : 'The library does not need reindexing solely because a generated answer failed formatting or quality validation.';
+            : 'Review the uploaded CNE material and retry if question validation fails.';
           setFailureDialog({title: 'AI Questions Did Not Pass Validation', message: `${msg} [${code}] ${materialAdvice}`, type: 'validation', retrySafe: true});
         } else {
           const recovered = await reconcileUncertainGeneration(requestCneId, isCurrent);
@@ -531,7 +537,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             setFailureDialog({title, message: `${msg} ${advice}`, type: 'technical', retrySafe});
           }
         }
-        if (missing || code === 'LIBRARY_CONSENT_REQUIRED' || validationFailure) {
+        if (missing || code === 'MATERIAL_NOT_INDEXED' || validationFailure) {
           await loadQuota(++quotaRequestRef.current, requestCneId);
         }
       }
@@ -913,7 +919,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                     : isAiGenerationUnavailable
                     ? 'AI generation is currently unavailable for this CNE'
 
-                    : 'AI Generate MCQs strictly from saved learning material and CNE Library resources'
+                    : 'AI Generate MCQs strictly from successfully indexed uploaded CNE material'
                 }
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-xs shadow-xs transition-colors ${
                   isAiGenerationUsed
@@ -961,7 +967,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               {pendingGenerationJob && !isAiGenerationUsed && (
                 <button
                   type="button"
-                  onClick={() => { setFailureDialog(null); void handleGenerateAi(false, true); }}
+                  onClick={() => { setFailureDialog(null); void handleGenerateAi(true); }}
                   disabled={!isPageReady || !canModify || isGenerating || generatingRef.current || isSaving}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-700 text-white text-xs font-bold disabled:opacity-50"
                 >
@@ -1117,7 +1123,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <HelpCircle className="w-10 h-10 text-slate-300 mx-auto" />
               <h4 className="text-sm font-bold text-slate-800">No Questions Created Yet</h4>
               <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-                AI analyzes the learning material along with relevant CNE Library resources to generate meaningful, content-based MCQs for review.
+                AI uses only the indexed learning material uploaded for this CNE to generate source-grounded MCQs for review.
               </p>
             </div>
           ) : (
@@ -1431,7 +1437,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">
                   {failureDialog.retryAction === 'material-check' ? 'Retry Material Check' : 'Retry AI Generation'}
                 </button>}
-                {pendingGenerationJob && !isGenerating && <button type="button" onClick={() => { setFailureDialog(null); void handleGenerateAi(false, true); }} className="px-3 py-2 rounded-lg bg-indigo-700 text-white font-semibold text-xs">Resume Generation</button>}
+                {pendingGenerationJob && !isGenerating && <button type="button" onClick={() => { setFailureDialog(null); void handleGenerateAi(true); }} className="px-3 py-2 rounded-lg bg-indigo-700 text-white font-semibold text-xs">Resume Generation</button>}
                 {failureDialog.type === 'technical' && !failureDialog.retrySafe && <button type="button" onClick={() => { setFailureDialog(null); void loadQuestions(); void loadQuota(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Refresh Questions & Quota</button>}
                 <button type="button" onClick={() => setFailureDialog(null)} className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 font-semibold text-xs">Close</button>
               </div>
@@ -1447,11 +1453,21 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               </div>
               <p className="text-sm text-slate-700 leading-relaxed">
                 {materialChoice === 'confirm'
-                  ? 'No learning material is uploaded for this CNE. AI can search the CNE Reference Library for relevant content, but this may take additional time. Questions will be generated only if suitable topic evidence is available. Would you like to proceed?'
+                  ? materialStatusMessage
                   : 'No sufficiently relevant learning material was found for this CNE topic. Question generation has stopped. No questions were saved and your successful-generation allowance remains available. Please upload the correct topic material.'}
               </p>
               <div className="flex flex-wrap gap-2 justify-end">
-                {materialChoice === 'confirm' && <button type="button" onClick={() => { void handleGenerateAi(true); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Proceed to Questions</button>}
+                {materialChoice === 'confirm' && (materialStatusCode === 'FAILED' || materialStatusCode === 'INDEXING') && <button type="button" disabled={reindexingMaterial} onClick={async () => {
+                  setReindexingMaterial(true);
+                  try {
+                    const res = await ApiService.reindexLearningResource(cneId);
+                    if (!res.success) error(res.message || 'Material indexing failed.');
+                    else success('Material indexing completed.');
+                    const ready = await loadMaterialStatus(++materialRequestRef.current, cneId);
+                    if (ready) setMaterialChoice(null);
+                  } catch (e: any) { error(e?.message || 'Unable to retry material indexing.'); }
+                  finally { setReindexingMaterial(false); }
+                }} className="px-3 py-2 rounded-lg border border-purple-400 text-purple-700 font-semibold text-xs disabled:opacity-60">{reindexingMaterial ? 'Indexing…' : 'Retry Indexing'}</button>}
                 <button type="button" onClick={() => { setMaterialChoice(null); if (onNavigateToMaterial) onNavigateToMaterial(); else error('Please open Material from the CNE Progress panel.'); }} className="px-3 py-2 rounded-lg border border-purple-400 text-purple-700 font-semibold text-xs">Upload Material</button>
                 <button type="button" onClick={() => setMaterialChoice(null)} className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 font-semibold text-xs">Cancel</button>
               </div>
