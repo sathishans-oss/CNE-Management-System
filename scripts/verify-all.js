@@ -5,8 +5,8 @@
  * embedded source sections. Each suite executes in its own isolated Node.js
  * subprocess, as it did when stored in separate files.
  *
- * Structural/behavioral assertions, test fixtures, and expected failures
- * have not been removed or weakened. A SHA-256 hash verifies each embedded
+ * Legacy checks were updated to require material-only generation, on-demand
+ * verification, and retired library indexing. A SHA-256 hash verifies each embedded
  * source before execution to detect an incomplete manual paste.
  *
  * Usage:
@@ -599,11 +599,12 @@ check('Departmental multi-ward selection is synchronized across all session drop
   assert.match(dept,/setRows\(\(prev\) => prev\.map\(\(r\) => \(\{ \.\.\.r, area: primary, participatingWards: next \}\)\)\)/);
   assert.ok(dept.split('onChange={handleWardChange}').length >= 3);
 });
-check('AI material presence check runs on first opening and rechecks readiness when Generate is clicked', () => {
-  assert.match(ai,/void loadMaterialStatus\(\+\+materialRequestRef\.current, cneId\)/);
-  assert.match(ai,/const own = await loadMaterialStatus\(\+\+materialRequestRef\.current, cneId\)/);
-  assert.match(ai,/await loadMaterialStatus\(\+\+materialRequestRef\.current, cneId\)/);
-  assert.match(ai,/if \(own === null \|\| currentCneIdRef\.current !== cneId\) return;/);
+check('Material verification occurs after explicit Generate confirmation, not on popup open', () => {
+  assert.doesNotMatch(ai,/void loadMaterialStatus\(\+\+materialRequestRef\.current, cneId\)/);
+  assert.match(ai,/setMaterialChoice\('confirm'\)/);
+  assert.match(ai,/void handleGenerateAi\(\)/);
+  assert.match(ai,/ApiService\.planCNEAiGeneration/);
+  assert.match(gas,/function cneAiMaterialReadiness_\(/);
 });
 check('Failure feedback is consistent, short, and retry icon is only displayed after errors', () => {
   assert.match(retry,/Unable to load\. Click refresh to retry\./);
@@ -2448,7 +2449,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-workflows.js",
     mode: "module",
     expectedChecks: 75,
-    sha256: "98e6b0777fce034e14f1ced163b0d5ae8ea50ded95a75e5992d8a1b42dd87b0a",
+    sha256: "a4dd360a001f60d2a77af48d14a96e9bb3f2030f7770e55cfc8d240a7dcbea77",
     source: `/**
  * CNE Business Workflows & Schema Verification Suite
  *
@@ -3617,12 +3618,15 @@ runTest('Teaching Mode master schema has no Sort Order field', () => {
   assert.ok(!codeGs.includes("'Teaching Mode': ['Mode Name', 'Status', 'Sort Order'"), 'Teaching Mode master must not use Sort Order');
 });
 
-runTest('Frontend Control Center exposes Teaching Modes Admin page', () => {
+runTest('Ward List and Teaching Modes are nested inside Admin Content after Class Photos', () => {
   const app = fs.readFileSync('src/App.tsx', 'utf8');
   const toolbar = fs.readFileSync('src/components/TopToolbar.tsx', 'utf8');
   const adminModes = fs.readFileSync('src/components/AdminTeachingModes.tsx', 'utf8');
   assert.ok(app.includes("activeView === 'admin-teaching-modes'"), 'App must render Teaching Modes Admin page');
-  assert.ok(toolbar.includes("id: 'admin-teaching-modes'"), 'Control Center must link to Teaching Modes');
+  const adminContent = fs.readFileSync('src/components/AdminContent.tsx', 'utf8');
+  assert.ok(!toolbar.includes("id: 'admin-teaching-modes'") && !toolbar.includes("id: 'admin-areas'"), 'Old separate Control Center master links must be retired');
+  assert.ok(adminContent.includes('<AdminTeachingModes user={user} />') && adminContent.includes('<AdminAreas user={user} />'), 'Both master editors must remain available inside Admin Content');
+  assert.ok(adminContent.indexOf("setActiveTab('wards')") > adminContent.indexOf('Class Photos & Moments') && adminContent.indexOf("setActiveTab('teaching')") > adminContent.indexOf('Class Photos & Moments'), 'Ward List and Teaching Modes must follow Class Photos & Moments');
   assert.ok(adminModes.includes('Teaching Mode | Status') || (adminModes.includes('Teaching Mode') && adminModes.includes('Status')), 'Admin page must expose Teaching Mode and Status columns');
   assert.ok(!adminModes.includes('Sort Order'), 'Admin Teaching Modes page must not expose Sort Order');
 });
@@ -3835,7 +3839,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-pdf-resources-and-indexing.js",
     mode: "module",
     expectedChecks: 17,
-    sha256: "17899f7d6a2ba57b0b590060feb9c40753005e2885460571e8413fee57b352c9",
+    sha256: "ca363ea52ba767ed57c3708e03f41053e0e462d73b06f88c116ae9be48effaa7",
     source: `/**
  * PDF Learning Resources, Reference Library & Indexing Verification Suite
  *
@@ -3884,11 +3888,11 @@ function runTest(name, fn) {
 // =============================================================================
 runTest('CNE Learning Material enforces PDF-only format in frontend modal', () => {
   assert.ok(
-    addResourceModalTs.includes("if (ext !== 'pdf')"),
-    'Frontend modal must strictly enforce ext === pdf'
+    addResourceModalTs.includes('\.pdf$/i.test(candidate.name)'),
+    'Frontend modal must reject anything other than PDF extensions'
   );
   assert.ok(
-    addResourceModalTs.includes('Only PDF (.pdf) documents are supported'),
+    addResourceModalTs.includes('Only PDF learning material is supported'),
     'Frontend modal must inform user that only PDF documents are supported'
   );
 });
@@ -3900,7 +3904,7 @@ runTest('CNE Learning Material enforces authoritative 3 MB maximum size limit', 
     'Frontend modal must check 3 MB limit'
   );
   assert.ok(
-    addResourceModalTs.includes('exceeds the maximum allowed limit of 3 MB'),
+    addResourceModalTs.includes('must not exceed 3 MB'),
     'Frontend modal must show 3 MB limit warning message'
   );
 
@@ -4037,26 +4041,12 @@ runTest('Nursing Reference Library is strictly Admin-managed and requires PDF fo
   assert.ok(learningResPageTs.includes("const isAdmin = user?.role === 'ADMIN';"), 'Learning Resources admin access guard missing');
 });
 
-runTest('Nursing Reference Library does NOT inherit the CNE 3 MB limit', () => {
-  // In AddResourceModal, CNE_LEARNING_MATERIAL uses file select with 3MB limit,
-  // whereas NURSING_REFERENCE_LIB connects to Drive files or reference items without 3 MB cutoff
-  assert.ok(
-    addResourceModalTs.includes("resourceType === 'NURSING_REFERENCE_LIB'"),
-    'Modal must support NURSING_REFERENCE_LIB mode'
-  );
-
-  function checkSizeAllowance(resourceType, sizeBytes) {
-    if (resourceType === 'CNE_LEARNING_MATERIAL') {
-      const MAX_SIZE = 3 * 1024 * 1024;
-      return sizeBytes <= MAX_SIZE;
-    }
-    // Reference library allows comprehensive clinical textbooks and reference guides beyond 3 MB
-    return true;
-  }
-
-  const largeBookSize = 8 * 1024 * 1024; // 8 MB reference book
-  assert.strictEqual(checkSizeAllowance('CNE_LEARNING_MATERIAL', largeBookSize), false);
-  assert.strictEqual(checkSizeAllowance('NURSING_REFERENCE_LIB', largeBookSize), true);
+runTest('Only CNE material can be uploaded and indexed; existing Library PDFs remain readable', () => {
+  const learningApi=fs.readFileSync('src/services/api.ts','utf8');
+  assert.ok(!addResourceModalTs.includes("resourceType === 'NURSING_REFERENCE_LIB'"), 'Retired library upload mode must not be available');
+  assert.ok(addResourceModalTs.includes('candidate.size > 3 * 1024 * 1024'), 'CNE PDF 3 MB limit must remain');
+  assert.ok(!learningApi.includes('indexNursingReferenceResource(') && !codeGs.includes('function indexReferenceLibraryResource('), 'Reference library indexing must remain retired');
+  assert.ok(learningApi.includes('listNursingReferenceResources(') && codeGs.includes('function handleDownloadNursingReferenceResource('), 'Existing reference PDF browse and download must remain available');
 });
 
 runTest('Educational resources are readable by all authenticated employees without visibility toggles, while re-indexing and Reference Library management remain Admin-only', () => {
@@ -4159,25 +4149,15 @@ runTest('Office extraction functions are completely removed and single shared PD
 
   // Both CNE learning material extraction and Reference Library extraction must use extractTextFromPdf
   const cneExtractionMatch = codeGs.includes('rawExtracted = extractTextFromPdf(blob)');
-  const refExtractionMatch = codeGs.includes('return extractTextFromPdf(blob)');
   assert.ok(cneExtractionMatch, 'CNE learning material extraction must use extractTextFromPdf');
-  assert.ok(refExtractionMatch, 'Reference Library extraction must use extractTextFromPdf');
+  assert.ok(!codeGs.includes('function extractReferenceLibraryBlob('), 'Retired Library extraction must not be reintegrated');
 });
 
-runTest('No application-defined file size limits (3MB, 5MB, 10MB, 25MB) exist for Reference Library', () => {
-  // indexReferenceLibraryResource must not have any 25MB or 3MB size check
-  const indexMatch = codeGs.match(/function\\s+indexReferenceLibraryResource\\s*\\([\\s\\S]*?\\n\\}/);
-  assert.ok(indexMatch, 'indexReferenceLibraryResource must exist in Code.gs');
-  assert.ok(!indexMatch[0].includes('25 * 1024 * 1024'), 'indexReferenceLibraryResource must not have 25 MB limit');
-  assert.ok(!indexMatch[0].includes('3 * 1024 * 1024'), 'indexReferenceLibraryResource must not have 3 MB limit');
-  assert.ok(!indexMatch[0].includes('5 * 1024 * 1024'), 'indexReferenceLibraryResource must not have 5 MB limit');
-  assert.ok(!indexMatch[0].includes('10 * 1024 * 1024'), 'indexReferenceLibraryResource must not have 10 MB limit');
-
-  // uploadNursingReferenceResource must not restrict reference textbooks to 3MB or 25MB
-  const uploadRefMatch = codeGs.match(/function\\s+uploadNursingReferenceResource\\s*\\([\\s\\S]*?\\n\\}/);
-  assert.ok(uploadRefMatch, 'uploadNursingReferenceResource must exist in Code.gs');
-  assert.ok(!uploadRefMatch[0].includes('3 * 1024 * 1024'), 'uploadNursingReferenceResource must not have 3 MB limit');
-  assert.ok(!uploadRefMatch[0].includes('25 * 1024 * 1024'), 'uploadNursingReferenceResource must not have 25 MB limit');
+runTest('Retired library upload and extraction impose no extra indexed-data processing', () => {
+  assert.ok(!codeGs.includes('function uploadNursingReferenceResource('), 'Library upload handler must be retired');
+  assert.ok(!codeGs.includes('function indexReferenceLibraryResource('), 'Library index handler must be retired');
+  assert.ok(codeGs.includes('function indexLearningResourceContent('), 'CNE material indexing must continue');
+  assert.ok(codeGs.includes('3 * 1024 * 1024'), 'Existing CNE material file-size safeguard remains');
 });
 
 runTest('Scanned/image-only PDFs return NO_EXTRACTABLE_CONTENT with helpful guidance', () => {
@@ -4416,7 +4396,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 27,
-    sha256: "fa916682cba86b0bf6f19c497936f515165c94594d7475d92ece527f6f646c8d",
+    sha256: "4d80d0f424929c7a81f245361f3990b04b71f53c147c6c1d50c05c1c787e086c",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -4968,14 +4948,10 @@ runTest('PDF resource policy (CNE 3MB limit vs Reference Library policy)', () =>
     "Code.gs must enforce Admin authority for reference library operations"
   );
 
-  // Reference Library does NOT inherit the CNE 3 MB limit for Drive indexing
-  // Check indexReferenceLibraryResource does not check 3MB limit
-  const indexMatch = codeGs.match(/function\\s+indexReferenceLibraryResource\\s*\\([\\s\\S]*?\\n\\}/);
-  assert.ok(indexMatch, "indexReferenceLibraryResource must exist in Code.gs");
-  assert.ok(
-    !indexMatch[0].includes("3 * 1024 * 1024"),
-    "indexReferenceLibraryResource must not restrict reference textbooks to 3 MB"
-  );
+  // CNE-only material indexing; legacy reference library ingestion is retired.
+  assert.ok(!codeGs.includes('function indexReferenceLibraryResource('), 'Legacy book indexing must be removed');
+  assert.ok(!codeGs.includes("case 'indexNursingReferenceResource':"), 'Legacy library index endpoint must be removed');
+  assert.ok(codeGs.includes('function indexLearningResourceContent(') && codeGs.includes('CNE_Material_Index'), 'CNE material indexing must remain');
 
   // Confirm no shared global constant inadvertently applies 3 MB to the reference library
   assert.ok(
@@ -10534,7 +10510,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if (!sandbox.cneReferenceChunkReadable_(partial)) throw Error('Minor PDF artefacts should not exclude readable clinical evidence');
   });
   focusCheck('Index keywords must derive from actual passage only', () => {
-    const keywords = sandbox.cneReferenceClinicalKeywords_(source);
+    const keywords = sandbox.cneMaterialClinicalKeywords_(source);
     if (!keywords.includes('peripheral IV catheter') || !keywords.includes('phlebitis')) throw Error('Missing grounded clinical keywords');
     if (keywords.includes('CPR') || keywords.includes('blood transfusion')) throw Error('Invented clinical keywords');
   });
@@ -10550,14 +10526,12 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   focusCheck('Reference reindex verifies replacement and refuses false SUCCESS', () => {
     if (!gas.includes('INDEX_REPLACEMENT_INCOMPLETE') || !gas.includes('verifiedCount !== rowsToInsert.length')) throw Error('Index replacement does not verify counts');
   });
-  focusCheck('Material presence is checked on first AI page opening, without full evidence extraction', () => {
-    const init = ui.slice(ui.indexOf('  useEffect(() => {'), ui.indexOf('  const loadQuestions = async'));
-    if (!init.includes('void loadMaterialStatus(++materialRequestRef.current, cneId)') || !init.includes('void loadQuestions(') || !init.includes('void loadQuota(')) {
-      throw Error('First AI page opening must check material presence with questions and quota');
-    }
-    if (!ui.includes('const own = await loadMaterialStatus(++materialRequestRef.current, cneId)')) {
-      throw Error('Generate must refresh material status to reject replaced files');
-    }
+  focusCheck('Popup prefetches Question Bank but checks material only after confirmation', () => {
+    const init=ui.slice(ui.indexOf('  useEffect(() => {'),ui.indexOf('  const loadQuestions = async'));
+    if (init.includes('loadMaterialStatus(') || !init.includes('searchCNEReferenceQuestions(cneId') || !init.includes('void loadQuestions(') || !init.includes('void loadQuota('))
+      throw Error('Popup must prefetch bank questions without requesting material status');
+    if (!ui.includes("setMaterialChoice('confirm')") || !ui.includes('void handleGenerateAi();'))
+      throw Error('Educator confirmation or on-demand generation is missing');
   });
   // Run the real Generate click handler in an isolated sandbox. Backend APIs are
   // stubbed; this verifies frontend requests, consent and failure behavior only.
@@ -10596,25 +10570,28 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       cwd: ROOT_DIR, encoding: 'utf8', timeout: 10000
     }));
   }
-  focusCheck('Generate with own CNE material checks once and starts without library consent', () => {
-    const events = exerciseMaterialClick({serverMaterial: true});
-    if (events.check !== 1 || JSON.stringify(events.generate) !== '[null]' || events.popup.length) throw Error('Own material generation path incorrect');
+  focusCheck('Generate click opens confirmation without a status API call', () => {
+    const events=exerciseMaterialClick({serverMaterial:true});
+    if (events.check !== 0 || events.generate.length || JSON.stringify(events.popup)!=='["confirm"]')
+      throw Error('Generate must ask educator first without checking material');
   });
-  focusCheck('Generate with no indexed material blocks AI and opens upload guidance', () => {
-    const events = exerciseMaterialClick({serverMaterial: false});
-    if (events.check !== 1 || events.generate.length || JSON.stringify(events.popup) !== '["confirm"]') throw Error('Missing-material block was bypassed');
+  focusCheck('Material not indexed is rejected by authoritative backend after Continue', () => {
+    const events=exerciseMaterialClick({serverMaterial:false});
+    if(events.check || events.generate.length || JSON.stringify(events.popup)!=='["confirm"]')throw Error('Confirmation must not infer material state');
+    if(!ui.includes('MATERIAL_NOT_INDEXED')||!gas.includes('cneAiMaterialReadiness_('))throw Error('Backend missing indexing enforcement');
   });
-  focusCheck('Generate refreshes material status even if earlier result was cached', () => {
+  focusCheck('Cached material state cannot bypass server readiness after Continue', () => {
     for (const cachedMaterial of [true,false]) {
-      const result = exerciseMaterialClick({cachedMaterial, serverMaterial:null});
-      if (result.check !== 1 || result.generate.length || result.popup.length)
-        throw Error('Stale material presence was trusted without a fresh server check');
+      const events=exerciseMaterialClick({cachedMaterial,serverMaterial:null});
+      if(events.check || events.generate.length || JSON.stringify(events.popup)!=='["confirm"]')
+        throw Error('Client assumed cached material ready');
     }
+    if(!gas.includes('afterGeminiReadiness.driveFileId !== readiness.driveFileId')) throw Error('Material replacement must invalidate generation');
   });
-  focusCheck('Unknown material status blocks generation and does not assume library consent', () => {
-    const events = exerciseMaterialClick({serverMaterial: null});
-    if (events.check !== 1 || events.generate.length || events.popup.length) throw Error('Failed material lookup was used as consent');
-    if (!ui.includes("title: 'Unable to Check Learning Material'") || !ui.includes("type: 'technical'")) throw Error('Missing explicit material check error recovery');
+  focusCheck('Unknown material status still asks confirmation and never assumes library permission', () => {
+    const events=exerciseMaterialClick({serverMaterial:null});
+    if(events.check || events.generate.length || JSON.stringify(events.popup)!=='["confirm"]')throw Error('Unknown status bypassed confirmation');
+    if(ui.includes('allowLibraryOnly')||gas.includes('allowLibraryOnly'))throw Error('Library-only fallback returned');
   });
   focusCheck('Repeated Generation click is blocked during busy state and for exhausted quota', () => {
     for (const scenario of [{checking:true},{canInteract:false},{used:true},{unavailable:true}]) {
@@ -11268,13 +11245,13 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     for (const token of ['export function prefetchRoute','export function scheduleIdlePrefetch','PREFETCH_MAP'])
       if (!route.includes(token)) throw Error('Route optimization missing: ' + token);
   });
-  retainCheck('Restored 43-runner parity: UI recovery and first-open material checks', () => {
+  retainCheck('Restored 43-runner parity: UI recovery and on-demand material confirmation', () => {
     for (const token of ['submissionUncertain','recoveredResult','formatPostTestTimestamp'])
       if (!postTest.includes(token)) throw Error('Post-Test recovery state missing: ' + token);
-    for (const token of ['const own = await loadMaterialStatus(++materialRequestRef.current, cneId)',
-      'reconcileUncertainGeneration','ApiService.getAiQuota'])
+    for (const token of ["setMaterialChoice('confirm')",'reconcileUncertainGeneration','ApiService.getAiQuota'])
       if (!ui.includes(token)) throw Error('On-demand material or AI recovery logic missing: ' + token);
-    if (!ui.includes('void loadMaterialStatus(++materialRequestRef.current, cneId)')) throw Error('First page-open material presence check is missing');
+    const beforeGenerate=ui.slice(ui.indexOf('  useEffect(() => {'),ui.indexOf('  const loadQuestions = async'));
+    if(beforeGenerate.includes('loadMaterialStatus('))throw Error('Page-open material status API call returned');
   });
 
   console.log('\n>>> Additional cross-module checks retained from the 43-test runner');
@@ -12343,7 +12320,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
 if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   const gas=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
   const checks=[];const check=(name,test)=>checks.push({name,test});
-  const semantic=gas.slice(gas.indexOf('function cneReferenceSemanticWindows_('),gas.indexOf('/**\n * Extract textual content from a reference library document blob.',gas.indexOf('function cneReferenceSemanticWindows_(')));
+  const semantic=gas.slice(gas.indexOf('function chunkExtractedContent('),gas.indexOf('function deleteReferenceLibraryResource('));
   const helper=gas.slice(gas.indexOf('function cneAiReadTopicIndexRows_('),gas.indexOf('function retrieveCNETopicEvidence(',gas.indexOf('function cneAiReadTopicIndexRows_(')));
   const setup=()=>{
     const ctx={isProbableHeading:(s)=>/^(?:Chapter \d+|Site Selection|Infection Prevention)$/i.test(s),calculateTopicRelevanceScore:(q,c)=>[c.sectionHeading,c.clinicalKeywords,c.topic,c.resourceTitle].join(' ').toLowerCase().includes(q.toLowerCase())?50:0,
@@ -12432,16 +12409,16 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   });
   check('Semantic splitting prefers complete sentences and respects the 1,450-character cap',()=>{
     const ctx=setup(),source='The nurse checks IV site integrity and assesses for infiltration. '.repeat(70);
-    const windows=ctx.cneReferenceSemanticWindows_(source);
+    const windows=ctx.cneMaterialSemanticWindows_(source);
     if(windows.length<3 ||windows.some(w=>w.length>1450)||windows.some(w=>!/[.!?]$/.test(w)))
       throw Error('Long clinical paragraphs were split mid-instruction or exceeded limits');
   });
-  check('Reference chunker retains real subheadings and paragraph-based clinical concepts',()=>{
+  check('CNE material chunker retains real subheadings and paragraph-based clinical concepts',()=>{
     const ctx=setup();
-    const chunks=ctx.chunkReferenceLibraryContent('Chapter 4\n\nSite Selection\n\n'+
+    const chunks=ctx.chunkExtractedContent('Chapter 4\n\nSite Selection\n\n'+
       'Choose a peripheral vein for intravenous catheter placement and monitor the site. '.repeat(5)+'\n\n'+
-      'Infection Prevention\n\nApply hand hygiene and aseptic technique during IV catheter insertion. '.repeat(5),'PDF','Approved Book');
-    if(!chunks.some(c=>c.sectionHeading==='Site Selection')||!chunks.some(c=>c.sectionHeading==='Infection Prevention'))
+      'Infection Prevention\n\nApply hand hygiene and aseptic technique during IV catheter insertion. '.repeat(5),'PDF');
+    if(!chunks.some(c=>c.heading==='Site Selection')||!chunks.some(c=>c.heading==='Infection Prevention'))
       throw Error('Clinical subheadings were discarded by chunking');
   });
   check('PLAN-FINISH preserve clinical verification with only uploaded material',()=>{
@@ -12517,9 +12494,9 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
       throw Error('Old library data unexpectedly rescued a CNE without indexed material');
   });
   check('New nursing keywords are derived from actual clinical passage text',()=>{
-    const start=gas.indexOf('function cneReferenceClinicalKeywords_('),end=gas.indexOf('function cneAiIvCannulationStem_(',start);
+    const start=gas.indexOf('function cneMaterialClinicalKeywords_('),end=gas.indexOf('function cneAiIvCannulationStem_(',start);
     const sandbox={};vm.runInNewContext(gas.slice(start,end),sandbox,{timeout:3000});
-    const found=sandbox.cneReferenceClinicalKeywords_(
+    const found=sandbox.cneMaterialClinicalKeywords_(
       'The nurse uses supplemental oxygen and pulse oximetry in respiratory assessment, with pressure injury prevention, fluid balance and wound assessment.');
     for(const expected of ['oxygen therapy','pulse oximetry','respiratory assessment','pressure injuries','fluid balance','wound assessment'])
       if(!found.includes(expected))throw Error('Omitted grounded nursing keyword: '+expected);
@@ -13292,7 +13269,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     ['Central new-CNE mode starts blank and is reset on reopening or success',()=>{
       assert(central.includes("const [newMode, setNewMode] = useState('')"));
       assert(central.includes("setNewMode('');\n                  setIsAddClassOpen(true)"));
-      assert(central.includes("setNewMode('');\n        loadData();"));
+      assert(central.includes("setNewMode('');\n        loadData(true);"));
       assert(!central.includes('setNewMode(preferredTeachingMode)'));
     }],
     ['Central mode-master refresh cannot silently select a mode',()=>{
@@ -13550,11 +13527,12 @@ function runQuizChecksIntegrated() {
   ok(context.handleGetQuizPracticeBatch({units:[],exclude:[],answeredCount:100001,lastImageAt:0,unitCounts:{}},user).errorCode==='INVALID_PARAMS','Practice batch bounds loaded question history');
   ok(source.includes("case 'getQuizPracticeBatch':"),'Practice batch action routed in Apps Script');
   const quizUI=readFileSync(join(ROOT_DIR,'src/components/QuizPage.tsx'),'utf8');
-  ok(quizUI.includes('Quiz & Clinical Learning')&&!quizUI.includes('Clinical Education')&&quizUI.indexOf('Quiz & Clinical Learning')<quizUI.indexOf('!home&&'),'Compact single-title Quiz banner renders before loading state');
+  ok(quizUI.includes('Quiz & Clinical Learning')&&!quizUI.includes('Clinical Education')&&quizUI.indexOf('Quiz & Clinical Learning')<quizUI.indexOf("{page==='home'&&<>"),'Compact single-title Quiz banner renders before loading state');
   equals((quizUI.match(/Quiz & Clinical Learning/g)||[]).length,1,'Quiz heading is displayed exactly once');
   equals((quizUI.match(/Back to Quiz/g)||[]).length,1,'Back to Quiz appears only in banner');
   ok(quizUI.includes('Resuming Quiz…')&&quizUI.includes('Cancelling Quiz…'),'Both resume and cancel actions display their own spinners');
-  ok(quizUI.includes('disabled={!!home.activeAttempt||busy}'),'Unfinished scored Quiz disables both quiz-mode launch cards');
+  ok(quizUI.includes('disabled={!coreReady || dashboardLoading || !!home.activeAttempt || busy}'),'Quiz launch cards stay disabled until the active attempt and approved units are known');
+  ok(quizUI.includes('getQuizHomeCore') && quizUI.includes('getQuizHomeDashboard'),'Quiz separates fast resume check from deferred dashboard load');
   ok(quizUI.includes('Finish Practice')&&quizUI.includes('getQuizPracticeBatch'),'Practice has Finish control and a ten-question backend API');
 
   // Reorder attempt tab and add an unrelated column: every read/write must
@@ -13791,7 +13769,9 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(recordsUi.includes('getMyCNERecordsPage({'));
       assert(!recordsUi.includes('setCurrentPage') && !recordsUi.includes('totalPages') && !recordsUi.includes('safeCurrentPage'));
       const handler = recordsUi.slice(recordsUi.indexOf('const handleGeneratePdf = async'), recordsUi.indexOf('const selectedRecordIsParticipant'));
-      assert(handler.includes('generateCNERecordsPdf(user, records, {'));
+      assert(handler.includes('generateCNERecordsPdf(user, filteredRecords, {'));
+      assert(recordsUi.includes('const filteredRecords = React.useMemo('), 'Filter locally without re-requesting Google Sheets');
+      assert(recordsUi.includes("search: '', fromDate: '', toDate: ''"), 'Only unfiltered personal history is fetched once');
       assert(!handler.includes('getMyCNERecordsPage'));
       assert(handler.includes('records.length !== totalRecords'));
     }],
@@ -14062,6 +14042,92 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   }
 }
 
+
+// Approved CNE performance / UI regression checks (single consolidated runner).
+{
+  const questions = readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+  const bank = readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const quiz = readFileSync(join(ROOT_DIR,'src/components/QuizPage.tsx'),'utf8');
+  const records = readFileSync(join(ROOT_DIR,'src/components/MyCNERecords.tsx'),'utf8');
+  const schedule = readFileSync(join(ROOT_DIR,'src/components/CNESchedule.tsx'),'utf8');
+  const calendar = readFileSync(join(ROOT_DIR,'src/components/CNECalendar.tsx'),'utf8');
+  const admin = readFileSync(join(ROOT_DIR,'src/components/AdminContent.tsx'),'utf8');
+  const upload = readFileSync(join(ROOT_DIR,'src/components/cne/AddResourceModal.tsx'),'utf8');
+  const checks = [
+    ['CNE bank finds up to 20 matches nonblocking and imports only with review', () => {
+      assert(bank.includes('out.slice(0,20)'));
+      assert(questions.includes('void ApiService.searchCNEReferenceQuestions(cneId'));
+      assert(questions.includes('window.confirm(`Review the answer and rationale?'));
+      assert(questions.includes('.slice(0, 20)'));
+    }],
+    ['Material check is deferred until educator confirms AI generation', () => {
+      const open = questions.slice(questions.indexOf('useEffect(() => {'),questions.indexOf('const editableQuestionFingerprint'));
+      assert(!open.includes('void loadMaterialStatus('));
+      assert(questions.includes("setMaterialChoice('confirm')"));
+      assert(questions.includes('Have you uploaded the learning material'));
+      assert(!questions.includes('allowLibraryOnly'));
+      assert(questions.includes('void handleGenerateAi();'));
+    }],
+    ['CNE question popup uses phone viewport and scrollable content', () => {
+      assert(questions.includes('h-[100dvh]'));
+      assert(questions.includes('overflow-y-auto min-h-0 flex-1'));
+      assert(questions.includes('safe-area-inset-bottom'));
+    }],
+    ['Quiz paints without waiting for the summary and never enables unverified launch', () => {
+      assert(quiz.includes("{page==='home'&&<>"));
+      assert(quiz.includes('getQuizHomeCore()')&&quiz.includes('getQuizHomeDashboard()'));
+      assert(quiz.includes('!coreReady || dashboardLoading'));
+    }],
+    ['CNE Schedule caches authorized pages, invalidates after mutations', () => {
+      assert(schedule.includes('scheduleCache.current.get(key)'));
+      assert(schedule.includes('loadData(true)'));
+      assert(schedule.includes('invalidateCNECalendarCache(user)'));
+      assert(schedule.includes('getCNESchedulePage({'));
+    }],
+    ['CNE Calendar reuses month cache until expiration or mutation', () => {
+      assert(calendar.includes('CALENDAR_CACHE_TTL_MS'));
+      assert(calendar.includes('if (!cached || Date.now() - cached.loadedAt > CALENDAR_CACHE_TTL_MS)'));
+      assert(calendar.includes('invalidateCNECalendarCache'));
+    }],
+    ['My CNE Records filters locally and PDF exports only matching records', () => {
+      assert(records.includes('const filteredRecords = React.useMemo('));
+      assert(records.includes('generateCNERecordsPdf(user, filteredRecords, {'));
+      assert(!records.includes('appliedFilters.search, fromDate: appliedFilters.fromDate'));
+    }],
+    ['Master lists live in Admin Content after class moments', () => {
+      assert(admin.indexOf("setActiveTab('wards')")>admin.indexOf('Class Photos & Moments'));
+      assert(admin.includes('<AdminAreas user={user} />'));
+      assert(admin.includes('<AdminTeachingModes user={user} />'));
+    }],
+    ['Only CNE material indexing is exposed; library PDFs remain readable', () => {
+      assert(!bank.includes("case 'indexNursingReferenceResource':"));
+      assert(!bank.includes('function indexReferenceLibraryResource('));
+      assert(bank.includes('function indexLearningResourceContent('));
+      assert(upload.includes('Only material uploaded for this specific CNE'));
+    }],
+    ['Loading bars display genuine record counts or indeterminate state', () => {
+      const progress=readFileSync(join(ROOT_DIR,'src/components/common/LoadingProgress.tsx'),'utf8');
+      const recordsUi=readFileSync(join(ROOT_DIR,'src/components/MyCNERecords.tsx'),'utf8');
+      const calendarUi=readFileSync(join(ROOT_DIR,'src/components/CNECalendar.tsx'),'utf8');
+      assert(progress.includes('Math.round((loaded / total) * 100)'));
+      assert(progress.includes('cne-loading-indeterminate'));
+      assert(recordsUi.includes('loaded={loadProgress.loaded} total={loadProgress.total}'));
+      assert(calendarUi.includes('<LoadingProgress label="Fetching scheduled CNE programmes"'));
+      assert(quiz.includes('<LoadingProgress className="mt-2"'));
+    }],
+    ['CNE index uses clinical keywords and narrowed retrieval', () => {
+      assert(bank.includes('cneMaterialClinicalKeywords_(chunkText)'));
+      const fn=bank.slice(bank.indexOf('function retrieveCNETopicEvidence('), bank.indexOf('function cneAiMaterialReadiness_('));
+      assert(fn.includes('idValues = materialIndexSheet.getRange('));
+      assert(!fn.includes('materialIndexSheet.getDataRange().getValues()'));
+    }]
+  ];
+  console.log('\n>>> Approved CNE improvements verification');
+  for (const [name,test] of checks) {
+    focusedChecks.push({name});
+    try {test();focusedPassed++;console.log('✓ '+name);} catch(e) {console.error('✗ '+name+': '+(e.stack||e.message));}
+  }
+}
 
 // Integrated material-only generation verification. This belongs to verify-all;
 // do not create or invoke a separate verify-material-only script.

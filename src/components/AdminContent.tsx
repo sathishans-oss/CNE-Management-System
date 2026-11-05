@@ -29,17 +29,19 @@ import { INITIAL_COORDINATOR_DESK } from '../services/initialData';
 import { useToast } from './Toast';
 import { VerifySheetsButton } from './VerifySheetsButton';
 import { ClinicalInsightsAdmin } from './ClinicalInsightsAdmin';
+import { AdminAreas } from './AdminAreas';
+import { AdminTeachingModes } from './AdminTeachingModes';
 
 interface AdminContentProps {
   user: SessionUser;
-  defaultTab?: 'news' | 'desk' | 'links' | 'moments' | 'insights';
+  defaultTab?: 'news' | 'desk' | 'links' | 'moments' | 'insights' | 'wards' | 'teaching';
 }
 
 export const AdminContent: React.FC<AdminContentProps> = ({
   user,
   defaultTab = 'news'
 }) => {
-  const [activeTab, setActiveTab] = useState<'news' | 'desk' | 'links' | 'moments' | 'insights'>(defaultTab);
+  const [activeTab, setActiveTab] = useState<'news' | 'desk' | 'links' | 'moments' | 'insights' | 'wards' | 'teaching'>(defaultTab);
 
   // -------------------------------------------------------------
   // Tab 1: News & Circulars State
@@ -608,6 +610,10 @@ export const AdminContent: React.FC<AdminContentProps> = ({
             <Images className="w-3.5 h-3.5 text-purple-500" />
             <span>Class Photos & Moments</span>
           </button>
+          <button type="button" onClick={() => setActiveTab('wards')}
+            className={`px-3 py-1.5 rounded-lg transition-colors ${activeTab === 'wards' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}>Ward List</button>
+          <button type="button" onClick={() => setActiveTab('teaching')}
+            className={`px-3 py-1.5 rounded-lg transition-colors ${activeTab === 'teaching' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}>Teaching Modes</button>
         </div>
       </div>
       </div>
@@ -616,6 +622,8 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       {/* TAB 1: News & Circulars                                    */}
       {/* ========================================================= */}
       {activeTab === 'insights' && <ClinicalInsightsAdmin />}
+      {activeTab === 'wards' && <AdminAreas user={user} />}
+      {activeTab === 'teaching' && <AdminTeachingModes user={user} />}
       {activeTab === 'news' && (
         <div className="space-y-4">
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">

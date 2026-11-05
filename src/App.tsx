@@ -18,8 +18,6 @@ const CNESchedule = lazy(() => import('./components/CNESchedule').then((m) => ({
 const LearningResourcesPage = lazy(() => import('./components/cne/LearningResourcesPage').then((m) => ({ default: m.LearningResourcesPage })));
 const Gallery = lazy(() => import('./components/Gallery').then((m) => ({ default: m.Gallery })));
 const QuizPage = lazy(() => import('./components/QuizPage').then((m) => ({ default: m.QuizPage })));
-const AdminAreas = lazy(() => import('./components/AdminAreas').then((m) => ({ default: m.AdminAreas })));
-const AdminTeachingModes = lazy(() => import('./components/AdminTeachingModes').then((m) => ({ default: m.AdminTeachingModes })));
 const AdminRoles = lazy(() => import('./components/AdminRoles').then((m) => ({ default: m.AdminRoles })));
 const AdminReports = lazy(() => import('./components/AdminReports').then((m) => ({ default: m.AdminReports })));
 const AdminContent = lazy(() => import('./components/AdminContent').then((m) => ({ default: m.AdminContent })));
@@ -196,11 +194,11 @@ const AppContent: React.FC = () => {
 
           {/* Admin Protected Views */}
           {activeView === 'admin-areas' && user?.role === 'ADMIN' && (
-            <AdminAreas user={user} />
+            <AdminContent user={user} defaultTab="wards" />
           )}
 
           {activeView === 'admin-teaching-modes' && user?.role === 'ADMIN' && (
-            <AdminTeachingModes user={user} />
+            <AdminContent user={user} defaultTab="teaching" />
           )}
 
           {activeView === 'admin-roles' && user?.role === 'ADMIN' && (

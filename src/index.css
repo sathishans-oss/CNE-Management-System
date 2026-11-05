@@ -39,3 +39,13 @@
     transform: none;
   }
 }
+
+/* Indeterminate server work: never represent elapsed time as completion. */
+@keyframes cne-loading-sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(340%); }
+}
+.cne-loading-indeterminate { animation: cne-loading-sweep 1.55s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cne-loading-indeterminate { animation: none; width: 100%; opacity: .45; }
+}

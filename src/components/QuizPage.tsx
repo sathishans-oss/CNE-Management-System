@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Award, BookOpenCheck, CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Image as ImageIcon, Loader2, RefreshCw, Trophy, XCircle, HeartPulse, Hourglass, Lightbulb, Target, ShieldCheck, Medal, CalendarDays, History } from 'lucide-react';
 import { ApiService } from '../services/api';
+import { LoadingProgress } from './common/LoadingProgress';
 import type { QuizAttempt, QuizHomeData, QuizQuestion, QuizResult, QuizHistoryItem, SessionUser } from '../types';
 
 type Page = 'home' | 'scored-setup' | 'practice-setup' | 'scored' | 'practice' | 'result';
@@ -37,7 +38,14 @@ const QuizImage: React.FC<{ question: QuizQuestion; attemptId?: string; getImage
 
 export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   const [page,setPage] = useState<Page>('home');
-  const [home,setHome] = useState<QuizHomeData | null>(null);
+  // Render the static clinical dashboard on the first React paint.
+  // A separate lightweight request identifies any unfinished scored attempt;
+  // analytics, approved units and clinical insight arrive later.
+  const [home,setHome] = useState<QuizHomeData>({units:[],total:0,imageCount:0,leaderboard:[],
+    activeAttempt:null,myProgress:{completedTests:0,questionsAnswered:0,accuracy:0,recent:[]},clinicalInsight:null});
+  const [coreReady,setCoreReady] = useState(false);
+  const [dashboardLoading,setDashboardLoading] = useState(true);
+  const [dashboardError,setDashboardError] = useState('');
   const [homeLoading,setHomeLoading] = useState(true);
   const [selectedUnits,setSelectedUnits] = useState<string[]>([]);
   const [count,setCount] = useState(10);
@@ -114,15 +122,35 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   }, [user.employeeId]);
 
   const refreshHome = useCallback(async () => {
-    if(mounted.current) setHomeLoading(true);
-    try {
-      const res = await ApiService.getQuizHome();
-      if (!res.success || !res.data) throw new Error(res.message || 'Quiz data could not be loaded.');
-      if(mounted.current) setHome(res.data);
+    if (mounted.current) { setHomeLoading(true); setDashboardLoading(true); setDashboardError(''); setCoreReady(false); }
+    // Do not wait for the expensive Question Bank/leaderboard calculations to
+    // resolve before exposing the page and Resume Unfinished Quiz control.
+    const corePromise = ApiService.getQuizHomeCore().then(res => {
+      if (!res.success || !res.data) throw new Error(res.message || 'Unable to check unfinished Quiz.');
+      if (mounted.current) {
+        setHome(prev => ({...prev, activeAttempt:res.data!.activeAttempt}));
+        setCoreReady(true);
+        setHomeLoading(false);
+      }
       return res.data;
-    } finally {
-      if(mounted.current) setHomeLoading(false);
-    }
+    }).catch(err => {
+      if (mounted.current) { setCoreReady(false); setHomeLoading(false); setError(err?.message || 'Unable to check unfinished Quiz.'); }
+      throw err;
+    });
+    const dashboardPromise = ApiService.getQuizHomeDashboard().then(res => {
+      if (!res.success || !res.data) throw new Error(res.message || 'Quiz dashboard is unavailable.');
+      if (mounted.current) setHome(prev => ({...prev, ...res.data}));
+      return res.data;
+    }).catch(err => {
+      if (mounted.current) setDashboardError(err?.message || 'Unable to load Quiz summary.');
+      throw err;
+    }).finally(() => { if (mounted.current) setDashboardLoading(false); });
+    // Keep prior refresh callers awaiting both parts, but settle both even if
+    // one fails. Every section can show its own retry without blanking the page.
+    const [core,dashboard] = await Promise.allSettled([corePromise,dashboardPromise]);
+    if (core.status==='rejected') throw core.reason;
+    if (dashboard.status==='rejected') return {...home, activeAttempt:core.value.activeAttempt};
+    return {...dashboard.value,activeAttempt:core.value.activeAttempt};
   }, []);
   useEffect(() => {
     mounted.current=true;
@@ -377,28 +405,24 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       <span className="flex-1">{notice}</span>
       <button type="button" aria-label="Dismiss notification" onClick={()=>setNotice('')} className="rounded-md p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"><XCircle className="h-4 w-4"/></button>
     </div>}
-    {!home&&<div className="flex min-h-[180px] flex-col items-center justify-center gap-3 py-10 text-center" role={homeLoading?'status':'alert'} aria-live="polite">
-      {homeLoading ? <>
-        <Loader2 className="h-8 w-8 animate-spin text-teal-600" aria-hidden="true" />
-        <span className="text-xs font-medium text-slate-500">Loading Quiz...</span>
-      </> : <>
-        <XCircle className="h-6 w-6 text-rose-600" aria-hidden="true" />
-        <p className="max-w-lg text-sm font-medium text-slate-700">{error && error !== 'Quiz data could not be loaded.' ? error : 'Unable to load Quiz questions.'}</p>
-        <button type="button" className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={()=>{setError('');void refreshHome().catch(e=>{if(mounted.current)setError((e as Error).message||'Unable to load Quiz questions.');});}}>
-          <RefreshCw className="h-4 w-4" aria-hidden="true" /> Retry
-        </button>
-      </>}
-    </div>}
-    {page==='home'&&home&&<>
+    {page === 'home' && (homeLoading || dashboardLoading || dashboardError || !coreReady) &&
+      <div className="mb-3 rounded-xl border border-teal-100 bg-teal-50/70 px-4 py-2 text-xs text-teal-800" role="status">
+        {homeLoading ? 'Checking unfinished Quiz… ' : ''}
+        {dashboardLoading ? 'Loading approved Units, My Progress, leaderboard and clinical insight in the background…' : ''}
+        {dashboardError && <span role="alert">{dashboardError} <button type="button" className="underline font-semibold" onClick={() => void refreshHome().catch(() => {})}>Retry</button></span>}
+        {!coreReady && !homeLoading && !dashboardError && 'Unable to verify active Quiz. Retry before starting a new test.'}
+        {(homeLoading || dashboardLoading) && <LoadingProgress className="mt-2" label={homeLoading ? 'Checking unfinished Quiz' : 'Loading Quiz dashboard'} />}
+      </div>}
+    {page==='home'&&<>
       <div className="grid items-start gap-4 xl:grid-cols-12">
         <div className="min-w-0 space-y-4 xl:col-span-8">
           <div className="grid gap-3 sm:grid-cols-2">
-            <button type="button" className="group rounded-2xl border border-teal-200 bg-white p-4 text-left shadow-sm transition hover:border-teal-500 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-55" disabled={!!home.activeAttempt||busy} onClick={()=>{setSelectedUnits([]);setCount(10);setPage('scored-setup');}}>
+            <button type="button" className="group rounded-2xl border border-teal-200 bg-white p-4 text-left shadow-sm transition hover:border-teal-500 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-55" disabled={!coreReady || dashboardLoading || !!home.activeAttempt || busy} onClick={()=>{setSelectedUnits([]);setCount(10);setPage('scored-setup');}}>
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-teal-50 text-teal-700"><ClipboardCheck className="h-5 w-5"/></div>
               <h2 className="font-bold text-slate-900">Scored Quiz</h2><p className="mt-1 min-h-9 text-xs leading-relaxed text-slate-500">1–50 approved questions · marks and explanations.</p>
               <span className="mt-3 inline-flex items-center gap-1 rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white">Start Scored Quiz <ChevronRight className="h-3.5 w-3.5"/></span>
             </button>
-            <button type="button" className="group rounded-2xl border border-violet-200 bg-white p-4 text-left shadow-sm transition hover:border-violet-500 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60" disabled={!!home.activeAttempt||busy} onClick={()=>{setSelectedUnits([]);setPage('practice-setup');}}>
+            <button type="button" className="group rounded-2xl border border-violet-200 bg-white p-4 text-left shadow-sm transition hover:border-violet-500 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60" disabled={!coreReady || dashboardLoading || !!home.activeAttempt || busy} onClick={()=>{setSelectedUnits([]);setPage('practice-setup');}}>
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><BookOpenCheck className="h-5 w-5"/></div>
               <h2 className="font-bold text-slate-900">Practice Quiz</h2><p className="mt-1 min-h-9 text-xs leading-relaxed text-slate-500">Instant feedback · no scores or answers stored.</p>
               <span className="mt-3 inline-flex items-center gap-1 rounded-lg border border-violet-500 px-3 py-2 text-xs font-bold text-violet-700">Start Practice <ChevronRight className="h-3.5 w-3.5"/></span>
@@ -412,7 +436,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
           </div>}
           <div className="overflow-hidden rounded-2xl border border-teal-100 bg-white shadow-sm">
             <div className="border-b border-teal-100 bg-teal-50/60 px-4 py-3 sm:px-5"><h2 className="flex items-center gap-2 font-bold text-slate-900"><Lightbulb className="h-5 w-5 text-teal-700"/>Today's Clinical Insight</h2></div>
-            {home.clinicalInsight ? <div className="p-3 sm:p-4">
+            {dashboardLoading ? <div role="status" className="p-5 text-xs text-slate-500"><Loader2 className="inline h-4 w-4 animate-spin mr-2" />Loading insight…</div> : home.clinicalInsight ? <div className="p-3 sm:p-4">
               {insightImage ? <button type="button" className="block w-full overflow-hidden rounded-xl border border-teal-100 bg-slate-50" aria-label="Enlarge today's clinical insight poster" onClick={()=>setInsightImageExpanded(true)}><img src={insightImage} alt="Today's clinical nursing educational poster with embedded explanation" className="mx-auto max-h-[510px] w-full object-contain"/></button>
                 : insightImageError ? <div role="alert" className="rounded-lg bg-rose-50 p-4 text-sm text-rose-700">{insightImageError}</div>
                   : <div role="status" className="flex flex-col items-center gap-2 py-16 text-slate-500"><Loader2 className="h-7 w-7 animate-spin text-teal-600"/><span className="text-xs">Loading today's insight…</span></div>}
@@ -422,11 +446,12 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
         </div>
         <aside className="min-w-0 space-y-4 xl:col-span-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><div className="mb-4 flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-900"><Trophy className="h-5 w-5 text-amber-500"/> Top 5 Leaderboard</h2><span className="text-[10px] text-slate-500">Last 30 days</span></div>
-            {home.leaderboard.length?<ol className="space-y-2">{home.leaderboard.map(p=><li key={`${p.rank}-${p.name}`} className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${p.rank===1?'bg-amber-100 text-amber-800':p.rank===2?'bg-slate-200 text-slate-700':p.rank===3?'bg-orange-100 text-orange-800':'bg-white text-slate-600'}`}>#{p.rank}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-slate-900">{p.name}</span><span className="block text-[10px] text-slate-500">{p.answered} unique answered</span></span><span className="shrink-0 text-xs font-bold text-teal-800">{p.accuracy.toFixed(1)}%</span></li>)}</ol>:<div className="flex flex-col items-center gap-2 py-8 text-center"><Medal className="h-9 w-9 text-slate-300"/><p className="text-sm font-semibold text-slate-700">Leaderboard awaits its first achievers</p><p className="max-w-48 text-xs text-slate-500">Completed scored quizzes will appear here.</p></div>}
+            {dashboardLoading ? <p role="status" className="text-xs text-slate-500">Loading leaderboard…</p> : home.leaderboard.length?<ol className="space-y-2">{home.leaderboard.map(p=><li key={`${p.rank}-${p.name}`} className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${p.rank===1?'bg-amber-100 text-amber-800':p.rank===2?'bg-slate-200 text-slate-700':p.rank===3?'bg-orange-100 text-orange-800':'bg-white text-slate-600'}`}>#{p.rank}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-slate-900">{p.name}</span><span className="block text-[10px] text-slate-500">{p.answered} unique answered</span></span><span className="shrink-0 text-xs font-bold text-teal-800">{p.accuracy.toFixed(1)}%</span></li>)}</ol>:<div className="flex flex-col items-center gap-2 py-8 text-center"><Medal className="h-9 w-9 text-slate-300"/><p className="text-sm font-semibold text-slate-700">Leaderboard awaits its first achievers</p><p className="max-w-48 text-xs text-slate-500">Completed scored quizzes will appear here.</p></div>}
             <p className="mt-4 border-t border-slate-100 pt-3 text-[11px] leading-relaxed text-slate-500">Ranked by unique questions answered, then accuracy. Practice attempts never count.</p>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
             <div className="mb-3 flex items-center justify-between gap-3"><h2 className="flex items-center gap-2 font-bold text-slate-900"><Activity className="h-5 w-5 text-teal-700"/> My Progress</h2><span className="text-[11px] text-slate-500">Scored quizzes only</span></div>
+            {dashboardLoading && <p role="status" className="mb-2 text-xs text-slate-500">Loading My Progress…</p>}
             <div className="grid grid-cols-3 gap-2 sm:gap-3">
               {([{label:'Completed Tests',value:home.myProgress?.completedTests??0,Icon:Award},{label:'Questions Answered',value:home.myProgress?.questionsAnswered??0,Icon:ClipboardCheck},{label:'Overall Accuracy',value:`${(home.myProgress?.accuracy??0).toFixed(1)}%`,Icon:Target}]).map(stat=><div className="min-w-0 rounded-xl bg-slate-50 p-3" key={stat.label}><stat.Icon className="mb-2 h-4 w-4 text-teal-700"/><p className="text-lg font-extrabold text-slate-900 sm:text-2xl">{stat.value}</p><p className="text-[10px] font-medium leading-4 text-slate-500 sm:text-xs">{stat.label}</p></div>)}
             </div>
@@ -435,7 +460,8 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
               {showHistory&&historyMore&&<button type="button" disabled={historyBusy} className="text-xs font-semibold text-teal-700" onClick={()=>void fetchHistory(history.length)}>{historyBusy?'Loading…':'Load more results'}</button>}
             </div>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><h2 className="mb-3 text-sm font-bold text-slate-900">Approved Question Bank</h2><div className="grid grid-cols-3 gap-2">{[{value:home.total,label:'MCQs'},{value:home.units.length,label:'Units'},{value:home.imageCount,label:'Images'}].map(s=><div key={s.label} className="rounded-lg bg-slate-50 px-2 py-3 text-center"><p className="text-lg font-extrabold text-teal-800">{s.value}</p><p className="text-[10px] text-slate-500">{s.label}</p></div>)}</div><p className="mt-3 text-[11px] text-slate-500">Only clinically approved questions are available. Drafts are excluded.</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><h2 className="mb-3 text-sm font-bold text-slate-900">Approved Question Bank</h2>{dashboardLoading && <p role="status" className="mb-2 text-xs text-slate-500">Loading approved question summary…</p>}
+            <div className="grid grid-cols-3 gap-2">{[{value:home.total,label:'MCQs'},{value:home.units.length,label:'Units'},{value:home.imageCount,label:'Images'}].map(s=><div key={s.label} className="rounded-lg bg-slate-50 px-2 py-3 text-center"><p className="text-lg font-extrabold text-teal-800">{s.value}</p><p className="text-[10px] text-slate-500">{s.label}</p></div>)}</div><p className="mt-3 text-[11px] text-slate-500">Only clinically approved questions are available. Drafts are excluded.</p></div>
         </aside>
       </div>
     </>}

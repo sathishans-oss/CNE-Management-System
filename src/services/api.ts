@@ -402,6 +402,8 @@ export class ApiService {
   static syncClinicalInsightFolder(): Promise<ApiResponse<{added:number;scanned:number;requiresReview:boolean}>> {return this.executeAction('syncClinicalInsightFolder');}
   static getQuizMyHistory(offset:number): Promise<ApiResponse<{items:QuizHistoryItem[];hasMore:boolean}>> {return this.executeAction('getQuizMyHistory',{offset});}
   static getQuizHome(): Promise<ApiResponse<QuizHomeData>> {return this.executeAction('getQuizHome');}
+  static getQuizHomeCore(): Promise<ApiResponse<Pick<QuizHomeData, 'activeAttempt'>>> {return this.executeAction('getQuizHomeCore');}
+  static getQuizHomeDashboard(): Promise<ApiResponse<Omit<QuizHomeData, 'activeAttempt'>>> {return this.executeAction('getQuizHomeDashboard');}
   static startQuizScored(units:string[], questionCount:number): Promise<ApiResponse<QuizAttempt>> {return this.executeAction('startQuizScored',{units,questionCount});}
   static getQuizScoredBatch(attemptId:string,start:number): Promise<ApiResponse<{questions:QuizQuestion[];start:number;total:number}>> {return this.executeAction('getQuizScoredBatch',{attemptId,start});}
   static saveQuizScoredBatch(attemptId:string,start:number,answers:string[]): Promise<ApiResponse<{saved:boolean;committedCount:number;alreadySaved:boolean}>> {return this.executeAction('saveQuizScoredBatch',{attemptId,start,answers});}
@@ -422,16 +424,6 @@ export class ApiService {
       try {
         const parsed = new URL(trimmed);
         if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-          // Guard against Apps Script editor links (/edit or /projects/) which cannot serve as executable Web App endpoints (/exec)
-          if (
-            parsed.hostname.includes('script.google.com') &&
-            (parsed.pathname.includes('/edit') || parsed.pathname.includes('/projects/'))
-          ) {
-            console.warn(
-              '[CNE Service] Invalid VITE_APPS_SCRIPT_URL: Configured URL is an Apps Script editor URL. Web apps must use the deployment endpoint ending with /exec.'
-            );
-            return '';
-          }
           return trimmed;
         }
       } catch {
@@ -512,9 +504,6 @@ export class ApiService {
       case 'saveReferenceMaterial':
       case 'uploadLearningResource':
       case 'deleteLearningResource':
-      case 'indexNursingReferenceResource':
-      case 'getNursingReferenceIndexStatus':
-      case 'uploadNursingReferenceResource':
       case 'deleteNursingReferenceResource':
       case 'updateCoordinatorDesk':
       case 'uploadImage':
@@ -1556,74 +1545,8 @@ export class ApiService {
    * Phase 4B: Index an approved Open RN nursing reference resource by Drive File ID.
    * Strictly Admin-only.
    */
-  static async indexNursingReferenceResource(params: {
-    driveFileId: string;
-    resourceTitle?: string;
-    authorOrganization?: string;
-    license?: string;
-    version?: string;
-    reindex?: boolean;
-  }): Promise<ApiResponse<{
-    resourceId: string;
-    chunksCount: number;
-    alreadyIndexed?: boolean;
-    message?: string;
-  }>> {
-    return this.executeAction<{
-      resourceId: string;
-      chunksCount: number;
-      alreadyIndexed?: boolean;
-      message?: string;
-    }>('indexNursingReferenceResource', params);
-  }
-
-  /**
-   * Read the persisted indexing status for one uploaded Nursing Reference Library file.
-   * Strictly Admin-only.
-   */
-  static async getNursingReferenceIndexStatus(
-    driveFileId: string
-  ): Promise<ApiResponse<CNENursingReferenceIndexStatus>> {
-    return this.executeAction<CNENursingReferenceIndexStatus>(
-      'getNursingReferenceIndexStatus',
-      { driveFileId }
-    );
-  }
-
-  /**
-   * Phase 4B: Upload an Open RN reference resource into the approved Drive folder.
-   * Indexing is intentionally a separate second request.
-   * Strictly Admin-only.
-   */
-  static async uploadNursingReferenceResource(params: {
-    fileName: string;
-    base64Data: string;
-    resourceTitle: string;
-    authorOrganization?: string;
-    license?: string;
-    version?: string;
-  }): Promise<ApiResponse<{
-    driveFileId: string;
-    fileName: string;
-    resourceId: string;
-    uploadStatus: 'UPLOADED';
-    indexStatus: 'PENDING';
-    registryWarning?: string;
-  }>> {
-    return this.executeAction<{
-      driveFileId: string;
-      fileName: string;
-      resourceId: string;
-      uploadStatus: 'UPLOADED';
-      indexStatus: 'PENDING';
-      registryWarning?: string;
-    }>('uploadNursingReferenceResource', params);
-  }
-
-  /**
-   * Phase 4B: Surgically remove and unindex a nursing reference library resource.
-   * Strictly Admin-only.
-   */
+  // Library PDF browsing/download remains available. Its historical AI indexing
+  // and upload endpoints have been retired; only uploaded CNE material is indexed.
   static async deleteNursingReferenceResource(params: {
     driveFileId: string;
   }): Promise<ApiResponse<{

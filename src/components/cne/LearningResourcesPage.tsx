@@ -455,7 +455,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
               className="flex items-center gap-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors"
             >
               <Plus className="w-4 h-4" />
-              <span>Add Resource</span>
+              <span>Upload CNE Material</span>
             </button>
           )}
         </div>
@@ -476,7 +476,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
           <p className="text-xs text-slate-500 mt-1 max-w-sm">
             {searchQuery || activeCategory !== 'ALL'
               ? 'No resources match your active search or filter criteria. Try resetting the filters.'
-              : 'No learning resources currently registered. Use "Add Resource" to upload curriculum materials or index Open RN reference textbooks.'}
+              : 'No learning resources currently registered. Upload CNE topic learning material to begin material-only indexing.'}
           </p>
           {(searchQuery || activeCategory !== 'ALL') && (
             <button
@@ -651,13 +651,13 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
         </div>
       )}
 
-      {/* Admin Add Resource Unified Modal */}
+      {/* Admin CNE learning material upload */}
       {isAdmin && (
         <AddResourceModal
           isOpen={isAddModalOpen}
           onClose={() => setIsAddModalOpen(false)}
           onSuccess={loadAllResources}
-          initialType={activeCategory === 'NURSING_REFERENCE_LIB' ? 'NURSING_REFERENCE_LIB' : 'CNE_LEARNING_MATERIAL'}
+          initialType="CNE_LEARNING_MATERIAL"
         />
       )}
 

@@ -815,6 +815,12 @@ function handleRequest(e, method) {
       case 'getQuizHome':
         output = handleGetQuizHome(params, session);
         break;
+      case 'getQuizHomeCore':
+        output = handleGetQuizHomeCore(params, session);
+        break;
+      case 'getQuizHomeDashboard':
+        output = handleGetQuizHomeDashboard(params, session);
+        break;
 
       case 'getClinicalInsightsAdmin':
         output = handleGetClinicalInsightsAdmin(params, session);
@@ -1069,17 +1075,8 @@ function handleRequest(e, method) {
         output = handleListNursingReferenceResources(params, session);
         break;
 
-      case 'indexNursingReferenceResource':
-        output = handleIndexNursingReferenceResource(params, session);
-        break;
 
-      case 'getNursingReferenceIndexStatus':
-        output = handleGetNursingReferenceIndexStatus(params, session);
-        break;
 
-      case 'uploadNursingReferenceResource':
-        output = handleUploadNursingReferenceResource(params, session);
-        break;
 
       case 'deleteNursingReferenceResource':
         output = handleDeleteNursingReferenceResource(params, session);
@@ -10271,14 +10268,21 @@ function chunkExtractedContent(text, fileType) {
     var para = paragraphs[p].trim();
     if (!para) continue;
 
-    // Detect potential heading: short line (<= 80 chars)
-    if (para.length <= 80 && isProbableHeading(para)) {
+    // Recognize headings either as their own paragraph or at the beginning
+    // of a multi-line block. Preserve the remaining text as clinical evidence.
+    var lines = para.split('\n');
+    var firstLine = lines[0].trim();
+    var standaloneHeading = para.length <= 80 && isProbableHeading(para);
+    var inlineHeading = !standaloneHeading && lines.length > 1 && firstLine.length <= 80 && isProbableHeading(firstLine);
+    if (standaloneHeading || inlineHeading) {
       if (currentAccumulator.trim()) {
         flushAccumulatedText(chunks, currentHeading, currentAccumulator);
         currentAccumulator = '';
       }
-      currentHeading = para;
-      continue;
+      currentHeading = standaloneHeading ? para : firstLine;
+      if (standaloneHeading) continue;
+      para = lines.slice(1).join('\n').trim();
+      if (!para) continue;
     }
 
     if ((currentAccumulator.length + para.length + 2) <= 1400) {
@@ -10289,7 +10293,7 @@ function chunkExtractedContent(text, fileType) {
         currentAccumulator = para;
       } else {
         var combined = currentAccumulator ? (currentAccumulator + '\n\n' + para) : para;
-        var windows = splitTextIntoWindows(combined, 1200, 150);
+        var windows = cneMaterialSemanticWindows_(combined);
         for (var w = 0; w < windows.length - 1; w++) {
           chunks.push({
             heading: currentHeading,
@@ -10307,7 +10311,7 @@ function chunkExtractedContent(text, fileType) {
 
   // Fallback if no chunks produced
   if (chunks.length === 0) {
-    var fallbackWindows = splitTextIntoWindows(clean, 1200, 150);
+    var fallbackWindows = cneMaterialSemanticWindows_(clean);
     for (var f = 0; f < fallbackWindows.length; f++) {
       chunks.push({
         heading: 'General Content',
@@ -10338,7 +10342,7 @@ function flushAccumulatedText(chunks, heading, text) {
   if (trimmed.length <= 1500) {
     chunks.push({ heading: heading || 'General Content', text: trimmed });
   } else {
-    var windows = splitTextIntoWindows(trimmed, 1200, 150);
+    var windows = cneMaterialSemanticWindows_(trimmed);
     for (var i = 0; i < windows.length; i++) {
       chunks.push({
         heading: heading ? (heading + (windows.length > 1 ? ' (Part ' + (i + 1) + ')' : '')) : 'General Content',
@@ -10490,12 +10494,17 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
   if (isSuccess) {
     var extractedText = extResult.data.extractedText;
     var chunks = chunkExtractedContent(extractedText, fileType);
+    var indexedTextKeys = {};
     if (chunks.length > 0) {
       for (var c = 0; c < chunks.length; c++) {
+        var chunkText = String(chunks[c].text || '').trim();
+        var textKey = chunkText.replace(/\s+/g, ' ').toLowerCase();
+        if (!chunkText || indexedTextKeys[textKey]) continue;
+        indexedTextKeys[textKey] = true;
         rowsToInsert.push([
           'IDX_' + cneId + '_' + driveFileId.substring(0, 8) + '_C' + (c + 1),
           'UPLOADED_CNE', cneId, driveFileId, fileName, topic,
-          chunks[c].heading || 'General Content', c + 1, chunks[c].text, '', 'SUCCESS', nowIso
+          chunks[c].heading || 'General Content', c + 1, chunkText, cneMaterialClinicalKeywords_(chunkText), 'SUCCESS', nowIso
         ]);
       }
     } else {
@@ -10572,6 +10581,26 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
       if (rowsToInsert.length > 0) {
         var startRow = sheet.getLastRow() + 1;
         cneWriteHeaderRows_(sheet,CNE_SHEET_HEADERS['CNE_Material_Index'],cneIndexProjectRows_(rowsToInsert,CNE_SHEET_HEADERS['CNE_Material_Index']),startRow);
+        // Verify the new material evidence is complete BEFORE removing the
+        // previous version. Failed readback must preserve old usable material.
+        SpreadsheetApp.flush();
+        var written = sheet.getRange(startRow, 1, rowsToInsert.length, sheet.getLastColumn()).getValues();
+        var idCol = colMap['indexid'] !== undefined ? colMap['indexid'] : 0;
+        var textCol = colMap['chunktext'] !== undefined ? colMap['chunktext'] : 8;
+        var verifiedCount = 0;
+        for (var chk = 0; chk < rowsToInsert.length; chk++) {
+          if (String(written[chk][idCol] || '') === rowsToInsert[chk][0] &&
+              String(written[chk][driveCol] || '') === String(driveFileId) &&
+              String(written[chk][statusCol] || '') === rowsToInsert[chk][10] &&
+              String(written[chk][textCol] || '') === rowsToInsert[chk][8]) verifiedCount++;
+        }
+        if (verifiedCount !== rowsToInsert.length) {
+          var incompleteRows = [];
+          for (var bad = 0; bad < rowsToInsert.length; bad++) incompleteRows.push(startRow + bad);
+          deleteSheetRowsByIndices(sheet, incompleteRows);
+          return { success: false, errorCode: 'INDEX_REPLACEMENT_INCOMPLETE',
+            message: 'New material indexing could not be verified. Existing index was preserved; please retry.' };
+        }
       }
       if (rowsToDelete.length > 0) deleteSheetRowsByIndices(sheet, rowsToDelete);
     }
@@ -10641,7 +10670,7 @@ function cneReferenceChunkReadable_(value) {
 }
 
 /** Keywords may describe only vocabulary actually present in the extracted passage. */
-function cneReferenceClinicalKeywords_(value) {
+function cneMaterialClinicalKeywords_(value) {
   var passage = String(value || '').toLowerCase();
   var glossary = [
     ['IV cannulation', /\b(?:iv cannulat\w*|intravenous cannulat\w*|peripheral venous cannulat\w*)\b/],
@@ -10727,7 +10756,7 @@ function cneAiSelectTopicEvidence_(evidence, hasOwnMaterial, topic) {
  * mid-sentence character cuts. No AI rewriting and no invented source text.
  * The short overlap is kept inside the same source section for continuity.
  */
-function cneReferenceSemanticWindows_(text) {
+function cneMaterialSemanticWindows_(text) {
   var raw=String(text||'').trim(), output=[];
   if(!raw)return output;
   var target=1250,max=1450,overlap=110,pos=0;
@@ -10767,579 +10796,8 @@ function cneReferenceSemanticWindows_(text) {
   return output;
 }
 
-function chunkReferenceLibraryContent(text, fileType, defaultTitle) {
-  if (!text || typeof text !== 'string') return [];
-  var clean = text.trim();
-  if (clean.length < 15) return [];
+// Legacy library text extraction/indexing is retired; library browse/download remains.
 
-  // Support both (text, defaultTitle) and (text, fileType, defaultTitle) signatures
-  var fallbackTitle = 'Open RN Nursing Reference';
-  if (defaultTitle && typeof defaultTitle === 'string') {
-    fallbackTitle = defaultTitle.trim();
-  } else if (fileType && typeof fileType === 'string' && fileType.toUpperCase() !== 'PDF') {
-    fallbackTitle = fileType.trim();
-  }
-
-  var chunks = [];
-  var currentChapter = fallbackTitle;
-  var currentSection = 'General Content';
-
-  // Document (PDF) chunking by paragraph and heading
-  var paragraphs = clean.split(/\n{2,}/);
-  var currentAccumulator = '';
-
-  for (var p = 0; p < paragraphs.length; p++) {
-    var para = paragraphs[p].trim();
-    if (!para) continue;
-
-    // Detect structural heading: either isolated short paragraph or first line of multi-line block
-    var lines = para.split('\n');
-    var firstLine = lines[0].trim();
-    var isHeaderOnly = para.length <= 80 && isProbableHeading(para);
-    var isFirstLineHeader = !isHeaderOnly && lines.length > 1 && firstLine.length <= 80 && isProbableHeading(firstLine);
-
-    if (isHeaderOnly || isFirstLineHeader) {
-      if (currentAccumulator.trim()) {
-        flushAccumulatedRefText(chunks, currentChapter, currentSection, currentAccumulator);
-        currentAccumulator = '';
-      }
-      var headerText = isHeaderOnly ? para : firstLine;
-      if (/^(?:chapter|unit|module|part)\b/i.test(headerText)) {
-        currentChapter = headerText;
-        currentSection = 'Chapter Overview';
-      } else {
-        currentSection = headerText;
-      }
-
-      if (isHeaderOnly) {
-        continue;
-      } else {
-        para = lines.slice(1).join('\n').trim();
-        if (!para) continue;
-      }
-    }
-
-    if ((currentAccumulator.length + para.length + 2) <= 1400) {
-      currentAccumulator = currentAccumulator ? (currentAccumulator + '\n\n' + para) : para;
-    } else {
-      if (currentAccumulator.length >= 800) {
-        flushAccumulatedRefText(chunks, currentChapter, currentSection, currentAccumulator);
-        currentAccumulator = para;
-      } else {
-        var combined = currentAccumulator ? (currentAccumulator + '\n\n' + para) : para;
-        var windows = cneReferenceSemanticWindows_(combined);
-        for (var w = 0; w < windows.length - 1; w++) {
-          chunks.push({
-            topic: currentChapter,
-            sectionHeading: currentSection,
-            text: windows[w]
-          });
-        }
-        currentAccumulator = windows[windows.length - 1];
-      }
-    }
-  }
-
-  if (currentAccumulator.trim()) {
-    flushAccumulatedRefText(chunks, currentChapter, currentSection, currentAccumulator);
-  }
-
-  if (chunks.length === 0) {
-    var fallbackWindows = cneReferenceSemanticWindows_(clean);
-    for (var f = 0; f < fallbackWindows.length; f++) {
-      chunks.push({
-        topic: fallbackTitle,
-        sectionHeading: 'General Content',
-        text: fallbackWindows[f]
-      });
-    }
-  }
-
-  return chunks;
-}
-
-function flushAccumulatedRefText(chunks, chapter, section, text) {
-  var trimmed = text.trim();
-  if (!trimmed) return;
-  if (trimmed.length <= 1500) {
-    chunks.push({
-      topic: chapter || 'General Reference',
-      sectionHeading: section || 'General Content',
-      text: trimmed
-    });
-  } else {
-    var windows = cneReferenceSemanticWindows_(trimmed);
-    for (var i = 0; i < windows.length; i++) {
-      chunks.push({
-        topic: chapter || 'General Reference',
-        sectionHeading: (section || 'General Content') + (windows.length > 1 ? ' (Part ' + (i + 1) + ')' : ''),
-        text: windows[i]
-      });
-    }
-  }
-}
-
-/**
- * Extract textual content from a reference library document blob.
- * Authoritative PDF extraction engine without OCR or external dependencies.
- */
-function extractReferenceLibraryBlob(blob, fileType) {
-  return extractTextFromPdf(blob);
-}
-
-/**
- * Register and index an approved Open RN nursing reference resource into CNE_Reference_Index.
- * Strictly Admin-only.
- * Document Policy: PDF only (.pdf). No application-defined size limit.
- * Extraction & chunking run OUTSIDE ScriptLock.
- * Duplicate protection and surgical batch writing run INSIDE ScriptLock.
- */
-function indexReferenceLibraryResource(driveFileId, metadata, session) {
-  var adminError = requireAdmin(session);
-  if (adminError) return adminError;
-
-  if (!driveFileId || typeof driveFileId !== 'string' || !driveFileId.trim()) {
-    return {
-      success: false,
-      errorCode: 'INVALID_PARAMS',
-      message: 'Drive File ID is required.'
-    };
-  }
-  var cleanDriveFileId = driveFileId.trim();
-
-  // 1. Resolve the root-level Nursing Reference Library folder by name
-  var folderResult = getOrCreateOpenRnFolder();
-  if (!folderResult.success || !folderResult.folder) {
-    return {
-      success: false,
-      errorCode: folderResult.errorCode || 'FOLDER_RESOLUTION_FAILED',
-      message: folderResult.message || 'Failed to resolve Open RN library folder.'
-    };
-  }
-  var openRnFolder = folderResult.folder;
-
-  // 2. Validate file existence
-  var file;
-  try {
-    file = DriveApp.getFileById(cleanDriveFileId);
-  } catch (e) {
-    return {
-      success: false,
-      errorCode: 'FILE_NOT_FOUND',
-      message: 'Specified Drive file could not be found or accessed.'
-    };
-  }
-
-  // 3. Validate file containment within Open RN folder
-  if (!isFileInOpenRnFolder(file, openRnFolder)) {
-    logAuditAction(
-      'REFERENCE_LIBRARY_SECURITY_ALERT',
-      session ? session.employeeId : 'UNKNOWN',
-      'Attempt to index file outside approved Nursing Reference Library folder: ' + cleanDriveFileId,
-      'FORBIDDEN'
-    );
-    return {
-      success: false,
-      errorCode: 'FILE_OUTSIDE_APPROVED_FOLDER',
-      message: 'Access denied. The specified file is not inside the approved Nursing Reference Library folder.'
-    };
-  }
-
-  // 4. Validate file non-empty and type (PDF only)
-  var fileSize = file.getSize();
-  var sourceLastUpdatedMs = file.getLastUpdated().getTime();
-  if (fileSize <= 0) {
-    return {
-      success: false,
-      errorCode: 'EMPTY_FILE',
-      message: 'Specified reference file is empty (0 bytes).'
-    };
-  }
-
-  var fileName = file.getName();
-  var ext = getFileExtension(fileName).toLowerCase();
-  var ALLOWED_EXTS = ['pdf'];
-  if (ALLOWED_EXTS.indexOf(ext) === -1) {
-    return {
-      success: false,
-      errorCode: 'UNSUPPORTED_FILE_TYPE',
-      message: 'Unsupported file type. Only PDF (.pdf) documents are permitted.'
-    };
-  }
-
-  // 5. Binary & Structural Signature Validation (%PDF header)
-  var fileBlob = file.getBlob();
-  var headerBytes = fileBlob.getBytes().slice(0, 4);
-  if (headerBytes.length < 4 ||
-      (headerBytes[0] & 0xFF) !== 0x25 ||
-      (headerBytes[1] & 0xFF) !== 0x50 ||
-      (headerBytes[2] & 0xFF) !== 0x44 ||
-      (headerBytes[3] & 0xFF) !== 0x46) {
-    return {
-      success: false,
-      errorCode: 'INVALID_FILE_CONTENT',
-      message: 'File content does not match standard PDF document structure (%PDF header missing).'
-    };
-  }
-
-  // 6. Validate sharing permissions: ensure not public (FAIL-CLOSED)
-  try {
-    var sharingAccess = file.getSharingAccess();
-    if (sharingAccess === DriveApp.Access.ANYONE || sharingAccess === DriveApp.Access.ANYONE_WITH_LINK) {
-      logAuditAction(
-        'REFERENCE_LIBRARY_SECURITY_ALERT',
-        session ? session.employeeId : 'UNKNOWN',
-        'Security policy violation: Reference file has public Drive link sharing: ' + cleanDriveFileId,
-        'FORBIDDEN'
-      );
-      return {
-        success: false,
-        errorCode: 'PUBLIC_ACCESS_FORBIDDEN',
-        message: 'Security policy violation: Reference file has public Drive link sharing. Sharing must be private.'
-      };
-    }
-  } catch (shareErr) {
-    logAuditAction(
-      'REFERENCE_LIBRARY_PRIVACY_CHECK_ERROR',
-      session ? session.employeeId : 'UNKNOWN',
-      'Drive privacy check failed for file ' + cleanDriveFileId + ': ' + (shareErr && shareErr.message ? shareErr.message : String(shareErr)),
-      'FAILED'
-    );
-    return {
-      success: false,
-      errorCode: 'DRIVE_PRIVACY_CHECK_FAILED',
-      message: 'Drive privacy check failed. Reference resource cannot be indexed without verifying sharing permissions: ' + (shareErr && shareErr.message ? shareErr.message : String(shareErr))
-    };
-  }
-
-  var meta = metadata || {};
-  var resourceTitle = String(meta.resourceTitle || meta.title || fileName.replace(/\.[^/.]+$/, '')).trim();
-  var authorOrg = String(meta.authorOrganization || meta.author || 'Open RN Project / Chippewa Valley Technical College').trim();
-  var license = String(meta.license || 'CC BY 4.0').trim();
-  var version = String(meta.version || 'Latest').trim();
-  var isReindex = Boolean(meta.reindex);
-  var jobPermission = cneLibraryIndexJobPermission_(cleanDriveFileId, meta);
-  if (jobPermission) return jobPermission;
-
-  // 7. CONTENT EXTRACTION & CHUNKING OUTSIDE SCRIPTLOCK
-  var extResult = null;
-  var rawText = '';
-  try {
-    rawText = extractReferenceLibraryBlob(fileBlob, ext);
-    if (!rawText || rawText.trim().length < 15) {
-      extResult = {
-        success: false,
-        errorCode: 'NO_EXTRACTABLE_CONTENT',
-        message: 'This PDF does not contain usable text. Please upload a text-based PDF.'
-      };
-    } else {
-      extResult = {
-        success: true,
-        extractedText: rawText.trim()
-      };
-    }
-  } catch (extractErr) {
-    extResult = {
-      success: false,
-      errorCode: 'CONTENT_EXTRACTION_FAILED',
-      message: extractErr && extractErr.message ? extractErr.message : String(extractErr)
-    };
-  }
-
-  var rowsToInsert = [];
-  var nowIso = new Date().toISOString();
-  var isSuccess = extResult && extResult.success && extResult.extractedText;
-
-  if (isSuccess) {
-    var chunks = chunkReferenceLibraryContent(extResult.extractedText, ext, resourceTitle);
-    var originalCharacters = chunks.reduce(function(sum, part) {return sum + String(part.text || '').length;}, 0);
-    chunks = chunks.filter(function(part) {return cneReferenceChunkReadable_(part.text);});
-    var readableCharacters = chunks.reduce(function(sum, part) {return sum + String(part.text || '').length;}, 0);
-    if (originalCharacters > 0 && readableCharacters / originalCharacters < 0.65) {
-      // Preserve any earlier good index on failed reindex; never mark noisy PDF as SUCCESS.
-      chunks = [];
-      extResult = {success:false,errorCode:'LOW_QUALITY_PDF_EXTRACTION',message:'Too much text was unreadable or damaged. Upload a searchable text-based PDF and reindex.'};
-      isSuccess = false;
-    }
-    if (chunks.length > 0) {
-      for (var c = 0; c < chunks.length; c++) {
-        var chunkIndexId = 'IDX_LIB_' + cleanDriveFileId.substring(0, 8) + '_C' + (c + 1);
-        rowsToInsert.push([
-          chunkIndexId,
-          'LOCAL_REFERENCE_LIB',
-          '', // CNE ID is empty for general reference library resources
-          cleanDriveFileId,
-          resourceTitle,
-          chunks[c].topic || resourceTitle,
-          /^(?:[0-9]+|general content)$/i.test(String(chunks[c].sectionHeading || '').trim()) ? 'General Content' : chunks[c].sectionHeading,
-          (c + 1),
-          chunks[c].text,
-          cneReferenceClinicalKeywords_(chunks[c].text),
-          'SUCCESS',
-          nowIso
-        ]);
-      }
-    } else {
-      isSuccess = false;
-      extResult = extResult && extResult.errorCode === 'LOW_QUALITY_PDF_EXTRACTION' ? extResult : {
-        success: false,
-        errorCode: 'NO_EXTRACTABLE_CONTENT',
-        message: 'This PDF does not contain usable text. Please upload a text-based PDF.'
-      };
-    }
-  }
-
-  if (!isSuccess) {
-    var failErrCode = extResult ? (extResult.errorCode || 'EXTRACTION_FAILED') : 'EXTRACTION_FAILED';
-    var failErrMsg = extResult ? (extResult.message || 'Extraction failed') : 'No readable content';
-    var failIndexId = 'IDX_LIB_' + cleanDriveFileId.substring(0, 8) + '_FAIL';
-
-    rowsToInsert.push([
-      failIndexId,
-      'LOCAL_REFERENCE_LIB',
-      '',
-      cleanDriveFileId,
-      resourceTitle,
-      'Extraction Error',
-      'Extraction Error',
-      0,
-      failErrCode + ': ' + failErrMsg,
-      '',
-      'FAILED',
-      nowIso
-    ]);
-  }
-
-  // 8. Revalidate Drive state immediately before the shared-sheet commit.
-  // ScriptLock cannot serialize external Drive permission/file edits, so keeping Drive calls
-  // inside the script-wide mutex only increases contention without providing stronger atomicity.
-  var liveReferenceFile;
-  try { liveReferenceFile = DriveApp.getFileById(cleanDriveFileId); } catch (liveRefErr) { liveReferenceFile = null; }
-  if (!liveReferenceFile || !isFileInOpenRnFolder(liveReferenceFile, openRnFolder)) {
-    return { success: false, errorCode: 'REFERENCE_RESOURCE_CHANGED', message: 'Reference resource was removed or moved while indexing. Stale indexing result was discarded.' };
-  }
-  if (liveReferenceFile.getSize() !== fileSize || liveReferenceFile.getLastUpdated().getTime() !== sourceLastUpdatedMs) {
-    return { success: false, errorCode: 'REFERENCE_RESOURCE_CHANGED', message: 'Reference resource changed while indexing. Please index the latest file version again.' };
-  }
-  try {
-    var liveSharing = liveReferenceFile.getSharingAccess();
-    if (liveSharing === DriveApp.Access.ANYONE || liveSharing === DriveApp.Access.ANYONE_WITH_LINK) {
-      return { success: false, errorCode: 'PUBLIC_ACCESS_FORBIDDEN', message: 'Security policy violation: Reference file has public Drive link sharing. Sharing must be private.' };
-    }
-  } catch (livePrivacyErr) {
-    return { success: false, errorCode: 'DRIVE_PRIVACY_CHECK_FAILED', message: 'Drive privacy check failed before indexing commit.' };
-  }
-
-  // 9. CRITICAL SECTION: shared Sheet state only.
-  var lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(20000);
-  } catch (lockErr) {
-    return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy indexing reference library. Please try again.' };
-  }
-
-  var alreadyIndexed = false;
-  var alreadyIndexedCount = 0;
-  var resourceId = 'LIB_OPENRN_' + cleanDriveFileId.substring(0, 10);
-
-  try {
-    var liveJobPermission = cneLibraryIndexJobPermission_(cleanDriveFileId, meta);
-    if (liveJobPermission) return liveJobPermission;
-    var freshIndexAdmin = requireFreshAdminMutation(session);
-    if (!freshIndexAdmin.success) return freshIndexAdmin;
-    session = freshIndexAdmin.session;
-
-    // 8A. Update / Verify CNE_Reference_Library metadata sheet
-    var libSheet = getOrCreateSheet('CNE_Reference_Library');
-    ensureReferenceLibrarySheetHeaders(libSheet, true);
-    var libMap = getHeaderMap(libSheet);
-    var driveColLib = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
-    var activeColLib = libMap['active'] !== undefined ? libMap['active'] : 8;
-    var updatedColLib = libMap['updatedat'] !== undefined ? libMap['updatedat'] : 10;
-    var resIdColLib = libMap['resourceid'] !== undefined ? libMap['resourceid'] : 0;
-
-    var existingLibRow = findExactRowInColumn_(libSheet, driveColLib, cleanDriveFileId, 2);
-    if (existingLibRow > 1) {
-      resourceId = String(libSheet.getRange(existingLibRow, resIdColLib + 1).getValue() || resourceId).trim();
-    }
-
-    // 8B. Duplicate Check in CNE_Reference_Index
-    var indexSheet = getOrCreateSheet('CNE_Reference_Index');
-    ensureReferenceIndexSheetHeaders(indexSheet, true);
-    var idxMap = getHeaderMap(indexSheet);
-    var srcTypeCol = idxMap['sourcetype'];
-    var driveColIdx = idxMap['drivefileid'] !== undefined ? idxMap['drivefileid'] : 3;
-    var statusColIdx = idxMap['extractionstatus'] !== undefined ? idxMap['extractionstatus'] : 10;
-    var idxRowCount = Math.max(0, indexSheet.getLastRow() - 1);
-    var srcVals = idxRowCount && srcTypeCol!==undefined ? indexSheet.getRange(2, srcTypeCol + 1, idxRowCount, 1).getValues() : [];
-    var driveVals = idxRowCount ? indexSheet.getRange(2, driveColIdx + 1, idxRowCount, 1).getValues() : [];
-    var statusVals = idxRowCount ? indexSheet.getRange(2, statusColIdx + 1, idxRowCount, 1).getValues() : [];
-
-    for (var ir = 0; ir < idxRowCount; ir++) {
-      var rSrc = srcTypeCol===undefined?'LOCAL_REFERENCE_LIB':String(srcVals[ir][0] || '').trim().toUpperCase();
-      var rDrive = String(driveVals[ir][0] || '').trim();
-      var rStat = String(statusVals[ir][0] || '').trim().toUpperCase();
-      if (rSrc === 'LOCAL_REFERENCE_LIB' && rDrive === cleanDriveFileId && rStat === 'SUCCESS') alreadyIndexedCount++;
-    }
-
-    if (alreadyIndexedCount > 0 && !isReindex) {
-      alreadyIndexed = true;
-    } else {
-      // If content extraction/chunking failed on re-index, preserve previous valid index!
-      if (!isSuccess && alreadyIndexedCount > 0) {
-        logAuditAction(
-          'REFERENCE_REINDEX_PRESERVED',
-          session ? session.employeeId : 'SYSTEM',
-          'Re-indexing failed to extract new content for ' + cleanDriveFileId + '. Previous valid index preserved.',
-          'WARNING'
-        );
-        return {
-          success: false,
-          errorCode: extResult ? extResult.errorCode : 'CONTENT_EXTRACTION_FAILED',
-          message: 'Re-indexing failed: unable to extract new content. Previous valid index has been preserved.'
-        };
-      }
-
-      // Collect existing LOCAL_REFERENCE_LIB rows for this Drive File ID ONLY
-      var rowsToDelete = [];
-      for (var ir2 = 0; ir2 < idxRowCount; ir2++) {
-        var rowSrc = srcTypeCol===undefined?'LOCAL_REFERENCE_LIB':String(srcVals[ir2][0] || '').trim().toUpperCase();
-        var rowDrive = String(driveVals[ir2][0] || '').trim();
-        if (rowSrc === 'LOCAL_REFERENCE_LIB' && rowDrive === cleanDriveFileId) rowsToDelete.push(ir2 + 2);
-      }
-
-      // 8C. Safe Replacement: Batch write new chunk rows FIRST before deleting old rows
-      if (rowsToInsert.length > 0) {
-        var startRow = indexSheet.getLastRow() + 1;
-        try {
-          cneWriteHeaderRows_(indexSheet,CNE_SHEET_HEADERS['CNE_Reference_Index'],cneIndexProjectRows_(rowsToInsert,CNE_SHEET_HEADERS['CNE_Reference_Index']),startRow);
-        } catch (writeErr) {
-          // If the new batch write fails, existing index rows were NOT deleted and remain intact
-          logAuditAction(
-            'REFERENCE_INDEX_WRITE_FAILED',
-            session ? session.employeeId : 'SYSTEM',
-            'Failed to write new reference index chunks for ' + cleanDriveFileId + ': ' + (writeErr && writeErr.message ? writeErr.message : String(writeErr)),
-            'FAILED'
-          );
-          return {
-            success: false,
-            errorCode: 'INDEX_BATCH_WRITE_FAILED',
-            message: 'Failed to write new reference index chunks. Previous valid index has been preserved.'
-          };
-        }
-
-        // 8D. Only after new replacement data is successfully written to the sheet,
-        // delete previous index rows for this specific LOCAL_REFERENCE_LIB resource.
-        if (rowsToDelete.length > 0) {
-          try {
-            deleteSheetRowsByIndices(indexSheet, rowsToDelete);
-          } catch (delErr) {
-            logAuditAction(
-              'REFERENCE_INDEX_PURGE_WARNING',
-              session ? session.employeeId : 'SYSTEM',
-              'Warning deleting old index rows during reindex: ' + (delErr && delErr.message ? delErr.message : String(delErr)),
-              'WARNING'
-            );
-            return {success:false,errorCode:'INDEX_REPLACEMENT_INCOMPLETE',message:'New index chunks were written but the old rows could not be removed. Reindex again after resolving the sheet error; no successful replacement is reported.'};
-          }
-        }
-        // The replacement must contain exactly the new indexed rows for this file.
-        var verifyIds = indexSheet.getRange(2, driveColIdx + 1, Math.max(0, indexSheet.getLastRow() - 1), 1).getValues();
-        var verifiedCount = 0;
-        for (var vc = 0; vc < verifyIds.length; vc++) if (String(verifyIds[vc][0] || '').trim() === cleanDriveFileId) verifiedCount++;
-        if (verifiedCount !== rowsToInsert.length) return {success:false,errorCode:'INDEX_REPLACEMENT_INCOMPLETE',message:'Reference index replacement verification failed. Check and safely reindex this resource.'};
-      }
-
-      // 8E. Update metadata registry in CNE_Reference_Library
-      var libRowValues = [
-        resourceId,
-        'LOCAL_REFERENCE_LIB',
-        resourceTitle,
-        cleanDriveFileId,
-        authorOrg,
-        license,
-        version,
-        ext.toUpperCase(),
-        isSuccess ? 'TRUE' : 'FALSE',
-        nowIso,
-        nowIso
-      ];
-
-      if (existingLibRow > 1) {
-        libSheet.getRange(existingLibRow, 1, 1, libRowValues.length).setValues([libRowValues]);
-      } else {
-        libSheet.appendRow(libRowValues);
-      }
-    }
-  } finally {
-    lock.releaseLock();
-  }
-
-  // 9. Audit and Return
-if (alreadyIndexed) {
-  return {
-    success: true,
-
-    // Keep existing top-level fields for backward compatibility
-    alreadyIndexed: true,
-    resourceId: resourceId,
-    chunksCount: alreadyIndexedCount,
-
-    // New frontend response shape
-    data: {
-      alreadyIndexed: true,
-      resourceId: resourceId,
-      chunksCount: alreadyIndexedCount
-    },
-
-    message: 'Nursing reference resource is already indexed.'
-  };
-}
-
-  if (isSuccess) {
-    logAuditAction(
-      'REFERENCE_LIBRARY_RESOURCE_INDEXED',
-      session ? session.employeeId : 'SYSTEM',
-      'Successfully indexed ' + rowsToInsert.length + ' chunks for reference resource "' + resourceTitle + '" (' + cleanDriveFileId + ')',
-      'SUCCESS'
-    );
-return {
-  success: true,
-
-  // Keep existing top-level fields for backward compatibility
-  resourceId: resourceId,
-  chunksCount: rowsToInsert.length,
-  alreadyIndexed: false,
-
-  // New frontend response shape
-  data: {
-    resourceId: resourceId,
-    chunksCount: rowsToInsert.length,
-    alreadyIndexed: false
-  },
-
-  message: 'Reference resource indexed successfully (' + rowsToInsert.length + ' chunks).'
-};
-  } else {
-    logAuditAction(
-      'REFERENCE_LIBRARY_RESOURCE_INDEX_FAILED',
-      session ? session.employeeId : 'SYSTEM',
-      'Indexing failed for reference resource "' + resourceTitle + '": ' + (extResult ? extResult.errorCode : 'FAILED'),
-      'FAILED'
-    );
-    return {
-      success: false,
-      errorCode: extResult ? extResult.errorCode : 'CONTENT_EXTRACTION_FAILED',
-      message: 'Unable to extract readable text from reference resource: ' + (extResult ? extResult.message : 'No readable content.')
-    };
-  }
-}
-
-/**
- * Surgically delete / deactivate a reference library resource from CNE_Reference_Library
- * and CNE_Reference_Index.
- * Strictly Admin-only.
- */
 function deleteReferenceLibraryResource(driveFileId, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
@@ -11531,322 +10989,10 @@ function listNursingReferenceResources(session) {
  *   PENDING = file is uploaded but no committed index result exists yet
  * Strictly Admin-only.
  */
-function getNursingReferenceIndexStatus(driveFileId, session) {
-  var adminError = requireAdmin(session);
-  if (adminError) return adminError;
+// Retired legacy Nursing Reference Library indexing implementation.
 
-  var cleanDriveFileId = String(driveFileId || '').trim();
-  if (!cleanDriveFileId) {
-    return { success: false, errorCode: 'INVALID_PARAMS', message: 'Drive File ID is required.' };
-  }
+// Retired legacy Nursing Reference Library indexing implementation.
 
-  var resourceId = '';
-  var resourceTitle = '';
-  var indexedAt = '';
-  var updatedAt = '';
-
-  // Metadata lookup is optional; status still works if the pending metadata write was skipped.
-  try {
-    var libSheet = getSpreadsheet('CNE').getSheetByName('CNE_Reference_Library');
-    if (libSheet && libSheet.getLastRow() > 1) {
-      ensureReferenceLibrarySheetHeaders(libSheet);
-      var libMap = getHeaderMap(libSheet);
-      var driveColLib = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
-      var libRow = findExactRowInColumn_(libSheet, driveColLib, cleanDriveFileId, 2);
-      if (libRow > 1) {
-        var libWidth = libSheet.getLastColumn();
-        var libValues = libSheet.getRange(libRow, 1, 1, libWidth).getValues()[0];
-        var resIdCol = libMap['resourceid'] !== undefined ? libMap['resourceid'] : 0;
-        var titleCol = libMap['resourcetitle'] !== undefined ? libMap['resourcetitle'] : 2;
-        var indexedAtCol = libMap['indexedat'] !== undefined ? libMap['indexedat'] : 9;
-        var updatedAtCol = libMap['updatedat'] !== undefined ? libMap['updatedat'] : 10;
-
-        resourceId = String(libValues[resIdCol] || '').trim();
-        resourceTitle = String(libValues[titleCol] || '').trim();
-        indexedAt = String(libValues[indexedAtCol] || '').trim();
-        updatedAt = String(libValues[updatedAtCol] || '').trim();
-      }
-    }
-  } catch (libStatusErr) {
-    // Non-blocking: authoritative index rows below remain sufficient.
-  }
-
-  var successChunks = 0;
-  var failedFound = false;
-  var failureCode = '';
-  var failureMessage = '';
-  var latestIndexUpdatedAt = '';
-
-  try {
-    var indexSheet = getSpreadsheet('CNE').getSheetByName('CNE_Reference_Index');
-    if (indexSheet && indexSheet.getLastRow() > 1) {
-      ensureReferenceIndexSheetHeaders(indexSheet);
-      var idxMap = getHeaderMap(indexSheet);
-      var driveColIdx = idxMap['drivefileid'] !== undefined ? idxMap['drivefileid'] : 3;
-      var srcTypeCol = idxMap['sourcetype'];
-      var textCol = idxMap['chunktext'] !== undefined ? idxMap['chunktext'] : 8;
-      var statusCol = idxMap['extractionstatus'] !== undefined ? idxMap['extractionstatus'] : 10;
-      var updatedCol = idxMap['updatedat'] !== undefined ? idxMap['updatedat'] : 11;
-
-      var searchRange = indexSheet.getRange(2, driveColIdx + 1, indexSheet.getLastRow() - 1, 1);
-      var matches = searchRange.createTextFinder(cleanDriveFileId).matchEntireCell(true).findAll();
-
-      if (matches && matches.length > 0) {
-        var minRow = matches[0].getRow();
-        var maxRow = matches[0].getRow();
-        for (var m = 1; m < matches.length; m++) {
-          minRow = Math.min(minRow, matches[m].getRow());
-          maxRow = Math.max(maxRow, matches[m].getRow());
-        }
-
-        // Read the bounded block once, then filter exact Drive File ID rows in memory.
-        var block = indexSheet.getRange(minRow, 1, maxRow - minRow + 1, indexSheet.getLastColumn()).getValues();
-        for (var r = 0; r < block.length; r++) {
-          var row = block[r];
-          var rowDrive = String(row[driveColIdx] || '').trim();
-          var rowSrc = srcTypeCol===undefined?'LOCAL_REFERENCE_LIB':String(row[srcTypeCol] || '').trim().toUpperCase();
-          if (rowDrive !== cleanDriveFileId || rowSrc !== 'LOCAL_REFERENCE_LIB') continue;
-
-          var rowStatus = String(row[statusCol] || '').trim().toUpperCase();
-          var rowUpdated = String(row[updatedCol] || '').trim();
-          if (rowUpdated && rowUpdated > latestIndexUpdatedAt) latestIndexUpdatedAt = rowUpdated;
-
-          if (rowStatus === 'SUCCESS') {
-            successChunks++;
-          } else if (rowStatus === 'FAILED') {
-            failedFound = true;
-            var rawFailure = String(row[textCol] || '').trim();
-            var separatorIndex = rawFailure.indexOf(':');
-            if (separatorIndex > 0) {
-              failureCode = rawFailure.substring(0, separatorIndex).trim();
-              failureMessage = rawFailure.substring(separatorIndex + 1).trim();
-            } else if (rawFailure) {
-              failureMessage = rawFailure;
-            }
-          }
-        }
-      }
-    }
-  } catch (statusErr) {
-    return {
-      success: false,
-      errorCode: 'INDEX_STATUS_READ_FAILED',
-      message: 'Unable to read reference indexing status: ' + (statusErr && statusErr.message ? statusErr.message : String(statusErr))
-    };
-  }
-
-  var indexStatus = successChunks > 0 ? 'INDEXED' : (failedFound ? 'FAILED' : 'PENDING');
-  var message = indexStatus === 'INDEXED'
-    ? 'Reference resource is indexed and ready.'
-    : indexStatus === 'FAILED'
-      ? (failureMessage || 'Reference resource indexing failed.')
-      : 'Reference file is uploaded. Indexing has not completed yet.';
-
-  return {
-    success: true,
-    data: {
-      driveFileId: cleanDriveFileId,
-      resourceId: resourceId || null,
-      resourceTitle: resourceTitle || '',
-      indexStatus: indexStatus,
-      chunksCount: successChunks,
-      errorCode: failureCode || null,
-      message: message,
-      indexedAt: indexedAt || latestIndexUpdatedAt || '',
-      updatedAt: latestIndexUpdatedAt || updatedAt || ''
-    }
-  };
-}
-
-/**
- * Upload a nursing reference PDF directly into the approved Nursing Reference Library folder.
- * Strictly Admin-only.
- * Document Policy: PDF only (.pdf). No application-defined size limit.
- *
- * IMPORTANT:
- * This action ONLY uploads the file and registers PENDING metadata.
- * Text extraction/indexing is intentionally performed by the separate
- * indexNursingReferenceResource action so a slow index can never cause
- * the browser to re-upload the same PDF.
- */
-function uploadNursingReferenceResource(params, session) {
-  var adminError = requireAdmin(session);
-  if (adminError) return adminError;
-
-  var fileName = params ? params.fileName : null;
-  var base64Data = params ? params.base64Data : null;
-  var resourceTitle = params ? params.resourceTitle : null;
-  if (!fileName || !base64Data) {
-    return { success: false, errorCode: 'INVALID_PARAMS', message: 'File name and file content are required.' };
-  }
-
-  var ext = getFileExtension(fileName).toLowerCase();
-  var ALLOWED_EXTS = ['pdf'];
-  if (ALLOWED_EXTS.indexOf(ext) === -1) {
-    return { success: false, errorCode: 'UNSUPPORTED_FILE_TYPE', message: 'Only PDF (.pdf) documents are permitted.' };
-  }
-
-  var folderResult = getOrCreateOpenRnFolder();
-  if (!folderResult.success || !folderResult.folder) {
-    return {
-      success: false,
-      errorCode: folderResult.errorCode || 'FOLDER_ERROR',
-      message: folderResult.message || 'Failed to access Nursing Reference Library folder.'
-    };
-  }
-
-  var cleanBase64 = String(base64Data || '');
-  if (cleanBase64.indexOf(',') !== -1) cleanBase64 = cleanBase64.split(',')[1];
-
-  var fileBytes;
-  try {
-    fileBytes = Utilities.base64Decode(cleanBase64);
-  } catch (decErr) {
-    return { success: false, errorCode: 'INVALID_PAYLOAD', message: 'Invalid file payload: unable to decode base64 content.' };
-  }
-
-  if (!fileBytes || fileBytes.length === 0) {
-    return { success: false, errorCode: 'EMPTY_FILE', message: 'Uploaded file is empty (0 bytes).' };
-  }
-
-  if (
-    fileBytes.length < 4 ||
-    (fileBytes[0] & 0xFF) !== 0x25 ||
-    (fileBytes[1] & 0xFF) !== 0x50 ||
-    (fileBytes[2] & 0xFF) !== 0x44 ||
-    (fileBytes[3] & 0xFF) !== 0x46
-  ) {
-    return {
-      success: false,
-      errorCode: 'INVALID_FILE_CONTENT',
-      message: 'File content does not match standard PDF document structure (%PDF header missing).'
-    };
-  }
-
-  // Fresh Admin identity immediately before the authoritative Drive mutation.
-  var freshAdmin = requireFreshAdminMutation(session);
-  if (!freshAdmin.success) return freshAdmin;
-  session = freshAdmin.session;
-
-  var safeBaseName = sanitizeFileNamePart(String(fileName).replace(/\.[^/.]+$/, '')) || 'Nursing_Reference';
-  var safeName = safeBaseName + '.' + ext;
-  var blob = Utilities.newBlob(fileBytes, 'application/pdf', safeName);
-
-  var createdFile;
-  try {
-    createdFile = folderResult.folder.createFile(blob);
-
-    // Reference library files must remain private.
-    createdFile.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
-
-    var sharingAccess = createdFile.getSharingAccess();
-    if (sharingAccess === DriveApp.Access.ANYONE || sharingAccess === DriveApp.Access.ANYONE_WITH_LINK) {
-      try { createdFile.setTrashed(true); } catch (privacyCleanupErr) {}
-      return {
-        success: false,
-        errorCode: 'PUBLIC_ACCESS_FORBIDDEN',
-        message: 'Security policy violation: uploaded reference file could not be kept private.'
-      };
-    }
-  } catch (createErr) {
-    if (createdFile) {
-      try { createdFile.setTrashed(true); } catch (createCleanupErr) {}
-    }
-    return {
-      success: false,
-      errorCode: 'FILE_CREATION_FAILED',
-      message: 'Failed to create private file in Nursing Reference Library folder: ' + (createErr && createErr.message ? createErr.message : String(createErr))
-    };
-  }
-
-  var driveFileId = createdFile.getId();
-  var nowIso = new Date().toISOString();
-  var pendingResourceId = 'LIB_OPENRN_' + driveFileId.substring(0, 10);
-  var cleanTitle = String(resourceTitle || safeBaseName).trim();
-  var cleanAuthor = String((params && params.authorOrganization) || 'Open RN Project / Chippewa Valley Technical College').trim();
-  var cleanLicense = String((params && params.license) || 'CC BY 4.0').trim();
-  var cleanVersion = String((params && params.version) || 'Latest').trim();
-  var registryWarning = '';
-
-  // Persist PENDING metadata quickly. If this small metadata write is temporarily busy,
-  // do NOT report the Drive upload as failed and do NOT ask the browser to upload again.
-  var lock = LockService.getScriptLock();
-  var lockAcquired = false;
-  try {
-    lock.tryLock(8000);
-    lockAcquired = lock.hasLock();
-
-    if (lockAcquired) {
-      var liveAdmin = requireFreshAdminMutation(session);
-      if (liveAdmin.success) {
-        session = liveAdmin.session;
-        var libSheet = getOrCreateSheet('CNE_Reference_Library');
-        ensureReferenceLibrarySheetHeaders(libSheet, true);
-        var libMap = getHeaderMap(libSheet);
-        var driveColLib = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
-        var existingRow = findExactRowInColumn_(libSheet, driveColLib, driveFileId, 2);
-
-        var pendingRow = [
-          pendingResourceId,
-          'LOCAL_REFERENCE_LIB',
-          cleanTitle,
-          driveFileId,
-          cleanAuthor,
-          cleanLicense,
-          cleanVersion,
-          ext.toUpperCase(),
-          'FALSE',
-          '',
-          nowIso
-        ];
-
-        if (existingRow > 1) {
-          libSheet.getRange(existingRow, 1, 1, pendingRow.length).setValues([pendingRow]);
-        } else {
-          libSheet.appendRow(pendingRow);
-        }
-      } else {
-        registryWarning = 'Pending metadata registration was deferred. Indexing can still continue using the uploaded Drive file.';
-      }
-    } else {
-      registryWarning = 'Pending metadata registration was deferred because the server was busy. Indexing can still continue using the uploaded Drive file.';
-    }
-  } catch (registryErr) {
-    registryWarning = 'Pending metadata registration was deferred: ' + (registryErr && registryErr.message ? registryErr.message : String(registryErr));
-  } finally {
-    if (lockAcquired) {
-      try { lock.releaseLock(); } catch (releaseErr) {}
-    }
-  }
-
-  logAuditAction(
-    'UPLOAD_REFERENCE_RESOURCE',
-    session ? session.employeeId : 'SYSTEM',
-    'Uploaded reference resource "' + safeName + '" (' + driveFileId + '). Index status: PENDING.',
-    'SUCCESS'
-  );
-
-  return {
-    success: true,
-    data: {
-      driveFileId: driveFileId,
-      fileName: safeName,
-      resourceId: pendingResourceId,
-      uploadStatus: 'UPLOADED',
-      indexStatus: 'PENDING',
-      registryWarning: registryWarning || undefined
-    },
-    message: registryWarning
-      ? 'Reference file uploaded successfully. Indexing is pending. ' + registryWarning
-      : 'Reference file uploaded successfully. Indexing is pending.'
-  };
-}
-
-/**
- * Re-index uploaded learning material for a specific CNE.
- * Authoritatively verifies session and CNE access.
- * Re-extracts and indexes content into CNE_Material_Index.
- */
 function handleReindexLearningResource(params, session) {
   var cneId = sanitizeCellInput(params ? params.cneId : '');
   if (!cneId) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE ID is required.' };
@@ -11882,35 +11028,17 @@ function handleReindexLearningResource(params, session) {
   return indexLearningResourceContent(cneId, driveFileId, fileName, fileType, record.topic, session, false);
 }
 
-function cneLibraryIndexJobPermission_(driveFileId, meta) {
-  return null;
-}
+// Retired legacy Nursing Reference Library indexing implementation.
 
-
-// Action Dispatch Handlers for Phase 4B
 function handleListNursingReferenceResources(params, session) {
   return listNursingReferenceResources(session);
 }
 
-function handleIndexNursingReferenceResource(params, session) {
-  return handleAdminAction(params, session, function(p, s) {
-    var driveFileId = p ? (p.driveFileId || p.fileId) : null;
-    return indexReferenceLibraryResource(driveFileId, p, s);
-  }, 'INDEX_NURSING_REFERENCE_RESOURCE');
-}
+// Retired legacy Nursing Reference Library indexing implementation.
 
-function handleGetNursingReferenceIndexStatus(params, session) {
-  var adminError = requireAdmin(session);
-  if (adminError) return adminError;
-  var driveFileId = params ? (params.driveFileId || params.fileId) : null;
-  return getNursingReferenceIndexStatus(driveFileId, session);
-}
+// Retired legacy Nursing Reference Library indexing implementation.
 
-function handleUploadNursingReferenceResource(params, session) {
-  return handleAdminAction(params, session, function(p, s) {
-    return uploadNursingReferenceResource(p, s);
-  }, 'UPLOAD_NURSING_REFERENCE_RESOURCE');
-}
+// Retired legacy Nursing Reference Library indexing implementation.
 
 function handleDeleteNursingReferenceResource(params, session) {
   return handleAdminAction(params, session, function(p, s) {
@@ -12796,11 +11924,27 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
   var keywordsCol = map['clinicalkeywords'];
   var statusCol = map['extractionstatus'] !== undefined ? map['extractionstatus'] : 10;
 
+  var rowCount = Math.max(0, materialIndexSheet.getLastRow() - 1);
+  // Scan only the CNE ID column, then read compact blocks around matching rows.
+  // Large unrelated CNE materials never need to cross the Apps Script boundary.
+  var idValues = materialIndexSheet.getRange(2, cneIdCol + 1, rowCount, 1).getValues();
+  var matchedRows = [];
   var upperCneId = cleanCneId.toUpperCase();
-  var rows = materialIndexSheet.getDataRange().getValues();
+  for (var m = 0; m < idValues.length; m++) {
+    if (String(idValues[m][0] || '').trim().toUpperCase() === upperCneId) matchedRows.push(m + 2);
+  }
+  var rowGroups = [];
+  for (var g = 0; g < matchedRows.length; g++) {
+    var actual = matchedRows[g];
+    var last = rowGroups.length ? rowGroups[rowGroups.length - 1] : null;
+    if (last && actual - last.end <= 12 && actual - last.start < 250) last.end = actual;
+    else rowGroups.push({ start: actual, end: actual });
+  }
   var uploadedCandidates = [];
-
-  for (var r = 1; r < rows.length; r++) {
+  for (var groupIndex = 0; groupIndex < rowGroups.length; groupIndex++) {
+    var group = rowGroups[groupIndex];
+    var rows = materialIndexSheet.getRange(group.start, 1, group.end - group.start + 1, materialIndexSheet.getLastColumn()).getValues();
+    for (var r = 0; r < rows.length; r++) {
     var row = rows[r];
     var rowCneId = String(row[cneIdCol] || '').trim().toUpperCase();
     if (rowCneId !== upperCneId || String(row[driveCol] || '').trim() !== currentDriveId) continue;
@@ -12812,7 +11956,7 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
     if (chunkText.length < 15) continue;
 
     var candidate = {
-      indexId: String(row[idCol] || ('IDX_' + cleanCneId + '_R' + (r + 1))),
+      indexId: String(row[idCol] || ('IDX_' + cleanCneId + '_R' + (group.start + r))),
       sourceType: 'UPLOADED_CNE',
       resourceTitle: String(row[fileNameCol] || ('CNE ' + cleanCneId + ' Material')),
       topic: String(row[topicCol] || cleanTopic),
@@ -12823,6 +11967,7 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
       relevanceScore: 0
     };
     uploadedCandidates.push(candidate);
+    }
   }
 
   if (uploadedCandidates.length === 0) {
@@ -15961,7 +15106,7 @@ function handleSearchCNEReferenceQuestions(params,session) {
     out.push(candidate);
   }
   out.sort(function(a,b){return b.matchScore-a.matchScore || a.questionId.localeCompare(b.questionId);});
-  return {success:true,data:out.slice(0,30),totalMatches:out.length,topic:topic,clinicalSearch:clinicalSearch};
+  return {success:true,data:out.slice(0,20),totalMatches:out.length,topic:topic,clinicalSearch:clinicalSearch};
 }
 function handleImportCNEReferenceQuestion(params,session) {
   if(!session||!session.employeeId)return {success:false,errorCode:'UNAUTHORIZED'};
@@ -21425,6 +20570,20 @@ function handleSyncClinicalInsightFolder(params,session){
     if(newRows.length)cneWriteHeaderRows_(sh,CNE_SHEET_HEADERS['CNE Clinical Insights'],newRows,sh.getLastRow()+1);
     return {success:true,data:{added:newRows.length,scanned:scanned,requiresReview:true}};
   }finally{lock.releaseLock();}
+}
+// Two priority tiers: resume-state is small and fast, while the dashboard
+// aggregates Question Bank + leaderboard + progress + insight in the background.
+// Both endpoints check the authenticated session server-side.
+function handleGetQuizHomeCore(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED',cneQuizSession_(session));
+  var activeRecord=cneQuizFindActiveAttempt_(session.employeeId);
+  return {success:true,data:{activeAttempt:activeRecord?cneQuizAttemptPayload_(activeRecord):null}};
+}
+function handleGetQuizHomeDashboard(params,session){
+  if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED',cneQuizSession_(session));
+  var summary=cneQuizUnitSummary_();if(!summary.success)return summary;
+  return {success:true,data:{units:summary.data.units,total:summary.data.total,imageCount:summary.data.imageCount,
+    leaderboard:cneQuizLeaderboard_(30),myProgress:cneQuizMyProgress_(session.employeeId),clinicalInsight:cneClinicalInsightToday_()}};
 }
 function handleGetQuizHome(params,session){
   if(cneQuizSession_(session))return cneQuizResponseError_('UNAUTHORIZED',cneQuizSession_(session));

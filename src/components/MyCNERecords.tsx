@@ -16,10 +16,12 @@ import {
   formatResourcePersonsDisplay,
   isUserAssignedResourcePerson,
   parseDurationToSeconds,
+  parseToIsoDateString,
   getCneTypeLabel
 } from '../utils';
 import { SearchInput } from './SearchInput';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
+import { LoadingProgress } from './common/LoadingProgress';
 
 export interface MyCNERecordsProps {
   user: SessionUser;
@@ -134,7 +136,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
           if (!isCurrent()) return;
           const res = await ApiService.getMyCNERecordsPage({
             page, pageSize: FETCH_BATCH_SIZE,
-            search: appliedFilters.search, fromDate: appliedFilters.fromDate, toDate: appliedFilters.toDate
+            search: '', fromDate: '', toDate: ''
           });
           if (!isCurrent()) return;
           if (!res.success || !res.data || !Array.isArray(res.data.records))
@@ -177,7 +179,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     };
     void load();
     return () => { if (recordsRequestIdRef.current === requestId) recordsRequestIdRef.current++; };
-  }, [identity, appliedFilters.search, appliedFilters.fromDate, appliedFilters.toDate, error]);
+  }, [identity, error]);
 
   const applyFilters = () => {
     if(startDate && endDate && startDate>endDate){error('From Date must not be after To Date.');return;}
@@ -188,13 +190,34 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     setSearchTerm('');setStartDate('');setEndDate('');
     setAppliedFilters({search:'',fromDate:'',toDate:''});
   };
-  const filteredRecords=records; // Already filtered and authorized on the server.
+  // Authorized records are downloaded once and kept in memory. Search/date tabs
+  // never trigger another Google Apps Script call; PDFs use these exact records.
+  const filteredRecords = React.useMemo(() => {
+    const query = appliedFilters.search.toLowerCase();
+    return records.filter(record => {
+      const date = parseToIsoDateString(record.fromDate || record.date) || '';
+      if (appliedFilters.fromDate && (!date || date < appliedFilters.fromDate)) return false;
+      if (appliedFilters.toDate && (!date || date > appliedFilters.toDate)) return false;
+      if (!query) return true;
+      return [record.topic, record.area, record.modeOfTeaching, record.resourcePersonName,
+        record.cneId, record.cneType].some(value => String(value || '').toLowerCase().includes(query));
+    });
+  }, [records, appliedFilters]);
+  const filteredDuration = React.useMemo(() => {
+    let participant = 0, resource = 0;
+    for (const record of filteredRecords) {
+      const seconds = getDurationSeconds(record.duration) || 0;
+      if (isUserParticipantInRecord(user, record)) participant += seconds;
+      if (isUserResourcePersonInRecord(user, record)) resource += seconds;
+    }
+    return { participant, resource };
+  }, [filteredRecords, user]);
   const formatTotalSeconds=(totalSeconds:number):string=>{
     const seconds=Math.max(0,Math.floor(Number(totalSeconds)||0));
     const hrs=Math.floor(seconds/3600),mins=Math.floor((seconds%3600)/60),secs=seconds%60;
     return `${hrs}h${mins?` ${mins}m`:''}${secs?` ${secs}s`:''}`;
   };
-  const trainingDurationStats={participant:formatTotalSeconds(totalParticipantSeconds),resourcePerson:formatTotalSeconds(totalResourceSeconds)};
+  const trainingDurationStats={participant:formatTotalSeconds(filteredDuration.participant),resourcePerson:formatTotalSeconds(filteredDuration.resource)};
 
   // Responsive display mode: render only desktop table OR mobile cards, never both
   const [isMobile, setIsMobile] = useState<boolean>(() => {
@@ -223,7 +246,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
       if (sessionGuardRef.current !== sessionAtStart) throw new Error('Session changed during PDF export.');
       // Uses exactly the complete filtered records already visible on this page.
       // No additional Apps Script requests are made when Generate PDF is clicked.
-      generateCNERecordsPdf(user, records, {
+      generateCNERecordsPdf(user, filteredRecords, {
         fromDate: appliedFilters.fromDate || undefined,
         toDate: appliedFilters.toDate || undefined,
         searchTerm: appliedFilters.search || undefined
@@ -328,7 +351,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
         {loading && records.length === 0 ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
             <Loader2 className="w-8 h-8 animate-spin text-teal-600" />
-            <span className="text-xs font-medium">Loading all matching CNE records{loadProgress.total > 0 ? ` (${loadProgress.loaded}/${loadProgress.total})` : "..."}</span>
+            <LoadingProgress label="Loading your CNE records" loaded={loadProgress.loaded} total={loadProgress.total} />
           </div>
         ) : filteredRecords.length === 0 ? (
           <div className="py-16 text-center space-y-3 px-4">
@@ -506,7 +529,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                     Loading all matching records ({loadProgress.loaded}/{loadProgress.total})...
                   </span>
                 ) : (
-                  <>Showing all <strong className="text-slate-900">{totalRecords}</strong> records matching your filters.</>
+                  <>Showing <strong className="text-slate-900">{filteredRecords.length}</strong> of <strong>{totalRecords}</strong> records after local filtering.</>
                 )}
               </div>
             )}

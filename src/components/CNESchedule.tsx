@@ -49,6 +49,8 @@ import { SearchInput } from './SearchInput';
 import { WardMultiSelect, WardStaffCounts } from './cne/WardMultiSelect';
 import { DropdownRetry } from './cne/DropdownRetry';
 import { loadOfficersSingleFlight, getCachedOfficers } from '../services/officerLoader';
+import { invalidateCNECalendarCache } from './CNECalendar';
+import { LoadingProgress } from './common/LoadingProgress';
 
 const CNEReferenceModal = lazy(() => import('./cne/CNEReferenceModal').then((m) => ({ default: m.CNEReferenceModal })));
 const CNEQuestionsModal = lazy(() => import('./cne/CNEQuestionsModal').then((m) => ({ default: m.CNEQuestionsModal })));
@@ -90,6 +92,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const scheduleCache = useRef(new Map<string, { records: CNERecord[]; total: number; hasMore: boolean; page: number; savedAt: number }>());
+  const CACHE_TTL_MS = 3 * 60 * 1000;
+  const scheduleCacheKey = () => JSON.stringify([sessionKey, statusFilter, debouncedSearch, fromDateFilter, toDateFilter]);
+  const clearScheduleCache = () => {
+    scheduleCache.current.clear();
+    if (user) invalidateCNECalendarCache(user);
+  };
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [fromDateFilter, setFromDateFilter] = useState('');
@@ -408,10 +417,22 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     return () => { activityRequestRef.current += 1; };
   }, [selectedDetailCne?.cneId, selectedDetailCne?.classId, fetchActivityProgress]);
 
-  const loadData = async (): Promise<CNERecord[] | undefined> => {
+  const loadData = async (forceFresh = false): Promise<CNERecord[] | undefined> => {
     const requestId = ++dataRequestRef.current;
     const requestSession = sessionKey;
     const isCurrent = () => requestId === dataRequestRef.current && requestSession === sessionKeyRef.current;
+    if (forceFresh) clearScheduleCache();
+    const key = scheduleCacheKey();
+    const cached = scheduleCache.current.get(key);
+    if (!forceFresh && cached && Date.now() - cached.savedAt < CACHE_TTL_MS) {
+      historyPageRef.current = cached.page;
+      setClasses(cached.records);
+      setHistoryTotal(cached.total);
+      setHistoryHasMore(cached.hasMore);
+      setLoadError('');
+      setLoading(false);
+      return cached.records;
+    }
     setLoading(true);
     setLoadingMore(false);
     historyMoreRequestRef.current = false;
@@ -444,6 +465,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       setClasses(result.data.records);
       setHistoryTotal(result.data.total);
       setHistoryHasMore(Boolean(result.data.hasMore));
+      scheduleCache.current.set(key, { records: result.data.records, total: result.data.total,
+        hasMore: Boolean(result.data.hasMore), page: 1, savedAt: Date.now() });
+      // Bound per-session memory; old search/filter variants are discarded.
+      if (scheduleCache.current.size > 16) scheduleCache.current.delete(scheduleCache.current.keys().next().value!);
       return result.data.records;
     } catch (e: any) {
       if (isCurrent()) {
@@ -481,7 +506,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       historyPageRef.current = nextPage;
       setClasses((current) => {
         const ids = new Set(current.map((c) => c.cneId || c.classId));
-        return [...current, ...result.data.records.filter((c) => !ids.has(c.cneId || c.classId))];
+        const updated = [...current, ...result.data.records.filter((c) => !ids.has(c.cneId || c.classId))];
+        scheduleCache.current.set(scheduleCacheKey(), { records: updated, total: result.data.total,
+          hasMore: Boolean(result.data.hasMore), page: nextPage, savedAt: Date.now() });
+        return updated;
       });
       setHistoryTotal(result.data.total);
       setHistoryHasMore(Boolean(result.data.hasMore));
@@ -552,7 +580,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       fetchActivityProgress(cneId, true);
     }
     try {
-      const freshClasses = await loadData();
+      const freshClasses = await loadData(true);
       if (cneId) {
         const fresh = freshClasses?.find((c) => (c.cneId || c.classId) === cneId) ||
           (await ApiService.getCNEScheduleById(cneId)).data;
@@ -781,7 +809,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         setNewExternalRpList([]);
         setNewExternalRpInput('');
         setNewMode('');
-        loadData();
+        loadData(true);
       } else {
         if (res.errorCode === 'AREA_INACTIVE') {
           error('This ward/area is currently inactive. Please select an active ward/area.');
@@ -1073,7 +1101,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       setCancelTargetCne(null);
       setCancelReason('');
       setSelectedDetailCne(null);
-      await loadData();
+      await loadData(true);
     } catch (e: any) {
       error(e?.message || 'Failed to cancel CNE.');
     } finally {
@@ -1111,7 +1139,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       setDeleteReason('Schedule created by mistake');
       setDeleteConfirmId('');
       setSelectedDetailCne(null);
-      await loadData();
+      await loadData(true);
     } catch (e: any) {
       error(e?.message || 'Failed to delete CNE.');
     } finally {
@@ -1265,7 +1293,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         {loading ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
             <Loader2 className="w-8 h-8 animate-spin text-teal-600" />
-            <span className="text-xs font-medium">Loading {statusFilter === 'ALL' ? 'CNE history' : statusFilter + ' CNEs'}...</span>
+            <LoadingProgress label={`Loading ${statusFilter === 'ALL' ? 'CNE history' : statusFilter + ' CNEs'}`} />
           </div>
         ) : loadError ? (
           <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center space-y-3">
@@ -2347,7 +2375,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           officersList={officersList}
           isOfficersLoading={isResourcePersonsLoading}
           onOfficersLoaded={(fresh) => setOfficersList(fresh)}
-          onSuccess={loadData}
+          onSuccess={() => { void loadData(true); }}
         />
       )}
 
@@ -2355,7 +2383,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         <AddUnscheduledCneModal
           isOpen={isUnscheduledOpen}
           onClose={() => setIsUnscheduledOpen(false)}
-          onSuccess={() => loadData()}
+          onSuccess={() => loadData(true)}
           areasList={areasList}
           staffCounts={wardStaffCounts}
           wardLoading={isWardMasterLoading}

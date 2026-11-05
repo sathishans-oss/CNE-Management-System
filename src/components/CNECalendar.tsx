@@ -12,6 +12,7 @@ import {
 import { CNERecord, SessionUser } from '../types';
 import { ApiService } from '../services/api';
 import { formatCneDateTimeDisplay, parseToIsoDateString, getCneTypeLabel } from '../utils';
+import { LoadingProgress } from './common/LoadingProgress';
 
 type CalendarViewMode = 'month' | 'agenda';
 export interface CalendarViewState {
@@ -40,7 +41,10 @@ type CalendarEventType = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
  * protected CNE data is written to localStorage or shared across logins.
  * Every Calendar visit still requests fresh server-authoritative records.
  */
-const calendarRecordsForSession = new WeakMap<SessionUser, Map<string, CNERecord[]>>();
+const CALENDAR_CACHE_TTL_MS = 3 * 60 * 1000;
+const calendarRecordsForSession = new WeakMap<SessionUser, Map<string, { records: CNERecord[]; loadedAt: number }>>();
+// After a schedule mutation, all cached calendar months must revalidate.
+export const invalidateCNECalendarCache = (user: SessionUser) => { calendarRecordsForSession.delete(user); };
 const calendarMonthKey = (year: number, monthIndex: number) => `${year}-${monthIndex + 1}`;
 
 const getIndiaCalendarDate = () => {
@@ -75,7 +79,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const monthKey = calendarMonthKey(year, month);
-  const cachedMonth = calendarRecordsForSession.get(user)?.get(monthKey);
+  const cachedMonth = calendarRecordsForSession.get(user)?.get(monthKey)?.records;
   // Each month has its own independent load state. A successful empty list is loaded.
   const [cneRecords, setCneRecords] = useState<CNERecord[]>(cachedMonth ?? []);
   const [loadedMonthKey, setLoadedMonthKey] = useState<string | null>(cachedMonth !== undefined ? monthKey : null);
@@ -99,7 +103,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
       }
       let months = calendarRecordsForSession.get(user);
       if (!months) { months = new Map(); calendarRecordsForSession.set(user, months); }
-      months.set(monthKey, recordsRes.data);
+      months.set(monthKey, { records: recordsRes.data, loadedAt: Date.now() });
       setCneRecords(recordsRes.data);
       setLoadedMonthKey(monthKey);
     } catch (error) {
@@ -113,10 +117,13 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
 
   useEffect(() => {
     const cached = calendarRecordsForSession.get(user)?.get(monthKey);
-    setCneRecords(cached ?? []);
+    setCneRecords(cached?.records ?? []);
     setLoadedMonthKey(cached !== undefined ? monthKey : null);
     setSelectedEvent(null);
-    void loadEvents();
+    // Switching between already-loaded months is instant. Force-refresh only
+    // after the short TTL expires, or when the user explicitly retries.
+    if (!cached || Date.now() - cached.loadedAt > CALENDAR_CACHE_TTL_MS) void loadEvents();
+    else { setLoading(false); setLoadError(null); }
     return () => { requestGeneration.current += 1; };
   }, [user, monthKey, loadEvents]);
 
@@ -194,7 +201,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
             <>
               <Loader2 id="cne-calendar-loading-spinner" className="w-11 h-11 animate-spin text-teal-600" aria-hidden="true" />
               <h1 className="text-lg sm:text-xl font-bold text-slate-900">Loading CNE Calendar...</h1>
-              <p className="text-sm text-slate-500 max-w-sm">Fetching scheduled CNE programmes. The calendar will appear when the data is ready.</p>
+              <LoadingProgress label="Fetching scheduled CNE programmes" />
             </>
           ) : (
             <>

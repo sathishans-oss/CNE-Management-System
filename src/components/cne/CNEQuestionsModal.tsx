@@ -132,7 +132,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [checkingMaterial, setCheckingMaterial] = useState(false);
   const materialRequestRef = useRef(0);
   const materialCheckRef = useRef(false);
-  const initialMaterialPresenceRef = useRef<boolean | null>(null);
   const [failureDialog, setFailureDialog] = useState<{
     title: string; message: string; type: 'material' | 'validation' | 'technical'; retrySafe: boolean; retryAction?: 'material-check' | 'generation';
   } | null>(null);
@@ -163,7 +162,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setBankMatches([]);setBankSearched(false);setActiveView('questions');setBankError(null);setBankLoading(false);
     setBankClinicalSearch(null);setBankSearchOverride('');setEditingBankConcept(false);setPartialAiCount(0);
     materialCheckRef.current = false;
-    initialMaterialPresenceRef.current = null;
     generationRequestRef.current += 1;
     stopProgressPolling();
     generatingRef.current = false;
@@ -194,9 +192,26 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const quotaRequestId = ++quotaRequestRef.current;
     void loadQuestions(questionRequestId, cneId);
     void loadQuota(quotaRequestId, cneId);
-    // Lightweight presence check once when the AI page opens (no evidence extraction).
-    // The Generate action uses this result; a failed check is retryable.
-    void loadMaterialStatus(++materialRequestRef.current, cneId);
+    // Bank discovery is nonblocking: show the modal immediately, then fetch at most 20
+    // ranked matches for this CNE. No material-status API call occurs at popup open.
+    if (isAuthorized && !isClosedCne(cne)) {
+      const searchId = ++bankRequestRef.current;
+      void ApiService.searchCNEReferenceQuestions(cneId, '').then(result => {
+        if (searchId !== bankRequestRef.current || cneId !== currentCneIdRef.current) return;
+        if (result.success) {
+          setBankMatches((result.data || []).slice(0, 20));
+          setBankClinicalSearch(result.clinicalSearch || null);
+          setBankSearched(true);
+        } else {
+          setBankError(result.message || 'Question Bank search unavailable.');
+        }
+      }).catch(err => {
+        if (searchId === bankRequestRef.current) setBankError(err?.message || 'Question Bank search failed.');
+      }).finally(() => {
+        if (searchId === bankRequestRef.current) setBankLoading(false);
+      });
+      setBankLoading(true);
+    }
     // A blueprint may have been completed after an earlier browser timeout.
     // Offer an explicit Resume action; do not re-reserve quota or auto-generate.
     void ApiService.getCNEAiJobStatus(cneId).then(job => {
@@ -297,8 +312,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       }
       setMaterialStatusCode(status.data.status || 'NOT_UPLOADED');
       setMaterialStatusMessage(status.data.message || 'Material indexing is required.');
-      initialMaterialPresenceRef.current = Boolean(status.data.hasOwnMaterial);
-      return initialMaterialPresenceRef.current;
+      return Boolean(status.data.hasOwnMaterial);
     } catch (e: any) {
       if (requestId === materialRequestRef.current && targetCneId === currentCneIdRef.current) {
         setFailureDialog({
@@ -370,7 +384,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const openQuestionBank = () => {
     if (!canModify || !isPageReady || isGenerating || isSaving || importingBankId) return;
     setActiveView('bank');
-    // Search only on first entry, or after a failure; the user can also refresh manually.
+    // Background discovery already started when the popup opened. Retry only on error.
     if (!bankSearched && !bankLoading) void searchBank();
   };
 
@@ -383,7 +397,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       const res=await ApiService.searchCNEReferenceQuestions(target, searchOverride !== undefined ? searchOverride : bankSearchOverride);
       if(id!==bankRequestRef.current || target!==currentCneIdRef.current)return;
       if(!res.success){setBankError(res.message || 'Question Bank search unavailable.');setBankMatches([]);setBankClinicalSearch(null);}
-      else {setBankMatches(res.data || []);setBankClinicalSearch(res.clinicalSearch || null);setBankSearched(true);setEditingBankConcept(false);}
+      else {setBankMatches((res.data || []).slice(0, 20));setBankClinicalSearch(res.clinicalSearch || null);setBankSearched(true);setEditingBankConcept(false);}
     }catch(e:any){if(id===bankRequestRef.current)setBankError(e?.message || 'Question Bank search failed.');}
     finally{if(id===bankRequestRef.current)setBankLoading(false);}
   };
@@ -411,14 +425,10 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   const requestAiGeneration = async () => {
     if (!canInteractWithQuestionTools || materialCheckRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
-    // Recheck the server so a newly replaced or indexed file cannot use stale page state.
-    // The backend revalidates permissions and indexed CNE material during generation.
+    // Confirmation is the only pre-generation UI step. PLAN validates the current
+    // CNE material index on the server; no redundant material-status request.
     setFailureDialog(null);
-    // Question Bank discovery is a separate user-selected view, not part of AI startup.
-    const own = await loadMaterialStatus(++materialRequestRef.current, cneId);
-    if (own === null || currentCneIdRef.current !== cneId) return;
-    if (!own) { setMaterialChoice('confirm'); return; }
-    await handleGenerateAi();
+    setMaterialChoice('confirm');
   };
 
   const handleGenerateAi = async (resumePlanned = false) => {
@@ -505,7 +515,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         ];
         const validationFailure = validationCodes.includes(code);
         if (code === 'MATERIAL_NOT_INDEXED' || code === 'MATERIAL_CHANGED') {
-          setMaterialChoice('confirm');
+          setMaterialChoice('missing');
+          setMaterialStatusMessage(msg);
         } else if (missing) {
           setFailureDialog({title: 'Learning Material Required', message: msg, type: 'material', retrySafe: false});
         } else if (validationFailure) {
@@ -843,8 +854,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const incompleteActiveCount = activeQuestions.length - completeActiveCount;
 
   return (
-    <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-white rounded-2xl w-[94vw] max-w-[1440px] max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
+    <div className="fixed inset-0 z-[60] overflow-hidden bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-stretch sm:items-center justify-center p-0 sm:p-5">
+      <div className="bg-white rounded-none sm:rounded-2xl w-full sm:w-[94vw] max-w-[1440px] h-[100dvh] sm:h-auto sm:max-h-[92dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
         {/* Header */}
         <div className="px-3 sm:px-6 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0 bg-slate-50/70">
           <div className="flex items-center gap-3 min-w-0 flex-1 pr-2">
@@ -1004,7 +1015,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
               <div>
                 <h4 className="text-sm font-bold text-indigo-950">Institutional Question Bank</h4>
-                <p className="text-slate-600 mt-1">Review the question, correct answer and rationale before importing as a Draft.</p>
+                <p className="text-slate-600 mt-1">Up to 20 clinically relevant matches. Review and choose which questions to import as Drafts; manual and AI creation remain optional.</p>
               </div>
               <button type="button" onClick={() => void searchBank()} disabled={bankLoading || !!importingBankId || !canModify}
                 className="px-3 py-1.5 rounded-lg border border-indigo-300 bg-white font-bold text-indigo-800 disabled:opacity-50">
@@ -1420,7 +1431,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
         {failureDialog && (
           <div className="fixed inset-0 z-[95] bg-slate-950/70 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={failureDialog.title}>
-            <div className="w-full max-w-md bg-white rounded-2xl p-5 shadow-2xl space-y-4">
+            <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto bg-white rounded-2xl p-5 shadow-2xl space-y-4">
               <div className="flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-rose-600" />
                 <h3 className="text-base font-bold text-slate-900">{failureDialog.title}</h3>
               </div>
@@ -1446,15 +1457,15 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         )}
 
         {materialChoice && (
-          <div className="fixed inset-0 z-[90] bg-slate-950/70 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={materialChoice === 'confirm' ? 'No CNE material uploaded' : 'No relevant learning material found'}>
-            <div className="w-full max-w-md bg-white rounded-2xl p-5 shadow-2xl space-y-4">
+          <div className="fixed inset-0 z-[90] bg-slate-950/70 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={materialChoice === 'confirm' ? 'Confirm CNE material upload' : 'No relevant learning material found'}>
+            <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto bg-white rounded-2xl p-5 shadow-2xl space-y-4">
               <div className="flex items-center gap-2"><BookOpen className="w-5 h-5 text-amber-600" />
-                <h3 className="text-base font-bold text-slate-900">{materialChoice === 'confirm' ? 'CNE Learning Material Not Uploaded' : 'No Relevant Learning Material Found'}</h3>
+                <h3 className="text-base font-bold text-slate-900">{materialChoice === 'confirm' ? 'Confirm Uploaded Learning Material' : 'CNE Learning Material Required'}</h3>
               </div>
               <p className="text-sm text-slate-700 leading-relaxed">
                 {materialChoice === 'confirm'
-                  ? materialStatusMessage
-                  : 'No sufficiently relevant learning material was found for this CNE topic. Question generation has stopped. No questions were saved and your successful-generation allowance remains available. Please upload the correct topic material.'}
+                  ? 'Have you uploaded the learning material for this CNE topic? Select Continue to verify the material and generate questions, or Upload Material to add it first.'
+                  : (materialStatusMessage || 'No successfully indexed material is available. Kindly upload the CNE topic material.')}
               </p>
               <div className="flex flex-wrap gap-2 justify-end">
                 {materialChoice === 'confirm' && (materialStatusCode === 'FAILED' || materialStatusCode === 'INDEXING') && <button type="button" disabled={reindexingMaterial} onClick={async () => {
@@ -1469,6 +1480,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                   finally { setReindexingMaterial(false); }
                 }} className="px-3 py-2 rounded-lg border border-purple-400 text-purple-700 font-semibold text-xs disabled:opacity-60">{reindexingMaterial ? 'Indexing…' : 'Retry Indexing'}</button>}
                 <button type="button" onClick={() => { setMaterialChoice(null); if (onNavigateToMaterial) onNavigateToMaterial(); else error('Please open Material from the CNE Progress panel.'); }} className="px-3 py-2 rounded-lg border border-purple-400 text-purple-700 font-semibold text-xs">Upload Material</button>
+                {materialChoice === 'confirm' && <button type="button" onClick={() => { setMaterialChoice(null); void handleGenerateAi(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Continue</button>}
                 <button type="button" onClick={() => setMaterialChoice(null)} className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 font-semibold text-xs">Cancel</button>
               </div>
             </div>
