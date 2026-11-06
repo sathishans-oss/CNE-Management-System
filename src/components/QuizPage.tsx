@@ -7,29 +7,54 @@ import type { QuizAttempt, QuizHomeData, QuizQuestion, QuizResult, QuizHistoryIt
 type Page = 'home' | 'scored-setup' | 'practice-setup' | 'scored' | 'practice' | 'result';
 const letters: Array<'A' | 'B' | 'C' | 'D'> = ['A','B','C','D'];
 const SCORED_BATCH_SIZE = 10;
+// Limit secure Drive image fetches, including preloads, to two simultaneous requests.
+const MAX_PARALLEL_QUIZ_IMAGES = 2;
+// Bound retained Base64 images so a long scored Quiz does not exhaust phone memory.
+const MAX_CACHED_QUIZ_IMAGES = 12;
 type PracticeGroup = {questions:QuizQuestion[];exhausted:boolean;lastImageAt:number;unitCounts:Record<string,number>};
 const batchMessages = ['Great progress — giving your neurons a moment to recharge!', 'Your answers are being saved securely. Stay sharp!', 'Clinical knowledge grows one question at a time.', 'Mental stretch! Your next set of questions is almost ready.'];
 
-const QuizImage: React.FC<{ question: QuizQuestion; attemptId?: string; getImage: (q: QuizQuestion, attemptId?: string) => Promise<string> }> = ({ question, attemptId, getImage }) => {
+const QuizImage: React.FC<{
+  question: QuizQuestion;
+  attemptId?: string;
+  getImage: (q: QuizQuestion, attemptId?: string, background?: boolean) => Promise<string>;
+  onAvailabilityChange?: (questionId: string, available: boolean) => void;
+  invalidateImage?: (q: QuizQuestion, attemptId?: string) => void;
+}> = ({ question, attemptId, getImage, onAvailabilityChange, invalidateImage }) => {
   const [source, setSource] = useState('');
   const [error, setError] = useState('');
+  const [rendered, setRendered] = useState(false);
+  const [retry, setRetry] = useState(0);
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (question.questionType !== 'IMAGE') return;
     let active = true;
-    setSource(''); setError('');
-    void getImage(question, attemptId).then(src => { if (active) setSource(src); }).catch(e => {if(active)setError(e instanceof Error ? e.message : 'Image unavailable');});
+    setSource(''); setError(''); setRendered(false); setExpanded(false);
+    onAvailabilityChange?.(question.questionId, false);
+    void getImage(question, attemptId).then(src => {
+      if (active) setSource(src);
+    }).catch(e => {
+      if (active) { setError(e instanceof Error ? e.message : 'Image unavailable'); onAvailabilityChange?.(question.questionId, false); }
+    });
     return () => { active = false; };
-  }, [question.questionId, question.imageFileId, question.questionType, attemptId, getImage]);
+    // Availability callback is stable; it intentionally does not trigger another download.
+  }, [question.questionId, question.imageFileId, question.questionType, attemptId, getImage, retry]);
   if (question.questionType !== 'IMAGE') return null;
-  if(error) return <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">Image cannot be loaded: {error}</div>;
-  if(!source) return <div className="rounded-lg bg-slate-100 p-4 text-sm text-slate-500" role="status">Loading clinical image…</div>;
+  if (error) return <div role="alert" className="my-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+    <p>Clinical image could not be loaded: {error}</p>
+    <button type="button" onClick={() => {invalidateImage?.(question,attemptId);setRetry(n => n + 1);}} className="mt-2 rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-bold text-rose-800">Retry Image</button>
+  </div>;
   return <>
-    <button type="button" className="my-3 max-w-full rounded-xl border border-slate-200 bg-white p-2 text-left" onClick={() => setExpanded(true)}>
-      <img src={source} alt="Clinical question illustration" className="max-h-64 max-w-full object-contain rounded" />
+    {(!source || !rendered) && <div role="status" aria-live="polite" className="my-3 flex min-h-40 flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+      <Loader2 aria-hidden="true" className="h-6 w-6 animate-spin text-teal-700" />
+      <span className="font-semibold">Loading clinical image…</span>
+      <span className="text-center text-xs">Please wait before answering this image question.</span>
+    </div>}
+    {source && <button type="button" className={`my-3 max-w-full rounded-xl border border-slate-200 bg-white p-2 text-left ${rendered ? 'block' : 'hidden'}`} onClick={() => setExpanded(true)}>
+      <img src={source} alt="Clinical question illustration" onLoad={() => { setRendered(true); onAvailabilityChange?.(question.questionId, true); }} onError={() => { setError('The browser could not display the image.'); setRendered(false); onAvailabilityChange?.(question.questionId, false); }} className="max-h-64 max-w-full rounded object-contain" />
       <span className="block pt-1 text-xs text-teal-700">Tap image to enlarge</span>
-    </button>
-    {expanded && <div role="dialog" aria-modal="true" aria-label="Enlarged clinical question image" className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/90 p-5" onClick={()=>setExpanded(false)}>
+    </button>}
+    {expanded && rendered && <div role="dialog" aria-modal="true" aria-label="Enlarged clinical question image" className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/90 p-5" onClick={()=>setExpanded(false)}>
       <button type="button" className="absolute top-5 right-5 rounded bg-white px-3 py-2 text-sm" onClick={()=>setExpanded(false)}>Close ✕</button>
       <img src={source} alt="Enlarged clinical question illustration" className="max-h-[85vh] max-w-[95vw] object-contain" onClick={e=>e.stopPropagation()}/>
     </div>}
@@ -92,6 +117,13 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
 
   const practiceUnitCounts = useRef<Record<string,number>>({});
   const imageCache = useRef<Map<string,Promise<string>>>(new Map());
+  const imageDownloadQueue = useRef<Array<{run: () => void; background: boolean}>>([]);
+  const imageDownloadsRunning = useRef(0);
+  const [imageReady, setImageReady] = useState<Record<string, boolean>>({});
+  const handleImageAvailability = useCallback((id: string, ready: boolean) => {
+    setImageReady(previous => previous[id] === ready ? previous : {...previous, [id]: ready});
+  }, []);
+  const isCurrentImageReady = !question || question.questionType !== 'IMAGE' || imageReady[question.questionId] === true;
   const mounted = useRef(true);
   const practiceEpoch = useRef(0);
   const preparedPractice = useRef<{epoch:number;promise:Promise<PracticeGroup>} | null>(null);
@@ -108,18 +140,60 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     return ()=>{valid=false;};
   }, [home?.clinicalInsight?.insightId]);
 
-  const getImage = useCallback(async (q: QuizQuestion, id?: string): Promise<string> => {
+  const drainImageDownloads = useCallback(() => {
+    while (imageDownloadsRunning.current < MAX_PARALLEL_QUIZ_IMAGES && imageDownloadQueue.current.length) {
+      const item = imageDownloadQueue.current.shift();
+      if (!item) break;
+      imageDownloadsRunning.current += 1;
+      item.run();
+    }
+  }, []);
+
+  // Cache the pending Promise as well as completed images to deduplicate calls.
+  // Foreground images enter ahead of queued preloads; every network request goes
+  // through one two-slot queue (not just the prefetch requests).
+  const invalidateImage = useCallback((q: QuizQuestion, id?: string) => {
+    imageCache.current.delete(`${user.employeeId}|${id || 'practice'}|${q.questionId}`);
+  }, [user.employeeId]);
+
+  const getImage = useCallback((q: QuizQuestion, id?: string, background = false): Promise<string> => {
     const key = `${user.employeeId}|${id || 'practice'}|${q.questionId}`;
     const cache = imageCache.current;
-    if(!cache.has(key)) {
-      const promise = ApiService.getQuizImage(q.questionId,id).then(res => {
-        if(!res.success || !res.data?.base64Data || !res.data?.mimeType)throw new Error(res.message || 'Image unavailable');
-        return `data:${res.data.mimeType};base64,${res.data.base64Data}`;
-      }).catch(e => {cache.delete(key);throw e;});
-      cache.set(key,promise);
+    const cached = cache.get(key);
+    if (cached) return cached;
+    const promise = new Promise<string>((resolve, reject) => {
+      const run = () => {
+        void ApiService.getQuizImage(q.questionId, id).then(res => {
+          if (!res.success || !res.data?.base64Data || !res.data?.mimeType) throw new Error(res.message || 'Image unavailable');
+          return `data:${res.data.mimeType};base64,${res.data.base64Data}`;
+        }).then(resolve, reject).finally(() => {
+          imageDownloadsRunning.current = Math.max(0, imageDownloadsRunning.current - 1);
+          drainImageDownloads();
+        });
+      };
+      const work = {run, background};
+      if (background) imageDownloadQueue.current.push(work);
+      else {
+        const nextBackground = imageDownloadQueue.current.findIndex(item => item.background);
+        if (nextBackground < 0) imageDownloadQueue.current.push(work);
+        else imageDownloadQueue.current.splice(nextBackground, 0, work);
+      }
+      drainImageDownloads();
+    }).catch(e => { if (cache.get(key) === promise) cache.delete(key); throw e; });
+    cache.set(key, promise);
+    while (cache.size > MAX_CACHED_QUIZ_IMAGES) {
+      const oldest = cache.keys().next().value;
+      if (!oldest) break;
+      cache.delete(oldest);
     }
-    return cache.get(key)!;
-  }, [user.employeeId]);
+    return promise;
+  }, [user.employeeId, drainImageDownloads]);
+
+  // Prefetch at most the next two IMAGE questions, never the whole question bank.
+  const prefetchUpcomingImages = useCallback((questions: QuizQuestion[], currentIndex: number, id?: string) => {
+    const upcoming = questions.slice(currentIndex + 1).filter(q => q.questionType === 'IMAGE').slice(0, 2);
+    upcoming.forEach(q => { void getImage(q, id, true).catch(() => {}); });
+  }, [getImage]);
 
   const refreshHome = useCallback(async () => {
     if (mounted.current) { setHomeLoading(true); setDashboardLoading(true); setDashboardError(''); setCoreReady(false); }
@@ -155,7 +229,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   useEffect(() => {
     mounted.current=true;
     void refreshHome().catch(e => {if(mounted.current)setError(String(e.message || e));});
-    return () => { mounted.current=false;practiceEpoch.current+=1;imageCache.current.clear(); };
+    return () => { mounted.current=false;practiceEpoch.current+=1;imageDownloadQueue.current=[];imageCache.current.clear(); };
   },[refreshHome]);
 
   const draftKey = (a:QuizAttempt) => `cne.quiz.batch.v1:${user.employeeId}:${a.attemptId}`;
@@ -194,10 +268,12 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       }catch(_ignored){/* storage unavailable */}
       setAttempt(a);setScoredBatch(questions);setBatchAnswers(draft);
       setIndex(start);setQuestion(questions[0]);setSelected(draft[questions[0].questionId]||'');setPage('scored');setBatchMessage('');
+      if(questions[0].questionType === 'IMAGE') void getImage(questions[0], a.attemptId).catch(() => {});
+      prefetchUpcomingImages(questions, 0, a.attemptId);
       if(start+questions.length<a.questionCount){void fetchBatch(a,start+questions.length).catch(()=>{});}
     }catch(e){setError(String((e as Error).message||e));setQuestion(null);setScoredBatch([]);setPage('scored');}
     finally{setBusy(false);}
-  },[fetchBatch,refreshHome,user.employeeId]);
+  },[fetchBatch,refreshHome,user.employeeId,getImage,prefetchUpcomingImages]);
 
   useEffect(()=>{
     if(page!=='scored'||!attempt||!scoredBatch.length)return;
@@ -206,7 +282,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   },[page,attempt,scoredBatch,batchAnswers,user.employeeId]);
 
   const beginScored = async() => {
-    setBusy(true);setError('');
+    setBusy(true);setError('');setImageReady({});
     try{
       const res=await ApiService.startQuizScored(selectedUnits,count);
       if(!res.success||!res.data)throw new Error(res.message || 'Could not start quiz.');
@@ -218,6 +294,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   const resume = async(a:QuizAttempt) => {
     if(busy||resumingId)return;
     setResumingId(a.attemptId);
+    setImageReady({});
     prefetchedBatches.current={};
     try { await loadScoredBatch(a); }
     finally { setResumingId(null); }
@@ -237,7 +314,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     finally{setBusy(false);setCancellingId(null);}
   };
   const chooseScored = (choice:string) => {
-    if(!question||busy)return;
+    if(!question||busy||!isCurrentImageReady)return;
     setSelected(choice);
     setBatchAnswers(prev=>({...prev,[question.questionId]:choice}));
   };
@@ -245,12 +322,17 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     if(!attempt||busy)return;
     const relative=position-attempt.committedCount;
     if(relative<0||relative>=scoredBatch.length)return;
-    const q=scoredBatch[relative];setQuestion(q);setIndex(position);setSelected(batchAnswers[q.questionId]||'');
+    const q=scoredBatch[relative];
+    setImageReady(previous=>({...previous,[q.questionId]:false}));
+    setQuestion(q);setIndex(position);setSelected(batchAnswers[q.questionId]||'');
+    if(q.questionType === 'IMAGE') void getImage(q,attempt.attemptId).catch(()=>{});
+    prefetchUpcomingImages(scoredBatch,relative,attempt.attemptId);
     setError('');
   };
   const submitScoredBatch = async() => {
     if(!attempt||busy||scoredBatch.length===0)return;
     const answers=scoredBatch.map(q=>batchAnswers[q.questionId]||'');
+    if(!isCurrentImageReady){setError('Please wait for the clinical image to load before submitting.');return;}
     if(answers.some(x=>!letters.includes(x as 'A'|'B'|'C'|'D'))){
       setError('Answer all questions in this batch before submitting.');return;
     }
@@ -281,17 +363,19 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       if(practiceEpoch.current!==epoch||preparedPractice.current?.promise!==promise)return;
       if(!group.questions.length)setPracticeExhausted(true);
       setPracticeNextMessage(group.questions.length?'Next group ready':'No additional questions after this group.');
-      const first=group.questions[0];if(first?.questionType==='IMAGE')void getImage(first).catch(()=>{});
+      const first=group.questions[0];if(first?.questionType==='IMAGE')void getImage(first,undefined,true).catch(()=>{});
+      prefetchUpcomingImages(group.questions,0);
     }).catch(e=>{
       if(practiceEpoch.current===epoch&&preparedPractice.current?.promise===promise){
         preparedPractice.current=null;
         setPracticeNextMessage((e as Error).message||'Could not prepare the next group. Retry.');
       }
     });
-  },[getImage,loadPracticeGroup]);
+  },[getImage,loadPracticeGroup,prefetchUpcomingImages]);
   const beginPractice=async() => {
     if(busy)return;
     const epoch=++practiceEpoch.current;
+    setImageReady({});
     preparedPractice.current=null;
     setBusy(true);setError('');setPracticeNextMessage('');
     try{
@@ -301,6 +385,8 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       practiceUnitCounts.current=group.unitCounts;
       setPracticeBatch(group.questions);setPracticeBatchIndex(0);setPracticeExhausted(group.exhausted);
       setQuestion(first);setPracticeSeen(ids);setLastPracticeImageAt(group.lastImageAt);
+      if(first.questionType==='IMAGE') void getImage(first).catch(()=>{});
+      prefetchUpcomingImages(group.questions,0);
       setPracticeCorrect(0);setPracticeWrong(0);setPracticeSubmitted(false);setSelected('');setPage('practice');
       if(!group.exhausted)prefetchPracticeGroup(ids,ids.length,group.lastImageAt,epoch,{...group.unitCounts});
       else setPracticeNextMessage('All available questions loaded.');
@@ -308,7 +394,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     finally{if(practiceEpoch.current===epoch)setBusy(false);}
   };
   const submitPractice=() => {
-    if(!question||!selected||practiceSubmitted)return;
+    if(!question||!selected||practiceSubmitted||!isCurrentImageReady)return;
     const correct=selected===question.correctOption;
     if(correct)setPracticeCorrect(n=>n+1);else setPracticeWrong(n=>n+1);
     setPracticeSubmitted(true);
@@ -325,7 +411,11 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     const nextIndex=practiceBatchIndex+1;
     // Local movement: zero Google Apps Script requests between prefetched questions.
     if(nextIndex<practiceBatch.length){
+      setImageReady(previous=>({...previous,[practiceBatch[nextIndex].questionId]:false}));
       setPracticeBatchIndex(nextIndex);setQuestion(practiceBatch[nextIndex]);
+      const upcoming=practiceBatch[nextIndex];
+      if(upcoming.questionType==='IMAGE')void getImage(upcoming).catch(()=>{});
+      prefetchUpcomingImages(practiceBatch,nextIndex);
       setSelected('');setPracticeSubmitted(false);
       return;
     }
@@ -339,7 +429,10 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       const ids=[...practiceSeen,...group.questions.map(q=>q.questionId)];
       practiceUnitCounts.current=group.unitCounts;
       setPracticeBatch(group.questions);setPracticeBatchIndex(0);setPracticeExhausted(group.exhausted);
+      setImageReady(previous=>({...previous,[group.questions[0].questionId]:false}));
       setQuestion(group.questions[0]);setSelected('');setPracticeSubmitted(false);
+      if(group.questions[0].questionType==='IMAGE')void getImage(group.questions[0]).catch(()=>{});
+      prefetchUpcomingImages(group.questions,0);
       setPracticeSeen(ids);setLastPracticeImageAt(group.lastImageAt);
       preparedPractice.current=null;
       if(!group.exhausted)prefetchPracticeGroup(ids,ids.length,group.lastImageAt,epoch,{...group.unitCounts});
@@ -506,23 +599,24 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       </div>}
       {page==='practice'&&<div className="flex gap-3 text-xs font-semibold"><span>Answered: {practiceCorrect+practiceWrong}</span><span className="text-emerald-700">Correct: {practiceCorrect}</span><span className="text-rose-700">Wrong: {practiceWrong}</span></div>}
       <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-4 py-4 sm:px-5"><h3 className="whitespace-pre-wrap text-base font-bold leading-relaxed text-slate-900">{question.question}</h3></div>
-      <QuizImage question={question} attemptId={page==='scored'?attempt?.attemptId:undefined} getImage={getImage}/>
+      <QuizImage question={question} attemptId={page==='scored'?attempt?.attemptId:undefined} getImage={getImage} invalidateImage={invalidateImage} onAvailabilityChange={handleImageAvailability}/>
+      {!isCurrentImageReady && <p role="status" className="text-xs font-medium text-teal-800">Image question: answer options will unlock after the clinical image loads.</p>}
       <fieldset className="space-y-2"><legend className="sr-only">Select the correct answer</legend>{letters.map(letter=>{const checked=selected===letter;const reveal=page==='practice'&&practiceSubmitted;const isCorrect=question.correctOption===letter;return <label key={letter} className={`flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 text-sm ${reveal&&isCorrect?'border-emerald-500 bg-emerald-50':reveal&&checked&&!isCorrect?'border-rose-500 bg-rose-50':checked?'border-teal-600 bg-teal-50':'border-slate-200'}`}>
-        <input type="radio" name={`quiz-${question.questionId}`} value={letter} checked={checked} disabled={reveal||busy} onChange={()=>page==='scored'?chooseScored(letter):setSelected(letter)} className="mt-1"/><span><strong>{letter}.</strong> {question.options[letter]}</span></label>;})}</fieldset>
+        <input type="radio" name={`quiz-${question.questionId}`} value={letter} checked={checked} disabled={reveal||busy||!isCurrentImageReady} onChange={()=>page==='scored'?chooseScored(letter):setSelected(letter)} className="mt-1"/><span><strong>{letter}.</strong> {question.options[letter]}</span></label>;})}</fieldset>
       {page==='practice'&&practiceSubmitted&&<div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><h4 className="mb-1 font-bold text-slate-900">{selected===question.correctOption?'Correct!':'Review the correct answer'} — {question.correctOption}</h4><p className="text-sm text-slate-700">{question.explanation}</p></div>}
       {page==='scored'?<div className="space-y-3"><div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
           <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={busy||!attempt||index<=attempt.committedCount} onClick={()=>changeScoredQuestion(index-1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"><ChevronLeft className="h-4 w-4"/> Previous</button>
             <button type="button" disabled={busy||!attempt||index>=attempt.committedCount+scoredBatch.length-1} onClick={()=>changeScoredQuestion(index+1)} className="inline-flex items-center gap-1 rounded-xl border border-teal-200 bg-white px-3 py-2.5 text-xs font-bold text-teal-800 transition hover:bg-teal-50 disabled:opacity-40">Next <ChevronRight className="h-4 w-4"/></button></div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <button type="button" disabled={busy} onClick={()=>{if(attempt){setCancelError('');setCancelTarget(attempt.attemptId);}}} className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-white px-3.5 py-2.5 text-xs font-bold text-rose-700 transition hover:bg-rose-50 disabled:opacity-40"><XCircle className="h-4 w-4"/> Cancel Quiz</button>
-            <button type="button" disabled={busy||scoredBatch.length===0||scoredBatch.some(q=>!batchAnswers[q.questionId])} onClick={()=>void submitScoredBatch()} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-teal-800 disabled:opacity-40">{busy?<><Loader2 className="h-4 w-4 animate-spin"/> Saving…</>:<>{attempt&&attempt.committedCount+scoredBatch.length>=attempt.questionCount?'Save & Finish':'Save & Next Batch'} <ChevronRight className="h-4 w-4"/></>}</button>
+            <button type="button" disabled={busy||!isCurrentImageReady||scoredBatch.length===0||scoredBatch.some(q=>!batchAnswers[q.questionId])} onClick={()=>void submitScoredBatch()} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-teal-800 disabled:opacity-40">{busy?<><Loader2 className="h-4 w-4 animate-spin"/> Saving…</>:<>{attempt&&attempt.committedCount+scoredBatch.length>=attempt.questionCount?'Save & Finish':'Save & Next Batch'} <ChevronRight className="h-4 w-4"/></>}</button>
           </div>
         </div>
         {busy&&batchMessage&&<div role="status" className="rounded-xl border border-teal-100 bg-teal-50 p-3 text-center text-sm font-medium text-teal-800"><Loader2 className="mr-2 inline h-4 w-4 animate-spin"/>{batchMessage}</div>}
         <p className="text-xs text-slate-500">All {scoredBatch.length} answers are required before saving. Once submitted, this batch cannot be changed. Your unsent answers are kept temporarily in this browser tab.</p>
       </div>:
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
-          <div className="flex flex-wrap items-center gap-2">{!practiceSubmitted?<button type="button" disabled={!selected||busy} onClick={submitPractice} className="rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-teal-800 disabled:opacity-50">Submit Answer</button>:(practiceBatchIndex===practiceBatch.length-1&&practiceExhausted?null:<button type="button" disabled={busy} onClick={()=>void advancePractice()} className="inline-flex items-center gap-1 rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-teal-800 disabled:opacity-50">{busy?<><Loader2 className="h-4 w-4 animate-spin"/> Loading…</>:<>Next Question <ChevronRight className="h-4 w-4"/></>}</button>)}
+          <div className="flex flex-wrap items-center gap-2">{!practiceSubmitted?<button type="button" disabled={!selected||busy||!isCurrentImageReady} onClick={submitPractice} className="rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-teal-800 disabled:opacity-50">Submit Answer</button>:(practiceBatchIndex===practiceBatch.length-1&&practiceExhausted?null:<button type="button" disabled={busy} onClick={()=>void advancePractice()} className="inline-flex items-center gap-1 rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-teal-800 disabled:opacity-50">{busy?<><Loader2 className="h-4 w-4 animate-spin"/> Loading…</>:<>Next Question <ChevronRight className="h-4 w-4"/></>}</button>)}
             {practiceSubmitted&&<span role="status" className="text-[11px] text-slate-500">{practiceBatchIndex<practiceBatch.length-1?'Next question ready':practiceNextMessage||'Next group preloading…'}</span>}</div>
           <button type="button" disabled={busy} onClick={finishPractice} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"><CheckCircle2 className="h-4 w-4"/> Finish Practice</button>
         </div>}
@@ -579,7 +673,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
           </div>
           <div className="space-y-4 p-4 sm:p-5">
             <h4 className="whitespace-pre-wrap text-sm font-bold leading-relaxed text-slate-900 sm:text-base">{r.question.question}</h4>
-            <QuizImage question={r.question} attemptId={results.attemptId} getImage={getImage}/>
+            <QuizImage question={r.question} attemptId={results.attemptId} getImage={getImage} invalidateImage={invalidateImage}/>
             <div className="grid gap-2 sm:grid-cols-2">{letters.map(letter=>{
               const selectedOption=letter===r.selectedOption;
               const rightOption=letter===correctOption;

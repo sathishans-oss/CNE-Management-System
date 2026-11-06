@@ -881,13 +881,16 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <Lock className="h-3 w-3" /> Locked (Submissions Received)
             </span>}
           </div>
-          <div role="tablist" aria-label="Post-Test question views" className="mt-2 grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+          {/* Wide screens: view tabs on the left, creation actions on the right.
+              Phones retain the two-column stacked controls that already work. */}
+          <div className="mt-2 flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div role="tablist" aria-label="Post-Test question views" className="grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
             <button type="button" role="tab" id="cne-my-questions-tab" aria-controls="cne-my-questions-panel"
               aria-selected={activeView === 'questions'}
               onClick={() => setActiveView('questions')}
               onKeyDown={(event) => { if (event.key === 'ArrowRight') { event.preventDefault(); openQuestionBank(); } }}
               disabled={isGenerating || isSaving || !!importingBankId}
-              className={`min-w-0 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors disabled:opacity-50 sm:px-3 ${activeView === 'questions' ? 'border-purple-600 bg-purple-50 text-purple-800' : 'border-slate-200 bg-white text-slate-700 hover:bg-purple-50'}`}>
+              className={`min-w-0 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors disabled:opacity-50 sm:px-4 sm:py-2.5 sm:text-xs ${activeView === 'questions' ? 'border-purple-600 bg-purple-50 text-purple-800' : 'border-slate-200 bg-white text-slate-700 hover:bg-purple-50'}`}>
               My Questions ({activeQuestions.length})
             </button>
             <button type="button" role="tab" id="cne-question-bank-tab" aria-controls="cne-question-bank-panel"
@@ -895,25 +898,30 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               onClick={openQuestionBank}
               onKeyDown={(event) => { if (event.key === 'ArrowLeft') { event.preventDefault(); setActiveView('questions'); } }}
               disabled={!canModify || !isPageReady || isGenerating || isSaving || !!importingBankId}
-              className={`flex min-w-0 items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors disabled:opacity-50 sm:px-3 ${activeView === 'bank' ? 'border-indigo-700 bg-indigo-50 text-indigo-900' : 'border-slate-200 bg-white text-slate-700 hover:bg-indigo-50'}`}>
+              className={`flex min-w-0 items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors disabled:opacity-50 sm:px-4 sm:py-2.5 sm:text-xs ${activeView === 'bank' ? 'border-indigo-700 bg-indigo-50 text-indigo-900' : 'border-slate-200 bg-white text-slate-700 hover:bg-indigo-50'}`}>
               <BookOpen className="h-3.5 w-3.5 shrink-0" /> Question Bank {bankSearched ? `(${bankMatches.length})` : ''}
             </button>
           </div>
-          {canModify && activeView === 'questions' && (
-            <div className="mt-2 grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+            {canModify && activeView === 'questions' && (
+            <div className="grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end lg:ml-auto lg:shrink-0 lg:flex-nowrap">
               <button type="button" onClick={() => { void requestAiGeneration(); }}
                 disabled={!isPageReady || isGenerating || checkingMaterial || materialCheckRef.current || generatingRef.current || isSaving || !canModify || isAiGenerationUsed || isAiGenerationUnavailable || !!pendingGenerationJob}
                 title={!isPageReady ? 'Please wait while questions load' : isAiGenerationUsed ? 'AI generation already used for this CNE' : isAiGenerationUnavailable ? 'AI generation unavailable for this CNE' : 'Generate MCQs only from indexed CNE material'}
-                className={`flex min-w-0 items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold shadow-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:px-3 ${isAiGenerationUsed ? 'border border-slate-300 bg-slate-200 text-slate-600' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
+                className={`flex min-w-0 items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold shadow-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:px-4 sm:py-2.5 sm:text-xs ${isAiGenerationUsed ? 'border border-slate-300 bg-slate-200 text-slate-600' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
                 {isGenerating || checkingMaterial ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : isAiGenerationUsed ? <Lock className="h-3.5 w-3.5 shrink-0" /> : <Sparkles className="h-3.5 w-3.5 shrink-0" />}
                 <span className="min-w-0">{checkingMaterial ? 'Checking material…' : isGenerating ? 'Generating MCQs…' : isAiGenerationUsed ? 'AI Used' : 'AI Generate MCQs'}</span>
               </button>
               <button type="button" onClick={handleAddManualQuestion}
                 disabled={!canInteractWithQuestionTools || !!importingBankId}
                 title="Add a manual Draft; this does not consume AI quota"
-                className="min-w-0 rounded-lg border border-purple-300 bg-white px-2 py-2 text-[11px] font-bold text-purple-800 transition-colors hover:bg-purple-50 disabled:opacity-50 sm:px-3">
+                className="min-w-0 rounded-lg border border-purple-300 bg-white px-2 py-2 text-[11px] font-bold text-purple-800 transition-colors hover:bg-purple-50 disabled:opacity-50 sm:px-4 sm:py-2.5 sm:text-xs">
                 + Manual Question
               </button>
+            </div>
+          )}
+          </div>
+          {canModify && activeView === 'questions' && (pendingGenerationJob || (activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && !activeQuestions.some((q) => String(q.id || '').startsWith('q_ai_') && !q.isFinalized))) && (
+            <div className="mt-2 grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
               {pendingGenerationJob && !isAiGenerationUsed && (
                 <button type="button" onClick={() => { setFailureDialog(null); void handleGenerateAi(true); }}
                   disabled={!isPageReady || !canModify || isGenerating || generatingRef.current || isSaving}

@@ -397,9 +397,12 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             </div>
 
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-          {loading && <div role="status" className="px-4 sm:px-6 py-2 border-b border-teal-100 bg-teal-50 space-y-1.5">
-            <p className="text-xs text-teal-900">Checking existing PDF and index status…</p>
-            <div className="h-1.5 rounded-full bg-teal-100 overflow-hidden"><div className="h-full w-1/3 bg-teal-600 animate-pulse rounded-full" /></div>
+          {loading && <div role="status" aria-live="polite" className="flex items-center gap-2.5 border-b border-teal-100 bg-teal-50 px-4 py-2.5 sm:px-6">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal-700" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-teal-900">Checking existing CNE material…</p>
+              <p className="text-[11px] text-teal-800">Retrieving uploaded PDF and indexing status</p>
+            </div>
           </div>}
           {loadError && <div role="alert" className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-b border-rose-200">{loadError} <button type="button" onClick={() => void loadAllReferenceData()} className="ml-2 underline font-bold">Retry</button></div>}
           {uploadStep !== 'idle' && <div role="status" aria-live="polite" className="px-4 sm:px-6 py-3 bg-white border-b border-teal-100 space-y-2">

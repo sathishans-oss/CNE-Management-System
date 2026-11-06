@@ -478,7 +478,7 @@ const hybridChecks=[
   }}
  ,{name:'Material instructions visible during load and compact question tools moved to header',run(){
     const material=readFileSync(join(ROOT,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
-    assert(material.includes('Checking existing PDF and index status') && !material.includes('{loading ? ('),'Material form must stay visible while metadata loads');
+    assert(material.includes('Checking existing CNE material') && material.includes('animate-spin') && !material.includes('{loading ? ('),'Material form must stay visible while metadata loads with a spinner');
     assert(MODAL.includes('Compact mobile header; desktop controls wrap without horizontal overflow.') && MODAL.includes('aria-label="Post-Test question views"'),'Mobile and desktop header view controls missing');
     assert(MODAL.includes("(['TEXT','IMAGE'] as const).map")&&MODAL.includes('handleSelectManualQuestionType'),'Compact manual selection controls missing');
   }}
@@ -14281,6 +14281,97 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     focusedChecks.push({ name: 'Material-only: ' + name });
     try { test(); focusedPassed++; console.log('✓ ' + name); }
     catch (e) { console.error('✗ ' + name + ': ' + (e.stack || e.message)); }
+  }
+}
+
+// Final image/UI improvements — retain these checks inside the single verify-all runner.
+{
+  const material = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEReferenceModal.tsx'), 'utf8');
+  const modal = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEQuestionsModal.tsx'), 'utf8');
+  const cneImage = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEQuestionImage.tsx'), 'utf8');
+  const quiz = readFileSync(join(ROOT_DIR, 'src/components/QuizPage.tsx'), 'utf8');
+  const checks = [
+    ['Material metadata loading uses one spinner, not a duplicate progress bar', () => {
+      const start = material.indexOf('{loading && <div role="status"');
+      const end = material.indexOf('{loadError &&', start);
+      assert(start > -1 && end > start);
+      const display = material.slice(start, end);
+      assert(display.includes('Loader2') && display.includes('animate-spin'));
+      assert(display.includes('Checking existing CNE material'));
+      assert(!display.includes('h-1.5 rounded-full') && !display.includes('animate-pulse'));
+      assert(material.includes("uploadStep==='indexing'"), 'Two-stage upload/indexing indicator must remain');
+    }],
+    ['Desktop question toolbar aligns tabs left and creation actions right, preserving mobile grid', () => {
+      const header = modal.slice(modal.indexOf('Wide screens: view tabs'), modal.indexOf('</header>'));
+      assert(header.includes('lg:flex-row lg:items-center lg:justify-between'));
+      assert(header.includes('sm:justify-end lg:ml-auto lg:shrink-0'));
+      assert(header.includes('grid-cols-2'), 'Mobile two-column toolbar missing');
+      assert(header.includes('AI Generate MCQs') && header.includes('+ Manual Question'));
+      assert(modal.includes('No Questions Created Yet'));
+    }],
+    ['CNE clinical image has a spinner, image decode confirmation and Retry Image', () => {
+      assert(cneImage.includes('Loading clinical image…'));
+      assert(cneImage.includes('animate-spin') && cneImage.includes('min-h-32'));
+      assert(cneImage.includes('onLoad={() => {setImageRendered(true);onAvailabilityChange?.(true);}}'));
+      assert(cneImage.includes('onError={() => {setError('));
+      assert(cneImage.includes('Retry Image'));
+      assert(cneImage.includes('ApiService.getCNEQuestionImage({ cneId, questionId, sourceQuestionId, qrToken, participantVerificationToken })'));
+    }],
+    ['Quiz clinical images visibly load with retry and verified display', () => {
+      assert(quiz.includes('Loading clinical image…') && quiz.includes('animate-spin'));
+      assert(quiz.includes('Retry Image') && quiz.includes('invalidateImage?.(question,attemptId)'));
+      assert(quiz.includes('onLoad={() => { setRendered(true); onAvailabilityChange?.(question.questionId, true); }}'));
+      assert(quiz.includes('onError={() => { setError('));
+    }],
+    ['Quiz prefetches only two upcoming images with at most two concurrent image requests', () => {
+      assert(quiz.includes('const MAX_PARALLEL_QUIZ_IMAGES = 2;'));
+      assert(quiz.includes('imageDownloadsRunning.current < MAX_PARALLEL_QUIZ_IMAGES'));
+      assert(quiz.includes("questions.slice(currentIndex + 1).filter(q => q.questionType === 'IMAGE').slice(0, 2)"));
+      assert(quiz.includes('imageDownloadQueue.current.push(work)'));
+      assert(quiz.includes('MAX_CACHED_QUIZ_IMAGES = 12'));
+      assert(quiz.includes('while (cache.size > MAX_CACHED_QUIZ_IMAGES)'));
+      assert(quiz.includes('imageCache.current.delete('));
+      assert(quiz.includes('prefetchUpcomingImages(scoredBatch,relative,attempt.attemptId)'));
+      assert(quiz.includes('prefetchUpcomingImages(practiceBatch,nextIndex)'));
+    }],
+    ['Image-dependent quiz answers cannot be submitted until image is displayed', () => {
+      assert(quiz.includes('!isCurrentImageReady'));
+      assert(quiz.includes('disabled={reveal||busy||!isCurrentImageReady}'));
+      assert(quiz.includes('disabled={!selected||busy||!isCurrentImageReady}'));
+      assert(quiz.includes('onAvailabilityChange={handleImageAvailability}'));
+      assert(quiz.includes('setImageReady({})'), 'New attempts must not inherit image readiness');
+    }],
+    ['Quiz Retry Image actually restarts the failed image request', () => {
+      const imageComponent = quiz.slice(quiz.indexOf('const QuizImage:'), quiz.indexOf('export const QuizPage:'));
+      assert(imageComponent.includes('setRetry(n => n + 1)'), 'Retry must change state to restart image loading, not only clear the error');
+      assert(/getImage,\s*retry\s*\]/.test(imageComponent), 'Image-loading effect must depend on retry state');
+      assert(imageComponent.includes('invalidateImage?.(question,attemptId)'), 'Retry must invalidate the failed cache entry');
+    }],
+    ['All Quiz image requests use one bounded priority queue with safe failure handling', () => {
+      assert(quiz.includes('const drainImageDownloads = useCallback('), 'Missing shared image request queue');
+      const download = quiz.slice(quiz.indexOf('const getImage = useCallback('), quiz.indexOf('const refreshHome = useCallback('));
+      assert(download.includes('const work = {run, background};'), 'Foreground image requests must go through the shared queue');
+      assert(download.includes('const nextBackground = imageDownloadQueue.current.findIndex('), 'Foreground requests must take priority over queued preloads');
+      assert(download.includes('imageDownloadsRunning.current - 1'), 'Queue slots must be released after image requests complete');
+      assert(download.includes('void getImage(q, id, true).catch(() => {})'), 'Background image failures must be handled without unhandled rejections');
+    }],
+    ['Quiz submission handlers enforce image readiness and practice prefetching', () => {
+      function section(start, end) {
+        const first = quiz.indexOf(start);
+        const last = quiz.indexOf(end, first);
+        assert(first >= 0 && last > first, `Missing Quiz section: ${start}`);
+        return quiz.slice(first, last);
+      }
+      assert(section('const chooseScored =', 'const changeScoredQuestion =').includes('!isCurrentImageReady'), 'Scored selection must check image readiness');
+      assert(section('const submitScoredBatch =', 'const loadPracticeGroup =').includes('!isCurrentImageReady'), 'Scored batch submission must check image readiness');
+      assert(section('const submitPractice=', 'const finishPractice=').includes('!isCurrentImageReady'), 'Practice submission must check image readiness');
+      assert(quiz.includes('prefetchUpcomingImages(group.questions,0)'), 'Practice should preload upcoming image questions after receiving a batch');
+    }]
+  ];
+  console.log('\n>>> Material spinner, desktop alignment and image-loading verification');
+  for (const [name, test] of checks) {
+    focusedChecks.push({name});
+    try {test();focusedPassed++;console.log('✓ '+name);} catch(e) {console.error('✗ '+name+': '+(e.stack||e.message));}
   }
 }
 
