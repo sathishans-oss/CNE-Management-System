@@ -9218,6 +9218,18 @@ function handleUploadLearningResource(params, session) {
 
   logAuditAction('UPLOAD_LEARNING_RESOURCE', session.employeeId, 'Uploaded learning resource for CNE ' + cneId + ': ' + finalFileName + ' (' + fileSize + ' bytes)', 'SUCCESS');
 
+  // Two-step upload mode: the Drive file and PENDING metadata are committed here.
+  // The frontend calls the existing authorized reindexLearningResource endpoint next.
+  // Existing callers that omit deferIndexing retain their original combined behavior.
+  if (params && params.deferIndexing === true) {
+    return {success:true, data:{cneId:cneId, driveFileId:newDriveFileId,
+      fileName:finalFileName, fileType:'PDF', fileSize:fileSize,
+      topic:record.topic, resourcePersonName:authoritativeRpName, hasFile:true,
+      updatedAt:updatedAt, indexingStatus:'PENDING', indexingMessage:'PDF uploaded. Awaiting content indexing.',
+      indexingErrorCode:'', chunksCount:0},
+      message:'CNE PDF uploaded to Drive. Content indexing is the next step.'};
+  }
+
   // Index with NO caller-held ScriptLock. Extraction happens concurrently; only final shared-sheet commit is serialized.
   var indexResult = null;
   try {
@@ -9672,6 +9684,18 @@ function handleGetLearningResource(params, session) {
       var chunksCount = chunksCountCol !== undefined ? (Number(data[r][chunksCountCol]) || 0) : 0;
       var indexedAt = indexedAtCol !== undefined ? String(data[r][indexedAtCol] || '').trim() : '';
 
+      // Correct legacy false-SUCCESS records at read time. Do not expose binary
+      // gibberish as a successfully indexed document in the Material UI.
+      if (driveFileId && indexingStatus === 'SUCCESS') {
+        var verifiedState = cneAiMaterialReadiness_(cneId);
+        if (!verifiedState.hasOwnMaterial) {
+          indexingStatus = verifiedState.status;
+          indexingErrorCode = verifiedState.errorCode || 'INDEX_QUALITY_FAILED';
+          indexingMessage = verifiedState.message;
+          chunksCount = verifiedState.indexCount || 0;
+        }
+      }
+
       // Backward-compatible migration for resources uploaded before persistent indexing columns existed.
       // If the current Drive file already has rows in CNE_Reference_Index, infer and persist that result.
       if (driveFileId && !indexingStatus) {
@@ -9992,7 +10016,8 @@ function handleDownloadLearningResource(params, session) {
  * Core extraction service for CNE Learning Resource
  * Fails closed on any security, authorization, or structural defect.
  */
-function extractLearningResourceContentCore(cneId, session) {
+function extractLearningResourceContentCore(cneId, session, options) {
+  var forIndex=!!(options&&options.forIndex);
   if (!cneId) {
     return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE ID is required.' };
   }
@@ -10136,9 +10161,9 @@ function extractLearningResourceContentCore(cneId, session) {
   try {
     cache = CacheService.getScriptCache();
     var cachedJson = cache.get(cacheKey);
-    if (cachedJson) {
+    if (cachedJson && !forIndex) {
       var parsedCache = JSON.parse(cachedJson);
-      if (parsedCache && parsedCache.extractedText && parsedCache.extractedText.length >= 15) {
+      if (parsedCache && cneMaterialTextReadable_(parsedCache.extractedText,16)) {
         return {
           success: true,
           data: {
@@ -10161,56 +10186,42 @@ function extractLearningResourceContentCore(cneId, session) {
     // Cache failure must never cause functional failure
   }
 
-  // 9. Extract textual content from PDF
-  var rawExtracted = '';
-  var blob = file.getBlob();
-
-  try {
-    rawExtracted = extractTextFromPdf(blob);
-  } catch (extractErr) {
-    logAuditAction('CONTENT_EXTRACTION_FAILED', {
-      cneId: cneId,
-      driveFileId: driveFileId,
-      ext: ext,
-      error: String(extractErr && extractErr.message ? extractErr.message : extractErr)
-    });
-    return {
-      success: false,
-      errorCode: 'CONTENT_EXTRACTION_FAILED',
-      message: 'Failed to extract textual content from PDF document: ' + (extractErr.message || 'Malformed structure')
-    };
+  // 9. Extract embedded PDF text first; if it is absent or corrupt, use Drive OCR.
+  // This is especially important for image-only slide PDFs. The raw PDF parser
+  // MUST NEVER produce SUCCESS for control characters or font-map garbage.
+  var rawExtracted='';
+  var blob=file.getBlob();
+  var extractionMethod='EMBEDDED_TEXT';
+  try {rawExtracted=extractTextFromPdf(blob);}catch(extractErr){rawExtracted='';}
+  if(!cneMaterialTextReadable_(rawExtracted,16)) {
+    var ocr=cneExtractPdfWithDriveOcr_(blob);
+    if(!ocr.success){return {success:false,errorCode:ocr.errorCode,message:ocr.message};}
+    rawExtracted=ocr.text;
+    extractionMethod=ocr.method;
   }
-
-  // 10. Check if extracted content is empty or unusable (scanned/image-only PDF)
-  if (!rawExtracted || rawExtracted.trim().length < 15) {
-    return {
-      success: false,
-      errorCode: 'NO_EXTRACTABLE_CONTENT',
-      message: 'This PDF does not contain usable text. Please upload a text-based PDF.'
-    };
+  if(!cneMaterialTextReadable_(rawExtracted,18)) {
+    return {success:false,errorCode:'UNREADABLE_PDF_TEXT',message:'Extracted PDF content is unreadable or too sparse for safe AI question generation.'};
   }
-
-  var cleanText = rawExtracted.trim();
-  var maxChars = 40000;
-  var isTruncated = false;
-  var originalCharCount = cleanText.length;
-  var finalText = cleanText;
-
-  // 11. Deterministic size limit safeguard
-  if (cleanText.length > maxChars) {
-    isTruncated = true;
-    var headChars = 25000;
-    var tailChars = 15000;
-    var head = cleanText.substring(0, headChars);
-    var tail = cleanText.substring(cleanText.length - tailChars);
-    finalText = head + '\n\n[... Content deterministically truncated for AI processing: omitted ' + (originalCharCount - (headChars + tailChars)) + ' characters ...]\n\n' + tail;
+  var cleanText=rawExtracted.trim();
+  var originalCharCount=cleanText.length;
+  var maxChars=40000;
+  var isTruncated=!forIndex && cleanText.length>maxChars;
+  // Index the FULL document, not just head/tail excerpts. If it is excessively
+  // long, fail explicitly; never silently discard its middle sections.
+  if(forIndex && cleanText.length>250000) {
+    return {success:false,errorCode:'DOCUMENT_TOO_LONG',message:'This PDF exceeds the supported 250,000-character indexing limit. Split the teaching material into smaller PDFs.'};
+  }
+  var finalText=cleanText;
+  if(!forIndex && isTruncated){
+    finalText=cleanText.slice(0,25000)+'\n\n[Middle omitted from preview only; full text used for indexing]\n\n'+cleanText.slice(-15000);
   }
 
   // 12. Populate temporary cache (TTL 6 hours)
-  if (cache) {
+  if (cache && !forIndex) {
     try {
       var cachePayload = JSON.stringify({
         extractedText: finalText,
+      extractionMethod: extractionMethod,
         isTruncated: isTruncated,
         originalCharCount: originalCharCount
       });
@@ -10232,12 +10243,75 @@ function extractLearningResourceContentCore(cneId, session) {
       fileName: file.getName(),
       fileType: 'PDF',
       extractedText: finalText,
+      extractionMethod: extractionMethod,
       charCount: finalText.length,
       isTruncated: isTruncated,
       originalCharCount: originalCharCount,
       cached: false
     }
   };
+}
+
+/**
+ * Strict English-language educational content quality gate, reused at extraction,
+ * persistence, AI readiness and AI evidence retrieval. Never treat PDF bytes as text.
+ * This intentionally rejects most binary gibberish and PDF operators; it does not
+ * invent text, and clinical accuracy remains the educator's responsibility.
+ */
+function cneMaterialTextReadable_(input, minWords) {
+  var text=String(input||'').trim();
+  var required=Math.max(8,Number(minWords)||16);
+  if (text.length<70 || /\b(?:endstream|startxref|flatedecode|endobj|obj\s*<<)\b/i.test(text)) return false;
+  var words=text.match(/\b[A-Za-z][A-Za-z'-]{2,}\b/g)||[];
+  if (words.length<required) return false;
+  var natural=words.join('').length;
+  if (natural < text.length*0.36) return false;
+  var invalid=text.match(/[\x00-\x08\x0B\x0C\x0E-\x1F\u007F-\u009F\uFFFD]/g)||[];
+  if (invalid.length>Math.max(5,Math.floor(text.length/100)))return false;
+  var symbols=text.match(/[^A-Za-z0-9\s.,;:()\[\]\-\/'"%+&!?=<>\u00B0\u00B1\u00B5\u00B7\u2013\u2014\u2018-\u201D]/g)||[];
+  if (symbols.length>text.length*0.16)return false;
+  return true;
+}
+/** Safe, bounded PDF-to-Google-Docs OCR. The converted temporary Doc is trashed.
+ * Requires Google Drive API and Documents access for this deployed Apps Script.
+ * Uploaded clinical material is not sent to unrelated external reference services.
+ */
+function cneExtractPdfWithDriveOcr_(pdfBlob) {
+  var temporaryId='';
+  try {
+    var boundary='cneOcr'+Utilities.getUuid().replace(/-/g,'');
+    var metadata=JSON.stringify({name:'TEMP_CNE_OCR_'+Utilities.getUuid(),mimeType:'application/vnd.google-apps.document'});
+    var prefix='--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+metadata+
+      '\r\n--'+boundary+'\r\nContent-Type: application/pdf\r\n\r\n';
+    var suffix='\r\n--'+boundary+'--\r\n';
+    var bytes=Utilities.newBlob(prefix).getBytes().concat(pdfBlob.getBytes(),Utilities.newBlob(suffix).getBytes());
+    var response=UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&ocrLanguage=en&fields=id',{
+      method:'post',contentType:'multipart/related; boundary='+boundary,
+      headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},
+      payload:bytes,muteHttpExceptions:true
+    });
+    var code=response.getResponseCode();
+    if(code<200||code>=300) {
+      var detail='';try{detail=JSON.parse(response.getContentText()).error.message||'';}catch(ignore){}
+      throw new Error('Drive OCR conversion failed (HTTP '+code+'). '+detail);
+    }
+    temporaryId=String(JSON.parse(response.getContentText()).id||'');
+    if(!temporaryId)throw new Error('Drive OCR did not return a converted document ID.');
+    var text='';
+    // Newly created Docs can briefly be unavailable to DocumentApp.
+    for(var attempt=0;attempt<3;attempt++){
+      try{text=DocumentApp.openById(temporaryId).getBody().getText()||'';break;}
+      catch(readErr){if(attempt===2)throw readErr;Utilities.sleep(700);}
+    }
+    if(!cneMaterialTextReadable_(text,18)) {
+      return {success:false,errorCode:'OCR_INSUFFICIENT',message:'OCR completed, but did not recover sufficient readable educational text from this image-based PDF. Upload a clearer PDF or text-based presentation.'};
+    }
+    return {success:true,text:text,method:'DRIVE_OCR'};
+  }catch(err){
+    return {success:false,errorCode:'OCR_UNAVAILABLE',message:'PDF text is unreadable and automatic Drive OCR failed: '+(err&&err.message?err.message:String(err))+'. Check Drive API permissions or upload a searchable PDF.'};
+  }finally{
+    if(temporaryId){try{DriveApp.getFileById(temporaryId).setTrashed(true);}catch(cleanupErr){console.warn('Temporary OCR Doc cleanup needed: '+temporaryId);}}
+  }
 }
 
 /**
@@ -10482,7 +10556,7 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
   // 1. Content extraction/chunking is deliberately outside the global ScriptLock.
   var extResult = null;
   try {
-    extResult = extractLearningResourceContentCore(cneId, session);
+    extResult = extractLearningResourceContentCore(cneId, session, {forIndex:true});
   } catch (extErr) {
     extResult = { success: false, errorCode: 'EXTRACTION_EXCEPTION', message: 'Exception during content extraction: ' + (extErr && extErr.message ? extErr.message : String(extErr)) };
   }
@@ -10499,7 +10573,7 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
       for (var c = 0; c < chunks.length; c++) {
         var chunkText = String(chunks[c].text || '').trim();
         var textKey = chunkText.replace(/\s+/g, ' ').toLowerCase();
-        if (!chunkText || indexedTextKeys[textKey]) continue;
+        if (!chunkText || indexedTextKeys[textKey] || !cneMaterialTextReadable_(chunkText,8)) continue;
         indexedTextKeys[textKey] = true;
         rowsToInsert.push([
           'IDX_' + cneId + '_' + driveFileId.substring(0, 8) + '_C' + (c + 1),
@@ -10507,9 +10581,12 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
           chunks[c].heading || 'General Content', c + 1, chunkText, cneMaterialClinicalKeywords_(chunkText), 'SUCCESS', nowIso
         ]);
       }
-    } else {
-      isSuccess = false;
-      extResult = { success: false, errorCode: 'NO_EXTRACTABLE_CONTENT', message: 'No readable textual content could be extracted into chunks.' };
+    }
+    // Do not persist a 'SUCCESS' index for a handful of incidental words.
+    var validLength=rowsToInsert.reduce(function(sum,row){return sum+String(row[8]||'').length;},0);
+    if(!rowsToInsert.length || validLength<500) {
+      rowsToInsert=[];isSuccess=false;
+      extResult={success:false,errorCode:'INSUFFICIENT_READABLE_MATERIAL',message:'The PDF did not provide at least 500 characters of validated readable teaching content. OCR or a clearer document is required.'};
     }
   }
 
@@ -10570,11 +10647,14 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
       var rCneId = String(cneVals[r][0] || '').trim().toUpperCase();
       var rDriveId = String(driveVals[r][0] || '').trim();
       var rStatus = String(statusVals[r][0] || '').trim().toUpperCase();
-      if (rCneId === targetCne && rDriveId === driveFileId && rStatus === 'SUCCESS') alreadyIndexedCount++;
+      if (rCneId === targetCne && rDriveId === driveFileId && rStatus === 'SUCCESS') {
+        var oldText=String(sheet.getRange(r+2,(colMap['chunktext']!==undefined?colMap['chunktext']:8)+1).getValue()||'');
+        if(cneMaterialTextReadable_(oldText,8))alreadyIndexedCount++;
+      }
       if (rCneId === targetCne) rowsToDelete.push(r + 2);
     }
 
-    if (alreadyIndexedCount > 0) {
+    if (alreadyIndexedCount > 0 && isSuccess && alreadyIndexedCount >= rowsToInsert.length) {
       alreadyIndexed = true;
     } else {
       // Safe replacement: write the new batch first. If the write fails, old index rows remain intact.
@@ -10602,7 +10682,7 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
             message: 'New material indexing could not be verified. Existing index was preserved; please retry.' };
         }
       }
-      if (rowsToDelete.length > 0) deleteSheetRowsByIndices(sheet, rowsToDelete);
+      if (isSuccess && rowsToDelete.length > 0) deleteSheetRowsByIndices(sheet, rowsToDelete);
     }
 
     // Persist indexing outcome in the same short critical section.
@@ -10613,7 +10693,7 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
       var indexingErrorCode = (!alreadyIndexed && !isSuccess && extResult && extResult.errorCode) ? extResult.errorCode : '';
       var indexingMessage = alreadyIndexed
         ? 'Learning resource is already indexed.'
-        : (isSuccess ? 'Learning resource indexed successfully (' + rowsToInsert.length + ' chunks).' : 'Unable to extract readable text from the uploaded material.');
+        : (isSuccess ? 'Learning resource indexed successfully (' + rowsToInsert.length + ' chunks).' : ((extResult&&extResult.message)||'Unable to extract readable text from uploaded material.'));
       var chunksCount = alreadyIndexed ? alreadyIndexedCount : (isSuccess ? rowsToInsert.length : 0);
       if (refMap['indexingstatus'] !== undefined) refRowValues[refMap['indexingstatus']] = indexingStatus;
       if (refMap['indexingerrorcode'] !== undefined) refRowValues[refMap['indexingerrorcode']] = indexingErrorCode;
@@ -10639,7 +10719,7 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
   return {
     success: false,
     errorCode: (extResult && extResult.errorCode) ? extResult.errorCode : 'CONTENT_EXTRACTION_FAILED',
-    message: 'Unable to extract readable text from the uploaded material. The file has been saved, but its content could not be indexed.'
+    message: (extResult && extResult.message) ? extResult.message : 'Unable to extract readable text from the uploaded material. The PDF has been saved; retry indexing.'
   };
 }
 
@@ -11953,7 +12033,7 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
     if (status !== 'SUCCESS') continue;
 
     var chunkText = String(row[textCol] || '').trim();
-    if (chunkText.length < 15) continue;
+    if (!cneMaterialTextReadable_(chunkText,8)) continue;
 
     var candidate = {
       indexId: String(row[idCol] || ('IDX_' + cleanCneId + '_R' + (group.start + r))),
@@ -14385,10 +14465,17 @@ function cneAiMaterialReadiness_(cneId) {
   var upper=String(cneId).trim().toUpperCase(),rows=[];
   for(var i=0;i<n;i++)if(String(ids[i][0]||'').trim().toUpperCase()===upper && String(files[i][0]||'').trim()===drive && String(states[i][0]||'').trim().toUpperCase()==='SUCCESS')rows.push(i+2);
   // The header-based extracted chunk is checked to avoid treating empty index records as usable evidence.
-  var valid=0;
-  for(var j=0;j<rows.length;j++)if(String(sheet.getRange(rows[j],txt+1).getValue()||'').trim().length>=15)valid++;
+  var valid=0,readableChars=0;
+  for(var j=0;j<rows.length;j++) {
+    var passage=String(sheet.getRange(rows[j],txt+1).getValue()||'').trim();
+    if(cneMaterialTextReadable_(passage,8)){valid++;readableChars+=passage.length;}
+  }
   result.indexCount=valid;
-  if(refStatus==='SUCCESS' && valid>0){result.hasOwnMaterial=true;result.status='READY';result.message='Learning material is ready for AI question generation.';}
+  if(refStatus==='SUCCESS' && valid>0 && readableChars>=500){result.hasOwnMaterial=true;result.status='READY';result.message='Learning material is ready for AI question generation.';}
+  else if(refStatus==='SUCCESS'){
+    result.status='FAILED';result.message='Previously saved index is unreadable or insufficient ('+readableChars+' valid characters). Please retry indexing the current CNE PDF using OCR.';
+    result.errorCode='INDEX_QUALITY_FAILED';
+  }
   else if(refStatus==='FAILED'){result.status='FAILED';result.message=refMessage||'Material indexing failed. Retry indexing or upload a readable document.';}
   else {result.status='INDEXING';result.message='Learning material indexing is incomplete. Retry indexing if it has stopped.';}
   return result;
@@ -14404,7 +14491,7 @@ function handleGetCNEAiMaterialStatus(params, session) {
   var state=normalizeCNEStatus(record.status);
   if(state==='Completed'||state==='Canceled'||isCNEQuestionsLocked(cneId))return {success:false,errorCode:'CNE_CLOSED',message:'Question generation is not available for this CNE.'};
   var readiness=cneAiMaterialReadiness_(cneId);
-  return {success:true,data:{cneId:cneId,hasOwnMaterial:readiness.hasOwnMaterial,status:readiness.status,message:readiness.message,indexCount:readiness.indexCount}};
+  return {success:true,data:{cneId:cneId,hasOwnMaterial:readiness.hasOwnMaterial,status:readiness.status,message:readiness.message,indexCount:readiness.indexCount,errorCode:readiness.errorCode||''}};
 }
 function cneAiProgressKey_(cneId, employeeId) {
   var safe = String(cneId || '').toUpperCase() + ':' + String(employeeId || '').toUpperCase();

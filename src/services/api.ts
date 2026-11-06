@@ -649,7 +649,8 @@ export class ApiService {
           action === 'uploadLearningResource' ||
           action === 'uploadNursingReferenceResource' ||
           action === 'indexNursingReferenceResource'
-        ) ? 120000 : action === 'generateCNEQuestions'
+        ) ? 120000 : action === 'reindexLearningResource'
+          ? 180000 : action === 'generateCNEQuestions'
           ? (params?.phase === 'PLAN' ? 150000 : 305000) : 45000;
         timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -1469,6 +1470,7 @@ export class ApiService {
     extension?: string;
     unifiedContent?: string;
     referenceText?: string;
+    deferIndexing?: boolean;
   }): Promise<ApiResponse<CNELearningResourceMetadata>> {
     return this.executeAction<CNELearningResourceMetadata>('uploadLearningResource', params);
   }

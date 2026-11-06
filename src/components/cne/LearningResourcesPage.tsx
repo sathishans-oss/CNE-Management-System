@@ -21,6 +21,7 @@ import {
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { AddResourceModal } from './AddResourceModal';
+import { FilterBarShell } from '../common/FilterBarShell';
 
 interface LearningResourcesPageProps {
   user: SessionUser | null;
@@ -358,15 +359,16 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
   return (
     <div id="cne-unified-learning-resources-page" className="w-full min-w-0 py-2 sm:py-4 space-y-6">
       {/* Filters, Search & Action Toolbar */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3.5 sm:p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+      <FilterBarShell title="Learning Resources" subtitle="Browse CNE materials and references" icon={<BookOpen className="h-3.5 w-3.5" />} >
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         {/* Category Tabs */}
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0">
+        <div className="grid min-w-0 grid-cols-3 gap-1 rounded-xl border border-teal-100 bg-white/70 p-1 lg:flex lg:flex-wrap lg:items-center lg:gap-2">
           <button
             type="button"
             onClick={() => setActiveCategory('ALL')}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            className={`flex min-w-0 items-center justify-center gap-1 px-1.5 py-2 rounded-lg text-[10px] font-bold transition-all cursor-pointer sm:gap-2 sm:px-3 sm:text-xs ${
               activeCategory === 'ALL'
-                ? 'bg-slate-900 text-white shadow-xs'
+                ? 'bg-teal-700 text-white shadow-xs'
                 : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
             }`}
           >
@@ -374,7 +376,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
             <span>All Resources</span>
             <span
               className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
-                activeCategory === 'ALL' ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-700'
+                activeCategory === 'ALL' ? 'bg-teal-800 text-white' : 'bg-slate-200 text-slate-700'
               }`}
             >
               {totalCount}
@@ -384,7 +386,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
           <button
             type="button"
             onClick={() => setActiveCategory('CNE_LEARNING_MATERIAL')}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            className={`flex min-w-0 items-center justify-center gap-1 px-1.5 py-2 rounded-lg text-[10px] font-bold transition-all cursor-pointer sm:gap-2 sm:px-3 sm:text-xs ${
               activeCategory === 'CNE_LEARNING_MATERIAL'
                 ? 'bg-teal-700 text-white shadow-xs'
                 : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
@@ -406,9 +408,9 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
           <button
             type="button"
             onClick={() => setActiveCategory('NURSING_REFERENCE_LIB')}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            className={`flex min-w-0 items-center justify-center gap-1 px-1.5 py-2 rounded-lg text-[10px] font-bold transition-all cursor-pointer sm:gap-2 sm:px-3 sm:text-xs ${
               activeCategory === 'NURSING_REFERENCE_LIB'
-                ? 'bg-emerald-700 text-white shadow-xs'
+                ? 'bg-teal-700 text-white shadow-xs'
                 : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
             }`}
           >
@@ -417,7 +419,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
             <span
               className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
                 activeCategory === 'NURSING_REFERENCE_LIB'
-                  ? 'bg-emerald-800 text-white'
+                  ? 'bg-teal-800 text-white'
                   : 'bg-slate-200 text-slate-700'
               }`}
             >
@@ -427,7 +429,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
         </div>
 
         {/* Search Bar */}
-        <div className="relative flex-1 min-w-[200px]">
+        <div className="relative w-full min-w-0 flex-1 md:min-w-[200px]">
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
@@ -459,7 +461,8 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
             </button>
           )}
         </div>
-      </div>
+        </div>
+      </FilterBarShell>
 
       {/* Table Content Section */}
       {loading ? (

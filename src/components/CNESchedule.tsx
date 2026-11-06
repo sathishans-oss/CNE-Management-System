@@ -51,6 +51,7 @@ import { DropdownRetry } from './cne/DropdownRetry';
 import { loadOfficersSingleFlight, getCachedOfficers } from '../services/officerLoader';
 import { invalidateCNECalendarCache } from './CNECalendar';
 import { LoadingProgress } from './common/LoadingProgress';
+import { FilterBarShell } from './common/FilterBarShell';
 
 const CNEReferenceModal = lazy(() => import('./cne/CNEReferenceModal').then((m) => ({ default: m.CNEReferenceModal })));
 const CNEQuestionsModal = lazy(() => import('./cne/CNEQuestionsModal').then((m) => ({ default: m.CNEQuestionsModal })));
@@ -1200,7 +1201,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       {/* Scheduled is the only default request; historical statuses are loaded on demand. */}
       {/* Desktop: Status | From | To | Compact Search | Spacer | Schedule CNE.
           Smaller viewports wrap naturally without introducing a separate filter panel. */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-xs">
+      <FilterBarShell title="CNE Schedule" subtitle="Browse and filter programmes" icon={<Calendar className="h-3.5 w-3.5" />} >
         <div className="flex flex-wrap items-center gap-2.5 xl:flex-nowrap xl:gap-3">
           <div className="w-full min-w-0 sm:w-auto xl:w-auto xl:shrink-0">
             <div className="flex w-full items-center gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1" role="group" aria-label="Filter CNEs by status">
@@ -1286,13 +1287,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             </>
           )}
         </div>
-      </div>
+      </FilterBarShell>
 
       {/* Main Content Area */}
       <div className="space-y-4">
         {loading ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
-            <Loader2 className="w-8 h-8 animate-spin text-teal-600" />
             <LoadingProgress label={`Loading ${statusFilter === 'ALL' ? 'CNE history' : statusFilter + ' CNEs'}`} />
           </div>
         ) : loadError ? (

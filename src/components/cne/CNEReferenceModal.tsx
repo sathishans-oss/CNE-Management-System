@@ -39,6 +39,9 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
 
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [uploadStep, setUploadStep] = useState<'idle'|'uploading'|'uploaded'|'indexing'|'done'|'failed'>('idle');
+  const [uploadStepError, setUploadStepError] = useState('');
   const savingRef = useRef(false);
 
   // Learning material content
@@ -73,6 +76,9 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     setSelectedFile(null);
     setIndexingInfo(null);
     setShowDeleteConfirm(false);
+    setLoadError(null);
+    setUploadStep('idle');
+    setUploadStepError('');
     loadAllReferenceData();
     return () => {
       loadRequestRef.current += 1;
@@ -82,6 +88,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const loadAllReferenceData = async () => {
     const requestId = ++loadRequestRef.current;
     setLoading(true);
+    setLoadError(null);
     try {
       const [refRes, resourceRes] = await Promise.all([
         ApiService.getReferenceMaterial(cneId),
@@ -124,6 +131,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     } catch (e: any) {
       if (requestId !== loadRequestRef.current) return;
       console.warn('Failed to load reference material or learning resource:', e);
+      setLoadError(e?.message || 'Unable to load existing CNE material metadata.');
     } finally {
       if (requestId === loadRequestRef.current) setLoading(false);
     }
@@ -223,7 +231,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
    * returns true on success, false on failure
    */
   const performSave = async (): Promise<boolean> => {
-    if (savingRef.current || isSaving || !canModify) return false;
+    if (savingRef.current || isSaving || loading || !canModify) return false;
 
     const hasAnyFile = selectedFile !== null || (existingResource && existingResource.hasFile);
     const hasAnyText = unifiedContent.trim().length > 0;
@@ -235,6 +243,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
 
     savingRef.current = true;
     setIsSaving(true);
+    setUploadStepError('');
+    setUploadStep(selectedFile ? 'uploading' : 'idle');
 
     try {
       // 1. Upload newly selected file if provided
@@ -245,28 +255,38 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
           base64Data: base64Data,
           fileName: selectedFile.name,
           fileType: selectedFile.type || 'application/octet-stream',
-          unifiedContent: unifiedContent.trim() || undefined
+          unifiedContent: unifiedContent.trim() || undefined,
+          deferIndexing: true
         });
 
         if (!uploadRes.success) {
+          setUploadStep('failed');
+          setUploadStepError(uploadRes.message || 'PDF upload failed.');
           error(uploadRes.message || 'Failed to upload learning resource file to Drive.');
           return false;
         }
 
         setExistingResource(uploadRes.data || null);
         setSelectedFile(null);
-        if (uploadRes.data) {
-          setIndexingInfo({
-            status: uploadRes.data.indexingStatus || 'UNKNOWN',
-            message: uploadRes.data.indexingMessage,
-            errorCode: uploadRes.data.indexingErrorCode,
-            chunksCount: uploadRes.data.chunksCount
-          });
+        setUploadStep('uploaded');
+        setIndexingInfo({status:'PENDING', message:'PDF uploaded. Beginning OCR/text indexing.', chunksCount:0});
+        // Stage 2: separate authenticated Apps Script execution. The PDF stays
+        // saved if indexing fails, so the educator can retry without re-uploading.
+        setUploadStep('indexing');
+        const indexRes = await ApiService.reindexLearningResource(cneId);
+        if (!indexRes.success) {
+          setUploadStep('failed');
+          const detail = indexRes.message || 'No readable CNE content could be indexed.';
+          setUploadStepError(detail);
+          setIndexingInfo({status:'FAILED', message:detail, errorCode:indexRes.errorCode, chunksCount:0});
+          warning('PDF uploaded, but indexing failed: ' + detail);
+          if (onUpdated) onUpdated();
+          return false;
         }
-
-        if (uploadRes.data?.indexingStatus === 'FAILED') {
-          warning(uploadRes.data?.indexingMessage || 'Unable to extract readable text from the uploaded material. The file has been saved, but its content could not be indexed.');
-        }
+        const chunkCount = Number(indexRes.data?.chunksCount ?? (indexRes as any).chunksCount ?? 0);
+        setIndexingInfo({status:'SUCCESS', message:indexRes.message || 'Learning material indexed successfully.', chunksCount:chunkCount});
+        setUploadStep('done');
+        success('CNE PDF uploaded and indexed successfully. '+chunkCount+' validated chunks are ready for AI questions.');
       }
 
       // 2. Save unified textual content if entered
@@ -300,8 +320,9 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
    */
   const handleSaveOnly = async (e: React.FormEvent) => {
     e.preventDefault();
+    const onlyNotes = !selectedFile;
     const successResult = await performSave();
-    if (successResult) {
+    if (successResult && onlyNotes) {
       success('Learning resource saved successfully.');
     }
   };
@@ -375,13 +396,24 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
               </div>
             </div>
 
-        {loading ? (
-          <div className="py-24 flex flex-col items-center justify-center gap-2 text-slate-500">
-            <Loader2 className="w-7 h-7 animate-spin text-teal-600" />
-            <span className="text-xs font-medium">Loading CNE learning resource...</span>
-          </div>
-        ) : (
-          <div className="flex flex-col flex-1 overflow-hidden">
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          {loading && <div role="status" className="px-4 sm:px-6 py-2 border-b border-teal-100 bg-teal-50 space-y-1.5">
+            <p className="text-xs text-teal-900">Checking existing PDF and index status…</p>
+            <div className="h-1.5 rounded-full bg-teal-100 overflow-hidden"><div className="h-full w-1/3 bg-teal-600 animate-pulse rounded-full" /></div>
+          </div>}
+          {loadError && <div role="alert" className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-b border-rose-200">{loadError} <button type="button" onClick={() => void loadAllReferenceData()} className="ml-2 underline font-bold">Retry</button></div>}
+          {uploadStep !== 'idle' && <div role="status" aria-live="polite" className="px-4 sm:px-6 py-3 bg-white border-b border-teal-100 space-y-2">
+            <div className="text-xs font-semibold text-slate-800">CNE Material Upload &amp; Indexing</div>
+            <div className="flex items-center gap-2 text-xs">
+              {['uploaded','indexing','done'].includes(uploadStep) ? <CheckCircle2 className="w-4 h-4 text-emerald-600"/> : uploadStep==='uploading' ? <Loader2 className="w-4 h-4 text-teal-700 animate-spin"/> : <AlertCircle className="w-4 h-4 text-rose-600"/>}
+              <span>1. Uploading CNE PDF {['uploaded','indexing','done'].includes(uploadStep) ? '— Completed' : uploadStep==='uploading' ? '— In progress' : '— Failed'}</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              {uploadStep==='done' ? <CheckCircle2 className="w-4 h-4 text-emerald-600"/> : uploadStep==='indexing' ? <Loader2 className="w-4 h-4 animate-spin text-teal-700"/> : uploadStep==='failed' && existingResource?.hasFile ? <AlertCircle className="w-4 h-4 text-rose-600"/> : <span className="w-4 h-4 rounded-full border border-slate-300"/>}
+              <span>2. Indexing PDF content for AI generation {uploadStep==='done' ? '— Completed' : uploadStep==='indexing' ? '— In progress (OCR if needed)' : uploadStep==='failed' && existingResource?.hasFile ? '— Failed' : '— Pending'}</span>
+            </div>
+            {uploadStepError && <p className="text-xs text-rose-700">{uploadStepError}</p>}
+          </div>}
             {isClosed && (
               <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 text-xs text-slate-700 shrink-0">
                 <Lock className="w-4 h-4 text-slate-600 shrink-0" />
@@ -498,6 +530,14 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       <div>Indexed chunks: <strong className="text-slate-800">{typeof indexingInfo.chunksCount === 'number' ? indexingInfo.chunksCount : '—'}</strong></div>
                       {indexingInfo.errorCode && <div>Error code: <strong className="text-rose-700">{indexingInfo.errorCode}</strong></div>}
                     </div>
+                    {canModify && indexingInfo.status !== 'SUCCESS' && !isSaving && !loading && <button type="button" onClick={async () => {
+                      setIsSaving(true);setUploadStep('indexing');setUploadStepError('');
+                      try {const res=await ApiService.reindexLearningResource(cneId);
+                        if(!res.success) {setUploadStep('failed');setUploadStepError(res.message || 'Indexing failed.');setIndexingInfo({status:'FAILED',message:res.message,errorCode:res.errorCode});warning(res.message || 'Indexing failed.');}
+                        else {const count=Number(res.data?.chunksCount ?? (res as any).chunksCount ?? 0);setIndexingInfo({status:'SUCCESS',message:res.message,chunksCount:count});setUploadStep('done');success('CNE PDF successfully indexed ('+count+' valid chunks).');if(onUpdated)onUpdated();}}
+                      catch(err:any){setUploadStep('failed');setUploadStepError(err?.message || 'Indexing error.');error(err?.message || 'Indexing error.');}
+                      finally{setIsSaving(false);}
+                    }} className="text-teal-700 font-semibold underline text-xs">Retry Indexing</button>}
                     {indexingInfo.message && (
                       <div className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-2">
                         {indexingInfo.message}
@@ -628,7 +668,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                   <button
                     type="button"
                     onClick={handleSaveOnly}
-                    disabled={isSaving}
+                    disabled={isSaving || loading}
                     className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold text-xs cursor-pointer transition-colors disabled:opacity-50"
                   >
                     {isSaving ? (
@@ -648,7 +688,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                   <button
                     type="button"
                     onClick={handleSaveAndNext}
-                    disabled={isSaving}
+                    disabled={isSaving || loading}
                     className="flex items-center gap-1.5 px-5 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors disabled:opacity-50"
                   >
                     {isSaving ? (
@@ -667,7 +707,6 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
               )}
             </div>
           </div>
-        )}
       </div>
     </div>
   );

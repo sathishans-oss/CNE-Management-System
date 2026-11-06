@@ -22,6 +22,7 @@ import {
 import { SearchInput } from './SearchInput';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 import { LoadingProgress } from './common/LoadingProgress';
+import { FilterBarShell } from './common/FilterBarShell';
 
 export interface MyCNERecordsProps {
   user: SessionUser;
@@ -266,7 +267,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   return (
     <div className="space-y-6 pb-12">
       {/* Compact Filter / Action Toolbar */}
-      <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-xs">
+      <FilterBarShell title="My CNE Records" subtitle="Filter your completed CNE history" icon={<Award className="h-3.5 w-3.5" />}>
         <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
           <div className="w-full sm:w-[280px] lg:w-[360px]">
             <SearchInput
@@ -344,13 +345,12 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             )}
           </button>
         </div>
-      </div>
+      </FilterBarShell>
 
       {/* CNE Records Data Table (Desktop) & Cards (Mobile) */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden xl:overflow-visible">
         {loading && records.length === 0 ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
-            <Loader2 className="w-8 h-8 animate-spin text-teal-600" />
             <LoadingProgress label="Loading your CNE records" loaded={loadProgress.loaded} total={loadProgress.total} />
           </div>
         ) : filteredRecords.length === 0 ? (

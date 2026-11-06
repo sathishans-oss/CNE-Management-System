@@ -250,7 +250,7 @@ const hybridChecks=[
  {name:'Separated indexes use only current CNE-uploaded material, never library citations',run(){
     const {ctx}=fixture();
     const hs={lib:['Index ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At'],mat:['Index ID','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At']};
-    const passage='The nurse selects an appropriate peripheral vein and uses aseptic preparation during intravenous cannulation. '.repeat(3);
+    const passage='The nurse selects an appropriate peripheral vein and uses aseptic preparation during intravenous cannulation. '.repeat(8);
     const lib=spreadsheet([hs.lib,['LIB1','ACTIVE','Nursing Handbook','IV Cannulation','Intravenous Therapy',1,passage,'venous catheter','SUCCESS','2026-10-29']]);
     const mat=spreadsheet([hs.mat,['MAT1','CNE-123','MATERIAL','Uploaded Clinical Guide','IV Cannulation','Venous Access',1,passage,'intravenous','SUCCESS','2026-10-29'],['OTHER','OTHER-CNE','PRIVATE','Private File','IV Cannulation','Other',1,passage,'intravenous','SUCCESS','2026-10-29']]);
     const libraryRegistry=spreadsheet([['Resource ID','Source Type','Resource Title','Drive File ID','Author / Organization','License','Version','File Type','Active','Indexed At','Updated At'],['REF','LOCAL_REFERENCE_LIB','Nursing Handbook','ACTIVE','','','','PDF','TRUE','','']]);
@@ -478,8 +478,8 @@ const hybridChecks=[
   }}
  ,{name:'Material instructions visible during load and compact question tools moved to header',run(){
     const material=readFileSync(join(ROOT,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
-    assert(material.indexOf('Upload the authoritative presentation slides')<material.indexOf('{loading ? ('),'Material guidance hidden behind spinner');
-    assert(MODAL.includes('Permanent full-width views; controls stay in the header during loading.'),'Header view controls missing');
+    assert(material.includes('Checking existing PDF and index status') && !material.includes('{loading ? ('),'Material form must stay visible while metadata loads');
+    assert(MODAL.includes('Compact mobile header; desktop controls wrap without horizontal overflow.') && MODAL.includes('aria-label="Post-Test question views"'),'Mobile and desktop header view controls missing');
     assert(MODAL.includes("(['TEXT','IMAGE'] as const).map")&&MODAL.includes('handleSelectManualQuestionType'),'Compact manual selection controls missing');
   }}
  ,{name:'Exactly ten valid finalized questions can be saved and reported ready',run(){
@@ -599,9 +599,9 @@ check('Departmental multi-ward selection is synchronized across all session drop
   assert.match(dept,/setRows\(\(prev\) => prev\.map\(\(r\) => \(\{ \.\.\.r, area: primary, participatingWards: next \}\)\)\)/);
   assert.ok(dept.split('onChange={handleWardChange}').length >= 3);
 });
-check('Material verification occurs after explicit Generate confirmation, not on popup open', () => {
+check('Material verification occurs in backend after Generate click, not popup open', () => {
   assert.doesNotMatch(ai,/void loadMaterialStatus\(\+\+materialRequestRef\.current, cneId\)/);
-  assert.match(ai,/setMaterialChoice\('confirm'\)/);
+  assert.doesNotMatch(ai,/setMaterialChoice\('confirm'\)/);
   assert.match(ai,/void handleGenerateAi\(\)/);
   assert.match(ai,/ApiService\.planCNEAiGeneration/);
   assert.match(gas,/function cneAiMaterialReadiness_\(/);
@@ -3839,7 +3839,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-pdf-resources-and-indexing.js",
     mode: "module",
     expectedChecks: 17,
-    sha256: "ca363ea52ba767ed57c3708e03f41053e0e462d73b06f88c116ae9be48effaa7",
+    sha256: "fea5b974eed0b9b9871014b6af5605a0819b73db26a200c70eee22c993c5ba88",
     source: `/**
  * PDF Learning Resources, Reference Library & Indexing Verification Suite
  *
@@ -4148,7 +4148,7 @@ runTest('Office extraction functions are completely removed and single shared PD
   assert.ok(codeGs.includes('extractTextFromPdf(blob)'), 'extractTextFromPdf must be called for text extraction');
 
   // Both CNE learning material extraction and Reference Library extraction must use extractTextFromPdf
-  const cneExtractionMatch = codeGs.includes('rawExtracted = extractTextFromPdf(blob)');
+  const cneExtractionMatch = codeGs.includes('rawExtracted=extractTextFromPdf(blob)');
   assert.ok(cneExtractionMatch, 'CNE learning material extraction must use extractTextFromPdf');
   assert.ok(!codeGs.includes('function extractReferenceLibraryBlob('), 'Retired Library extraction must not be reintegrated');
 });
@@ -4160,30 +4160,18 @@ runTest('Retired library upload and extraction impose no extra indexed-data proc
   assert.ok(codeGs.includes('3 * 1024 * 1024'), 'Existing CNE material file-size safeguard remains');
 });
 
-runTest('Scanned/image-only PDFs return NO_EXTRACTABLE_CONTENT with helpful guidance', () => {
-  assert.ok(
-    codeGs.includes("'NO_EXTRACTABLE_CONTENT'"),
-    'Code.gs must return NO_EXTRACTABLE_CONTENT error code'
-  );
-  assert.ok(
-    codeGs.includes('This PDF does not contain usable text. Please upload a text-based PDF.'),
-    'Code.gs must provide clear user-facing message for scanned/image-only PDFs'
-  );
+runTest('Scanned PDFs use automatic OCR fallback and fail closed if OCR is unavailable', () => {
+  assert.ok(codeGs.includes('function cneExtractPdfWithDriveOcr_('), 'OCR fallback helper must exist');
+  assert.ok(codeGs.includes("'OCR_UNAVAILABLE'") && codeGs.includes("'OCR_INSUFFICIENT'"), 'OCR must distinguish access and quality failures');
+  assert.ok(codeGs.includes('cneMaterialTextReadable_(rawExtracted,16)'), 'Corrupt extracted text must trigger OCR');
+  assert.ok(codeGs.includes("mimeType:'application/vnd.google-apps.document'"), 'OCR must convert to an ephemeral Google Doc');
 });
 
-runTest('OCR is completely absent from PDF extraction engine', () => {
-  assert.ok(
-    !codeGs.includes('ocr: true') && !codeGs.includes('ocr:true'),
-    'Code.gs must not contain Drive OCR conversions (ocr: true)'
-  );
-  assert.ok(
-    !codeGs.includes('Drive.Files.insert'),
-    'Code.gs must not call Drive.Files.insert for OCR conversion'
-  );
-  assert.ok(
-    !codeGs.includes('temp_extract_'),
-    'Code.gs must not create temporary Docs files for OCR'
-  );
+runTest('OCR converted Doc is cleaned up and content quality is checked before SUCCESS', () => {
+  assert.ok(codeGs.includes('DriveApp.getFileById(temporaryId).setTrashed(true)'), 'Temporary OCR Doc must be trashed');
+  assert.ok(codeGs.includes('cneMaterialTextReadable_(passage,8)'), 'AI readiness must reject corrupt index text');
+  assert.ok(codeGs.includes("'INDEX_QUALITY_FAILED'"), 'Existing legacy false-SUCCESS index must be rejected');
+  assert.ok(codeGs.includes('if(forIndex && cleanText.length>250000)'), 'Whole-document index must reject oversized PDFs instead of head/tail truncation');
 });
 
 // =============================================================================
@@ -10386,7 +10374,7 @@ if (passedTests === totalTests) {
 function runSuite(suite) {
   const actualHash = createHash('sha256').update(suite.source).digest('hex');
   if (actualHash !== suite.sha256) {
-    throw new Error(`Embedded suite ${suite.id} is incomplete or modified (SHA-256 mismatch). Check that the full TXT was pasted.`);
+    throw new Error(`Embedded suite ${suite.id} SHA-256 mismatch: actual ${actualHash}. Check that the full TXT was pasted.`);
   }
 
   const args = suite.mode === 'module'
@@ -10526,12 +10514,12 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   focusCheck('Reference reindex verifies replacement and refuses false SUCCESS', () => {
     if (!gas.includes('INDEX_REPLACEMENT_INCOMPLETE') || !gas.includes('verifiedCount !== rowsToInsert.length')) throw Error('Index replacement does not verify counts');
   });
-  focusCheck('Popup prefetches Question Bank but checks material only after confirmation', () => {
+  focusCheck('Popup prefetches Question Bank and validates material only on Generate', () => {
     const init=ui.slice(ui.indexOf('  useEffect(() => {'),ui.indexOf('  const loadQuestions = async'));
     if (init.includes('loadMaterialStatus(') || !init.includes('searchCNEReferenceQuestions(cneId') || !init.includes('void loadQuestions(') || !init.includes('void loadQuota('))
       throw Error('Popup must prefetch bank questions without requesting material status');
-    if (!ui.includes("setMaterialChoice('confirm')") || !ui.includes('void handleGenerateAi();'))
-      throw Error('Educator confirmation or on-demand generation is missing');
+    if (ui.includes("setMaterialChoice('confirm')") || !ui.includes('void handleGenerateAi();'))
+      throw Error('Direct on-demand generation or no-confirmation rule is missing');
   });
   // Run the real Generate click handler in an isolated sandbox. Backend APIs are
   // stubbed; this verifies frontend requests, consent and failure behavior only.
@@ -10570,27 +10558,27 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       cwd: ROOT_DIR, encoding: 'utf8', timeout: 10000
     }));
   }
-  focusCheck('Generate click opens confirmation without a status API call', () => {
+  focusCheck('Generate click invokes direct backend flow without confirmation or extra status API', () => {
     const events=exerciseMaterialClick({serverMaterial:true});
-    if (events.check !== 0 || events.generate.length || JSON.stringify(events.popup)!=='["confirm"]')
-      throw Error('Generate must ask educator first without checking material');
+    if (events.check!==0 || events.generate.length!==1 || events.popup.length)
+      throw Error('Generate must start the backend PLAN directly');
   });
-  focusCheck('Material not indexed is rejected by authoritative backend after Continue', () => {
+  focusCheck('Material not indexed is rejected by authoritative backend during PLAN', () => {
     const events=exerciseMaterialClick({serverMaterial:false});
-    if(events.check || events.generate.length || JSON.stringify(events.popup)!=='["confirm"]')throw Error('Confirmation must not infer material state');
+    if(events.check || events.generate.length!==1 || events.popup.length)throw Error('Client assumed it could determine indexing state');
     if(!ui.includes('MATERIAL_NOT_INDEXED')||!gas.includes('cneAiMaterialReadiness_('))throw Error('Backend missing indexing enforcement');
   });
   focusCheck('Cached material state cannot bypass server readiness after Continue', () => {
     for (const cachedMaterial of [true,false]) {
       const events=exerciseMaterialClick({cachedMaterial,serverMaterial:null});
-      if(events.check || events.generate.length || JSON.stringify(events.popup)!=='["confirm"]')
+      if(events.check || events.generate.length!==1 || events.popup.length)
         throw Error('Client assumed cached material ready');
     }
     if(!gas.includes('afterGeminiReadiness.driveFileId !== readiness.driveFileId')) throw Error('Material replacement must invalidate generation');
   });
-  focusCheck('Unknown material status still asks confirmation and never assumes library permission', () => {
+  focusCheck('Unknown material status still uses the backend and never assumes library permission', () => {
     const events=exerciseMaterialClick({serverMaterial:null});
-    if(events.check || events.generate.length || JSON.stringify(events.popup)!=='["confirm"]')throw Error('Unknown status bypassed confirmation');
+    if(events.check || events.generate.length!==1 || events.popup.length)throw Error('Unknown status bypassed the backend');
     if(ui.includes('allowLibraryOnly')||gas.includes('allowLibraryOnly'))throw Error('Library-only fallback returned');
   });
   focusCheck('Repeated Generation click is blocked during busy state and for exhausted quota', () => {
@@ -10605,15 +10593,15 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     }
   });
   focusCheck('Required header Valid & Finalized count badge remains dynamic, including locked sessions', () => {
-    const header=ui.slice(ui.indexOf('{/* Header */}'),ui.indexOf('{/* AI & Manual Action Bar */}'));
-    if (!header.includes('{validFinalizedCount} of {activeQuestions.length} Valid & Finalized (Min 5)') || !header.includes('Locked (Submissions Received)')) throw Error('Count or locked status was removed');
+    const header=ui.slice(ui.indexOf('{/* Compact mobile header;'),ui.indexOf("{activeView === 'bank' ? ("));
+    if (!header.includes('{validFinalizedCount} / 5 finalized minimum') || !header.includes('Locked (Submissions Received)')) throw Error('Dynamic count or locked status was removed');
     if (!ui.includes('validFinalizedCount < 5 || validFinalizedCount > 10 || incompleteActiveCount > 0')) throw Error('QR eligibility disabled guard was weakened');
   });
   focusCheck('Redundant AI badges, quota label and QR footer warning are removed', () => {
     const obsolete=['AI: Generating','1 AI generation allowed per CNE','Need 5 valid finalized questions before QR. Ready:','Synthesize exactly 5 clinical MCQs grounded strictly'];
     for(const phrase of obsolete) if(ui.includes(phrase)) throw Error('Redundant UI text remains: '+phrase);
-    if(!ui.includes('<span>Generating MCQs...</span>') && !ui.includes("'Generating MCQs...'")) throw Error('Useful busy progress disappeared');
-    if(!ui.includes('aria-label={materialChoice ===') || !ui.includes("'MATERIAL_NOT_INDEXED'") || ui.includes('LIBRARY_CONSENT_REQUIRED')) throw Error('Material-only popup or backend error handling missing');
+    if(!ui.includes('Generating MCQs…') && !ui.includes('Generating MCQs...')) throw Error('Useful busy progress disappeared');
+    if(ui.includes('aria-label={materialChoice ===') || !ui.includes("'MATERIAL_NOT_INDEXED'") || ui.includes('LIBRARY_CONSENT_REQUIRED')) throw Error('Material-only direct-generation error handling missing');
   });
   focusCheck('Generation quota and backend material/evidence validation remain mandatory', () => {
     if(!ui.includes('isAiGenerationUsed') || !ui.includes('isAiGenerationUnavailable') || !ui.includes('quotaInfo') ||
@@ -10621,7 +10609,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   });
   focusCheck('Manual question is blocked during material checking and generation', () => {
     const handler = ui.substring(ui.indexOf('const handleAddManualQuestion'),ui.indexOf('const handleReplaceQuestion'));
-    if (!handler.includes('materialCheckRef.current') || !ui.includes('checkingMaterial ||\n                  materialCheckRef.current')) throw Error('Missing manual busy guards');
+    if (!handler.includes('materialCheckRef.current') || !ui.includes('checkingMaterial || materialCheckRef.current')) throw Error('Missing manual busy guards');
   });
   focusCheck('Loading failure, contextual popup and uncertain-outcome recovery exist', () => {
     if (!ui.includes('Unable to Load Questions') || !ui.includes('reconcileUncertainGeneration') || !ui.includes('AI Questions Did Not Pass Validation') || !ui.includes('Refresh Questions & Quota')) throw Error('Failure UI/recovery missing');
@@ -10654,7 +10642,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   focusCheck('Uploaded material retry endpoint is authorized and routed',()=>{
     if(!gas.includes("case 'reindexLearningResource':") || !gas.includes('function handleReindexLearningResource('))throw Error('Material indexing retry backend missing');
     if(!libraryApi.includes('static async reindexLearningResource('))throw Error('Material reindex API missing');
-    if(!ui.includes('ApiService.reindexLearningResource(cneId)'))throw Error('Material retry button not connected');
+    const materialModal=readFileSync(join(ROOT_DIR,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
+    if(!materialModal.includes('ApiService.reindexLearningResource(cneId)'))throw Error('Material retry button not connected to Material page');
   });
   focusCheck('Library consent and generation flags are prohibited everywhere',()=>{
     for(const x of [gas,ui,libraryApi])if(x.includes('allowLibraryOnly')||x.includes('LIBRARY_CONSENT_REQUIRED'))throw Error('Library generation flag restored');
@@ -11245,10 +11234,10 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     for (const token of ['export function prefetchRoute','export function scheduleIdlePrefetch','PREFETCH_MAP'])
       if (!route.includes(token)) throw Error('Route optimization missing: ' + token);
   });
-  retainCheck('Restored 43-runner parity: UI recovery and on-demand material confirmation', () => {
+  retainCheck('Restored 43-runner parity: UI recovery and on-demand material verification', () => {
     for (const token of ['submissionUncertain','recoveredResult','formatPostTestTimestamp'])
       if (!postTest.includes(token)) throw Error('Post-Test recovery state missing: ' + token);
-    for (const token of ["setMaterialChoice('confirm')",'reconcileUncertainGeneration','ApiService.getAiQuota'])
+    for (const token of ['void handleGenerateAi();','reconcileUncertainGeneration','ApiService.getAiQuota'])
       if (!ui.includes(token)) throw Error('On-demand material or AI recovery logic missing: ' + token);
     const beforeGenerate=ui.slice(ui.indexOf('  useEffect(() => {'),ui.indexOf('  const loadQuestions = async'));
     if(beforeGenerate.includes('loadMaterialStatus('))throw Error('Page-open material status API call returned');
@@ -12444,6 +12433,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     ctx.passesClinicalRelevanceGate=()=>true;
     ctx.cneAiSelectTopicEvidence_=(arr)=>arr.slice(0,12);
     ctx.cneAiExpandObjectiveEvidence_=(base)=>({evidence:base,addedCount:0,perObjective:{}});
+    vm.runInNewContext(gas.slice(gas.indexOf('function cneMaterialTextReadable_('),gas.indexOf('function cneExtractPdfWithDriveOcr_(')),ctx,{timeout:3000});
     vm.runInNewContext(gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf(')),ctx,{timeout:3000});
     const result=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{employeeId:'STAFF-A'},{});
     if(!result.success || result.indexSearchMode!=='UPLOADED_CNE_MATERIAL'||result.evidence.length!==12 ||
@@ -12627,7 +12617,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     }],
     ['Question Bank occupies exclusive full-height scroll area, not an inline split section', () => {
       assert(modal.includes("{activeView === 'bank' ? ("));
-      assert(bankPanel.includes('overflow-y-auto min-h-0 flex-1'));
+      assert(bankPanel.includes('overflow-y-auto') && bankPanel.includes('min-h-0') && bankPanel.includes('flex-1'));
       assert(!bankPanel.includes('max-h-72') && !modal.includes('bankOpen'));
       assert(!bankPanel.includes('Replaced Questions History') && !bankPanel.includes('onClick={handleAddManualQuestion}'));
     }],
@@ -13825,13 +13815,15 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(!questionsUi.includes('AI Question Synthesizer'));
       assert(questionsUi.includes('Review, edit and finalize AI, Question Bank and manual Drafts.'));
       assert.equal(questionsUi.split('My Questions ({activeQuestions.length})').length-1,1);
-      const nav=questionsUi.slice(questionsUi.indexOf('role="tablist"'),questionsUi.indexOf('onClick={onClose}'));
-      assert(nav.indexOf('My Questions ({activeQuestions.length})')<nav.indexOf('AI Generate MCQs'));
-      assert(nav.indexOf('AI Generate MCQs')<nav.indexOf('+ Manual Question'));
-      assert(nav.indexOf('+ Manual Question')<nav.indexOf('id="cne-question-bank-tab"'));
+      const nav=questionsUi.slice(questionsUi.indexOf('role="tablist"'),questionsUi.indexOf("{activeView === 'bank' ? ("));
+      assert(nav.indexOf('My Questions ({activeQuestions.length})')>=0);
+      assert(nav.indexOf('id="cne-question-bank-tab"')>nav.indexOf('My Questions ({activeQuestions.length})'));
+      assert(nav.indexOf('AI Generate MCQs')>nav.indexOf('id="cne-question-bank-tab"'));
+      assert(nav.indexOf('+ Manual Question')>nav.indexOf('AI Generate MCQs'));
       assert(nav.includes('onClick={handleAddManualQuestion}'));
       assert(nav.includes('disabled={!canInteractWithQuestionTools || !!importingBankId}'));
       assert(nav.includes('Resume AI Generation') && nav.includes('Finalize All'));
+      assert(nav.includes('grid-cols-2') && questionsUi.includes('aria-label="Close CNE Questions"'));
     }],
     ['Learning Resources removes only PDF preview and retains secure download', () => {
       assert(!resourceUi.includes('handlePreview') && !resourceUi.includes('previewItem'));
@@ -14060,18 +14052,54 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(questions.includes('window.confirm(`Review the answer and rationale?'));
       assert(questions.includes('.slice(0, 20)'));
     }],
-    ['Material check is deferred until educator confirms AI generation', () => {
+    ['AI generation starts directly and validates material on server', () => {
       const open = questions.slice(questions.indexOf('useEffect(() => {'),questions.indexOf('const editableQuestionFingerprint'));
       assert(!open.includes('void loadMaterialStatus('));
-      assert(questions.includes("setMaterialChoice('confirm')"));
-      assert(questions.includes('Have you uploaded the learning material'));
+      assert(!questions.includes("setMaterialChoice('confirm')"));
+      assert(!questions.includes('Have you uploaded the learning material'));
       assert(!questions.includes('allowLibraryOnly'));
       assert(questions.includes('void handleGenerateAi();'));
     }],
     ['CNE question popup uses phone viewport and scrollable content', () => {
       assert(questions.includes('h-[100dvh]'));
-      assert(questions.includes('overflow-y-auto min-h-0 flex-1'));
+      assert(questions.includes('overflow-y-auto') && questions.includes('min-h-0') && questions.includes('flex-1'));
       assert(questions.includes('safe-area-inset-bottom'));
+    }],
+    ['Page-loading indicators do not duplicate bar and spinner on Calendar, Schedule or My Records', () => {
+      const records = readFileSync(join(ROOT_DIR,'src/components/MyCNERecords.tsx'),'utf8');
+      const calendar = readFileSync(join(ROOT_DIR,'src/components/CNECalendar.tsx'),'utf8');
+      const schedule = readFileSync(join(ROOT_DIR,'src/components/CNESchedule.tsx'),'utf8');
+      assert(!calendar.includes('Loading CNE Calendar...') && !calendar.includes('cne-calendar-loading-spinner'));
+      assert(calendar.includes('<LoadingProgress label="Fetching scheduled CNE programmes"'));
+      assert(calendar.includes('<LoadingProgress label="Refreshing scheduled CNE programmes"'));
+      assert(!/\{loading \? \([\s\S]*?<Loader2 className="w-8 h-8 animate-spin text-teal-600" \/>\s*<LoadingProgress/.test(schedule));
+      assert(!/\{loading && records.length === 0 \? \([\s\S]*?<Loader2 className="w-8 h-8 animate-spin text-teal-600" \/>\s*<LoadingProgress/.test(records));
+    }],
+    ['Calendar has no duplicate agenda view and selected dates preserve full event details', () => {
+      const calendar = readFileSync(join(ROOT_DIR,'src/components/CNECalendar.tsx'),'utf8');
+      assert(!calendar.includes('Agenda / List View') && !calendar.includes("viewMode === 'agenda'"));
+      assert(!calendar.includes("setViewMode('agenda')"));
+      assert(calendar.includes('setSelectedDay(dayNum)') && calendar.includes('eventsByDay[selectedDay]'));
+      assert(calendar.includes('setSelectedEvent(ev)') && calendar.includes('handleViewFullDetails'));
+      assert(calendar.includes('onViewFullCneDetails(fullDetailsCne.cneId, { year, month, viewMode })'));
+    }],
+    ['Quiz-style filter header is shared by all three pages without changing filter handlers', () => {
+      const shell=readFileSync(join(ROOT_DIR,'src/components/common/FilterBarShell.tsx'),'utf8');
+      const sched=readFileSync(join(ROOT_DIR,'src/components/CNESchedule.tsx'),'utf8');
+      const records=readFileSync(join(ROOT_DIR,'src/components/MyCNERecords.tsx'),'utf8');
+      const resources=readFileSync(join(ROOT_DIR,'src/components/cne/LearningResourcesPage.tsx'),'utf8');
+      assert(shell.includes('bg-gradient-to-r from-white via-cyan-50 to-teal-100'));
+      assert(shell.includes('border-teal-100') && shell.includes('rounded-full bg-teal-100'));
+      assert(sched.includes('<FilterBarShell title="CNE Schedule"') && sched.includes('setStatusFilter(status)'));
+      assert(records.includes('<FilterBarShell title="My CNE Records"') && records.includes('onClick={applyFilters}'));
+      assert(resources.includes('<FilterBarShell title="Learning Resources"') && resources.includes('setActiveCategory('));
+    }],
+    ['Mobile question popup is two-column, compact and keeps Save actions in safe area', () => {
+      assert(questions.includes('max-h-[46dvh]') && questions.includes('grid-cols-2'));
+      assert(questions.includes('aria-label="Close CNE Questions"'));
+      assert(questions.includes('No Questions Created Yet') && questions.includes('my-3 w-full max-w-xl'));
+      assert(questions.includes('safe-area-inset-bottom') && questions.includes('Save &amp; Next'));
+      assert(questions.includes('Question Bank') && questions.includes('+ Manual Question'));
     }],
     ['Quiz paints without waiting for the summary and never enables unverified launch', () => {
       assert(quiz.includes("{page==='home'&&<>"));
@@ -14151,8 +14179,8 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   const idxHeaders = ['Index ID', 'CNE ID', 'Drive File ID', 'Resource Title', 'Topic', 'Section / Heading', 'Chunk Index', 'Chunk Text', 'Clinical Keywords', 'Extraction Status', 'Updated At'];
   const ref = makeSheet('CNE_Reference', [refHeaders, ['CNE-1', 'FILE-A', 'SUCCESS', '', '2026-11-04T08:00:00Z']]);
   const index = makeSheet('CNE_Material_Index', [idxHeaders,
-    ['IDX-OLD', 'CNE-1', 'FILE-OLD', 'Old material', 'Sepsis', 'Clinical', '1', 'Sepsis treatment source content', 'sepsis', 'SUCCESS', 'now'],
-    ['IDX-OK', 'CNE-1', 'FILE-A', 'Current material', 'Sepsis', 'Clinical', '1', 'Sepsis nursing management from this uploaded document', 'sepsis', 'SUCCESS', 'now']
+    ['IDX-OLD', 'CNE-1', 'FILE-OLD', 'Old material', 'Sepsis', 'Clinical', '1', ('Old reference to nursing care of a patient with sepsis and assessment. ').repeat(10), 'sepsis', 'SUCCESS', 'now'],
+    ['IDX-OK', 'CNE-1', 'FILE-A', 'Current material', 'Sepsis', 'Clinical', '1', ('Sepsis nursing management requires monitoring vital signs, recognizing deterioration, and documenting observations. ').repeat(9), 'sepsis', 'SUCCESS', 'now']
   ]);
   ctx.getSpreadsheet = () => ({ getSheetByName(n) { return n === 'CNE_Reference' ? ref : n === 'CNE_Material_Index' ? index : null; } });
   ctx.getHeaderMap = sh => Object.fromEntries(sh.rows[0].map((v, i) => [v.toLowerCase().replace(/[^a-z0-9]/g, ''), i]));
@@ -14191,6 +14219,53 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       const current = index.rows.pop();
       try { assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial, false); }
       finally { index.rows.push(current); }
+    }],
+    ['Corrupt PDF bytes cannot be accepted as a successful clinical index', () => {
+      const corrupt = 'u\u00e1v>v\u009b\u00f8wVw\u00b3xxnx\u00ccy*y\u0089y\u00e7zFz\u00a5{{c'.repeat(20);
+      assert.equal(ctx.cneMaterialTextReadable_(corrupt,8), false);
+      const row = index.rows[2]; const previous = row[7];
+      row[7] = corrupt;
+      try {
+        const state = ctx.cneAiMaterialReadiness_('CNE-1');
+        assert.equal(state.hasOwnMaterial,false);
+        assert.equal(state.status,'FAILED');
+      } finally { row[7] = previous; }
+    }],
+    ['Valid indexed passages remain usable after screening', () => {
+      assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial,true);
+    }],
+    ['Upload and OCR are explicit, separate material stages', () => {
+      const material = readFileSync(join(ROOT_DIR,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
+      const additional = readFileSync(join(ROOT_DIR,'src/components/cne/AddResourceModal.tsx'),'utf8');
+      assert(material.includes('deferIndexing: true') && material.includes('ApiService.reindexLearningResource(cneId)'));
+      assert(additional.includes('deferIndexing:true') && additional.includes('ApiService.reindexLearningResource(selectedCneId)'));
+      assert(code.includes('cneExtractPdfWithDriveOcr_') && code.includes('ocrLanguage=en'));
+      assert(code.includes('forIndex:true') && code.includes('DOCUMENT_TOO_LONG'));
+    }],
+    ['OCR fallback converts scanned PDF and deletes temporary Google Doc', () => {
+      let trashed=false;
+      ctx.Utilities={getUuid:()=>'TESTUUID',newBlob:(v)=>({getBytes:()=>Array.from(Buffer.from(String(v),'utf8'))})};
+      ctx.ScriptApp={getOAuthToken:()=>'FAKE_TOKEN'};
+      ctx.UrlFetchApp={fetch:(url,options)=>{
+        assert(url.includes('uploadType=multipart') && url.includes('ocrLanguage=en'));
+        assert(options.headers.Authorization==='Bearer FAKE_TOKEN');
+        return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({id:'TEMP_DOC'})};
+      }};
+      ctx.DocumentApp={openById:()=>({getBody:()=>({getText:()=>('Chronic kidney disease nursing teaching includes fluid balance monitoring, careful renal assessments and evaluation of electrolyte abnormalities. ').repeat(12)})})};
+      ctx.DriveApp={getFileById:(id)=>({setTrashed:(value)=>{assert(id==='TEMP_DOC' && value===true);trashed=true;}})};
+      const result=ctx.cneExtractPdfWithDriveOcr_({getBytes:()=>[37,80,68,70,45]});
+      assert.equal(result.success,true);
+      assert.equal(result.method,'DRIVE_OCR');
+      assert.equal(trashed,true);
+    }],
+    ['OCR fallback refuses unreadable text without leaving temp Docs', () => {
+      let trashed=false;
+      ctx.DocumentApp={openById:()=>({getBody:()=>({getText:()=>('\u0088\u0099~\u0081').repeat(200)})})};
+      ctx.DriveApp={getFileById:()=>({setTrashed:()=>{trashed=true;}})};
+      const result=ctx.cneExtractPdfWithDriveOcr_({getBytes:()=>[37,80,68,70,45]});
+      assert.equal(result.success,false);
+      assert.equal(result.errorCode,'OCR_INSUFFICIENT');
+      assert.equal(trashed,true);
     }],
     ['Library-only generation and consent flags are absent', () => {
       assert.equal(code.includes('allowLibraryOnly'), false);

@@ -26,6 +26,8 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
   const [notes, setNotes] = useState('');
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadStage, setUploadStage] = useState<'idle'|'upload'|'index'|'done'|'failed'>('idle');
+  const [stageError, setStageError] = useState('');
   const [loadError, setLoadError] = useState('');
   const requestRef = useRef(0);
   const submitRef = useRef(false);
@@ -61,7 +63,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
     if (!selectedCneId || !file) { error('Choose a CNE session and a PDF learning material file.'); return; }
     const selected = classes.find(record => (record.cneId || record.classId) === selectedCneId);
     if (!selected) { error('The selected CNE is no longer available. Refresh the page.'); return; }
-    submitRef.current = true; setSubmitting(true);
+    submitRef.current = true; setSubmitting(true);setUploadStage('upload');setStageError('');
     try {
       const base64Data = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -71,14 +73,16 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
       });
       const result = await ApiService.uploadLearningResource({
         cneId: selectedCneId, base64Data, fileName: file.name,
-        fileType: file.type || 'application/pdf', unifiedContent: notes.trim() || undefined
+        fileType: file.type || 'application/pdf', unifiedContent: notes.trim() || undefined, deferIndexing:true
       });
       if (!result.success) throw new Error(result.message || 'Could not upload CNE material.');
-      if (result.data?.indexingStatus === 'FAILED') warning(result.data?.indexingMessage || 'PDF saved, but material indexing failed. Retry indexing from the CNE Questions page.');
-      else success('CNE material uploaded and indexing result recorded.');
-      onSuccess(); onClose();
+      setUploadStage('index');
+      const indexed=await ApiService.reindexLearningResource(selectedCneId);
+      if(!indexed.success){setUploadStage('failed');setStageError(indexed.message||'PDF indexing failed.');warning('PDF saved, but indexing failed: '+(indexed.message||'Retry from the CNE Material page.'));onSuccess();return;}
+      setUploadStage('done');success('CNE PDF uploaded and indexed. '+Number(indexed.data?.chunksCount ?? (indexed as any).chunksCount ?? 0)+' valid chunks are ready.');
+      onSuccess();onClose();
     } catch (err: any) {
-      error(err?.message || 'Could not upload CNE learning material.');
+      setUploadStage('failed');setStageError(err?.message || 'Could not upload CNE learning material.');error(err?.message || 'Could not upload CNE learning material.');
     } finally { submitRef.current = false; setSubmitting(false); }
   };
 
@@ -120,6 +124,11 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
               <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} className="mt-1 block w-full rounded-lg border border-slate-300 p-3 text-xs font-normal"/>
             </label>
           </div>
+          {uploadStage!=='idle' && <div role="status" className="shrink-0 px-4 py-2 border-t text-xs text-slate-700 space-y-1.5">
+            <p className="flex items-center gap-2">{['index','done'].includes(uploadStage)?<span className="text-emerald-600">✓</span>:uploadStage==='upload'?<Loader2 className="h-3.5 w-3.5 animate-spin"/>:<span>○</span>} 1. Uploading CNE PDF</p>
+            <p className="flex items-center gap-2">{uploadStage==='done'?<span className="text-emerald-600">✓</span>:uploadStage==='index'?<Loader2 className="h-3.5 w-3.5 animate-spin"/>:<span>○</span>} 2. Indexing PDF content for AI generation</p>
+            {stageError && <p className="text-rose-700">{stageError}</p>}
+          </div>}
           <div className="shrink-0 flex justify-end gap-2 border-t bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
             <button type="button" onClick={onClose} disabled={submitting} className="rounded-lg border px-4 py-2 text-xs font-bold">Cancel</button>
             <button type="submit" disabled={submitting || loadingClasses || !file || !selectedCneId} className="inline-flex items-center gap-2 rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
