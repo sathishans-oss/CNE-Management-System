@@ -562,6 +562,7 @@ export interface QuizQuestion {
   question: string;
   options: Record<'A'|'B'|'C'|'D'|'E'|'F',string>;
   responseFormat: 'SINGLE_SELECT' | 'MULTI_SELECT' | 'ORDERED_RESPONSE';
+  orderedItems?: string[]; // configured subset of A–F used by ORDERED_RESPONSE
   scoringMethod: 'EXACT_MATCH';
   imageFileId?: string;
   correctOption?: string; // only practice or COMPLETED scored quiz: B, A,C,D, C,A,D,B

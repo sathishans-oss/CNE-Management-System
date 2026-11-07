@@ -181,7 +181,7 @@ const hybridChecks=[
     const {ctx}=fixture();
     assert(typeof ctx.cneAdminMigrateIndexSchemas_==='undefined'&&typeof ctx.cneEvidenceSplitReady_==='undefined','Old migration or switch still callable');
     assert(!/CNE_EVIDENCE_INDEX_V2_READY/.test(gas),'Migration property still present');
-    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===23,'Question index schema must be 23 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===21,'Question index schema is not 22 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'].length===10,'Library schema is not 10 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE_Material_Index'].length===11,'Uploaded material schema is not 11 columns');
     assert(ctx.cneIndexProjectRows_([['ID','LOCAL_REFERENCE_LIB','','DOC','Source','Gastritis','Heading',1,'Evidence','Keyword','SUCCESS','Today']],ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'])[0].length===10,'Library projection failed');
@@ -202,7 +202,7 @@ const hybridChecks=[
     assert(result.success,'Clean index initialization failed '+result.message);
     assert(created['CNE_Reference_Index'].rows[0].length===10,'Library headers not initialized');
     assert(created['CNE_Material_Index'].rows[0].length===11,'CNE material tab not created');
-    assert(created['CNE_Reference_Question_Index'].rows[0].length===23,'Question index tab not created');
+    assert(created['CNE_Reference_Question_Index'].rows[0].length===21,'Question index tab not created');
     assert(result.auditReport.some(x=>x.tab==='CNE_Material_Index'),'Material tab missing from verification results');
   }},
  {name:'Verify Sheets reports legacy extra index columns without deleting data',run(){
@@ -252,7 +252,12 @@ const hybridChecks=[
     const hs={lib:['Index ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At'],mat:['Index ID','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At']};
     const passage='The nurse selects an appropriate peripheral vein and uses aseptic preparation during intravenous cannulation. '.repeat(8);
     const lib=spreadsheet([hs.lib,['LIB1','ACTIVE','Nursing Handbook','IV Cannulation','Intravenous Therapy',1,passage,'venous catheter','SUCCESS','2026-10-29']]);
-    const mat=spreadsheet([hs.mat,['MAT1','CNE-123','MATERIAL','Uploaded Clinical Guide','IV Cannulation','Venous Access',1,passage,'intravenous','SUCCESS','2026-10-29'],['OTHER','OTHER-CNE','PRIVATE','Private File','IV Cannulation','Other',1,passage,'intravenous','SUCCESS','2026-10-29']]);
+    const mat=spreadsheet([hs.mat,
+      ['IDX_CNE-123_MATERIAL_V3_ABCDEF12_C1','CNE-123','MATERIAL','Uploaded Clinical Guide','IV Cannulation','Venous Access',1,passage,'intravenous, vein selection','SUCCESS','2026-10-29'],
+      ['IDX_CNE-123_MATERIAL_V3_ABCDEF12_C2','CNE-123','MATERIAL','Uploaded Clinical Guide','IV Cannulation','Infection Prevention',2,
+        'During intravenous cannulation, use hand hygiene, aseptic technique and monitoring of the insertion site. '.repeat(8),
+        'hand hygiene, aseptic technique, phlebitis','SUCCESS','2026-10-29'],
+      ['OTHER','OTHER-CNE','PRIVATE','Private File','IV Cannulation','Other',1,passage,'intravenous','SUCCESS','2026-10-29']]);
     const libraryRegistry=spreadsheet([['Resource ID','Source Type','Resource Title','Drive File ID','Author / Organization','License','Version','File Type','Active','Indexed At','Updated At'],['REF','LOCAL_REFERENCE_LIB','Nursing Handbook','ACTIVE','','','','PDF','TRUE','','']]);
     const ref=spreadsheet([['CNE ID','Drive File ID','Indexing Status','Indexing Message','Indexed At'],['CNE-123','MATERIAL','SUCCESS','','2026-11-04']]);
     ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Reference_Index'?lib:n==='CNE_Material_Index'?mat:n==='CNE_Reference'?ref:n==='CNE_Reference_Library'?libraryRegistry:null});
@@ -265,7 +270,7 @@ const hybridChecks=[
     ctx.cneAiSelectTopicEvidence_=(arr)=>arr.slice(0,12);
     const result=ctx.retrieveCNETopicEvidence('CNE-123','IV Cannulation',session,{});
     assert(result.success,'Split-index retrieval failed '+result.errorCode);
-    assert(result.evidence.some(x=>x.indexId==='MAT1'&&x.sourceType==='UPLOADED_CNE'),'Own CNE evidence missing');
+    assert(result.evidence.some(x=>x.indexId==='IDX_CNE-123_MATERIAL_V3_ABCDEF12_C1'&&x.sourceType==='UPLOADED_CNE'),'Own CNE evidence missing');
     assert(!result.evidence.some(x=>x.indexId==='LIB1'),'Reference library must not be AI evidence');
     assert(!result.evidence.some(x=>x.indexId==='OTHER'),"Another CNE's private passage leaked");
   }},
@@ -446,7 +451,7 @@ const hybridChecks=[
   }}
  ,{name:'Image Description is absent from both Question Bank schemas and all MCQ interfaces',run(){
     const {ctx}=fixture();
-    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===23,'Question Bank must have 23 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===21,'Question Bank must have 21 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE Post Test Questions'].length===17,'Post Test must have 17 columns');
     assert(!gas.includes('imageDescription')&&!gas.includes('Image Description'),'Removed description persists in backend');
     assert(!MODAL.includes('imageDescription')&&!TYPES.includes('imageDescription'),'Removed description persists in frontend');
@@ -1057,7 +1062,8 @@ function main() {
     }
   }
 
-  console.log('\n================================================================');
+  
+console.log('\n================================================================');
   console.log(`TIMEZONE REGRESSION SUITE COMPLETE: ${totalPassed}/${totalExecuted} tests passed across 3 timezones`);
   console.log('Tested environments: Asia/Kolkata, UTC, America/Los_Angeles');
   console.log('================================================================\n');
@@ -3839,7 +3845,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-pdf-resources-and-indexing.js",
     mode: "module",
     expectedChecks: 17,
-    sha256: "fea5b974eed0b9b9871014b6af5605a0819b73db26a200c70eee22c993c5ba88",
+    sha256: "3e6acdc378f33e79fb5afcef582457eab86b3026cb16d52c962521bb9bbd3519",
     source: `/**
  * PDF Learning Resources, Reference Library & Indexing Verification Suite
  *
@@ -4169,7 +4175,7 @@ runTest('Scanned PDFs use automatic OCR fallback and fail closed if OCR is unava
 
 runTest('OCR converted Doc is cleaned up and content quality is checked before SUCCESS', () => {
   assert.ok(codeGs.includes('DriveApp.getFileById(temporaryId).setTrashed(true)'), 'Temporary OCR Doc must be trashed');
-  assert.ok(codeGs.includes('cneMaterialTextReadable_(passage,8)'), 'AI readiness must reject corrupt index text');
+  assert.ok(codeGs.includes('cneMaterialEvidenceQuality_(chunks)') && codeGs.includes('cneMaterialTeachingPassage_(text,heading)'), 'AI readiness must reject non-teaching or corrupt index text');
   assert.ok(codeGs.includes("'INDEX_QUALITY_FAILED'"), 'Existing legacy false-SUCCESS index must be rejected');
   assert.ok(codeGs.includes('if(forIndex && cleanText.length>250000)'), 'Whole-document index must reject oversized PDFs instead of head/tail truncation');
 });
@@ -4288,7 +4294,7 @@ runTest('passesClinicalRelevanceGate and CLINICAL_PROCEDURAL_TAXONOMY are presen
     codeGs.includes('CLINICAL_PROCEDURAL_TAXONOMY'),
     'CLINICAL_PROCEDURAL_TAXONOMY must exist in Code.gs'
   );
-  assert.ok(codeGs.includes('passesClinicalRelevanceGate(cleanTopic, {resourceTitle:'),
+  assert.ok(codeGs.includes('cneAiTopicBoundEvidence_(cleanTopic, uc)'),
     'Uploaded CNE material must pass the clinical topic relevance gate');
 });
 
@@ -10402,73 +10408,6 @@ function runSuite(suite) {
   });
 }
 
-
-// Phase 1 response-format regression checks (formerly separate verify-quiz-formats.js).
-// Keep all checks here: SINGLE_SELECT, MULTI_SELECT, ORDERED_RESPONSE,
-// 6-option validation, mixed sampling, image guard and answer persistence.
-function runQuizFormatChecksIntegrated() {
-  const code=readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
-  const ctx=vm.createContext({console,Date,Math,JSON,Number,String,Object,Array,Set});
-  vm.runInContext(code,ctx);
-  ctx.cneQuestionImageFileId_ = id => /^[\w-]{16,}$/.test(String(id||''))?id:'';
-  const base={questionId:'Q-1',unit:'Nursing',topic:'Clinical assessment',questionType:'TEXT',question:'Choose the safest action for this clinical situation.',options:{A:'Assess airway',B:'Document findings',C:'Notify provider',D:'Reassess vital signs',E:'Check medication chart',F:'Review fluids'},explanation:'Clinical priority is evaluated in the correct context.',verificationStatus:'CLINICALLY_APPROVED',scoringMethod:'EXACT_MATCH'};
-  const single={...base,responseFormat:'SINGLE_SELECT',correctOption:'A'};
-  const multi={...base,questionId:'Q-M',responseFormat:'MULTI_SELECT',correctOption:'A,C,F'};
-  const ordered={...base,questionId:'Q-O',responseFormat:'ORDERED_RESPONSE',correctOption:'C,A,F,D,E,B'};
-  let assertions = 0;
-  const check=(ok,msg)=>{ assert.equal(ok,true,msg); assertions++; };
-  check(!ctx.cneQuizValidateItem_(single),'Single valid');
-  check(!ctx.cneQuizValidateItem_(multi),'Multi six-option valid');
-  check(!ctx.cneQuizValidateItem_(ordered),'Ordered six-step valid');
-  check(ctx.cneQuizNormalizeAnswer_(multi,'f, a, c')==='A,C,F','Multi order independent');
-  check(ctx.cneQuizNormalizeAnswer_(ordered,'F,A,C,D,E,B')!=='C,A,F,D,E,B','Sequence order matters');
-  check(ctx.cneQuizValidResponse_(multi,'C,A'),'Multi partial attempt is structurally valid');
-  check(!ctx.cneQuizValidResponse_(multi,'A,A,C'),'Duplicate picks blocked');
-  check(!ctx.cneQuizValidResponse_(ordered,'C,A,F'),'Missing sequence item blocked');
-  check(!ctx.cneQuizValidResponse_(ordered,'C,A,F,D,E,E'),'Repeated sequence blocked');
-  check(ctx.cneQuizValidateItem_({...multi,correctOption:'A'})==='INVALID_MULTI_SET','Bad answer set rejected');
-  check(ctx.cneQuizValidateItem_({...ordered,correctOption:'C,A,D'})==='INVALID_ANSWER','Incomplete ordered key rejected');
-  check(ctx.cneQuizValidateItem_({...single,options:{...base.options,B:''}})==='OPTIONS_MISSING_OR_SPARSE','Sparse options rejected');
-  check(ctx.cneQuizValidateItem_({...single,questionType:'IMAGE',imageFileId:''})==='IMAGE_ID_MISSING_OR_INVALID','Missing image ID rejected');
-  check(ctx.cneQuizValidateItem_({...multi,responseFormat:'CLOZE'})==='UNSUPPORTED_FORMAT_OR_SCORING','Future type not enabled');
-  check(ctx.cneQuizValidateItem_({...multi,scoringMethod:'PLUS_MINUS'})==='UNSUPPORTED_FORMAT_OR_SCORING','Unimplemented partial scoring rejected');
-  const bank=[];
-  for(const [format,num] of [['SINGLE_SELECT',70],['MULTI_SELECT',45],['ORDERED_RESPONSE',30]])for(let i=0;i<num;i++)bank.push({...base,questionId:format+i,unit:i%2?'Unit A':'Unit B',responseFormat:format});
-  const picked=ctx.cneQuizPickFormats_(bank,[],30,'ALL');
-  check(picked.length===30,'Mixed count');
-  check(new Set(picked.map(q=>q.questionId)).size===30,'No duplicate IDs');
-  const formats={};picked.forEach(q=>{formats[q.responseFormat]=(formats[q.responseFormat]||0)+1;});
-  check(formats.SINGLE_SELECT>=12&&formats.SINGLE_SELECT<=18,'Single fraction near 50%');
-  check(formats.MULTI_SELECT>=6&&formats.MULTI_SELECT<=12,'Multi fraction near 30%');
-  check(formats.ORDERED_RESPONSE>=3&&formats.ORDERED_RESPONSE<=9,'Ordered fraction near 20%');
-  const units={};picked.forEach(q=>{units[q.unit]=(units[q.unit]||0)+1;});
-  check(units['Unit A']===15&&units['Unit B']===15,'Equal unit allocation');
-  check(ctx.cneQuizPickFormats_(bank,[],15,'MULTI_SELECT').every(q=>q.responseFormat==='MULTI_SELECT'),'Focused format filter');
-  const shortage=ctx.cneQuizPickFormats_(bank.filter(q=>q.responseFormat==='SINGLE_SELECT').concat([multi]),[],30,'ALL');
-  check(shortage.length===30&&shortage.filter(q=>q.responseFormat==='MULTI_SELECT').length===1,'Redistribution on scarce formats');
-  const encoded=JSON.stringify(['B','A,C,F','C,A,F,D,E,B']);
-  const restored=ctx.cneQuizStoredAnswers_(encoded,3);
-  check(restored&&restored[1]==='A,C,F'&&restored[2]==='C,A,F,D,E,B','Mixed answers survive JSON encoding');
-  check(ctx.cneQuizStoredAnswers_('ABCD',4).join('')==='ABCD','Legacy single-answer attempts can be read');
-  check(ctx.cneQuizStoredAnswers_(encoded,2)===null,'Stored answer count mismatch rejected');
-  // Verify on-server batch commit and selected answer normalization.
-  ctx.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
-  ctx.refreshMutationSession=()=>({success:true});
-  ctx.cneQuizApprovedPool_=()=>({success:true,questions:[single,multi,ordered]});
-  const sheet={lastUpdate:null};
-  const saved={ids:['Q-1','Q-M','Q-O'],row:['ID','EMP','','','','','IN_PROGRESS','','','','','','','','',0],sheet,layout:{}};
-  ctx.cneQuizFindAttempt_=()=>saved;
-  ctx.cneUpdateHeaderFields_=(sh,number,fields)=>{sheet.lastUpdate=fields;saved.row[14]=fields['Answers Encoded'];saved.row[15]=fields['Committed Count'];};
-  const user={employeeId:'EMP'};
-  const response=ctx.handleSaveQuizScoredBatch({attemptId:'ID',start:0,answers:['A','f, a, c','C,A,F,D,E,B']},user);
-  check(response.success&&response.data.committedCount===3,'Mixed-format batch stored');
-  check(JSON.parse(saved.row[14])[1]==='A,C,F','Multi answer canonicalized on server');
-  check(ctx.cneQuizSavedAnswers_(saved)['Q-O']==='C,A,F,D,E,B','Sequence saved intact');
-  check(ctx.handleSaveQuizScoredBatch({attemptId:'ID',start:0,answers:['A','A,C,F','B,A,F,D,E,C']},user).errorCode==='BATCH_LOCKED','Submitted batch immutable');
-  console.log(`PASS: Phase 1 response-format checks — ${assertions}/${assertions} assertions (validation, mixed selection, persistence).`);
-  return assertions;
-}
-
 // Run any test category from the same file, including timezone workers.
 const specialSuitePos = process.argv.indexOf('--suite');
 const specialSuiteName = specialSuitePos >= 0 ? process.argv[specialSuitePos + 1] : null;
@@ -10493,11 +10432,6 @@ if (specialSuiteName === 'smart-hybrid') {
 if (specialSuiteName === 'dropdown-retry') {
   runFocusedOnly('Dropdown recovery', createDropdownRetryChecks());
   process.exit(process.exitCode || 0);
-}
-if (specialSuiteName === 'formats' || specialSuiteName === 'quiz-formats') {
-  try { runQuizFormatChecksIntegrated(); }
-  catch (err) { console.error('✗ Quiz response-format checks FAILED:', err.stack || err.message); process.exit(1); }
-  process.exit(0);
 }
 
 const suiteFlagIndex = process.argv.indexOf('--suite');
@@ -10580,7 +10514,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if (chosen.length !== 8 || chosen.some(x=>x.sourceType!=='UPLOADED_CNE') || chosen[0].indexId !== 'IDX-0') throw Error('Evidence budget/priority failure');
   });
   focusCheck('Old damaged SUCCESS chunks excluded from retrieval before AI', () => {
-    if (!gas.includes("if (status !== 'SUCCESS') continue;")) throw Error('Failed material index rows not filtered');
+    if (!gas.includes("status !== 'SUCCESS' || !cneMaterialCurrentIndexId_(row[idCol])")) throw Error('Failed/legacy material index rows not filtered');
     if (!gas.includes('cneAiSelectTopicEvidence_(scoredUploaded, true, cleanTopic)')) throw Error('Material retrieval is not bounded');
   });
   focusCheck('Reference reindex verifies replacement and refuses false SUCCESS', () => {
@@ -12309,7 +12243,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   });
   check('Objective expansion retains clinical passage gate on uploaded material',()=>{
     const source=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
-    const gate=source.indexOf('passesClinicalRelevanceGate(cleanTopic, {resourceTitle:');
+    const gate=source.indexOf('cneAiTopicBoundEvidence_(cleanTopic, uc)');
     const scoring=source.indexOf('scoredUploaded.push(uc)');
     if(gate<0||scoring<gate||!source.includes('cneAiExpandObjectiveEvidence_(totalEvidence, scoredUploaded, options.objectives)'))
       throw Error('Topic gate must apply before uploaded-material evidence is expanded');
@@ -12381,13 +12315,14 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
 if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   const gas=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
   const checks=[];const check=(name,test)=>checks.push({name,test});
-  const semantic=gas.slice(gas.indexOf('function chunkExtractedContent('),gas.indexOf('function deleteReferenceLibraryResource('));
+  const semantic=gas.slice(gas.indexOf('var CNE_MATERIAL_INDEX_VERSION_'),gas.indexOf('function deleteReferenceLibraryResource('));
   const helper=gas.slice(gas.indexOf('function cneAiReadTopicIndexRows_('),gas.indexOf('function retrieveCNETopicEvidence(',gas.indexOf('function cneAiReadTopicIndexRows_(')));
   const setup=()=>{
     const ctx={isProbableHeading:(s)=>/^(?:Chapter \d+|Site Selection|Infection Prevention)$/i.test(s),calculateTopicRelevanceScore:(q,c)=>[c.sectionHeading,c.clinicalKeywords,c.topic,c.resourceTitle].join(' ').toLowerCase().includes(q.toLowerCase())?50:0,
       cneAiObjectiveEvidenceScore_:()=>0,cneAiObjectiveSearchTokens_:()=>['intravenous','catheter']};
     // These semantic-retrieval fixtures intentionally use the legacy 12-field
     // in-memory view. Exact physical sheet-schema guards are tested separately.
+    ctx.cneMaterialTextReadable_ = text => String(text||'').trim().length >= 70;
     ctx.cneRequireIndexHeaders_=()=>{};
     ctx.CNE_SHEET_HEADERS={'CNE_Reference_Index':['Index ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At'],
       'CNE_Material_Index':['Index ID','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At']};
@@ -12486,7 +12421,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     const src=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
     const generate=gas.slice(gas.indexOf('function handleGenerateCNEQuestions('));
     if(!src.includes('cneAiExpandObjectiveEvidence_(totalEvidence, scoredUploaded, options.objectives)')||
-      !src.includes('passesClinicalRelevanceGate(cleanTopic, {resourceTitle:') ||
+      !src.includes('cneAiTopicBoundEvidence_(cleanTopic, uc)') ||
       !gas.includes('MAX_CORRECTIONS=4, MAX_CORRECTIONS_PER_QUESTION=2')||
       !generate.includes("phase==='FINISH' && (!savedJob || savedJob.materialDriveFileId!==readiness.driveFileId") ||
       !generate.includes('afterGeminiReadiness.driveFileId !== readiness.driveFileId') ||
@@ -12501,6 +12436,9 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     ctx.checkCNEActionAuthorized=()=>null;
     ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='CNE_Material_Index'?sh:null});
     ctx.getHeaderMap=()=>headers;
+    ctx.cneMaterialCurrentIndexId_=()=>true;
+    ctx.cneMaterialTeachingPassage_=t=>Boolean(t);
+    ctx.cneAiTopicBoundEvidence_=()=>true;
     ctx.cneAiMaterialReadiness_=()=>({hasOwnMaterial:true,driveFileId:'ACTIVE',indexedAt:'VERSION-1'});
     ctx.passesClinicalRelevanceGate=()=>true;
     ctx.cneAiSelectTopicEvidence_=(arr)=>arr.slice(0,12);
@@ -12569,13 +12507,145 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     const src=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
     const terms=['checkCNEActionAuthorized(session, record)', 'cneAiMaterialReadiness_(cleanCneId)',
       'rowCneId !== upperCneId', 'currentDriveId', "status !== 'SUCCESS'",
-      'passesClinicalRelevanceGate(cleanTopic, {resourceTitle:',
+      'cneAiTopicBoundEvidence_(cleanTopic, uc)',
       'cneAiSelectTopicEvidence_', 'cneAiExpandObjectiveEvidence_', 'cneAiClinicalPassageScore_'];
     for(const term of terms)if(!src.includes(term))throw Error('Material-only retrieval verification step missing: '+term);
     if(src.includes('CNE_Reference_Index') || src.includes('activeLibFiles'))throw Error('Legacy library retrieval was restored');
   });
   console.log('\n>>> Metadata-first source retrieval and semantic clinical chunking checks');
   for(const item of checks){focusedChecks.push(item);try{item.test();focusedPassed++;console.log('✓ '+item.name);}catch(e){console.error('✗ '+item.name+': '+e.message);}}
+}
+
+// Clinical evidence indexing V3: real helper behavior, one unified verifier.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const gas = readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const modal = readFileSync(join(ROOT_DIR,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
+  const ctx={console,Date,JSON,Math};vm.createContext(ctx);
+  vm.runInContext(gas,ctx,{timeout:18000});
+  const tests=[];
+  const add=(name,fn)=>tests.push({name,fn});
+  const mk=(section,text)=>({heading:section,text});
+  const good='Nursing assessment requires monitoring renal function, serum potassium, fluid status and changing patient symptoms. ';
+  const ckd=`Chronic kidney disease
+Definition
+Chronic kidney disease is a condition associated with declining GFR and progressive impairment of kidney function. ${good.repeat(3)}
+Risk factors
+Diabetes mellitus and hypertension are important risk factors for chronic kidney disease. ${good.repeat(3)}
+Metabolic changes
+Hyperkalemia can contribute to abnormal cardiac rhythms and is associated with metabolic complications. ${good.repeat(3)}
+Nursing management
+Nurses monitor daily weight, fluid intake, edema, and renal function. Patient education includes dietary guidance. ${good.repeat(3)}
+References
+http://example.org/
+Textbook of Medical Surgical Nursing
+THANK YOU!`;
+  add('V3 index preserves distinct CKD sections and excludes References/THANK YOU',()=>{
+    const chunks=ctx.chunkExtractedContent(ckd,'PDF','Chronic kidney disease');
+    const names=chunks.map(c=>c.heading.toLowerCase());
+    for(const h of ['definition','risk factors','metabolic changes','nursing management'])
+      assert(names.includes(h),'Missing clinical heading: '+h);
+    assert(!chunks.some(c=>/example\.org|thank you|textbook of medical surgical nursing/i.test(c.text)));
+    assert(chunks.every(c=>!/^chronic kidney disease$/i.test(c.heading)));
+  });
+  add('V3 index detects actual specialty keywords and no invented unrelated topic',()=>{
+    const data='Chronic kidney disease (CKD) may cause hyperkalemia, proteinuria, metabolic acidosis, and uremia. GFR should be assessed before dialysis. Erythropoietin changes may contribute to anemia.';
+    const kws=ctx.cneMaterialClinicalKeywords_(data,'Metabolic changes').toLowerCase();
+    for(const k of ['chronic kidney disease','glomerular filtration rate','hyperkalemia','proteinuria','uremia'])
+      assert(kws.includes(k),'Missing grounded specialty term: '+k);
+    assert(!kws.includes('blood transfusion')&&!kws.includes('iv cannulation'));
+  });
+  add('V3 quality requires more than long generic or single-section text',()=>{
+    const bad=[mk('General Content','This is a general introduction that provides some information. '.repeat(25))];
+    assert.equal(ctx.cneMaterialEvidenceQuality_(bad).success,false);
+    const goodRows=ctx.chunkExtractedContent(ckd,'PDF','Chronic kidney disease');
+    const q=ctx.cneMaterialEvidenceQuality_(goodRows);
+    assert.equal(q.success,true);assert(q.sectionCount>=4);assert(q.validChunks>=4);
+  });
+  add('V3 reindex never reuses earlier chunk count as a quality shortcut',()=>{
+    const section=gas.slice(gas.indexOf('function indexLearningResourceContent('),gas.indexOf('function cneReferenceChunkReadable_('));
+    assert(!section.includes('alreadyIndexedCount >= rowsToInsert.length'));
+    assert(section.includes('cneMaterialContentFingerprint_(extractedText)'));
+    assert(section.includes('INDEX_REPLACEMENT_INCOMPLETE'));
+    assert(section.includes('deleteSheetRowsByIndices(sheet, rowsToDelete)'));
+  });
+  add('V3 index fingerprint and version marker are deterministic',()=>{
+    assert.equal(ctx.cneMaterialContentFingerprint_(ckd),ctx.cneMaterialContentFingerprint_(ckd));
+    assert.notEqual(ctx.cneMaterialContentFingerprint_(ckd),ctx.cneMaterialContentFingerprint_(ckd+'more'));
+    assert(ctx.cneMaterialCurrentIndexId_('IDX_CNE_ABCDEFGH_V3_A1B2C3D4_C1'));
+    assert(!ctx.cneMaterialCurrentIndexId_('IDX_CNE_ABCDEFGH_C1'));
+  });
+  add('Evidence selection covers distinct sections before extra passages',()=>{
+    const candidates=[];
+    for(let i=0;i<8;i++)candidates.push({sourceType:'UPLOADED_CNE',sectionHeading:'Diagnosis',indexId:'D'+i,chunkText:good.repeat(3)+i});
+    for(const label of ['Risk factors','Metabolic changes','Nursing management','Patient education'])
+      candidates.push({sourceType:'UPLOADED_CNE',sectionHeading:label,indexId:label,chunkText:(good+' '+label+'. ').repeat(3)});
+    const picked=ctx.cneAiSelectTopicEvidence_(candidates,true,'CKD');
+    assert.equal(picked.length,12);
+    assert.equal(new Set(picked.slice(0,5).map(c=>c.sectionHeading)).size,5);
+  });
+  add('AI retrieval never falls back to library and prioritizes clinical passage',()=>{
+    const src=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
+    assert(!src.includes("ss.getSheetByName('CNE_Reference_Index')"));
+    assert(src.includes('cneMaterialCurrentIndexId_(row[idCol])'));
+    const weak={chunkText:'General information about staff and resources for nurses. '.repeat(6),sectionHeading:'General Content',clinicalKeywords:'',topic:'CKD'};
+    const strong={chunkText:'Hyperkalemia causes cardiac rhythm problems in patients with chronic kidney disease. '.repeat(6),sectionHeading:'Metabolic changes',clinicalKeywords:'hyperkalemia, chronic kidney disease',topic:'CKD'};
+    assert(ctx.cneAiClinicalPassageScore_('CKD',strong,50)>ctx.cneAiClinicalPassageScore_('CKD',weak,500));
+  });
+  add('Legacy index is not deceptively marked AI-ready in the material popup',()=>{
+    assert(modal.includes('needsQualityReindex')&&modal.includes('Quality reindex required'));
+    assert(modal.includes('Retry Indexing'));
+  });
+  add('V3 indexing writes then verifies replacement; failed OCR preserves prior rows',()=>{
+    const isolate={console,Date,Math};vm.createContext(isolate);
+    vm.runInContext(gas,isolate,{timeout:15000});
+    const indexHeaders=['Index ID','CNE ID','Drive File ID','Resource Title','Topic','Section / Heading','Chunk Index','Chunk Text','Clinical Keywords','Extraction Status','Updated At'];
+    const refHeaders=['CNE ID','Drive File ID','Indexing Status','Indexing Error Code','Indexing Message','Chunks Count','Indexed At'];
+    function sheet(rows){return {rows,getLastRow(){return rows.length;},getLastColumn(){return rows[0].length;},
+      getRange(row,col,height=1,width=1){return {
+        getValue(){return rows[row-1]?.[col-1]??'';},
+        getValues(){return Array.from({length:height},(_,i)=>Array.from({length:width},(_,j)=>rows[row-1+i]?.[col-1+j]??''));},
+        setValues(values){values.forEach((r,i)=>r.forEach((v,j)=>{while(rows.length<row+i)rows.push([]);rows[row-1+i][col-1+j]=v;}));}
+      };},deleteRow(at){rows.splice(at-1,1);},deleteRows(at,n){rows.splice(at-1,n);}};}
+    const ref=sheet([refHeaders,['CNE-X','FILE123','SUCCESS','','old',1,'now']]);
+    const idx=sheet([indexHeaders,['IDX_OLD','CNE-X','FILE123','Old','CKD','General Content',1,'Old passage','','SUCCESS','2026']]);
+    const sheets={'CNE_Reference':ref,'CNE_Material_Index':idx};
+    isolate.getOrCreateSheet=name=>sheets[name];
+    isolate.getHeaderMap=sh=>Object.fromEntries(sh.rows[0].map((head,i)=>[head.toLowerCase().replace(/[^a-z0-9]/g,''),i]));
+    isolate.ensureReferenceSheetHeaders=()=>{};isolate.ensureLearningResourceSheetHeaders=()=>{};
+    isolate.cneRequireIndexHeaders_=()=>{};isolate.logAuditAction=()=>{};
+    isolate.findExactRowInColumn_=(sh,col,id)=>sh.rows.findIndex((r,i)=>i>0&&r[col]===id)+1;
+    isolate.cneWriteHeaderRows_=(sh,headers,rows,start)=>rows.forEach((r,i)=>{sh.rows[start+i-1]=r;});
+    isolate.SpreadsheetApp={flush:()=>{}};
+    isolate.LockService={getScriptLock:()=>({waitLock:()=>{},releaseLock:()=>{}})};
+    const passage='Nursing assessment includes monitoring renal function, potassium, edema and blood pressure. ';
+    function material(tail){return 'Definition\nChronic kidney disease may reduce renal function and GFR. '+passage.repeat(7)+
+      '\nRisk factors\nDiabetes mellitus and hypertension may increase CKD risk. '+passage.repeat(7)+
+      '\nMetabolic changes\nHyperkalemia can contribute to abnormal heart rhythms. '+passage.repeat(7)+
+      '\nNursing management\nMonitor fluid intake, daily weight and serum potassium. '+passage.repeat(7)+tail+
+      '\nReferences\nhttps://example.org\nTHANK YOU!';}
+    let text=material('');
+    isolate.extractLearningResourceContentCore=()=>({success:true,data:{extractedText:text}});
+    const run=()=>isolate.indexLearningResourceContent('CNE-X','FILE123','CKD.pdf','PDF','Chronic kidney disease',{employeeId:'USER'},false);
+    const first=run();assert(first.success&&first.indexVersion==='V3');
+    const firstId=idx.rows[1][0],firstCount=first.chunksCount;
+    assert(idx.rows.every((r,i)=>i===0||r[0].includes('_V3_')));
+    text=material(' A revised material note.');
+    const second=run();assert(second.success&&second.chunksCount===firstCount);
+    assert.notEqual(idx.rows[1][0],firstId);
+    assert.equal(idx.rows.length,firstCount+1);
+    const latestId=idx.rows[1][0];
+    isolate.extractLearningResourceContentCore=()=>({success:false,errorCode:'OCR_FAILED',message:'Test OCR failure'});
+    const failed=run();assert.equal(failed.success,false);
+    assert(idx.rows.some(r=>r[0]===latestId),'Last good index must not be erased by failed extraction');
+    assert.equal(ref.rows[1][2],'FAILED','Failed indexing cannot advertise stale evidence as ready');
+  });
+  add('Gemini blueprint requires clinical topic diversity using indexed passages only',()=>{
+    assert(gas.includes('Cover distinct source sections'));
+    assert(gas.includes('Use only UPLOADED_CNE passages'));
+    assert(!gas.includes('allowLibraryOnly'));
+  });
+  console.log('\n>>> Clinical evidence indexing V3 checks');
+  for(const t of tests){focusedChecks.push(t);try{t.fn();focusedPassed++;console.log('✓ '+t.name);}catch(e){console.error('✗ '+t.name+': '+(e.stack||e.message));}}
 }
 
 // New 08:00–17:00 classroom duration policy: actual backend helper behavior,
@@ -13499,6 +13569,7 @@ function runQuizChecksIntegrated() {
   let uuid=0;
   context.cneQuizSheet_=(name)=>sheets[name];
   context.cneQuizApprovedPool_=()=>({success:true,questions:bank});
+  context.cneQuizImageEligible_=()=>true; // tested separately with failure fixtures, avoids mock Drive APIs
   context.cneQuizFindQuestion_=(id)=>bank.find(q=>q.questionId===id)||null;
   context.cneQuizEmployeeName_=()=> 'Test Employee';
   context.refreshMutationSession=(session)=>({success:true,session});
@@ -13521,7 +13592,7 @@ function runQuizChecksIntegrated() {
   ok(context.handleGetQuizScoredBatch({attemptId:id,start:0},{employeeId:'OTHER'}).errorCode==='NOT_FOUND','Employee isolation');
   ok(context.handleGetQuizScoredBatch({attemptId:id,start:20},user).errorCode==='INVALID_BATCH','Cannot preload beyond the next batch');
   ok(context.handleGetQuizScoredResult({attemptId:id},user).errorCode==='QUIZ_NOT_COMPLETED','No results before completion');
-  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:['E',...Array(9).fill('B')]},user).errorCode==='INVALID_RESPONSE','Rejects out-of-range options');
+  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:['E',...Array(9).fill('B')]},user).errorCode==='INVALID_ANSWER','Rejects unpopulated Option E');
   ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:['B']},user).errorCode==='INVALID_BATCH','Rejects incomplete batch');
   const answerArray=['A',...Array(9).fill('B')];
   const save=context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:answerArray},user);
@@ -13659,20 +13730,6 @@ if (!wantedSuite || wantedSuite === 'integration') {
   }
 }
 
-
-// New-format checks are now part of this consolidated runner.
-// They run on every full verification and the integration suite; no second script.
-if (!wantedSuite || wantedSuite === 'integration') {
-  console.log('\n>>> Integrated Phase 1 Quiz response-format verification');
-  try {
-    const count = runQuizFormatChecksIntegrated();
-    focusedPassed += count;
-    for (let i = 1; i <= count; i++) focusedChecks.push({name: 'Quiz response-format assertion ' + i});
-  } catch (error) {
-    console.error('✗ Quiz response-format checks FAILED:', error.stack || error.message);
-    focusedChecks.push({name: 'Quiz response-format verification failure'});
-  }
-}
 
 // Header-directed read/write and concurrency performance checks, kept in the
 // ONE existing unified verification script. These are executable permutations,
@@ -13818,10 +13875,10 @@ if (selected.some(suite => suite.id === 'integration' || suite.id === 'performan
     }],
     ['Quiz creates question selection outside global lock while retaining in-lock duplicate check',()=>{
       const start=code.slice(code.indexOf('function handleStartQuizScored('),code.indexOf('function cneQuizEmployeeName_('));
-      assert(start.indexOf('cneQuizPickFormats_(')<start.indexOf('getScriptLock()'),'Selection must occur before lock');
+      assert(start.indexOf('cneQuizPick_(')<start.indexOf('getScriptLock()'),'Selection must occur before lock');
       assert(start.indexOf('cneQuizFindActiveAttempt_(')>start.indexOf('getScriptLock()'),'Duplicate check must remain inside lock');
       const save=code.slice(code.indexOf('function handleSaveQuizScoredBatch('),code.indexOf('function handleCompleteQuizScored('));
-      assert(save.includes("'Answers Encoded':JSON.stringify(next)") && save.includes("'Committed Count':next.length"),'Batch save updates only compact attempt fields');
+      assert(save.includes("'Answers Encoded':cneQuizEncode_(combined)") && save.includes("'Committed Count':combined.length"),'Batch save updates only compact attempt fields');
       assert(!save.includes("'CNE Quiz Answers'"),'Batch save never uses redundant answer sheet');
     }]
   ];
@@ -13989,7 +14046,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     }],
     ['Results use styled score tiles, unit accuracy bars and full-answer review cards', () => {
       const result=quizUi.slice(quizUi.indexOf("page==='result'&&results"),quizUi.indexOf('confirmBack&&'));
-      for(const expected of ['Scored Quiz Results','Overall Score','Correct','Incorrect','Overall Accuracy','Unit-wise Performance','Question Review & Explanations','Clinical Explanation','results.review.map','populatedOptions(r.question).map'])
+      for(const expected of ['Scored Quiz Results','Overall Score','Correct','Incorrect','Overall Accuracy','Unit-wise Performance','Question Review & Explanations','Clinical Explanation','results.review.map','QuizResponseInput'])
         assert(result.includes(expected),expected);
       assert(result.includes('role="progressbar"'));
       assert(result.includes('QuizImage question={r.question}'));
@@ -14230,7 +14287,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(quiz.includes('<LoadingProgress className="mt-2"'));
     }],
     ['CNE index uses clinical keywords and narrowed retrieval', () => {
-      assert(bank.includes('cneMaterialClinicalKeywords_(chunkText)'));
+      assert(bank.includes('cneMaterialClinicalKeywords_(chunkText,chunks[c].heading)'));
       const fn=bank.slice(bank.indexOf('function retrieveCNETopicEvidence('), bank.indexOf('function cneAiMaterialReadiness_('));
       assert(fn.includes('idValues = materialIndexSheet.getRange('));
       assert(!fn.includes('materialIndexSheet.getDataRange().getValues()'));
@@ -14265,8 +14322,9 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   const idxHeaders = ['Index ID', 'CNE ID', 'Drive File ID', 'Resource Title', 'Topic', 'Section / Heading', 'Chunk Index', 'Chunk Text', 'Clinical Keywords', 'Extraction Status', 'Updated At'];
   const ref = makeSheet('CNE_Reference', [refHeaders, ['CNE-1', 'FILE-A', 'SUCCESS', '', '2026-11-04T08:00:00Z']]);
   const index = makeSheet('CNE_Material_Index', [idxHeaders,
-    ['IDX-OLD', 'CNE-1', 'FILE-OLD', 'Old material', 'Sepsis', 'Clinical', '1', ('Old reference to nursing care of a patient with sepsis and assessment. ').repeat(10), 'sepsis', 'SUCCESS', 'now'],
-    ['IDX-OK', 'CNE-1', 'FILE-A', 'Current material', 'Sepsis', 'Clinical', '1', ('Sepsis nursing management requires monitoring vital signs, recognizing deterioration, and documenting observations. ').repeat(9), 'sepsis', 'SUCCESS', 'now']
+    ['IDX_CNE-1_FILE-OLD_V3_1234ABCD_C1', 'CNE-1', 'FILE-OLD', 'Old material', 'Sepsis', 'Clinical', '1', ('Old reference to nursing care of a patient with sepsis and assessment. ').repeat(10), 'sepsis', 'SUCCESS', 'now'],
+    ['IDX_CNE-1_FILE-A_V3_1234ABCD_C1', 'CNE-1', 'FILE-A', 'Current material', 'Sepsis', 'Assessment', '1', ('Sepsis nursing management requires monitoring vital signs, recognizing deterioration, and documenting observations. ').repeat(9), 'sepsis, vital signs', 'SUCCESS', 'now'],
+    ['IDX_CNE-1_FILE-A_V3_1234ABCD_C2', 'CNE-1', 'FILE-A', 'Current material', 'Sepsis', 'Complications', '2', ('Sepsis can produce clinical deterioration requiring infection surveillance, careful monitoring, and timely escalation of care. ').repeat(9), 'sepsis, complications', 'SUCCESS', 'now']
   ]);
   ctx.getSpreadsheet = () => ({ getSheetByName(n) { return n === 'CNE_Reference' ? ref : n === 'CNE_Material_Index' ? index : null; } });
   ctx.getHeaderMap = sh => Object.fromEntries(sh.rows[0].map((v, i) => [v.toLowerCase().replace(/[^a-z0-9]/g, ''), i]));
@@ -14286,8 +14344,16 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     ['Evidence excludes a different Drive file even for the same CNE', () => {
       const result = ctx.retrieveCNETopicEvidence('CNE-1', 'Sepsis', session);
       assert.equal(result.success, true);
-      assert.equal(result.evidence.length, 1);
-      assert.equal(result.evidence[0].indexId, 'IDX-OK');
+      assert.equal(result.evidence.length, 2);
+      assert.equal(result.evidence[0].indexId, 'IDX_CNE-1_FILE-A_V3_1234ABCD_C1');
+    }],
+    ['Legacy false-SUCCESS index requires an explicit V3 rebuild', () => {
+      const currentId=index.rows[2][0];index.rows[2][0]='IDX-LEGACY';
+      const otherId=index.rows[3][0];index.rows[3][0]='IDX-LEGACY-2';
+      try {const result=ctx.cneAiMaterialReadiness_('CNE-1');
+        assert.equal(result.hasOwnMaterial,false);
+        assert.equal(result.errorCode,'INDEX_UPGRADE_REQUIRED');}
+      finally {index.rows[2][0]=currentId;index.rows[3][0]=otherId;}
     }],
     ['Material replacement invalidates old index', () => {
       ref.rows[1][1] = 'FILE-NEW';
@@ -14422,8 +14488,9 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     }],
     ['Image-dependent quiz answers cannot be submitted until image is displayed', () => {
       assert(quiz.includes('!isCurrentImageReady'));
-      assert(quiz.includes('disabled={reveal||busy||!isCurrentImageReady}'));
-      assert(quiz.includes('!isValidResponse(question,selected)||busy||!isCurrentImageReady'));
+      assert(quiz.includes('disabled={busy||!isCurrentImageReady||Boolean(page===\'practice\'&&practiceSubmitted)}'));
+      assert(quiz.includes('QuizResponseInput key='));
+      assert(quiz.includes('disabled={!question||!validQuizResponse(question,selected)||busy||!isCurrentImageReady}'), 'Practice submit must require a valid response and a ready clinical image');
       assert(quiz.includes('onAvailabilityChange={handleImageAvailability}'));
       assert(quiz.includes('setImageReady({})'), 'New attempts must not inherit image readiness');
     }],
@@ -14458,6 +14525,152 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   for (const [name, test] of checks) {
     focusedChecks.push({name});
     try {test();focusedPassed++;console.log('✓ '+name);} catch(e) {console.error('✗ '+name+': '+(e.stack||e.message));}
+  }
+}
+
+// PHASE 1 THREE-FORMAT QUIZ ENGINE — integrated regression coverage.
+// New formats do not add columns to the authoritative 21-column bank.
+{
+  const code=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const ui=readFileSync(join(ROOT_DIR,'src/components/QuizPage.tsx'),'utf8');
+  const responseUI=readFileSync(join(ROOT_DIR,'src/components/QuizResponseInput.tsx'),'utf8');
+  const api=readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+  const ctx={console,Math,Date,Set,JSON,Number,String,Object,Array};vm.createContext(ctx);
+  vm.runInContext(code,ctx,{timeout:20000});
+  const single={questionId:'P1-01',unit:'ICU',topic:'Patient safety',question:'What should the nurse do first in this case?',
+    options:{A:'Check vitals',B:'Call the team',C:'Check identity',D:'Document findings',E:'',F:''},
+    correctOption:'A',explanation:'The initial step is to check vital signs before subsequent actions.',questionType:'TEXT'};
+  const tests=[
+    ['Legacy single-select defaults without response-details rows',()=>{
+      const v=ctx.cneQuizValidate_(single,undefined);assert(v.valid&&v.format==='SINGLE_SELECT');
+      assert(ctx.cneQuizCorrect_({...single,responseFormat:'SINGLE_SELECT'},'A'));
+      assert(!ctx.cneQuizCorrect_({...single,responseFormat:'SINGLE_SELECT'},'B'));
+    }],
+    ['Multi-select validates keys, populated options, and exact-match set scoring',()=>{
+      const q={...single,correctOption:'A,C,D',responseFormat:'MULTI_SELECT'};
+      assert(ctx.cneQuizValidate_(q,{format:'MULTI_SELECT'}).valid);
+      assert(ctx.cneQuizCorrect_(q,'D,A,C'));
+      assert(!ctx.cneQuizCorrect_(q,'D,A'));
+      assert(!ctx.cneQuizCorrect_(q,'D,A,C,B'));
+      assert(!ctx.cneQuizValidate_({...q,correctOption:'A,A,C'},{format:'MULTI_SELECT'}).valid);
+      assert(!ctx.cneQuizValidate_({...q,correctOption:'A,E'},{format:'MULTI_SELECT'}).valid);
+    }],
+    ['Ordered Response uses only explicitly configured steps, exact sequence',()=>{
+      const q={...single,correctOption:'C,A,D',responseFormat:'ORDERED_RESPONSE',orderedItems:['A','C','D'],
+        explanation:'First identify the patient, next check vitals, finally document findings.'};
+      const d={format:'ORDERED_RESPONSE',feedback:'{"orderedItems":["A","C","D"]}',sequence:'C,A,D'};
+      const v=ctx.cneQuizValidate_(q,d);assert(v.valid);
+      assert.equal(v.orderedItems.length,3);
+      assert(ctx.cneQuizCorrect_(q,'C,A,D'));
+      assert(!ctx.cneQuizCorrect_(q,'A,C,D'));
+      assert(ctx.cneQuizResponseValid_(q,'A,D,C'));
+      assert(!ctx.cneQuizResponseValid_(q,'A,D,C,E'));
+      assert(!ctx.cneQuizValidate_(q,{...d,sequence:'D,A,C'}).valid);
+    }],
+    ['A-F option support and clinical approval gate do not alter 21-column bank',()=>{
+      assert.equal(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length,21);
+      assert.equal(ctx.CNE_SHEET_HEADERS['CNE_Question_Response_Details'].length,6);
+      assert(!ctx.cneQuizIsClinicallyApproved_({verificationStatus:'PENDING_REVIEW'}));
+      const q={...single,options:{...single.options,E:'Reassess',F:'Escalate'},correctOption:'A,E,F'};
+      assert(ctx.cneQuizValidate_(q,{format:'MULTI_SELECT'}).valid);
+      assert(ctx.cneQuizResponseValid_({...q,responseFormat:'MULTI_SELECT'},'A,F'));
+    }],
+    ['Mixed-format selection has approximate 50/30/20 distribution and redistribution',()=>{
+      const pool=Array.from({length:120},(_,i)=>({...single,questionId:'FMT-'+i,unit:'UNIT-'+(i%4),
+        responseFormat:i<60?'SINGLE_SELECT':i<96?'MULTI_SELECT':'ORDERED_RESPONSE',questionType:'TEXT'}));
+      const selected=ctx.cneQuizPick_(pool,[],50,'ALL');assert.equal(selected.length,50);
+      assert.equal(new Set(selected.map(q=>q.questionId)).size,50);
+      const counts={};selected.forEach(q=>{counts[q.responseFormat]=(counts[q.responseFormat]||0)+1;});
+      assert(Math.abs(counts.SINGLE_SELECT-25)<=2&&Math.abs(counts.MULTI_SELECT-15)<=2&&Math.abs(counts.ORDERED_RESPONSE-10)<=2);
+      const only=pool.filter(q=>q.responseFormat==='SINGLE_SELECT');
+      assert.equal(ctx.cneQuizPick_(only,[],35,'ALL').length,35);
+      assert.equal(ctx.cneQuizPick_(pool,['UNIT-2'],8,'MULTI_SELECT').length,8);
+    }],
+    ['Versioned compact answer persistence decodes legacy and multi/ordered strings',()=>{
+      const original=['A','A,C,D','C,A,D'];
+      const encoded=ctx.cneQuizEncode_(original);
+      assert.deepEqual(Array.from(ctx.cneQuizDecode_(encoded,3)),original);
+      assert.deepEqual(Array.from(ctx.cneQuizDecode_('ABCD',4)),['A','B','C','D']);
+      assert.throws(()=>ctx.cneQuizDecode_('J2:["A"]',2));
+    }],
+    ['Scored answers and keys are validated server-side and key versions checked',()=>{
+      const start=code.slice(code.indexOf('function handleStartQuizScored('),code.indexOf('function cneQuizEmployeeName_('));
+      const save=code.slice(code.indexOf('function handleSaveQuizScoredBatch('),code.indexOf('function handleCompleteQuizScored('));
+      const finish=code.slice(code.indexOf('function handleCompleteQuizScored('),code.indexOf('function handleGetQuizScoredResult('));
+      assert(start.includes('cneQuizKeyHash_') && save.includes('cneQuizAttemptKeysValid_'));
+      assert(save.includes('cneQuizResponseValid_') && finish.includes('cneQuizScore_'));
+      assert(!start.includes('Correct Answer JSON'));
+    }],
+    ['All response formats render with mobile move controls and answer feedback',()=>{
+      assert(ui.includes('All Response Formats (Mixed)')&&ui.includes('selectedFormat'));
+      assert(ui.includes('formatScores')&&ui.includes('quizAnswerText'));
+      assert(responseUI.includes('type="checkbox"')&&responseUI.includes('type="radio"'));
+      assert(responseUI.includes('draggable={!locked}')&&responseUI.includes('Move step ${letter} up')&&responseUI.includes('Move step ${letter} down'));
+      assert(ui.includes('validQuizResponse(scoredBatch[i],x)'), 'Scored batch responses must be validated before saving');
+      assert(ui.includes('validQuizResponse(question,selected)'), 'Practice responses must be validated before submission');
+      assert(ui.includes('QuizResponseInput key=') && ui.includes('review={page===\'practice\'&&practiceSubmitted}'), 'Shared renderer must support both answering and practice feedback');
+      assert(ui.includes('key={`review-${r.question.questionId}`}') && ui.includes('review/>'), 'Completed reviews must use the shared renderer');
+      assert(api.includes('startQuizScored(units:string[], questionCount:number,responseFormat:string') && api.includes('getQuizPracticeBatch(units:string[],exclude:string[]'), 'API must carry selected response format to both Scored and Practice endpoints');
+    }],
+    ['Ordered subset metadata is carried through UI and valid answer checks',()=>{
+      const types=readFileSync(join(ROOT_DIR,'src/types.ts'),'utf8');
+      const util=readFileSync(join(ROOT_DIR,'src/utils/quizResponse.tsx'),'utf8');
+      assert(types.includes('orderedItems?: string[]'), 'Frontend must accept ordered item subsets');
+      assert(util.includes('orderedItems(q)') && util.includes('required.every(letter=>keys.includes(letter))'), 'Only configured ordered steps should be required');
+      assert(util.includes("keys.length<=options.length"), 'Selecting every option in multi-select is a valid (though potentially incorrect) submitted response');
+      assert(responseUI.includes('orderedSequence(question, value, seed)'), 'Shared renderer must preserve recorded response order');
+      assert(responseUI.includes('onDrop=') && responseUI.includes('onKeyDown=') && responseUI.includes('reorder(position'), 'Ordered input needs desktop drag, keyboard and mobile arrows');
+    }],
+    ['Admin validation diagnostics are routed, and image checks remain private',()=>{
+      assert(code.includes("case 'getQuizValidationDiagnostics':"));
+      assert(code.includes("cneQuestionImageCheck_(q.imageFileId,'BANK')"));
+      assert(code.includes('cneQuizDetails_()'));
+    }],
+    ['Practice Quiz returns a mixed 50/30/20 group without persisting results',()=>{
+      const pool=[];
+      for(let i=0;i<90;i++){
+        const fmt=i<45?'SINGLE_SELECT':i<72?'MULTI_SELECT':'ORDERED_RESPONSE';
+        pool.push({...single,questionId:'BATCH-'+i,responseFormat:fmt,orderedItems:fmt==='ORDERED_RESPONSE'?['A','C','D']:[],
+          correctOption:fmt==='SINGLE_SELECT'?'A':fmt==='MULTI_SELECT'?'A,C':'C,A,D',unit:'Unit '+(i%3)});
+      }
+      ctx.cneQuizApprovedPool_=()=>({success:true,questions:pool});
+      ctx.cneQuizHasActiveScored_=()=>false;
+      ctx.cneQuizImageEligible_=()=>true;
+      const r=ctx.handleGetQuizPracticeBatch({units:[],exclude:[],answeredCount:0,lastImageAt:0,unitCounts:{},responseFormat:'ALL'},{employeeId:'PRACTICE-TEST'});
+      assert(r.success&&r.data.questions.length===10);
+      const counts={};r.data.questions.forEach(q=>{counts[q.responseFormat]=(counts[q.responseFormat]||0)+1;});
+      assert(Math.abs((counts.SINGLE_SELECT||0)-5)<=1);
+      assert(Math.abs((counts.MULTI_SELECT||0)-3)<=1);
+      assert(Math.abs((counts.ORDERED_RESPONSE||0)-2)<=1);
+      assert.equal(new Set(r.data.questions.map(q=>q.questionId)).size,10);
+    }],
+    ['Response metadata is read by headers regardless of physical column order',()=>{
+      ctx._cneQuizDetailsCache_=null;
+      const headers=['Scoring Method','Option Feedback JSON','Response Format','Question ID','Max Points','Correct Answer Sequence'];
+      const rows=[headers,['EXACT_MATCH','{"orderedItems":["A","C","D"]}','ORDERED_RESPONSE','METADATA-Q1',1,'C,A,D']];
+      ctx.getSpreadsheet=()=>({getSheetByName:()=>({getLastRow:()=>rows.length,getDataRange:()=>({getValues:()=>rows}),getLastColumn:()=>headers.length,getRange:()=>({getValues:()=>[headers]})})});
+      ctx.getHeaderMap=()=>({scoringmethod:0,optionfeedbackjson:1,responseformat:2,questionid:3,maxpoints:4,correctanswersequence:5});
+      const data=ctx.cneQuizDetails_();assert.equal(data['METADATA-Q1'].format,'ORDERED_RESPONSE');
+      assert.equal(data['METADATA-Q1'].sequence,'C,A,D');
+    }],
+    ['Old source multi-response questions are blocked until explicitly configured',()=>{
+      const q={...single,originalQuestionFormat:'Select All That Apply'};
+      assert(!ctx.cneQuizValidate_(q,undefined).valid);
+      assert(ctx.cneQuizValidate_(q,{format:'SINGLE_SELECT'}).valid);
+      assert(!ctx.cneQuizValidate_({...single,questionType:'IMAGE',imageFileId:'abc'},{}).valid);
+    }],
+    ['Practice remains ephemeral and Scored quiz remains compact',()=>{
+      const practice=code.slice(code.indexOf('function handleGetQuizPracticeBatch('),code.indexOf('function handleGetQuizImage('));
+      assert(practice.includes('responseFormat'));
+      assert(!practice.includes("cneWriteHeaderRows_"));
+      assert(code.includes('CNE_QUIZ_BATCH_SIZE_ = 10'));
+      assert(!code.includes("'CNE Quiz Answers':"));
+    }]
+  ];
+  console.log('\n>>> Three response formats — Phase 1 regression checks');
+  for(const [name,test] of tests){
+    focusedChecks.push({name});
+    try{test();focusedPassed++;console.log('✓ '+name);}catch(e){console.error('✗ '+name+': '+(e.stack||e.message));}
   }
 }
 

@@ -346,8 +346,12 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const wordCount = unifiedContent.trim() ? unifiedContent.trim().split(/\s+/).length : 0;
 
 
-  const indexingLabel = indexingInfo?.status === 'SUCCESS'
-    ? 'Indexed'
+  const needsQualityReindex = indexingInfo?.status === 'SUCCESS' &&
+    !/\bV3\b|\(V3\)/i.test(indexingInfo.message || '');
+  const indexingLabel = needsQualityReindex
+    ? 'Quality reindex required'
+    : indexingInfo?.status === 'SUCCESS'
+    ? 'AI-ready clinical index'
     : indexingInfo?.status === 'FAILED'
     ? 'Indexing failed'
     : indexingInfo?.status === 'PENDING'
@@ -356,7 +360,9 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     ? 'Index status not reported'
     : '';
 
-  const indexingBadgeClass = indexingInfo?.status === 'SUCCESS'
+  const indexingBadgeClass = needsQualityReindex
+    ? 'bg-amber-100 text-amber-800 border-amber-200'
+    : indexingInfo?.status === 'SUCCESS'
     ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
     : indexingInfo?.status === 'FAILED'
     ? 'bg-rose-100 text-rose-800 border-rose-200'
@@ -533,7 +539,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       <div>Indexed chunks: <strong className="text-slate-800">{typeof indexingInfo.chunksCount === 'number' ? indexingInfo.chunksCount : '—'}</strong></div>
                       {indexingInfo.errorCode && <div>Error code: <strong className="text-rose-700">{indexingInfo.errorCode}</strong></div>}
                     </div>
-                    {canModify && indexingInfo.status !== 'SUCCESS' && !isSaving && !loading && <button type="button" onClick={async () => {
+                    {canModify && (indexingInfo.status !== 'SUCCESS' || needsQualityReindex) && !isSaving && !loading && <button type="button" onClick={async () => {
                       setIsSaving(true);setUploadStep('indexing');setUploadStepError('');
                       try {const res=await ApiService.reindexLearningResource(cneId);
                         if(!res.success) {setUploadStep('failed');setUploadStepError(res.message || 'Indexing failed.');setIndexingInfo({status:'FAILED',message:res.message,errorCode:res.errorCode});warning(res.message || 'Indexing failed.');}
@@ -541,6 +547,11 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       catch(err:any){setUploadStep('failed');setUploadStepError(err?.message || 'Indexing error.');error(err?.message || 'Indexing error.');}
                       finally{setIsSaving(false);}
                     }} className="text-teal-700 font-semibold underline text-xs">Retry Indexing</button>}
+                    {needsQualityReindex && (
+                      <div className="text-[11px] text-amber-800 leading-relaxed bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2" role="status">
+                        This PDF was indexed with an older clinical-text algorithm. Use Retry Indexing to build a section-aware V3 index before Gemini generates questions. The PDF itself will not be replaced.
+                      </div>
+                    )}
                     {indexingInfo.message && (
                       <div className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-2">
                         {indexingInfo.message}
