@@ -404,14 +404,14 @@ export class ApiService {
   static getQuizHome(): Promise<ApiResponse<QuizHomeData>> {return this.executeAction('getQuizHome');}
   static getQuizHomeCore(): Promise<ApiResponse<Pick<QuizHomeData, 'activeAttempt'>>> {return this.executeAction('getQuizHomeCore');}
   static getQuizHomeDashboard(): Promise<ApiResponse<Omit<QuizHomeData, 'activeAttempt'>>> {return this.executeAction('getQuizHomeDashboard');}
-  static startQuizScored(units:string[], questionCount:number): Promise<ApiResponse<QuizAttempt>> {return this.executeAction('startQuizScored',{units,questionCount});}
+  static startQuizScored(units:string[], questionCount:number,responseFormat:string='ALL'): Promise<ApiResponse<QuizAttempt>> {return this.executeAction('startQuizScored',{units,questionCount,responseFormat});}
   static getQuizScoredBatch(attemptId:string,start:number): Promise<ApiResponse<{questions:QuizQuestion[];start:number;total:number}>> {return this.executeAction('getQuizScoredBatch',{attemptId,start});}
   static saveQuizScoredBatch(attemptId:string,start:number,answers:string[]): Promise<ApiResponse<{saved:boolean;committedCount:number;alreadySaved:boolean}>> {return this.executeAction('saveQuizScoredBatch',{attemptId,start,answers});}
   static cancelQuizScored(attemptId:string): Promise<ApiResponse<{cancelled:boolean}>> {return this.executeAction('cancelQuizScored',{attemptId});}
   static completeQuizScored(attemptId:string): Promise<ApiResponse<QuizResult>> {return this.executeAction('completeQuizScored',{attemptId});}
   static getQuizScoredResult(attemptId:string): Promise<ApiResponse<QuizResult>> {return this.executeAction('getQuizScoredResult',{attemptId});}
-  static getQuizPracticeQuestion(units:string[],exclude:string[],answeredCount:number,lastImageAt:number,unitCounts:Record<string,number>): Promise<ApiResponse<QuizQuestion>> {return this.executeAction('getQuizPracticeQuestion',{units,exclude,answeredCount,lastImageAt,unitCounts});}
-  static getQuizPracticeBatch(units:string[],exclude:string[],answeredCount:number,lastImageAt:number,unitCounts:Record<string,number>): Promise<ApiResponse<{questions:QuizQuestion[];exhausted:boolean;lastImageAt:number;unitCounts:Record<string,number>}>> {return this.executeAction('getQuizPracticeBatch',{units,exclude,answeredCount,lastImageAt,unitCounts});}
+  static getQuizPracticeQuestion(units:string[],exclude:string[],answeredCount:number,lastImageAt:number,unitCounts:Record<string,number>,responseFormat:string='ALL'): Promise<ApiResponse<QuizQuestion>> {return this.executeAction('getQuizPracticeQuestion',{units,exclude,answeredCount,lastImageAt,unitCounts,responseFormat});}
+  static getQuizPracticeBatch(units:string[],exclude:string[],answeredCount:number,lastImageAt:number,unitCounts:Record<string,number>,responseFormat:string='ALL',formatCounts:Record<string,number>={}): Promise<ApiResponse<{questions:QuizQuestion[];exhausted:boolean;lastImageAt:number;unitCounts:Record<string,number>;formatCounts:Record<string,number>}>> {return this.executeAction('getQuizPracticeBatch',{units,exclude,answeredCount,lastImageAt,unitCounts,responseFormat,formatCounts});}
   static getQuizImage(questionId:string,attemptId?:string): Promise<ApiResponse<{mimeType:string;base64Data:string}>> {return this.executeAction('getQuizImage',{questionId,attemptId});}
 
   /**

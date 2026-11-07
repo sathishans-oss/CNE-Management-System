@@ -181,7 +181,7 @@ const hybridChecks=[
     const {ctx}=fixture();
     assert(typeof ctx.cneAdminMigrateIndexSchemas_==='undefined'&&typeof ctx.cneEvidenceSplitReady_==='undefined','Old migration or switch still callable');
     assert(!/CNE_EVIDENCE_INDEX_V2_READY/.test(gas),'Migration property still present');
-    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===21,'Question index schema is not 22 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===23,'Question index schema must be 23 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'].length===10,'Library schema is not 10 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE_Material_Index'].length===11,'Uploaded material schema is not 11 columns');
     assert(ctx.cneIndexProjectRows_([['ID','LOCAL_REFERENCE_LIB','','DOC','Source','Gastritis','Heading',1,'Evidence','Keyword','SUCCESS','Today']],ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'])[0].length===10,'Library projection failed');
@@ -202,7 +202,7 @@ const hybridChecks=[
     assert(result.success,'Clean index initialization failed '+result.message);
     assert(created['CNE_Reference_Index'].rows[0].length===10,'Library headers not initialized');
     assert(created['CNE_Material_Index'].rows[0].length===11,'CNE material tab not created');
-    assert(created['CNE_Reference_Question_Index'].rows[0].length===21,'Question index tab not created');
+    assert(created['CNE_Reference_Question_Index'].rows[0].length===23,'Question index tab not created');
     assert(result.auditReport.some(x=>x.tab==='CNE_Material_Index'),'Material tab missing from verification results');
   }},
  {name:'Verify Sheets reports legacy extra index columns without deleting data',run(){
@@ -446,7 +446,7 @@ const hybridChecks=[
   }}
  ,{name:'Image Description is absent from both Question Bank schemas and all MCQ interfaces',run(){
     const {ctx}=fixture();
-    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===21,'Question Bank must have 21 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===23,'Question Bank must have 23 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE Post Test Questions'].length===17,'Post Test must have 17 columns');
     assert(!gas.includes('imageDescription')&&!gas.includes('Image Description'),'Removed description persists in backend');
     assert(!MODAL.includes('imageDescription')&&!TYPES.includes('imageDescription'),'Removed description persists in frontend');
@@ -10402,6 +10402,73 @@ function runSuite(suite) {
   });
 }
 
+
+// Phase 1 response-format regression checks (formerly separate verify-quiz-formats.js).
+// Keep all checks here: SINGLE_SELECT, MULTI_SELECT, ORDERED_RESPONSE,
+// 6-option validation, mixed sampling, image guard and answer persistence.
+function runQuizFormatChecksIntegrated() {
+  const code=readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const ctx=vm.createContext({console,Date,Math,JSON,Number,String,Object,Array,Set});
+  vm.runInContext(code,ctx);
+  ctx.cneQuestionImageFileId_ = id => /^[\w-]{16,}$/.test(String(id||''))?id:'';
+  const base={questionId:'Q-1',unit:'Nursing',topic:'Clinical assessment',questionType:'TEXT',question:'Choose the safest action for this clinical situation.',options:{A:'Assess airway',B:'Document findings',C:'Notify provider',D:'Reassess vital signs',E:'Check medication chart',F:'Review fluids'},explanation:'Clinical priority is evaluated in the correct context.',verificationStatus:'CLINICALLY_APPROVED',scoringMethod:'EXACT_MATCH'};
+  const single={...base,responseFormat:'SINGLE_SELECT',correctOption:'A'};
+  const multi={...base,questionId:'Q-M',responseFormat:'MULTI_SELECT',correctOption:'A,C,F'};
+  const ordered={...base,questionId:'Q-O',responseFormat:'ORDERED_RESPONSE',correctOption:'C,A,F,D,E,B'};
+  let assertions = 0;
+  const check=(ok,msg)=>{ assert.equal(ok,true,msg); assertions++; };
+  check(!ctx.cneQuizValidateItem_(single),'Single valid');
+  check(!ctx.cneQuizValidateItem_(multi),'Multi six-option valid');
+  check(!ctx.cneQuizValidateItem_(ordered),'Ordered six-step valid');
+  check(ctx.cneQuizNormalizeAnswer_(multi,'f, a, c')==='A,C,F','Multi order independent');
+  check(ctx.cneQuizNormalizeAnswer_(ordered,'F,A,C,D,E,B')!=='C,A,F,D,E,B','Sequence order matters');
+  check(ctx.cneQuizValidResponse_(multi,'C,A'),'Multi partial attempt is structurally valid');
+  check(!ctx.cneQuizValidResponse_(multi,'A,A,C'),'Duplicate picks blocked');
+  check(!ctx.cneQuizValidResponse_(ordered,'C,A,F'),'Missing sequence item blocked');
+  check(!ctx.cneQuizValidResponse_(ordered,'C,A,F,D,E,E'),'Repeated sequence blocked');
+  check(ctx.cneQuizValidateItem_({...multi,correctOption:'A'})==='INVALID_MULTI_SET','Bad answer set rejected');
+  check(ctx.cneQuizValidateItem_({...ordered,correctOption:'C,A,D'})==='INVALID_ANSWER','Incomplete ordered key rejected');
+  check(ctx.cneQuizValidateItem_({...single,options:{...base.options,B:''}})==='OPTIONS_MISSING_OR_SPARSE','Sparse options rejected');
+  check(ctx.cneQuizValidateItem_({...single,questionType:'IMAGE',imageFileId:''})==='IMAGE_ID_MISSING_OR_INVALID','Missing image ID rejected');
+  check(ctx.cneQuizValidateItem_({...multi,responseFormat:'CLOZE'})==='UNSUPPORTED_FORMAT_OR_SCORING','Future type not enabled');
+  check(ctx.cneQuizValidateItem_({...multi,scoringMethod:'PLUS_MINUS'})==='UNSUPPORTED_FORMAT_OR_SCORING','Unimplemented partial scoring rejected');
+  const bank=[];
+  for(const [format,num] of [['SINGLE_SELECT',70],['MULTI_SELECT',45],['ORDERED_RESPONSE',30]])for(let i=0;i<num;i++)bank.push({...base,questionId:format+i,unit:i%2?'Unit A':'Unit B',responseFormat:format});
+  const picked=ctx.cneQuizPickFormats_(bank,[],30,'ALL');
+  check(picked.length===30,'Mixed count');
+  check(new Set(picked.map(q=>q.questionId)).size===30,'No duplicate IDs');
+  const formats={};picked.forEach(q=>{formats[q.responseFormat]=(formats[q.responseFormat]||0)+1;});
+  check(formats.SINGLE_SELECT>=12&&formats.SINGLE_SELECT<=18,'Single fraction near 50%');
+  check(formats.MULTI_SELECT>=6&&formats.MULTI_SELECT<=12,'Multi fraction near 30%');
+  check(formats.ORDERED_RESPONSE>=3&&formats.ORDERED_RESPONSE<=9,'Ordered fraction near 20%');
+  const units={};picked.forEach(q=>{units[q.unit]=(units[q.unit]||0)+1;});
+  check(units['Unit A']===15&&units['Unit B']===15,'Equal unit allocation');
+  check(ctx.cneQuizPickFormats_(bank,[],15,'MULTI_SELECT').every(q=>q.responseFormat==='MULTI_SELECT'),'Focused format filter');
+  const shortage=ctx.cneQuizPickFormats_(bank.filter(q=>q.responseFormat==='SINGLE_SELECT').concat([multi]),[],30,'ALL');
+  check(shortage.length===30&&shortage.filter(q=>q.responseFormat==='MULTI_SELECT').length===1,'Redistribution on scarce formats');
+  const encoded=JSON.stringify(['B','A,C,F','C,A,F,D,E,B']);
+  const restored=ctx.cneQuizStoredAnswers_(encoded,3);
+  check(restored&&restored[1]==='A,C,F'&&restored[2]==='C,A,F,D,E,B','Mixed answers survive JSON encoding');
+  check(ctx.cneQuizStoredAnswers_('ABCD',4).join('')==='ABCD','Legacy single-answer attempts can be read');
+  check(ctx.cneQuizStoredAnswers_(encoded,2)===null,'Stored answer count mismatch rejected');
+  // Verify on-server batch commit and selected answer normalization.
+  ctx.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
+  ctx.refreshMutationSession=()=>({success:true});
+  ctx.cneQuizApprovedPool_=()=>({success:true,questions:[single,multi,ordered]});
+  const sheet={lastUpdate:null};
+  const saved={ids:['Q-1','Q-M','Q-O'],row:['ID','EMP','','','','','IN_PROGRESS','','','','','','','','',0],sheet,layout:{}};
+  ctx.cneQuizFindAttempt_=()=>saved;
+  ctx.cneUpdateHeaderFields_=(sh,number,fields)=>{sheet.lastUpdate=fields;saved.row[14]=fields['Answers Encoded'];saved.row[15]=fields['Committed Count'];};
+  const user={employeeId:'EMP'};
+  const response=ctx.handleSaveQuizScoredBatch({attemptId:'ID',start:0,answers:['A','f, a, c','C,A,F,D,E,B']},user);
+  check(response.success&&response.data.committedCount===3,'Mixed-format batch stored');
+  check(JSON.parse(saved.row[14])[1]==='A,C,F','Multi answer canonicalized on server');
+  check(ctx.cneQuizSavedAnswers_(saved)['Q-O']==='C,A,F,D,E,B','Sequence saved intact');
+  check(ctx.handleSaveQuizScoredBatch({attemptId:'ID',start:0,answers:['A','A,C,F','B,A,F,D,E,C']},user).errorCode==='BATCH_LOCKED','Submitted batch immutable');
+  console.log(`PASS: Phase 1 response-format checks — ${assertions}/${assertions} assertions (validation, mixed selection, persistence).`);
+  return assertions;
+}
+
 // Run any test category from the same file, including timezone workers.
 const specialSuitePos = process.argv.indexOf('--suite');
 const specialSuiteName = specialSuitePos >= 0 ? process.argv[specialSuitePos + 1] : null;
@@ -10426,6 +10493,11 @@ if (specialSuiteName === 'smart-hybrid') {
 if (specialSuiteName === 'dropdown-retry') {
   runFocusedOnly('Dropdown recovery', createDropdownRetryChecks());
   process.exit(process.exitCode || 0);
+}
+if (specialSuiteName === 'formats' || specialSuiteName === 'quiz-formats') {
+  try { runQuizFormatChecksIntegrated(); }
+  catch (err) { console.error('✗ Quiz response-format checks FAILED:', err.stack || err.message); process.exit(1); }
+  process.exit(0);
 }
 
 const suiteFlagIndex = process.argv.indexOf('--suite');
@@ -13449,7 +13521,7 @@ function runQuizChecksIntegrated() {
   ok(context.handleGetQuizScoredBatch({attemptId:id,start:0},{employeeId:'OTHER'}).errorCode==='NOT_FOUND','Employee isolation');
   ok(context.handleGetQuizScoredBatch({attemptId:id,start:20},user).errorCode==='INVALID_BATCH','Cannot preload beyond the next batch');
   ok(context.handleGetQuizScoredResult({attemptId:id},user).errorCode==='QUIZ_NOT_COMPLETED','No results before completion');
-  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:['E',...Array(9).fill('B')]},user).errorCode==='INVALID_BATCH','Rejects out-of-range options');
+  ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:['E',...Array(9).fill('B')]},user).errorCode==='INVALID_RESPONSE','Rejects out-of-range options');
   ok(context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:['B']},user).errorCode==='INVALID_BATCH','Rejects incomplete batch');
   const answerArray=['A',...Array(9).fill('B')];
   const save=context.handleSaveQuizScoredBatch({attemptId:id,start:0,answers:answerArray},user);
@@ -13587,6 +13659,20 @@ if (!wantedSuite || wantedSuite === 'integration') {
   }
 }
 
+
+// New-format checks are now part of this consolidated runner.
+// They run on every full verification and the integration suite; no second script.
+if (!wantedSuite || wantedSuite === 'integration') {
+  console.log('\n>>> Integrated Phase 1 Quiz response-format verification');
+  try {
+    const count = runQuizFormatChecksIntegrated();
+    focusedPassed += count;
+    for (let i = 1; i <= count; i++) focusedChecks.push({name: 'Quiz response-format assertion ' + i});
+  } catch (error) {
+    console.error('✗ Quiz response-format checks FAILED:', error.stack || error.message);
+    focusedChecks.push({name: 'Quiz response-format verification failure'});
+  }
+}
 
 // Header-directed read/write and concurrency performance checks, kept in the
 // ONE existing unified verification script. These are executable permutations,
@@ -13732,10 +13818,10 @@ if (selected.some(suite => suite.id === 'integration' || suite.id === 'performan
     }],
     ['Quiz creates question selection outside global lock while retaining in-lock duplicate check',()=>{
       const start=code.slice(code.indexOf('function handleStartQuizScored('),code.indexOf('function cneQuizEmployeeName_('));
-      assert(start.indexOf('cneQuizPick_(')<start.indexOf('getScriptLock()'),'Selection must occur before lock');
+      assert(start.indexOf('cneQuizPickFormats_(')<start.indexOf('getScriptLock()'),'Selection must occur before lock');
       assert(start.indexOf('cneQuizFindActiveAttempt_(')>start.indexOf('getScriptLock()'),'Duplicate check must remain inside lock');
       const save=code.slice(code.indexOf('function handleSaveQuizScoredBatch('),code.indexOf('function handleCompleteQuizScored('));
-      assert(save.includes("'Answers Encoded':next") && save.includes("'Committed Count':next.length"),'Batch save updates only compact attempt fields');
+      assert(save.includes("'Answers Encoded':JSON.stringify(next)") && save.includes("'Committed Count':next.length"),'Batch save updates only compact attempt fields');
       assert(!save.includes("'CNE Quiz Answers'"),'Batch save never uses redundant answer sheet');
     }]
   ];
@@ -13903,7 +13989,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     }],
     ['Results use styled score tiles, unit accuracy bars and full-answer review cards', () => {
       const result=quizUi.slice(quizUi.indexOf("page==='result'&&results"),quizUi.indexOf('confirmBack&&'));
-      for(const expected of ['Scored Quiz Results','Overall Score','Correct','Incorrect','Overall Accuracy','Unit-wise Performance','Question Review & Explanations','Clinical Explanation','results.review.map','letters.map'])
+      for(const expected of ['Scored Quiz Results','Overall Score','Correct','Incorrect','Overall Accuracy','Unit-wise Performance','Question Review & Explanations','Clinical Explanation','results.review.map','populatedOptions(r.question).map'])
         assert(result.includes(expected),expected);
       assert(result.includes('role="progressbar"'));
       assert(result.includes('QuizImage question={r.question}'));
@@ -14337,7 +14423,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     ['Image-dependent quiz answers cannot be submitted until image is displayed', () => {
       assert(quiz.includes('!isCurrentImageReady'));
       assert(quiz.includes('disabled={reveal||busy||!isCurrentImageReady}'));
-      assert(quiz.includes('disabled={!selected||busy||!isCurrentImageReady}'));
+      assert(quiz.includes('!isValidResponse(question,selected)||busy||!isCurrentImageReady'));
       assert(quiz.includes('onAvailabilityChange={handleImageAvailability}'));
       assert(quiz.includes('setImageReady({})'), 'New attempts must not inherit image readiness');
     }],

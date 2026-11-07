@@ -237,8 +237,10 @@ export interface CNEReferenceBankItem {
   topic: string;
   subtopic: string;
   questionType: string;
+  responseFormat?: string;
+  scoringMethod?: string;
   question: string;
-  options: {A:string;B:string;C:string;D:string};
+  options: {A:string;B:string;C:string;D:string;E?:string;F?:string};
   correctOption: string;
   explanation: string;
   questionPdfPage?: string; // Administrator-only source location
@@ -558,9 +560,11 @@ export interface QuizQuestion {
   topic: string;
   questionType: 'TEXT' | 'IMAGE';
   question: string;
-  options: Record<'A'|'B'|'C'|'D',string>;
+  options: Record<'A'|'B'|'C'|'D'|'E'|'F',string>;
+  responseFormat: 'SINGLE_SELECT' | 'MULTI_SELECT' | 'ORDERED_RESPONSE';
+  scoringMethod: 'EXACT_MATCH';
   imageFileId?: string;
-  correctOption?: 'A'|'B'|'C'|'D'; // only practice or COMPLETED scored quiz
+  correctOption?: string; // only practice or COMPLETED scored quiz: B, A,C,D, C,A,D,B
   explanation?: string;             // never supplied for active scored questions
 }
 export interface QuizAttempt {
@@ -615,4 +619,5 @@ export interface QuizResult {
   percentage: number;
   review: Array<{question:QuizQuestion;selectedOption:string}>;
   unitScores: Array<{unit:string;total:number;correct:number;wrong:number}>;
+  formatScores?: Array<{format:string;total:number;correct:number;wrong:number}>;
 }

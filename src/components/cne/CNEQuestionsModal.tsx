@@ -986,12 +986,12 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               const alreadyImported = questions.some(item => item.id === sourceId || String(item.id || '').startsWith(sourceId + '__v'));
               return <div key={q.questionId} className="border border-indigo-100 bg-white rounded-xl p-4 space-y-3 shadow-xs">
                 <div className="font-semibold text-slate-900 text-sm">{q.question}</div>
-                <span className="text-[10px] font-bold uppercase rounded bg-indigo-50 px-2 py-1">{q.questionType}</span>
+                <span className="text-[10px] font-bold uppercase rounded bg-indigo-50 px-2 py-1">{q.questionType} · {q.responseFormat||'SINGLE_SELECT'}</span>
                 {q.questionType==='IMAGE' && <div className="space-y-1">
                   <button type="button" className="text-indigo-700 font-semibold underline" onClick={()=>setBankImagePreviewIds(prev=>{const next=new Set(prev);next.has(q.questionId)?next.delete(q.questionId):next.add(q.questionId);return next;})}>{bankImagePreviewIds.has(q.questionId)?'Hide image':'Preview clinical image'}</button>
                   {bankImagePreviewIds.has(q.questionId)&& <CNEQuestionImage cneId={cneId} sourceQuestionId={q.questionId} imageFileId={q.imageFileId} />}
                 </div>}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{(['A','B','C','D'] as const).map(key => <div key={key}>{key}. {q.options[key]}</div>)}</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{(['A','B','C','D','E','F'] as const).filter(key=>Boolean(q.options[key])).map(key => <div key={key}>{key}. {q.options[key]}</div>)}</div>
                 <div><strong>Original answer:</strong> {q.correctOption} · <strong>Rationale:</strong> {q.explanation}</div>
                 {alreadyImported ? (
                   <span className="inline-flex items-center gap-1 text-emerald-700 font-bold"><CheckCircle2 className="w-4 h-4"/> Imported · Review under My Questions</span>
@@ -1002,7 +1002,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                     {importingBankId === q.questionId ? 'Importing…' : 'Import as Draft'}
                   </button>
                 )}
-                {!q.canImport && <span className="ml-2 text-amber-700">Not available for import. Contact the Question Bank administrator for review.</span>}
+                {!q.canImport && <span className="ml-2 text-amber-700">{q.responseFormat&&q.responseFormat!=='SINGLE_SELECT'?'This format is supported in standalone Quiz only; CNE-class post-test import currently requires single-select.':'Not available for CNE-class import. Review question validity and format.'}</span>}
               </div>;
             })}
           </div>
