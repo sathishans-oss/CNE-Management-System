@@ -14688,6 +14688,14 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(!quiz.includes('Answered: {practiceCorrect+practiceWrong}'), 'Per-question session counters must be removed');
       assert(quiz.includes('practiceSubmitted?0:1'), 'Question number must not advance before Next Question');
     }],
+    ['Practice session summary remains compact, inline, and responsive',()=>{
+      const summary=quiz.slice(quiz.indexOf("page==='practice'&&<section aria-label=\"Current Practice Session\""),quiz.indexOf("page==='scored'&&attempt&&question&&<section"));
+      assert(summary.includes('flex flex-wrap items-center'), 'Session stats must use a compact inline layout');
+      assert(summary.includes('text-[11px]') && summary.includes('px-3 py-2'), 'Use compact label size and padding');
+      assert(!summary.includes('grid grid-cols-3') && !summary.includes('text-lg') && !summary.includes('sm:text-xl'), 'Oversized statistic tiles must not return');
+      assert(summary.includes('practiceCorrect+practiceWrong') && summary.includes('{practiceCorrect}') && summary.includes('{practiceWrong}'));
+      assert(quiz.includes("page==='practice'?'space-y-3 sm:space-y-4':'space-y-5'"), 'Reduce spacing only in active Practice Quiz');
+    }],
     ['Scored Quiz shows only progress while answers remain private',()=>{
       const progress=quiz.slice(quiz.indexOf("page==='scored'&&attempt&&question&&<section"),quiz.indexOf('{error&&home&&'));
       assert(progress.includes('Scored Quiz progress') && progress.includes('role="progressbar"'));

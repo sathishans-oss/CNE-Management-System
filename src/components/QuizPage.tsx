@@ -514,7 +514,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       ? 'max-w-[1100px]'
       : 'max-w-[1300px]';
 
-  return <section className={`mx-auto w-full min-w-0 ${quizMaxWidth} space-y-5 pb-12`} aria-label="Quiz">
+  return <section className={`mx-auto w-full min-w-0 ${quizMaxWidth} ${page==='practice'?'space-y-3 sm:space-y-4':'space-y-5'} pb-12`} aria-label="Quiz">
     <div className="relative overflow-hidden rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 px-5 py-3 shadow-sm sm:px-7">
       <div className="pointer-events-none absolute -right-4 -top-12 h-40 w-40 rounded-full border-[24px] border-white/30" aria-hidden="true" />
       <div className="relative flex flex-wrap items-center justify-between gap-3">
@@ -523,15 +523,13 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
           :<div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/70 text-teal-700 shadow-sm"><HeartPulse className="h-5 w-5"/></div>}
       </div>
     </div>
-    {page==='practice'&&<section aria-label="Current Practice Session" className="rounded-2xl border border-teal-100 bg-white p-3 shadow-sm sm:p-4">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-xs font-bold text-slate-800 sm:text-sm">Current Practice Session</h2>
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">Not saved</span>
-      </div>
-      <div className="grid grid-cols-3 gap-2 sm:gap-3" aria-live="polite" aria-atomic="true">
-        <div className="rounded-xl border border-slate-100 bg-slate-50 px-2 py-2.5 text-center"><p className="text-lg font-extrabold tabular-nums text-slate-900 sm:text-xl">{practiceCorrect+practiceWrong}</p><p className="text-[11px] font-medium text-slate-600">Answered</p></div>
-        <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 px-2 py-2.5 text-center"><p className="text-lg font-extrabold tabular-nums text-emerald-800 sm:text-xl">{practiceCorrect}</p><p className="text-[11px] font-medium text-emerald-800">Correct</p></div>
-        <div className="rounded-xl border border-rose-100 bg-rose-50/70 px-2 py-2.5 text-center"><p className="text-lg font-extrabold tabular-nums text-rose-800 sm:text-xl">{practiceWrong}</p><p className="text-[11px] font-medium text-rose-800">Wrong</p></div>
+    {page==='practice'&&<section aria-label="Current Practice Session" className="rounded-xl border border-teal-100 bg-white px-3 py-2 shadow-sm sm:px-4">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-5 sm:gap-x-4" aria-live="polite" aria-atomic="true">
+        <h2 className="mr-1 whitespace-nowrap text-[11px] font-semibold text-slate-700">Current Practice Session</h2>
+        <span className="inline-flex items-center gap-1 whitespace-nowrap text-slate-600"><strong className="tabular-nums font-bold text-slate-900">{practiceCorrect+practiceWrong}</strong> Answered</span>
+        <span className="inline-flex items-center gap-1 whitespace-nowrap text-emerald-700"><strong className="tabular-nums font-bold">{practiceCorrect}</strong> Correct</span>
+        <span className="inline-flex items-center gap-1 whitespace-nowrap text-rose-700"><strong className="tabular-nums font-bold">{practiceWrong}</strong> Wrong</span>
+        <span className="ml-auto whitespace-nowrap text-[10px] text-slate-400">Not saved</span>
       </div>
     </section>}
     {page==='scored'&&attempt&&question&&<section aria-label="Scored Quiz progress" className="space-y-2 rounded-2xl border border-teal-100 bg-white p-3 shadow-sm sm:p-4">
