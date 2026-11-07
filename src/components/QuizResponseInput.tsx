@@ -112,10 +112,27 @@ export const QuizResponseInput: React.FC<QuizResponseInputProps> = ({ question, 
       {populatedOptions(question).map(letter => {
         const selected = chosen.includes(letter);
         const right = correct.includes(letter);
-        return <div key={letter} className={`flex min-w-0 items-start gap-2.5 rounded-xl border px-3 py-3 text-sm ${right ? 'border-emerald-300 bg-emerald-50' : selected ? 'border-rose-200 bg-rose-50' : 'border-slate-100 bg-slate-50/60'}`}>
-          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs font-bold ${right ? 'bg-emerald-200 text-emerald-900' : selected ? 'bg-rose-200 text-rose-900' : 'bg-white text-slate-600'}`}>{letter}</span>
+        // Each option has one accessible feedback state; a correct answer that
+        // was missed must not look like a correct option the learner selected.
+        const state = right ? (selected ? 'correct-selected' : 'correct-missed') : (selected ? 'incorrect-selected' : 'not-selected');
+        const label = state === 'correct-selected' ? 'Correct — You selected this'
+          : state === 'correct-missed' ? 'Correct — You missed this'
+          : state === 'incorrect-selected' ? 'Incorrect — You selected this' : 'Not selected';
+        const styles = state === 'correct-selected' ? 'border-emerald-300 bg-emerald-50'
+          : state === 'correct-missed' ? 'border-amber-300 bg-amber-50'
+          : state === 'incorrect-selected' ? 'border-rose-300 bg-rose-50' : 'border-slate-100 bg-slate-50/60';
+        const labelStyles = state === 'correct-selected' ? 'text-emerald-800'
+          : state === 'correct-missed' ? 'text-amber-900'
+          : state === 'incorrect-selected' ? 'text-rose-800' : 'text-slate-500';
+        return <div key={letter} className={`flex min-w-0 items-start gap-2.5 rounded-xl border px-3 py-3 text-sm ${styles}`}>
+          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs font-bold ${state === 'correct-selected' ? 'bg-emerald-200 text-emerald-900' : state === 'correct-missed' ? 'bg-amber-200 text-amber-900' : state === 'incorrect-selected' ? 'bg-rose-200 text-rose-900' : 'bg-white text-slate-600'}`}>{letter}</span>
           <div className="min-w-0 flex-1"><p className="whitespace-pre-wrap leading-relaxed text-slate-800">{optionText(question, letter)}</p>
-            {(right || selected) && <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-bold"><span className={right ? 'text-emerald-700' : 'text-rose-700'}>{right ? 'Correct answer' : 'Your answer'}</span>{right && selected && <span className="text-emerald-700">· Your answer</span>}</div>}
+            <p className={`mt-1.5 flex items-center gap-1.5 text-[11px] font-bold ${labelStyles}`}>
+              {state === 'correct-selected' ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                : state === 'incorrect-selected' ? <XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                : state === 'correct-missed' ? <span aria-hidden="true" className="font-extrabold">!</span> : null}
+              {label}
+            </p>
           </div>
         </div>;
       })}

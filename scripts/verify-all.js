@@ -14674,6 +14674,76 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   }
 }
 
+// PRACTICE QUIZ UI CLARITY — keep all checks in the existing unified verifier.
+// These checks protect the approved layout without introducing another test runner.
+{
+  const quiz=readFileSync(join(ROOT_DIR,'src/components/QuizPage.tsx'),'utf8');
+  const responseUI=readFileSync(join(ROOT_DIR,'src/components/QuizResponseInput.tsx'),'utf8');
+  const checks=[
+    ['Practice session statistics appear once above the question and are not persisted',()=>{
+      assert(quiz.includes("page==='practice'&&<section aria-label=\"Current Practice Session\""));
+      assert(quiz.includes('practiceCorrect+practiceWrong') && quiz.includes('{practiceCorrect}') && quiz.includes('{practiceWrong}'));
+      assert(quiz.includes('Not saved') && quiz.includes('aria-live="polite"'));
+      assert(quiz.indexOf('Current Practice Session')<quiz.indexOf("(page==='scored'||page==='practice')&&question"));
+      assert(!quiz.includes('Answered: {practiceCorrect+practiceWrong}'), 'Per-question session counters must be removed');
+      assert(quiz.includes('practiceSubmitted?0:1'), 'Question number must not advance before Next Question');
+    }],
+    ['Scored Quiz shows only progress while answers remain private',()=>{
+      const progress=quiz.slice(quiz.indexOf("page==='scored'&&attempt&&question&&<section"),quiz.indexOf('{error&&home&&'));
+      assert(progress.includes('Scored Quiz progress') && progress.includes('role="progressbar"'));
+      assert(progress.includes('attempt.committedCount') && progress.includes('batchAnswers'));
+      assert(!progress.includes('practiceCorrect') && !progress.includes('practiceWrong'));
+      assert(quiz.includes('Answers and explanations appear only after completing the quiz.'));
+    }],
+    ['Option review clearly distinguishes all four feedback states',()=>{
+      for(const label of ['Correct — You selected this','Correct — You missed this','Incorrect — You selected this','Not selected']){
+        assert(responseUI.includes(label),`Missing reviewed-option label: ${label}`);
+      }
+      for(const state of ['correct-selected','correct-missed','incorrect-selected','not-selected']){
+        assert(responseUI.includes(state),`Missing reviewed-option state: ${state}`);
+      }
+      assert(responseUI.includes('border-amber-300 bg-amber-50'), 'Missed correct answers need a distinct amber treatment');
+      assert(responseUI.includes('border-rose-300 bg-rose-50'), 'Selected incorrect answers need a distinct red treatment');
+      assert(responseUI.includes('border-emerald-300 bg-emerald-50'), 'Selected correct answers need a green treatment');
+    }],
+    ['Practice review shows exact-match mark and compact key summary without repeating option bodies',()=>{
+      const feedback=quiz.slice(quiz.indexOf("page==='practice'&&practiceSubmitted&&<div"),quiz.indexOf("{page==='scored'?<div",quiz.indexOf("page==='practice'&&practiceSubmitted&&<div")));
+      assert(feedback.includes('Answer Review') && feedback.includes('1/1 mark') && feedback.includes('0/1 mark'));
+      assert(feedback.includes('Selected: {selected') && feedback.includes('Correct: {question.correctOption'));
+      assert(feedback.includes("responseFormat(question)!=='ORDERED_RESPONSE'"), 'Ordered responses already show their complete sequences');
+      assert(feedback.includes('question.explanation'), 'Never truncate or replace the stored clinical rationale');
+      assert(!feedback.includes('quizAnswerText('), 'Avoid duplicating full option text in summary');
+    }],
+    ['Ordered reviews preserve both complete step lists and clinical rationale',()=>{
+      assert(responseUI.includes('Your submitted order') && responseUI.includes('Correct clinical sequence'));
+      assert(responseUI.includes('chosen.map((letter, position)') && responseUI.includes('correct.map((letter, position)'));
+      assert(quiz.includes('responseFormat(r.question)!==\'ORDERED_RESPONSE\''));
+      assert(quiz.includes("r.question.explanation||'Explanation unavailable.'"));
+    }],
+    ['Practice navigation groups the actions and retains image readiness and prefetch status',()=>{
+      const footer=quiz.slice(quiz.indexOf('className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row'),quiz.indexOf("Practice answers and scores exist only in this page session."));
+      assert(footer.includes('sm:justify-between') && footer.includes('items-center justify-end'));
+      assert(footer.includes('min-h-11') && footer.includes('sm:flex-none'));
+      assert(footer.includes('Next Question') && footer.includes('Finish Practice'));
+      assert(footer.includes('Next question ready') && footer.includes('practiceNextMessage'));
+      assert(footer.includes('!isCurrentImageReady') && footer.includes('validQuizResponse(question,selected)'));
+      assert(footer.includes('onClick={finishPractice}'));
+    }],
+    ['Existing quiz image protections and server scoring architecture are unchanged',()=>{
+      assert(quiz.includes('MAX_PARALLEL_QUIZ_IMAGES = 2'));
+      assert(quiz.includes('prefetchUpcomingImages(practiceBatch,nextIndex)'));
+      assert(quiz.includes('const submitScoredBatch = async() =>'));
+      assert(quiz.includes('ApiService.saveQuizScoredBatch('));
+      assert(responseUI.includes('onDrop=') && responseUI.includes('Move step ${letter} up'));
+    }]
+  ];
+  console.log('\n>>> Quiz review clarity and session progress checks');
+  for(const [name,test] of checks){
+    focusedChecks.push({name});
+    try{test();focusedPassed++;console.log('✓ '+name);}catch(e){console.error('✗ '+name+': '+(e.stack||e.message));}
+  }
+}
+
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');
