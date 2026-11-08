@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useAccessibleDialog } from '../common/useAccessibleDialog';
 import {
   AlertCircle,
   AlertTriangle,
@@ -577,9 +578,11 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
 
   const answeredCount = questions.filter((q) => Boolean(answers[q.id])).length;
 
+  const dialogRef = useAccessibleDialog({ isOpen: true, onRequestClose: onClose, canClose: !isSubmitting && !checkingSavedSubmission });
+
   return (
     <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-white rounded-2xl w-[92vw] max-w-[1440px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="cne-posttest-dialog-title" tabIndex={-1} className="bg-white rounded-xl sm:rounded-2xl w-full sm:w-[92vw] max-w-[1440px] max-h-[calc(100dvh-1.5rem)] sm:max-h-[88dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
         {/* Header */}
         <div className="px-6 py-3.5 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/70">
           <div className="flex items-center gap-3">
@@ -587,7 +590,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
               <Award className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">CNE Post-Test Evaluation</h3>
+              <h3 id="cne-posttest-dialog-title" className="text-sm sm:text-base font-bold text-slate-900 leading-snug">CNE Post-Test Evaluation</h3>
               {resolvedCneId && <p className="text-[11px] text-slate-500 mt-0.5">CNE ID: {resolvedCneId}</p>}
             </div>
           </div>
@@ -604,7 +607,7 @@ export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div ref={contentRef} className="p-6 overflow-y-auto flex-1 bg-slate-50/40 text-xs">
+        <div ref={contentRef} className="p-3 sm:p-6 overflow-y-auto min-h-0 flex-1 bg-slate-50/40 text-sm">
           {(checkingSavedSubmission || submissionUncertain) && !submissionResult && (
             <div className="mb-4 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 flex flex-wrap items-center gap-3" role="status">
               {checkingSavedSubmission ? <Loader2 className="w-5 h-5 animate-spin shrink-0" /> : <AlertTriangle className="w-5 h-5 shrink-0" />}

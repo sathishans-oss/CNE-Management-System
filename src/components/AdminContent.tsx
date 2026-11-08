@@ -1,5 +1,5 @@
 import { getIndiaTodayIsoDate, newestNewsFirst } from '../utils';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import {
   Bell,
   BookOpen,
@@ -28,9 +28,12 @@ import { ApiService } from '../services/api';
 import { INITIAL_COORDINATOR_DESK } from '../services/initialData';
 import { useToast } from './Toast';
 import { VerifySheetsButton } from './VerifySheetsButton';
-import { ClinicalInsightsAdmin } from './ClinicalInsightsAdmin';
-import { AdminAreas } from './AdminAreas';
-import { AdminTeachingModes } from './AdminTeachingModes';
+// Render heavy administration editors only when their tab is selected.
+// All existing editor APIs, saves, role checks, and sheet verification remain intact.
+const ClinicalInsightsAdmin = lazy(() => import('./ClinicalInsightsAdmin').then(m => ({ default: m.ClinicalInsightsAdmin })));
+const AdminAreas = lazy(() => import('./AdminAreas').then(m => ({ default: m.AdminAreas })));
+const AdminTeachingModes = lazy(() => import('./AdminTeachingModes').then(m => ({ default: m.AdminTeachingModes })));
+
 
 interface AdminContentProps {
   user: SessionUser;
@@ -139,12 +142,14 @@ export const AdminContent: React.FC<AdminContentProps> = ({
 
   const { success, error } = useToast();
 
+  // Load only the CMS data required by the selected tab. Editors are still
+  // permitted to refresh their own datasets immediately after a save.
   useEffect(() => {
-    loadNews();
-    loadDesk();
-    loadLinks();
-    loadGallery();
-  }, []);
+    if (activeTab === 'news') void loadNews();
+    else if (activeTab === 'desk') void loadDesk();
+    else if (activeTab === 'links') void loadLinks();
+    else if (activeTab === 'moments') void loadGallery();
+  }, [activeTab]);
 
   // -------------------------------------------------------------
   // Data Loaders
@@ -554,11 +559,24 @@ export const AdminContent: React.FC<AdminContentProps> = ({
           <VerifySheetsButton user={user} />
 
           {/* Tab Switcher */}
-          <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl overflow-x-auto text-xs font-semibold">
+          <div role="tablist" aria-label="Admin content sections"
+            onKeyDown={(event) => {
+              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+              const tabs = Array.from((event.currentTarget as HTMLDivElement).querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+              const position = tabs.indexOf(document.activeElement as HTMLButtonElement);
+              if (position === -1) return;
+              event.preventDefault();
+              const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 :
+                (position + (event.key === 'ArrowLeft' ? -1 : 1) + tabs.length) % tabs.length;
+              tabs[next]?.focus();
+              tabs[next]?.click();
+            }}
+            className="flex max-w-full items-center gap-1.5 p-1 bg-slate-100 rounded-xl overflow-x-auto no-scrollbar text-xs font-semibold">
           <button
             type="button"
             onClick={() => setActiveTab('news')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+            role="tab" aria-selected={activeTab === 'news'} aria-controls="admin-section-news"
+            className={`flex items-center gap-1.5 px-3 py-1.5 min-h-10 shrink-0 whitespace-nowrap rounded-lg transition-colors cursor-pointer ${
               activeTab === 'news'
                 ? 'bg-white text-slate-900 shadow-xs font-bold'
                 : 'text-slate-600 hover:text-slate-900'
@@ -571,7 +589,8 @@ export const AdminContent: React.FC<AdminContentProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('desk')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+            role="tab" aria-selected={activeTab === 'desk'} aria-controls="admin-section-desk"
+            className={`flex items-center gap-1.5 px-3 py-1.5 min-h-10 shrink-0 whitespace-nowrap rounded-lg transition-colors cursor-pointer ${
               activeTab === 'desk'
                 ? 'bg-white text-slate-900 shadow-xs font-bold'
                 : 'text-slate-600 hover:text-slate-900'
@@ -584,7 +603,8 @@ export const AdminContent: React.FC<AdminContentProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('links')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+            role="tab" aria-selected={activeTab === 'links'} aria-controls="admin-section-links"
+            className={`flex items-center gap-1.5 px-3 py-1.5 min-h-10 shrink-0 whitespace-nowrap rounded-lg transition-colors cursor-pointer ${
               activeTab === 'links'
                 ? 'bg-white text-slate-900 shadow-xs font-bold'
                 : 'text-slate-600 hover:text-slate-900'
@@ -594,14 +614,15 @@ export const AdminContent: React.FC<AdminContentProps> = ({
             <span>Quick Links</span>
           </button>
 
-          <button type="button" onClick={()=>setActiveTab('insights')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${activeTab === 'insights' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}>
+          <button type="button" onClick={()=>setActiveTab('insights')} role="tab" aria-selected={activeTab === 'insights'} aria-controls="admin-section-insights"
+            className={`flex items-center gap-1.5 px-3 py-1.5 min-h-10 shrink-0 whitespace-nowrap rounded-lg transition-colors cursor-pointer ${activeTab === 'insights' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}>
             <BookOpen className="w-3.5 h-3.5 text-teal-600"/><span>Clinical Insights</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('moments')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+            role="tab" aria-selected={activeTab === 'moments'} aria-controls="admin-section-moments"
+            className={`flex items-center gap-1.5 px-3 py-1.5 min-h-10 shrink-0 whitespace-nowrap rounded-lg transition-colors cursor-pointer ${
               activeTab === 'moments'
                 ? 'bg-white text-slate-900 shadow-xs font-bold'
                 : 'text-slate-600 hover:text-slate-900'
@@ -610,10 +631,10 @@ export const AdminContent: React.FC<AdminContentProps> = ({
             <Images className="w-3.5 h-3.5 text-purple-500" />
             <span>Class Photos & Moments</span>
           </button>
-          <button type="button" onClick={() => setActiveTab('wards')}
-            className={`px-3 py-1.5 rounded-lg transition-colors ${activeTab === 'wards' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}>Ward List</button>
-          <button type="button" onClick={() => setActiveTab('teaching')}
-            className={`px-3 py-1.5 rounded-lg transition-colors ${activeTab === 'teaching' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}>Teaching Modes</button>
+          <button type="button" onClick={() => setActiveTab('wards')} role="tab" aria-selected={activeTab === 'wards'} aria-controls="admin-section-wards"
+            className={`px-3 py-1.5 min-h-10 shrink-0 whitespace-nowrap rounded-lg transition-colors ${activeTab === 'wards' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}>Ward List</button>
+          <button type="button" onClick={() => setActiveTab('teaching')} role="tab" aria-selected={activeTab === 'teaching'} aria-controls="admin-section-teaching"
+            className={`px-3 py-1.5 min-h-10 shrink-0 whitespace-nowrap rounded-lg transition-colors ${activeTab === 'teaching' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}>Teaching Modes</button>
         </div>
       </div>
       </div>
@@ -621,11 +642,11 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       {/* ========================================================= */}
       {/* TAB 1: News & Circulars                                    */}
       {/* ========================================================= */}
-      {activeTab === 'insights' && <ClinicalInsightsAdmin />}
-      {activeTab === 'wards' && <AdminAreas user={user} />}
-      {activeTab === 'teaching' && <AdminTeachingModes user={user} />}
+      {activeTab === 'insights' && <section id="admin-section-insights" role="tabpanel"><Suspense fallback={<p role="status" className="p-4 text-sm text-slate-600">Loading clinical insights editor…</p>}><ClinicalInsightsAdmin /></Suspense></section>}
+      {activeTab === 'wards' && <section id="admin-section-wards" role="tabpanel"><Suspense fallback={<p role="status" className="p-4 text-sm text-slate-600">Loading ward editor…</p>}><AdminAreas user={user} /></Suspense></section>}
+      {activeTab === 'teaching' && <section id="admin-section-teaching" role="tabpanel"><Suspense fallback={<p role="status" className="p-4 text-sm text-slate-600">Loading teaching modes editor…</p>}><AdminTeachingModes user={user} /></Suspense></section>}
       {activeTab === 'news' && (
-        <div className="space-y-4">
+        <div id="admin-section-news" role="tabpanel" className="space-y-4">
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
             <div className="relative w-full sm:w-80">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
@@ -741,7 +762,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       {/* TAB 2: CNE Desk (Admin-editable committee membership)      */}
       {/* ========================================================= */}
       {activeTab === 'desk' && (
-        <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-xs max-w-4xl space-y-5">
+        <div id="admin-section-desk" role="tabpanel" className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-xs max-w-4xl space-y-5">
           <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
             <div>
               <h2 className="text-sm font-bold text-slate-900">CNE Desk Configuration</h2>
@@ -822,7 +843,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       {/* TAB 3: Quick Links                                        */}
       {/* ========================================================= */}
       {activeTab === 'links' && (
-        <div className="space-y-4">
+        <div id="admin-section-links" role="tabpanel" className="space-y-4">
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-bold text-slate-900">Institutional Quick Links</h2>
@@ -927,7 +948,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
       {/* TAB 4: Previous Class Photos & Moments                    */}
       {/* ========================================================= */}
       {activeTab === 'moments' && (
-        <div className="space-y-4">
+        <div id="admin-section-moments" role="tabpanel" className="space-y-4">
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-bold text-slate-900">Training Moments & Class Photos</h2>

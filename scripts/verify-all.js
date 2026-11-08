@@ -10440,14 +10440,17 @@ if (suiteFlagIndex !== -1 && !process.argv[suiteFlagIndex + 1]) {
   process.exit(2);
 }
 const wantedSuite = suiteFlagIndex !== -1 ? process.argv[suiteFlagIndex + 1] : null;
-const selected = wantedSuite ? suites.filter(s => s.id === wantedSuite) : suites;
+// The question-response format assertions are embedded in the unified focused
+// checks below. Keep them active while selecting the integration baseline.
+const formatVerification = wantedSuite === 'formats';
+const selected = wantedSuite ? suites.filter(s => s.id === (formatVerification ? 'integration' : wantedSuite)) : suites;
 if (!selected.length) {
   console.error(`Unknown suite: ${wantedSuite}. Available: ${suites.map(s=>s.id).join(', ')}`);
   process.exit(2);
 }
 
 console.log('================================================================');
-console.log('CNE MANAGEMENT SYSTEM - CONSOLIDATED VERIFICATION');
+console.log(formatVerification ? 'CNE MANAGEMENT SYSTEM - RESPONSE FORMAT VERIFICATION' : 'CNE MANAGEMENT SYSTEM - CONSOLIDATED VERIFICATION');
 console.log('================================================================');
 
 let passed = 0;
@@ -11491,6 +11494,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       const notices = [];
       const window = {scrollTo: () => {}};
       const ApiService = {logout: () => {}};
+      const ADMIN_VIEWS = ['admin-content','admin-roles','admin-reports','admin-areas','admin-teaching-modes','admin-departmental-cne-outcome'];
+      const writeViewToUrl = () => {};
       const setUser = value => {user = value};
       const setPendingGuestView = value => {pendingGuestView = value};
       const setIsLoginOpen = value => {isLoginOpen = value};
@@ -11572,10 +11577,12 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if (got.activeView !== 'dashboard' || !got.authenticated || got.pendingGuestView !== null)
       throw Error('Normal sign-in should preserve dashboard destination');
   });
-  check('Existing guest protected-route guard remains in place without stale redirect', () => {
+  check('Guest protected-route guard resumes requested records only after login', () => {
+    const guest = scenario(['records']);
     const got = scenario(['records','login']);
-    if (got.activeView !== 'dashboard' || got.notices[0]?.title !== 'Authentication Required' || got.pendingGuestView !== null)
-      throw Error('Original protected-route guard was modified unexpectedly');
+    if (guest.activeView !== 'dashboard' || guest.pendingGuestView !== 'my-cne-records' || !guest.isLoginOpen ||
+        got.activeView !== 'my-cne-records' || got.notices[0]?.title !== 'Login Required' || got.pendingGuestView !== null)
+      throw Error('The records deep link must not open before authentication and must resume after login');
   });
   check('Logout clears active and pending destinations; login validates actual session', () => {
     const got = scenario(['calendar','login','logout']);
@@ -14755,6 +14762,89 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
 console.log('\n================================================================');
 console.log(`Suites: ${passed}/${selected.length} passed; baseline checks covered by passing suites: ${passedChecks}/${selected.reduce((sum,s)=>sum+s.expectedChecks,0)}`);
 console.log('================================================================');
+// -----------------------------------------------------------------------------
+// Cross-device UI integration assertions (source-level only, not browser pixels).
+// Existing clinical and backend tests above remain unchanged.
+// -----------------------------------------------------------------------------
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const source = file => readFileSync(join(ROOT_DIR, file), 'utf8');
+  const app = source('src/App.tsx');
+  const routes = source('src/services/viewNavigation.ts');
+  const toolbar = source('src/components/TopToolbar.tsx');
+  const calendar = source('src/components/CNECalendar.tsx');
+  const quiz = source('src/components/QuizPage.tsx');
+  const schedule = source('src/components/CNESchedule.tsx');
+  const records = source('src/components/MyCNERecords.tsx');
+  const admin = source('src/components/AdminContent.tsx');
+  const questions = source('src/components/cne/CNEQuestionsModal.tsx');
+  const dialog = source('src/components/common/useAccessibleDialog.ts');
+  const css = source('src/index.css');
+  const checks = [
+    ['Browser Back/Forward route names preserve postTest query', () => {
+      assert(routes.includes('window.history.pushState') && routes.includes('window.location.search') && routes.includes('readViewFromUrl'));
+      assert(app.includes("window.addEventListener('popstate'") && app.includes("window.addEventListener('hashchange'"));
+      assert(app.includes("url.searchParams.delete('postTest')"));
+    }],
+    ['All protected destinations and unauthorized admin routes are guarded', () => {
+      assert(app.includes("!user?.employeeId && destination !== 'dashboard'"));
+      assert(app.includes('ADMIN_VIEWS.includes(destination)') && app.includes("user.role !== 'ADMIN'"));
+      assert(routes.includes("'quiz'") && routes.includes("'gallery'") && routes.includes("'learning-resources'"));
+    }],
+    ['Mobile and tablet toolbar have accessible overflow and keyboard menu', () => {
+      assert(toolbar.includes('navScrollRef') && toolbar.includes('navOverflow.right') && toolbar.includes('lg:hidden'));
+      assert(toolbar.includes('aria-current={isActive') && toolbar.includes('aria-haspopup="menu"'));
+      assert(toolbar.includes("event.key === 'ArrowDown'") && toolbar.includes("event.key === 'End'"));
+    }],
+    ['Calendar preserves seven columns and uses tappable date buttons', () => {
+      assert(calendar.includes('grid grid-cols-7') && calendar.includes('flex flex-wrap items-center gap-x-4'));
+      assert(calendar.includes('min-h-10 min-w-10') && calendar.includes('aria-pressed={selectedDay === dayNum}'));
+      assert(calendar.includes('aria-hidden="true" />') && calendar.includes('eventDialogRef'));
+    }],
+    ['Scored progress avoids duplicate question headings; practice counters remain small', () => {
+      assert(quiz.includes('Scored Quiz · Answer progress'));
+      assert(quiz.includes('Current Practice Session') && quiz.includes('text-[11px] leading-5'));
+      assert(quiz.includes("page!=='practice'&&page!=='scored'"));
+    }],
+    ['CNE schedule and records keep primary actions while hiding secondary mobile filters', () => {
+      assert(schedule.includes('ResponsiveFilterToggle') && schedule.includes('schedule-secondary-filters') && schedule.includes('md:contents'));
+      assert(schedule.includes('btn-schedule-cne'));
+      assert(records.includes('my-cne-date-filters') && records.includes('md:contents'));
+      assert(records.includes('generateCNERecordsPdf(user, filteredRecords, {'));
+    }],
+    ['CNE records table stays semantic and has an explicit accessible details control', () => {
+      assert(records.includes('View CNE record details: ${rec.topic}'));
+      assert(records.includes('role="dialog" aria-modal="true" aria-labelledby="my-cne-record-details-title"'));
+      assert(records.includes('filteredRecords.map('));
+    }],
+    ['Core modal focus is trapped and scroll lock is reference-counted', () => {
+      assert(dialog.includes('OPEN_DIALOGS') && dialog.includes('document.body.style.overflow'));
+      assert(dialog.includes("event.key !== 'Tab'") && dialog.includes("event.key === 'Escape'"));
+      for (const file of ['src/components/LoginModal.tsx','src/components/ForgotPasswordModal.tsx','src/components/ChangePasswordModal.tsx']) {
+        const data = source(file);
+        assert(data.includes('useAccessibleDialog') && data.includes('aria-modal="true"'), file);
+      }
+    }],
+    ['CNE question editor and post-test preserve safe dialog boundaries', () => {
+      assert(questions.includes('useAccessibleDialog({ isOpen: true, canClose: false })'));
+      assert(questions.includes('failureDialogRef') && questions.includes('CNEQuestionHeaderStatusTag'));
+      const post = source('src/components/cne/CNEPostTestModal.tsx');
+      assert(post.includes('canClose: !isSubmitting && !checkingSavedSubmission'));
+    }],
+    ['Administration editors load on demand and styling protects mobile form readability', () => {
+      assert(admin.includes('const AdminAreas = lazy(') && admin.includes('const AdminTeachingModes = lazy('));
+      assert(admin.includes("if (activeTab === 'news') void loadNews()"));
+      assert(admin.includes('role="tablist"') && admin.includes('role="tabpanel"'));
+      assert(css.includes('max-width: 639px') && css.includes('font-size: 16px') && css.includes('prefers-reduced-motion'));
+    }]
+  ];
+  console.log('\n>>> Responsive UI, accessible overlays and navigation checks');
+  for (const [name, check] of checks) {
+    focusedChecks.push({ name });
+    try { check(); focusedPassed++; console.log('✓ ' + name); }
+    catch (error) { console.error('✗ ' + name + ': ' + (error.message || error)); }
+  }
+}
+
 if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);
 if (passed !== selected.length || focusedPassed !== focusedChecks.length) process.exit(1);
 if (process.argv.includes('--with-timezone')) runTimezoneVerification();

@@ -22,6 +22,8 @@ import { CNERecord, CNEQuestion, CNEAiQuotaInfo, CNEReferenceBankItem, CNEClinic
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { CNEQuestionImage } from './CNEQuestionImage';
+import { useAccessibleDialog } from '../common/useAccessibleDialog';
+import { CNEQuestionHeaderStatusTag } from './CNEQuestionHeaderStatusTag';
 
 interface CNEQuestionsModalProps {
   cne: CNERecord;
@@ -848,12 +850,19 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const completeActiveCount = activeQuestions.filter(isQuestionComplete).length;
   const validFinalizedCount = activeQuestions.filter((q) => q.isFinalized && isQuestionComplete(q)).length;
   const incompleteActiveCount = activeQuestions.length - completeActiveCount;
+  // The top-level editing dialog deliberately requires its explicit Close button:
+  // Escape must not discard draft questions or interrupt image imports.
+  const dialogRef = useAccessibleDialog({ isOpen: true, canClose: false });
+  const failureDialogRef = useAccessibleDialog({
+    isOpen: Boolean(failureDialog), onRequestClose: () => setFailureDialog(null),
+    initialFocus: '[data-failure-heading]'
+  });
 
   return (
     <div className="fixed inset-0 z-[60] overflow-hidden bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-stretch sm:items-center justify-center p-0 sm:p-5">
-      <div className="bg-white rounded-none sm:rounded-2xl w-full sm:w-[94vw] max-w-[1440px] h-[100dvh] sm:h-auto sm:max-h-[92dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="cne-questions-dialog-title" tabIndex={-1} className="bg-white rounded-none sm:rounded-2xl w-full sm:w-[94vw] max-w-[1440px] h-[100dvh] sm:h-auto sm:max-h-[92dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
         {/* Compact mobile header; desktop controls wrap without horizontal overflow. */}
-        <header className="z-10 max-h-[46dvh] shrink-0 overflow-y-auto border-b border-slate-200 bg-slate-50/90 px-3 py-2.5 sm:max-h-none sm:overflow-visible sm:px-6 sm:py-3">
+        <header className="z-10 max-h-[35dvh] sm:max-h-[46dvh] shrink-0 overflow-y-auto border-b border-slate-200 bg-slate-50/90 px-3 py-2.5 sm:max-h-none sm:overflow-visible sm:px-6 sm:py-3">
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-purple-100 text-purple-700 sm:h-9 sm:w-9 sm:rounded-xl">
@@ -861,7 +870,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               </div>
               <div className="min-w-0 flex-1">
                 <span className="block text-[10px] font-bold uppercase tracking-wide text-purple-800">Post-Test Questions</span>
-                <h3 className="mt-0.5 break-words text-sm font-bold leading-snug text-slate-900 sm:text-base">{cne.topic}</h3>
+                <h3 id="cne-questions-dialog-title" className="mt-0.5 break-words text-sm font-bold leading-snug text-slate-900 sm:text-base">{cne.topic}</h3>
                 <p className="mt-0.5 hidden text-[11px] leading-snug text-slate-600 sm:block">
                   Review, edit and finalize AI, Question Bank and manual Drafts.
                 </p>
@@ -874,17 +883,17 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             </button>
           </div>
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-            <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${validFinalizedCount >= 5 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+            <CNEQuestionHeaderStatusTag tone={validFinalizedCount >= 5 ? 'ready' : 'pending'}>
               {validFinalizedCount} / 5 finalized minimum
-            </span>
-            {isLocked && <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-800">
+            </CNEQuestionHeaderStatusTag>
+            {isLocked && <CNEQuestionHeaderStatusTag tone="locked">
               <Lock className="h-3 w-3" /> Locked (Submissions Received)
-            </span>}
+            </CNEQuestionHeaderStatusTag>}
           </div>
           {/* Wide screens: view tabs on the left, creation actions on the right.
               Phones retain the two-column stacked controls that already work. */}
-          <div className="mt-2 flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-            <div role="tablist" aria-label="Post-Test question views" className="grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
+          <div className="mt-2 flex min-w-0 flex-col gap-1.5 sm:gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div role="tablist" aria-label="Post-Test question views" className="grid min-w-0 grid-cols-2 gap-1.5 sm:gap-2 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
             <button type="button" role="tab" id="cne-my-questions-tab" aria-controls="cne-my-questions-panel"
               aria-selected={activeView === 'questions'}
               onClick={() => setActiveView('questions')}
@@ -1360,10 +1369,10 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         )}
 
         {failureDialog && (
-          <div className="fixed inset-0 z-[95] bg-slate-950/70 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={failureDialog.title}>
+          <div ref={failureDialogRef} tabIndex={-1} className="fixed inset-0 z-[95] bg-slate-950/70 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="cne-questions-failure-title">
             <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto bg-white rounded-2xl p-5 shadow-2xl space-y-4">
               <div className="flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-rose-600" />
-                <h3 className="text-base font-bold text-slate-900">{failureDialog.title}</h3>
+                <h3 id="cne-questions-failure-title" data-failure-heading tabIndex={-1} className="text-base font-bold text-slate-900">{failureDialog.title}</h3>
               </div>
               <p className="text-sm text-slate-700 leading-relaxed">{failureDialog.message}</p>
               <div className="flex gap-2 justify-end flex-wrap">

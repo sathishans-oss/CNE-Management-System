@@ -11,6 +11,7 @@ import { CNERecord, SessionUser } from '../types';
 import { ApiService } from '../services/api';
 import { formatCneDateTimeDisplay, parseToIsoDateString, getCneTypeLabel } from '../utils';
 import { LoadingProgress } from './common/LoadingProgress';
+import { useAccessibleDialog } from './common/useAccessibleDialog';
 
 type CalendarViewMode = 'month';
 export interface CalendarViewState {
@@ -89,6 +90,9 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
   const [fullDetailsCne, setFullDetailsCne] = useState<CNERecord | null>(null);
   const requestGeneration = useRef(0);
+  const eventDialogRef = useAccessibleDialog({ isOpen: Boolean(selectedEvent),
+    onRequestClose: () => setSelectedEvent(null),
+    initialFocus: '[aria-label="Close selected CNE event"]' });
 
   const loadEvents = useCallback(async () => {
     const generation = ++requestGeneration.current;
@@ -284,7 +288,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
       {loading && <LoadingProgress label="Refreshing scheduled CNE programmes" className="mx-auto" />}
 
       {/* Calendar Legend */}
-      <div className="flex items-center gap-4 text-xs bg-white px-5 py-2.5 rounded-xl border border-slate-200 text-slate-600">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs bg-white px-3 sm:px-5 py-3 rounded-xl border border-slate-200 text-slate-600">
         <span className="font-semibold text-slate-700">Legend:</span>
         <div className="flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
@@ -332,22 +336,22 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
               return (
                 <div
                   key={`day-${dayNum}`}
-                  className={`min-w-0 min-h-[65px] p-1 transition-colors sm:min-h-[110px] sm:p-2 ${
+                  className={`min-w-0 min-h-[65px] p-0.5 transition-colors sm:min-h-[110px] sm:p-2 ${
                     selectedDay === dayNum ? 'bg-teal-50 ring-1 ring-inset ring-teal-300' : isToday ? 'bg-emerald-50/30' : 'hover:bg-slate-50/60'
                   }`}
                 >
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-start justify-between gap-0.5 mb-0.5 sm:mb-1.5">
                     <button type="button" onClick={() => setSelectedDay(dayNum)}
                       aria-label={`${dayNum} ${monthNames[month]} ${year}, ${dayEvents.length} CNE events`}
                       aria-pressed={selectedDay === dayNum}
-                      className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 ${
+                      className={`inline-flex min-h-10 min-w-10 items-center justify-center rounded-full text-xs font-bold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 ${
                         isToday ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-teal-100'
                       }`}
                     >
                       {dayNum}
                     </button>
                     {dayEvents.length > 0 && (
-                      <span className="text-[10px] text-slate-500 font-semibold">
+                      <span className="text-[10px] text-slate-500 font-semibold hidden sm:inline">
                         {dayEvents.length}
                       </span>
                     )}
@@ -381,10 +385,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
                     )}
                   </div>
                   {dayEvents.length > 0 && (
-                    <button type="button" onClick={() => setSelectedDay(dayNum)}
-                      className="mt-1 h-2 w-full rounded-full bg-teal-600 sm:hidden"
-                      aria-label={`Show ${dayEvents.length} CNE events on ${dayNum} ${monthNames[month]}`}
-                    />
+                    <span className="mt-0.5 block h-1.5 w-full rounded-full bg-teal-600 sm:hidden" aria-hidden="true" />
                   )}
                 </div>
               );
@@ -421,7 +422,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
       {/* Event Details Modal */}
       {selectedEvent && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-          <div className="bg-white rounded-2xl w-[90vw] max-w-[950px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden text-xs">
+          <div ref={eventDialogRef} role="dialog" aria-modal="true" aria-labelledby="calendar-event-dialog-title" tabIndex={-1} className="bg-white rounded-2xl w-full sm:w-[90vw] max-w-[950px] max-h-[calc(100dvh-1.5rem)] sm:max-h-[85dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden text-sm">
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/70">
               <div className="flex items-center gap-3">
                 <div
@@ -451,7 +452,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
                       ? 'Canceled CNE Session'
                       : 'Completed CNE Session'}
                   </span>
-                  <h3 className="text-base font-bold text-slate-900 mt-1">
+                  <h3 id="calendar-event-dialog-title" className="text-base font-bold text-slate-900 mt-1">
                     {selectedEvent.title}
                   </h3>
                 </div>
@@ -459,13 +460,14 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
 
               <button
                 onClick={() => setSelectedEvent(null)}
+                type="button" aria-label="Close selected CNE event"
                 className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-6 overflow-y-auto flex-1 bg-slate-50/40">
+            <div className="p-3 sm:p-6 overflow-y-auto min-h-0 flex-1 bg-slate-50/40 cne-scroll-panel">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
                 <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between shadow-xs">
                   <span className="text-slate-500 font-semibold">Date &amp; Time</span>

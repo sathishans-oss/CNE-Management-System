@@ -23,6 +23,8 @@ import { SearchInput } from './SearchInput';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 import { LoadingProgress } from './common/LoadingProgress';
 import { FilterBarShell } from './common/FilterBarShell';
+import { ResponsiveFilterToggle } from './common/ResponsiveFilterToggle';
+import { useAccessibleDialog } from './common/useAccessibleDialog';
 
 export interface MyCNERecordsProps {
   user: SessionUser;
@@ -104,6 +106,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   const sessionGuardRef = useRef('');
   const [searchTerm, setSearchTerm] = useState('');
   const [startDate, setStartDate] = useState('');
+  const [showDateFilters, setShowDateFilters] = useState(false);
   const [endDate, setEndDate] = useState('');
   const [appliedFilters, setAppliedFilters] = useState({search:'',fromDate:'',toDate:''});
   const [selectedRecord, setSelectedRecord] = useState<CNERecord | null>(null);
@@ -257,6 +260,9 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     finally { generatingPdfRef.current = false; setIsGeneratingPdf(false); }
   };
 
+  const detailsDialogRef = useAccessibleDialog({ isOpen: Boolean(selectedRecord),
+    onRequestClose: () => setSelectedRecord(null), initialFocus: '[aria-label="Close CNE record details"]' });
+
   const selectedRecordIsParticipant = selectedRecord
     ? isUserParticipantInRecord(user, selectedRecord)
     : false;
@@ -278,6 +284,11 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             />
           </div>
 
+          <ResponsiveFilterToggle expanded={showDateFilters}
+            onToggle={() => setShowDateFilters(value => !value)}
+            activeCount={Number(Boolean(startDate))+Number(Boolean(endDate))}
+            controlsId="my-cne-date-filters" />
+          <div id="my-cne-date-filters" className={`${showDateFilters ? 'flex' : 'hidden'} w-full flex-col gap-2.5 md:contents`}>
           <div className="w-full sm:w-[160px]">
             <ConfirmDatePicker
               id="my-cne-from-date"
@@ -301,8 +312,10 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             />
           </div>
 
+          </div>
+
           <button type="button" onClick={applyFilters}
-            className="inline-flex h-9 items-center justify-center gap-1.5 px-3 rounded-lg bg-teal-700 text-white text-xs font-bold hover:bg-teal-800 cursor-pointer">
+            className="inline-flex min-h-10 items-center justify-center gap-1.5 px-3 rounded-lg bg-teal-700 text-white text-xs font-bold hover:bg-teal-800 cursor-pointer">
             <Search className="w-3.5 h-3.5" /> Show Results
           </button>
 
@@ -318,7 +331,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             <button
               type="button"
               onClick={clearFilters}
-              className="inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors cursor-pointer"
+              className="inline-flex min-h-10 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors cursor-pointer"
               title="Clear filters"
             >
               <X className="w-3.5 h-3.5" />
@@ -326,11 +339,15 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
             </button>
           )}
 
+          <span className="order-last w-full text-xs font-medium text-slate-600 sm:order-none sm:w-auto" role="status" aria-live="polite">
+            {isGeneratingPdf ? `Creating PDF for ${filteredRecords.length} matching records…` : `${filteredRecords.length} matching records in current view`}
+          </span>
           <button
             id="btn-generate-cne-records-pdf"
             onClick={handleGeneratePdf}
-            disabled={isGeneratingPdf || loading}
-            className="ml-auto inline-flex h-9 items-center gap-2 whitespace-nowrap rounded-lg bg-slate-900 px-4 text-xs font-bold text-white shadow-xs transition-colors hover:bg-slate-800 cursor-pointer disabled:opacity-50"
+            disabled={isGeneratingPdf || loading || records.length !== totalRecords || filteredRecords.length === 0}
+            aria-label={`Generate PDF containing ${filteredRecords.length} currently filtered CNE records`}
+            className="ml-auto inline-flex min-h-10 items-center gap-2 whitespace-nowrap rounded-lg bg-slate-900 px-4 text-xs font-bold text-white shadow-xs transition-colors hover:bg-slate-800 cursor-pointer disabled:opacity-50"
           >
             {isGeneratingPdf ? (
               <>
@@ -457,16 +474,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                         <tr
                           key={rec.cneId || rec.dataId || `rec-${globalIdx}`}
                           onClick={() => setSelectedRecord(rec)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              setSelectedRecord(rec);
-                            }
-                          }}
-                          tabIndex={0}
-                          role="button"
-                          aria-label={`View details for ${rec.topic}`}
-                          className="hover:bg-slate-50/90 cursor-pointer transition-colors focus:outline-none focus:bg-slate-100/80"
+                          className="hover:bg-slate-50/90 cursor-pointer transition-colors"
                         >
                           <td className="py-3 px-3 text-center font-medium text-slate-500">
                             {globalIdx + 1}
@@ -475,9 +483,11 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                             {formatCneDateTimeDisplay(rec.fromDate, rec.toDate)}
                           </td>
                           <td className="py-3 px-4 font-semibold text-slate-900 text-left whitespace-normal break-words [overflow-wrap:anywhere]">
-                            <div title={rec.topic}>
+                            <button type="button" onClick={() => setSelectedRecord(rec)}
+                              title={rec.topic} aria-label={`View CNE record details: ${rec.topic}`}
+                              className="rounded text-left font-semibold text-teal-900 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600">
                               {rec.topic}
-                            </div>
+                            </button>
                           </td>
                           <td className="py-3 px-4 whitespace-nowrap text-left">
                             <span
@@ -540,9 +550,10 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
       {/* Record Details Modal */}
       {selectedRecord && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-slate-200 relative">
+          <div ref={detailsDialogRef} role="dialog" aria-modal="true" aria-labelledby="my-cne-record-details-title" tabIndex={-1} className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-2rem)] overflow-y-auto p-4 sm:p-6 shadow-xl border border-slate-200 relative">
             <button
               onClick={() => setSelectedRecord(null)}
+              aria-label="Close CNE record details"
               className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
             >
               <X className="w-5 h-5" />
@@ -553,7 +564,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                 <Award className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-slate-900">CNE Record</h3>
+                <h3 id="my-cne-record-details-title" className="text-base font-bold text-slate-900">CNE Record</h3>
                 <div className="flex flex-wrap items-center gap-2 mt-0.5">
                   <span className="text-xs text-slate-500 font-mono">ID: {selectedRecord.cneId || selectedRecord.dataId}</span>
                   <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-700 border border-slate-200">

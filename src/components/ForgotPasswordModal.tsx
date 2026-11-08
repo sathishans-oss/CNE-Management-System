@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { ApiService } from '../services/api';
 import { useToast } from './Toast';
+import { useAccessibleDialog } from './common/useAccessibleDialog';
 import { PasswordRequirementGuidance } from './common/PasswordRequirementGuidance';
 
 interface ForgotPasswordModalProps {
@@ -79,8 +80,6 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
     }, 1000);
     return () => window.clearInterval(timer);
   }, [isOpen, resendSeconds]);
-
-  if (!isOpen) return null;
 
   const cleanEmployeeId = employeeId.trim().toUpperCase();
 
@@ -244,9 +243,12 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
 
   const stepLabel = step === 'EMPLOYEE' ? '1 of 3' : step === 'OTP' ? '2 of 3' : step === 'PASSWORD' ? '3 of 3' : 'Complete';
 
+  const dialogRef = useAccessibleDialog({ isOpen, onRequestClose: handleClose, canClose: !loading, initialFocus: 'input' });
+  if (!isOpen) return null;
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-md w-full max-h-[calc(100dvh-2rem)] min-h-0 flex flex-col shadow-xl border border-slate-200 relative overflow-hidden">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="forgot-password-dialog-title" tabIndex={-1} className="bg-white rounded-2xl max-w-md w-full max-h-[calc(100dvh-2rem)] min-h-0 flex flex-col shadow-xl border border-slate-200 relative overflow-hidden">
         <div className="px-4 sm:px-6 py-4 sm:py-5 shrink-0 border-b border-slate-100 bg-slate-50/70">
           <button
             id="btn-close-forgot-pass"
@@ -265,7 +267,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
             </div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-lg font-bold text-slate-900">Create / Reset Password</h2>
+                <h2 id="forgot-password-dialog-title" className="text-lg font-bold text-slate-900">Create / Reset Password</h2>
                 <span className="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5 whitespace-nowrap">
                   {stepLabel}
                 </span>

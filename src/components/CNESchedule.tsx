@@ -52,6 +52,7 @@ import { loadOfficersSingleFlight, getCachedOfficers } from '../services/officer
 import { invalidateCNECalendarCache } from './CNECalendar';
 import { LoadingProgress } from './common/LoadingProgress';
 import { FilterBarShell } from './common/FilterBarShell';
+import { ResponsiveFilterToggle } from './common/ResponsiveFilterToggle';
 
 const CNEReferenceModal = lazy(() => import('./cne/CNEReferenceModal').then((m) => ({ default: m.CNEReferenceModal })));
 const CNEQuestionsModal = lazy(() => import('./cne/CNEQuestionsModal').then((m) => ({ default: m.CNEQuestionsModal })));
@@ -102,6 +103,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   };
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [fromDateFilter, setFromDateFilter] = useState('');
   const [toDateFilter, setToDateFilter] = useState('');
 
@@ -1212,7 +1214,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                     type="button"
                     onClick={() => setStatusFilter(status)}
                     aria-pressed={statusFilter === status}
-                    className={`min-w-0 whitespace-nowrap rounded-lg px-1.5 py-2 text-[11px] font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 ${statusFilter === status
+                    className={`min-w-0 whitespace-nowrap min-h-10 rounded-lg px-1.5 py-2 text-xs font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 ${statusFilter === status
                       ? 'bg-teal-700 text-white shadow-sm'
                       : 'bg-transparent text-slate-700 hover:bg-white hover:text-teal-800'}`}
                   >
@@ -1235,6 +1237,14 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             </div>
           </div>
 
+          {!showAdvancedFilters && hasActiveFilters && <span className="max-w-full text-xs font-medium text-teal-900 md:hidden" role="status">Search/date filters active</span>}
+          <ResponsiveFilterToggle
+            expanded={showAdvancedFilters}
+            onToggle={() => setShowAdvancedFilters(value => !value)}
+            activeCount={Number(Boolean(searchTerm.trim()))+Number(Boolean(fromDateFilter))+Number(Boolean(toDateFilter))}
+            controlsId="schedule-secondary-filters"
+          />
+          <div id="schedule-secondary-filters" className={`${showAdvancedFilters ? 'flex' : 'hidden'} w-full min-w-0 flex-col gap-2.5 md:contents`}>
           <div className="min-w-[120px] flex-1 sm:w-[145px] sm:flex-none xl:min-w-[120px] xl:w-[145px] xl:shrink">
             <ConfirmDatePicker
               id="filter-from-date"
@@ -1264,6 +1274,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
               value={searchTerm}
               onChange={setSearchTerm}
             />
+          </div>
+
           </div>
 
           {canScheduleCne && (

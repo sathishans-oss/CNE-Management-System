@@ -6,6 +6,7 @@ import { Navbar } from './components/Navbar';
 import { TopToolbar } from './components/TopToolbar';
 import { CneHomePage } from './components/CneHomePage';
 import { scheduleIdlePrefetch } from './services/routePrefetch';
+import { ADMIN_VIEWS, readViewFromUrl, writeViewToUrl } from './services/viewNavigation';
 import type { CalendarViewState } from './components/CNECalendar';
 
 const LoginModal = lazy(() => import('./components/LoginModal').then((m) => ({ default: m.LoginModal })));
@@ -31,7 +32,7 @@ const PageLoadingFallback: React.FC = () => (
 
 const AppContent: React.FC = () => {
   const [user, setUser] = useState<SessionUser | null>(() => ApiService.getSessionUser());
-  const [activeView, setActiveView] = useState<ViewMode>('dashboard');
+  const [activeView, setActiveView] = useState<ViewMode>(readViewFromUrl);
   const [calendarReturnState, setCalendarReturnState] = useState<CalendarViewState | null>(null);
   const [requestedFullCneId, setRequestedFullCneId] = useState<string | null>(null);
 
@@ -49,7 +50,7 @@ const AppContent: React.FC = () => {
   // Modals state
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   // A guest's requested page is resumed only after a successful login.
-  const [pendingGuestView, setPendingGuestView] = useState<'calendar' | 'cne-schedule' | null>(null);
+  const [pendingGuestView, setPendingGuestView] = useState<ViewMode | null>(null);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
 
@@ -58,6 +59,51 @@ const AppContent: React.FC = () => {
   useEffect(() => {
     return scheduleIdlePrefetch(Boolean(user && user.employeeId));
   }, [user?.employeeId]);
+
+
+  // Restore public route names across refresh and browser Back/Forward. QR tokens
+  // remain in the query string and are not touched by route navigation.
+  useEffect(() => {
+    const handleLocationChange = () => {
+      const next = readViewFromUrl();
+      if (ADMIN_VIEWS.includes(next) && user?.employeeId && user.role !== 'ADMIN') {
+        info('This section requires administrator access.', 'Access Restricted');
+        writeViewToUrl('dashboard', true);
+        setActiveView('dashboard');
+        return;
+      }
+      setRequestedFullCneId(null);
+      setActiveView(next);
+      if (!user?.employeeId && next !== 'dashboard' && !rootQrToken) {
+        setPendingGuestView(next);
+        setIsLoginOpen(true);
+      }
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    };
+    window.addEventListener('popstate', handleLocationChange);
+    window.addEventListener('hashchange', handleLocationChange);
+    return () => {
+      window.removeEventListener('popstate', handleLocationChange);
+      window.removeEventListener('hashchange', handleLocationChange);
+    };
+  }, [user?.employeeId, user?.role, rootQrToken, info]);
+
+  // Deep links into staff pages require login; public QR post-tests are allowed.
+  useEffect(() => {
+    if (!user?.employeeId && activeView !== 'dashboard' && !rootQrToken) {
+      setPendingGuestView(activeView);
+      setIsLoginOpen(true);
+    }
+  }, []);
+
+  // Reject a directly pasted admin URL if the restored session is non-admin.
+  useEffect(() => {
+    if (user?.employeeId && user.role !== 'ADMIN' && ADMIN_VIEWS.includes(activeView)) {
+      setActiveView('dashboard');
+      writeViewToUrl('dashboard', true);
+      info('This page requires administrator access.', 'Access Restricted');
+    }
+  }, [user?.employeeId, user?.role]);
 
   const handleCloseRootQrPostTest = () => {
     setRootQrToken(null);
@@ -75,12 +121,15 @@ const AppContent: React.FC = () => {
   const handleLoginSuccess = (loggedInUser: SessionUser) => {
     setUser(loggedInUser);
     setIsLoginOpen(false);
-    // Continue to the Calendar / full Schedule requested before authentication.
-    // A normal Sign in (without a pending destination) retains the current page.
+    // Resume any authenticated staff page, but never grant unauthorized admin pages.
     if (pendingGuestView) {
-      setActiveView(pendingGuestView);
+      const permitted = !ADMIN_VIEWS.includes(pendingGuestView) || loggedInUser.role === 'ADMIN';
+      const destination = permitted ? pendingGuestView : 'dashboard';
+      setActiveView(destination);
+      writeViewToUrl(destination, true);
       setRequestedFullCneId(null);
       setCalendarReturnState(null);
+      if (!permitted) info('Administrator access is required for that page.', 'Access Restricted');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
     setPendingGuestView(null);
@@ -93,37 +142,34 @@ const AppContent: React.FC = () => {
     setIsLoginOpen(false);
     setPendingGuestView(null);
     setActiveView('dashboard');
+    writeViewToUrl('dashboard', true);
     setRequestedFullCneId(null);
     setCalendarReturnState(null);
     info('You have been signed out.', 'Session Ended');
   };
 
   const handleNavigate = (view: ViewMode) => {
-    if (!user?.employeeId) {
-      // These two home-page actions must never silently switch to an
-      // authenticated-only view. Explain the requirement, then open login.
-      if (view === 'calendar' || view === 'cne-schedule') {
-        setPendingGuestView(view);
-        info(
-          view === 'calendar'
-            ? 'Please log in with your Employee ID to view the full CNE Calendar and session details.'
-            : 'Please log in with your Employee ID to view the complete CNE Schedule and session details.',
-          'Login Required'
-        );
-        setIsLoginOpen(true);
-        return;
-      }
-      if (['my-cne-records', 'admin-areas', 'admin-teaching-modes', 'admin-roles', 'admin-content', 'admin-reports', 'admin-departmental-cne-outcome'].includes(view)) {
-        setPendingGuestView(null);
-        info('Please log in with your Employee ID to access this section.', 'Authentication Required');
-        setIsLoginOpen(true);
-        return;
-      }
+    const destination = view === 'home' ? 'dashboard' : view;
+    if (!user?.employeeId && destination !== 'dashboard') {
+      // Every staff-only Quick Link, not just Calendar and Schedule, can be resumed.
+      setPendingGuestView(destination);
+      info(destination === 'calendar'
+        ? 'Please log in with your Employee ID to view the full CNE Calendar and session details.'
+        : destination === 'cne-schedule'
+        ? 'Please log in with your Employee ID to view the complete CNE Schedule and session details.'
+        : 'Please log in with your Employee ID to access this section.', 'Login Required');
+      setIsLoginOpen(true);
+      return;
+    }
+    if (ADMIN_VIEWS.includes(destination) && user?.role !== 'ADMIN') {
+      info('Only the administrator can access this section.', 'Access Restricted');
+      return;
     }
     setPendingGuestView(null);
     setRequestedFullCneId(null);
     setCalendarReturnState(null);
-    setActiveView(view);
+    setActiveView(destination);
+    writeViewToUrl(destination);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
   const openFullCneDetailsFromCalendar = (cneId: string, context: CalendarViewState) => {
@@ -131,12 +177,14 @@ const AppContent: React.FC = () => {
     setCalendarReturnState(context);
     setRequestedFullCneId(cneId);
     setActiveView('cne-schedule');
+    writeViewToUrl('cne-schedule');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const backToCalendar = () => {
     setRequestedFullCneId(null);
     setActiveView('calendar');
+    writeViewToUrl('calendar');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -159,7 +207,7 @@ const AppContent: React.FC = () => {
         />
       )}
 
-      <div className="flex-1 w-full max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-12">
+      <div className="flex-1 w-full min-w-0 max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 pt-4 sm:pt-6 pb-12">
         {/* Main Content Area */}
         <main className="w-full">
           <Suspense fallback={<PageLoadingFallback />}>
@@ -236,6 +284,12 @@ const AppContent: React.FC = () => {
           onClose={() => {
             setIsLoginOpen(false);
             setPendingGuestView(null);
+            // Canceling a protected deep link must not leave a hidden route
+            // that unexpectedly becomes visible on the next ordinary login.
+            if (!user?.employeeId && activeView !== 'dashboard') {
+              setActiveView('dashboard');
+              writeViewToUrl('dashboard', true);
+            }
           }}
           onLoginSuccess={handleLoginSuccess}
           onOpenForgotPassword={() => {
@@ -271,6 +325,10 @@ const AppContent: React.FC = () => {
           onClose={() => {
             setIsForgotPasswordOpen(false);
             setPendingGuestView(null);
+            if (!user?.employeeId && activeView !== 'dashboard') {
+              setActiveView('dashboard');
+              writeViewToUrl('dashboard', true);
+            }
           }}
           onBackToLogin={() => {
             setIsForgotPasswordOpen(false);

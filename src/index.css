@@ -49,3 +49,15 @@
 @media (prefers-reduced-motion: reduce) {
   .cne-loading-indeterminate { animation: none; width: 100%; opacity: .45; }
 }
+
+/* CNE cross-device UX primitives — compact badges are deliberately unaffected. */
+:root { --cne-touch-size: 40px; --cne-readable-caption: 12px; --cne-control-radius: .75rem; }
+.cne-readable-caption { font-size: var(--cne-readable-caption); line-height: 1.5; }
+.cne-touch-target { min-width: var(--cne-touch-size); min-height: var(--cne-touch-size); }
+.cne-scroll-panel { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+:where(button, a, input, select, textarea):focus-visible { outline-offset: 2px; }
+@media (max-width: 639px) {
+  /* Prevent iPhone Safari input-focus autozoom without changing small status badges. */
+  input:not([type="checkbox"]):not([type="radio"]), select, textarea { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }

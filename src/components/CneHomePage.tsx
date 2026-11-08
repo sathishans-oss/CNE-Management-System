@@ -199,7 +199,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
       {/* Responsive homepage: leadership/guidance in main; impact/today's schedule in sidebar. */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Main content (7 columns on desktop): Chairperson, Coordinator Desk, Certification. */}
-        <main className="lg:col-span-7 space-y-6">
+        <section aria-label="CNE home information" className="lg:col-span-7 space-y-6">
           <CnoLeadershipCard
             cnoMessage={cnoMessage}
             accentColor="teal"
@@ -208,7 +208,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
             <CoordinatorDeskCard coordinatorDesk={coordinatorDesk} accentColor="teal" />
             <CertificationWorkflowWidget accentColor="teal" />
           </Suspense>
-        </main>
+        </section>
 
         {/* Right sidebar (5 columns on desktop): Program Impact, Today's CNE, News, Links, Photos. */}
         <aside className="lg:col-span-5 space-y-6">

@@ -11,6 +11,8 @@ import {
   BookOpen,
   Images,
   ChevronDown,
+  ChevronRight,
+  ChevronLeft,
   SlidersHorizontal,
   FileSpreadsheet,
   ClipboardCheck
@@ -53,6 +55,42 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
 
   // Control Center state & logic for Admins
   const [isControlCenterOpen, setIsControlCenterOpen] = useState(false);
+  const navScrollRef = useRef<HTMLDivElement>(null);
+  const [navOverflow, setNavOverflow] = useState({ left: false, right: false });
+  const updateNavOverflow = () => {
+    const el = navScrollRef.current;
+    if (!el) return;
+    setNavOverflow({ left: el.scrollLeft > 5, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 5 });
+  };
+  useEffect(() => {
+    const scrollArea = navScrollRef.current;
+    if (!scrollArea) return;
+    const recalc = () => updateNavOverflow();
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(recalc) : null;
+    observer?.observe(scrollArea);
+    if (scrollArea.firstElementChild) observer?.observe(scrollArea.firstElementChild);
+    window.addEventListener('resize', recalc);
+    scrollArea.addEventListener('scroll', recalc, { passive: true });
+    const frame = window.requestAnimationFrame(recalc);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener('resize', recalc);
+      scrollArea.removeEventListener('scroll', recalc);
+    };
+  }, [isAdmin]);
+  useEffect(() => {
+    const scrollArea = navScrollRef.current;
+    const activeId = ['admin-content', 'admin-roles', 'admin-departmental-cne-outcome', 'admin-areas', 'admin-teaching-modes'].includes(activeView)
+      ? 'top-tab-control-center' : `top-tab-${activeView}`;
+    const target = document.getElementById(activeId);
+    if (scrollArea && target) {
+      const left = target.getBoundingClientRect().left - scrollArea.getBoundingClientRect().left;
+      const right = left + target.getBoundingClientRect().width;
+      if (left < 8) scrollArea.scrollBy({ left: left - 16, behavior: 'smooth' });
+      else if (right > scrollArea.clientWidth - 8) scrollArea.scrollBy({ left: right - scrollArea.clientWidth + 16, behavior: 'smooth' });
+    }
+  }, [activeView, isAdmin]);
   const controlCenterRef = useRef<HTMLDivElement>(null);
   const controlCenterBtnRef = useRef<HTMLButtonElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
@@ -96,6 +134,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsControlCenterOpen(false);
+        controlCenterBtnRef.current?.focus();
       }
     };
 
@@ -116,10 +155,16 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
     };
   }, [isControlCenterOpen]);
 
+  useEffect(() => {
+    if (!isControlCenterOpen) return;
+    const frame = window.requestAnimationFrame(() => document.querySelector<HTMLElement>('#control-center-dropdown-menu [role="menuitem"]')?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [isControlCenterOpen]);
+
   return (
     <div id="cne-top-toolbar" className="bg-slate-900 border-b border-slate-800 shadow-md sticky top-16 z-20">
-      <div className="max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between overflow-x-auto no-scrollbar py-1.5 gap-2 sm:gap-4">
+      <div className="max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 relative">
+        <div ref={navScrollRef} className="flex items-center justify-between overflow-x-auto no-scrollbar py-1.5 gap-2 sm:gap-4" role="region" aria-label="CNE page navigation" tabIndex={0}>
           {/* Staff Primary Section */}
           <nav className="flex items-center gap-1 sm:gap-1.5 shrink-0" aria-label="Staff Navigation">
             {staffTabs.map((tab) => {
@@ -136,7 +181,8 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                     setIsControlCenterOpen(false);
                     onSelectView(tab.id);
                   }}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`flex min-h-10 items-center gap-2 px-3 py-2 rounded-lg text-xs sm:text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
                     isActive
                       ? 'bg-teal-600 text-white shadow-sm'
                       : 'text-slate-300 hover:bg-slate-800 hover:text-white'
@@ -176,9 +222,18 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                     id="top-tab-control-center"
                     type="button"
                     onClick={toggleControlCenter}
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        if (!isControlCenterOpen) { updateDropdownPos(); setIsControlCenterOpen(true); }
+                        window.requestAnimationFrame(() => document.querySelector<HTMLElement>('#control-center-dropdown-menu [role="menuitem"]')?.focus());
+                      }
+                    }}
                     aria-expanded={isControlCenterOpen}
-                    aria-haspopup="true"
-                    className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                    aria-haspopup="menu"
+                    aria-controls="control-center-dropdown-menu"
+                    aria-current={isControlCenterActive ? 'page' : undefined}
+                    className={`flex min-h-10 items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
                       isControlCenterActive
                         ? 'bg-purple-700 text-white shadow-sm ring-1 ring-purple-400'
                         : 'text-slate-300 hover:bg-purple-950/50 hover:text-purple-200'
@@ -207,6 +262,16 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                       className="bg-white rounded-xl shadow-xl border border-slate-200/90 py-1 overflow-hidden animate-in fade-in zoom-in-95 duration-100"
                       role="menu"
                       aria-orientation="vertical"
+                      onKeyDown={(event) => {
+                        const buttons = Array.from((event.currentTarget as HTMLDivElement).querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+                        const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+                        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+                          event.preventDefault();
+                          const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+                            : (current + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
+                          buttons[next]?.focus();
+                        }
+                      }}
                     >
                       <div className="px-3 py-1.5 border-b border-slate-100 text-[10px] font-bold uppercase tracking-wider text-slate-400">
                         Control Center
@@ -225,7 +290,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                               setIsControlCenterOpen(false);
                               onSelectView(item.id);
                             }}
-                            className={`w-full flex items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors cursor-pointer ${
+                            className={`w-full flex min-h-10 items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors cursor-pointer ${
                               isItemActive
                                 ? 'bg-purple-50 text-purple-900 font-bold border-l-2 border-purple-600'
                                 : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
@@ -250,6 +315,8 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             </div>
           )}
         </div>
+        {navOverflow.left && <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center bg-gradient-to-r from-slate-900 via-slate-900/80 to-transparent pl-0.5 pr-4 lg:hidden" aria-hidden="true"><ChevronLeft className="h-4 w-4 text-teal-300" /></div>}
+        {navOverflow.right && <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center bg-gradient-to-l from-slate-900 via-slate-900/80 to-transparent pl-4 pr-0.5 lg:hidden" aria-hidden="true"><ChevronRight className="h-4 w-4 text-teal-300" /></div>}
       </div>
     </div>
   );

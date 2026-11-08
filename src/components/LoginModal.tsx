@@ -3,6 +3,7 @@ import { GraduationCap, Lock, User, AlertCircle, ArrowRight, MailCheck, X, Eye, 
 import { ApiService } from '../services/api';
 import { SessionUser } from '../types';
 import { useToast } from './Toast';
+import { useAccessibleDialog } from './common/useAccessibleDialog';
 
 interface LoginModalProps {
   isOpen?: boolean;
@@ -25,6 +26,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [errorMsg, setErrorMsg] = useState('');
 
   const { error } = useToast();
+  const dialogRef = useAccessibleDialog({ isOpen, onRequestClose: onClose, canClose: !loading, initialFocus: '#input-employee-id' });
 
   if (!isOpen) return null;
 
@@ -88,12 +90,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-md w-full p-6 sm:p-8 shadow-2xl border border-slate-200 relative my-8">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="login-dialog-title" tabIndex={-1} className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-8 shadow-2xl border border-slate-200 relative my-4 sm:my-8 max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain">
         {onClose && (
           <button
             id="btn-close-login"
             type="button"
             onClick={onClose}
+            disabled={loading}
             className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
             aria-label="Close"
           >
@@ -109,7 +112,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             </div>
           </div>
 
-          <h1 className="mt-3 text-center text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
+          <h1 id="login-dialog-title" className="mt-3 text-center text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
             CNE Management System
           </h1>
           <p className="mt-0.5 text-center text-xs sm:text-sm font-medium text-teal-700">
@@ -125,6 +128,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             {errorMsg && (
               <div
                 id="login-error-alert"
+                role="alert"
                 className="p-3.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-900 text-xs leading-relaxed"
               >
                 <div className="flex items-start gap-2.5">
