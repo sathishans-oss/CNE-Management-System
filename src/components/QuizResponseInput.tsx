@@ -95,7 +95,7 @@ export const QuizResponseInput: React.FC<QuizResponseInputProps> = ({ question, 
           className="flex items-center gap-2.5 rounded-xl border border-slate-200 bg-white px-2.5 py-2.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 sm:gap-3 sm:px-3">
           <GripVertical className="hidden h-4 w-4 shrink-0 text-slate-400 sm:block" aria-hidden="true" />
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-sm font-bold text-teal-800">{position + 1}</span>
-          <span className="min-w-0 flex-1 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{optionText(question, letter)}</span>
+          <span className="min-w-0 flex-1 whitespace-pre-wrap text-[15px] leading-relaxed text-slate-700 sm:text-base">{optionText(question, letter)}</span>
           <div className="flex shrink-0 gap-1.5">
             <button type="button" aria-label={`Move step ${letter} up`} title="Move step up" disabled={locked || position === 0} onClick={() => reorder(position, position - 1)} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-700 transition hover:bg-teal-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 disabled:cursor-not-allowed disabled:opacity-30"><ArrowUp className="h-5 w-5" aria-hidden="true" /></button>
             <button type="button" aria-label={`Move step ${letter} down`} title="Move step down" disabled={locked || position === order.length - 1} onClick={() => reorder(position, position + 1)} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-700 transition hover:bg-teal-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 disabled:cursor-not-allowed disabled:opacity-30"><ArrowDown className="h-5 w-5" aria-hidden="true" /></button>
@@ -108,7 +108,7 @@ export const QuizResponseInput: React.FC<QuizResponseInputProps> = ({ question, 
   }
 
   if (review) {
-    return <div className="grid gap-2 sm:grid-cols-2" aria-label="Submitted answer and correct answer">
+    return <div className="grid gap-2 lg:grid-cols-2" aria-label="Submitted answer and correct answer">
       {populatedOptions(question).map(letter => {
         const selected = chosen.includes(letter);
         const right = correct.includes(letter);
@@ -124,7 +124,7 @@ export const QuizResponseInput: React.FC<QuizResponseInputProps> = ({ question, 
         const labelStyles = state === 'correct-selected' ? 'text-emerald-800'
           : state === 'correct-missed' ? 'text-amber-900'
           : state === 'incorrect-selected' ? 'text-rose-800' : 'text-slate-500';
-        return <div key={letter} className={`flex min-w-0 items-start gap-2.5 rounded-xl border px-3 py-3 text-sm ${styles}`}>
+        return <div key={letter} className={`flex min-w-0 items-start gap-2.5 rounded-xl border px-3 py-3 text-[15px] leading-relaxed sm:text-base ${styles}`}>
           <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs font-bold ${state === 'correct-selected' ? 'bg-emerald-200 text-emerald-900' : state === 'correct-missed' ? 'bg-amber-200 text-amber-900' : state === 'incorrect-selected' ? 'bg-rose-200 text-rose-900' : 'bg-white text-slate-600'}`}>{letter}</span>
           <div className="min-w-0 flex-1"><p className="whitespace-pre-wrap leading-relaxed text-slate-800">{optionText(question, letter)}</p>
             <p className={`mt-1.5 flex items-center gap-1.5 text-[11px] font-bold ${labelStyles}`}>
@@ -145,7 +145,7 @@ export const QuizResponseInput: React.FC<QuizResponseInputProps> = ({ question, 
     {populatedOptions(question).map(letter => {
       const checked = chosen.includes(letter);
       const style = checked ? 'border-teal-600 bg-teal-50' : 'border-slate-200';
-      return <label key={letter} className={`flex min-w-0 cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 text-sm ${style}`}>
+      return <label key={letter} className={`flex min-h-12 min-w-0 cursor-pointer items-start gap-3 rounded-xl border px-3 py-3 text-[15px] leading-relaxed transition-colors focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-teal-700 sm:px-4 sm:text-base ${style}`}>
         {format === 'MULTI_SELECT'
           ? <input type="checkbox" name={`quiz-${question.questionId}-${letter}`} value={letter} checked={checked} disabled={locked} onChange={() => toggle(letter)} className="mt-1" />
           : <input type="radio" name={`quiz-${question.questionId}`} value={letter} checked={checked} disabled={locked} onChange={() => update(letter)} className="mt-1" />}

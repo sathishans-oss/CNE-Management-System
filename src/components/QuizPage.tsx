@@ -5,6 +5,8 @@ import { LoadingProgress } from './common/LoadingProgress';
 import type { QuizAttempt, QuizHomeData, QuizQuestion, QuizResult, QuizHistoryItem, SessionUser } from '../types';
 import {normalizeResponse, isValidResponse, isCorrectResponse, responseFormat} from '../utils/quizResponse';
 import { QuizResponseInput } from './QuizResponseInput';
+import { QuizClinicalExplanation } from './QuizClinicalExplanation';
+import { useAccessibleDialog } from './common/useAccessibleDialog';
 
 type Page = 'home' | 'scored-setup' | 'practice-setup' | 'scored' | 'practice' | 'result';
 const SCORED_BATCH_SIZE = 10;
@@ -27,6 +29,7 @@ const QuizImage: React.FC<{
   const [rendered, setRendered] = useState(false);
   const [retry, setRetry] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  const imageDialogRef = useAccessibleDialog({isOpen: expanded && rendered, onRequestClose: () => setExpanded(false), initialFocus: '[data-quiz-image-close]'});
   useEffect(() => {
     if (question.questionType !== 'IMAGE') return;
     let active = true;
@@ -43,7 +46,7 @@ const QuizImage: React.FC<{
   if (question.questionType !== 'IMAGE') return null;
   if (error) return <div role="alert" className="my-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
     <p>Clinical image could not be loaded: {error}</p>
-    <button type="button" onClick={() => {invalidateImage?.(question,attemptId);setRetry(n => n + 1);}} className="mt-2 rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-bold text-rose-800">Retry Image</button>
+    <button type="button" onClick={() => {invalidateImage?.(question,attemptId);setRetry(n => n + 1);}} className="mt-2 min-h-11 rounded-lg border border-rose-300 bg-white px-3 py-2 text-xs font-bold text-rose-800">Retry Image</button>
   </div>;
   return <>
     {(!source || !rendered) && <div role="status" aria-live="polite" className="my-3 flex min-h-40 flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
@@ -55,9 +58,9 @@ const QuizImage: React.FC<{
       <img src={source} alt="Clinical question illustration" onLoad={() => { setRendered(true); onAvailabilityChange?.(question.questionId, true); }} onError={() => { setError('The browser could not display the image.'); setRendered(false); onAvailabilityChange?.(question.questionId, false); }} className="max-h-64 max-w-full rounded object-contain" />
       <span className="block pt-1 text-xs text-teal-700">Tap image to enlarge</span>
     </button>}
-    {expanded && rendered && <div role="dialog" aria-modal="true" aria-label="Enlarged clinical question image" className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/90 p-5" onClick={()=>setExpanded(false)}>
-      <button type="button" className="absolute top-5 right-5 rounded bg-white px-3 py-2 text-sm" onClick={()=>setExpanded(false)}>Close ✕</button>
-      <img src={source} alt="Enlarged clinical question illustration" className="max-h-[85vh] max-w-[95vw] object-contain" onClick={e=>e.stopPropagation()}/>
+    {expanded && rendered && <div ref={imageDialogRef} role="dialog" aria-modal="true" aria-label="Enlarged clinical question image" tabIndex={-1} className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/90 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-5" onMouseDown={e=>{if(e.target===e.currentTarget)setExpanded(false);}}>
+      <button type="button" data-quiz-image-close className="absolute right-3 top-3 z-10 inline-flex min-h-11 items-center rounded-lg bg-white px-4 py-2 text-sm font-bold text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500 sm:right-5 sm:top-5" onClick={()=>setExpanded(false)}>Close ✕</button>
+      <img src={source} alt="Enlarged clinical question illustration" className="max-h-[80dvh] max-w-[96vw] object-contain sm:max-h-[85dvh]"/>
     </div>}
   </>;
 };
@@ -116,6 +119,8 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   const [practiceExhausted,setPracticeExhausted] = useState(false);
   const [practiceNextMessage,setPracticeNextMessage] = useState('');
   const [results,setResults] = useState<QuizResult | null>(null);
+  const [resultFilter,setResultFilter] = useState<'all'|'incorrect'|'correct'>('all');
+  const [expandedReview,setExpandedReview] = useState<number|null>(null);
   const [busy,setBusy] = useState(false);
   const [error,setError] = useState('');
   const [notice,setNotice] = useState('');
@@ -131,6 +136,9 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
   const [insightImage,setInsightImage] = useState('');
   const [insightImageError,setInsightImageError] = useState('');
   const [insightImageExpanded,setInsightImageExpanded] = useState(false);
+  const insightDialogRef = useAccessibleDialog({isOpen:insightImageExpanded&&Boolean(insightImage),onRequestClose:()=>setInsightImageExpanded(false),initialFocus:'[data-quiz-insight-close]'});
+  const leaveDialogRef = useAccessibleDialog({isOpen:confirmBack,onRequestClose:()=>setConfirmBack(false),canClose:!busy,initialFocus:'[data-quiz-stay]'});
+  const cancelDialogRef = useAccessibleDialog({isOpen:Boolean(cancelTarget),onRequestClose:()=>{setCancelTarget(null);setCancelError('');},canClose:!busy,initialFocus:'[data-quiz-keep]'});
 
   // Transient success feedback belongs in a bottom toast, not in the page layout.
   useEffect(() => {
@@ -280,7 +288,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       if(start>=a.questionCount){
         const completed=await ApiService.completeQuizScored(a.attemptId);
         if(!completed.success||!completed.data)throw new Error(completed.message||'Could not finish the saved quiz.');
-        setResults(completed.data);setAttempt(null);setScoredBatch([]);setQuestion(null);setPage('result');
+        setResults(completed.data);setResultFilter('all');setExpandedReview(null);setAttempt(null);setScoredBatch([]);setQuestion(null);setPage('result');
         clearDraft(a);void refreshHome().catch(()=>{});return;
       }
       const questions=await fetchBatch(a,start);
@@ -493,7 +501,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     try {
       const res = await ApiService.getQuizScoredResult(id);
       if(!res.success || !res.data)throw new Error(res.message || 'Result unavailable.');
-      setResults(res.data);setPage('result');
+      setResults(res.data);setResultFilter('all');setExpandedReview(null);setPage('result');
     }catch(e){setError((e as Error).message||'Result unavailable.');}
     finally{setBusy(false);}
   };
@@ -503,6 +511,8 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     if(page==='scored' && Object.keys(batchAnswers).length>0){setConfirmBack(true);return;}
     goHome();
   };
+  const batchAnswered=scoredBatch.filter(q=>Boolean(batchAnswers[q.questionId]&&validQuizResponse(q,batchAnswers[q.questionId]))).length;
+  const batchRemaining=scoredBatch.length-batchAnswered;
   const allUnitNames=home?.units.map(u=>u.name)||[];
   const available=home?.units.reduce((n,u)=>n+(!selectedUnits.length||selectedUnits.includes(u.name)?u.available:0),0)||0;
   const quizMaxWidth =
@@ -511,10 +521,10 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       : page === 'scored-setup' || page === 'practice-setup'
       ? 'max-w-[1200px]'
       : page === 'scored' || page === 'practice'
-      ? 'max-w-[1100px]'
-      : 'max-w-[1300px]';
+      ? 'max-w-[900px]'
+      : 'max-w-[1100px]';
 
-  return <section className={`mx-auto w-full min-w-0 ${quizMaxWidth} ${page==='practice'?'space-y-3 sm:space-y-4':'space-y-5'} pb-12`} aria-label="Quiz">
+  return <section className={`mx-auto w-full min-w-0 ${quizMaxWidth} ${page==='practice'?'space-y-3 sm:space-y-4':'space-y-4 sm:space-y-5'} pb-[calc(2rem+env(safe-area-inset-bottom))]`} aria-label="Quiz">
     <div className={`relative overflow-hidden rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 shadow-sm ${page==='practice'||page==='scored'?'px-3 py-2 sm:px-4':'px-5 py-3 sm:px-7'}`}>
       {page!=='practice'&&page!=='scored'&&<div className="pointer-events-none absolute -right-4 -top-12 h-40 w-40 rounded-full border-[24px] border-white/30" aria-hidden="true" />}
       <div className="relative flex flex-wrap items-center justify-between gap-3">
@@ -532,10 +542,13 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
         <span className="ml-auto whitespace-nowrap text-[10px] text-slate-400">Not saved</span>
       </div>
     </section>}
-    {page==='scored'&&attempt&&question&&<section aria-label="Scored Quiz progress" className="space-y-2 rounded-2xl border border-teal-100 bg-white p-3 shadow-sm sm:p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs"><h2 className="font-bold text-slate-800">Scored Quiz · Answer progress</h2><span className="font-medium text-slate-500">{attempt.committedCount} saved · {Object.keys(batchAnswers).length} answered in this batch</span></div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-label="Scored Quiz answer progress" aria-valuemin={0} aria-valuemax={attempt.questionCount} aria-valuenow={Math.min(attempt.questionCount,attempt.committedCount+Object.keys(batchAnswers).length)}>
-        <div className="h-full rounded-full bg-teal-600 transition-all" style={{width:`${attempt.questionCount ? Math.min(100,Math.round((attempt.committedCount+Object.keys(batchAnswers).length)/attempt.questionCount*100)) : 0}%`}}/>
+    {page==='scored'&&attempt&&question&&<section aria-label="Scored Quiz progress" className="space-y-2 rounded-xl border border-teal-100 bg-white px-3 py-2.5 shadow-sm sm:px-4">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
+        <h2 className="font-bold text-slate-800">Scored Quiz · Batch {Math.floor(attempt.committedCount/SCORED_BATCH_SIZE)+1}/{Math.ceil(attempt.questionCount/SCORED_BATCH_SIZE)}</h2>
+        <span className="font-semibold tabular-nums text-teal-800">{batchAnswered}/{scoredBatch.length} answered <span className="font-normal text-slate-500">· {attempt.committedCount} saved</span></span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-label="Scored Quiz answer progress" aria-valuemin={0} aria-valuemax={attempt.questionCount} aria-valuenow={Math.min(attempt.questionCount,attempt.committedCount+batchAnswered)}>
+        <div className="h-full rounded-full bg-teal-600 transition-all" style={{width:`${attempt.questionCount ? Math.min(100,Math.round((attempt.committedCount+batchAnswered)/attempt.questionCount*100)) : 0}%`}}/>
       </div>
     </section>}
     {error&&home&&<div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
@@ -581,7 +594,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
                   : <div role="status" className="flex flex-col items-center gap-2 py-16 text-slate-500"><Loader2 className="h-7 w-7 animate-spin text-teal-600"/><span className="text-xs">Loading today's insight…</span></div>}
             </div> : <p className="p-5 text-sm text-slate-500">Today's image will appear after the admin activates an insight in the image library.</p>}
           </div>
-          {insightImageExpanded&&insightImage&&<div role="dialog" aria-modal="true" aria-label="Enlarged daily clinical insight" className="fixed inset-0 z-[160] flex items-center justify-center bg-slate-950/90 p-4" onClick={()=>setInsightImageExpanded(false)}><button type="button" onClick={()=>setInsightImageExpanded(false)} className="absolute right-4 top-4 rounded-lg bg-white px-3 py-2 text-sm font-bold">Close ✕</button><img src={insightImage} alt="Enlarged clinical nursing infographic" className="max-h-[90vh] max-w-[97vw] object-contain" onClick={e=>e.stopPropagation()}/></div>}
+          {insightImageExpanded&&insightImage&&<div ref={insightDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Enlarged daily clinical insight" className="fixed inset-0 z-[160] flex items-center justify-center bg-slate-950/90 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4" onMouseDown={e=>{if(e.target===e.currentTarget)setInsightImageExpanded(false);}}><button type="button" data-quiz-insight-close onClick={()=>setInsightImageExpanded(false)} className="absolute right-3 top-3 inline-flex min-h-11 items-center rounded-lg bg-white px-4 py-2 text-sm font-bold sm:right-4 sm:top-4">Close ✕</button><img src={insightImage} alt="Enlarged clinical nursing infographic" className="max-h-[85dvh] max-w-[96vw] object-contain"/></div>}
         </div>
         <aside className="min-w-0 space-y-4 xl:col-span-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><div className="mb-4 flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-900"><Trophy className="h-5 w-5 text-amber-500"/> Top 5 Leaderboard</h2><span className="text-[10px] text-slate-500">Last 30 days</span></div>
@@ -612,7 +625,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
         {page==='scored-setup'&&<section className="space-y-3" aria-label="Step 1 - Number of questions">
           <h3 className="text-sm font-bold text-slate-900"><span className="mr-2 rounded-full bg-teal-100 px-2 py-1 text-xs text-teal-700">1</span>Number of Questions</h3>
           <div className="grid grid-cols-5 gap-2">{[10,20,30,40,50].map(n=><button type="button" key={n} onClick={()=>setCount(n)} aria-pressed={count===n} className={`rounded-xl border py-3 text-sm font-bold transition ${count===n?'border-teal-600 bg-teal-50 text-teal-800 ring-1 ring-teal-600':'border-slate-200 bg-slate-50 text-slate-600 hover:border-teal-300'}`}>{n}</button>)}</div>
-          <label className="flex items-center gap-3 text-xs font-medium text-slate-600">Custom (1–50)<input className="w-20 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900" type="number" min={1} max={50} value={count} onChange={e=>setCount(Math.max(1,Math.min(50,Number(e.target.value)||1)))}/></label>
+          <label className="flex items-center gap-3 text-xs font-medium text-slate-600">Custom (1–50)<input className="w-20 rounded-lg border border-slate-300 bg-white px-3 py-2 text-base font-semibold text-slate-900" type="number" min={1} max={50} value={count} onChange={e=>setCount(Math.max(1,Math.min(50,Number(e.target.value)||1)))}/></label>
         </section>}
         <fieldset className="space-y-3"><legend className="mb-2 text-sm font-bold text-slate-900">{page==='scored-setup'&&<span className="mr-2 rounded-full bg-teal-100 px-2 py-1 text-xs text-teal-700">2</span>}Select Units</legend>
           <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-teal-100 bg-teal-50 p-3 text-sm font-semibold text-slate-800"><input type="checkbox" className="accent-teal-700" checked={!selectedUnits.length} onChange={()=>setSelectedUnits([])}/> All Units <span className="ml-auto text-xs font-normal text-teal-700">Default</span></label>
@@ -639,17 +652,22 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       <p className="text-sm text-slate-600">{busy?'Preparing your next group of questions.':'The last saved batch remains locked. Retry to open the next batch or finish your quiz.'}</p>
       {!busy&&<button type="button" onClick={()=>void loadScoredBatch(attempt)} className="rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-bold text-white">Retry loading quiz</button>}
     </div>}
-    {(page==='scored'||page==='practice')&&question&&<div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-7">
+    {(page==='scored'||page==='practice')&&question&&<div className="space-y-3.5 rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:space-y-4 sm:p-5 md:p-6">
       <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
         <span className="font-bold text-slate-800">{page==='scored'?`Question ${index+1} of ${attempt?.questionCount}`:`Question ${Math.max(1,practiceCorrect+practiceWrong+(practiceSubmitted?0:1))}`}</span>
         <div className="flex flex-wrap items-center gap-2"><QuizFormatBadge question={question}/><span className="rounded-lg bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-800">{question.unit}</span></div>
       </div>
-      {page==='scored'&&attempt&&<div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2.5"><div className="flex flex-wrap gap-1.5" aria-label="Questions in current batch">{scoredBatch.map((q,n)=><button type="button" key={q.questionId} disabled={busy} onClick={()=>changeScoredQuestion(attempt.committedCount+n)} aria-label={`Question ${attempt.committedCount+n+1}`} aria-current={question.questionId===q.questionId?'step':undefined} className={`h-9 min-w-9 rounded-lg border text-xs font-bold ${question.questionId===q.questionId?'border-teal-700 bg-teal-700 text-white':batchAnswers[q.questionId]?'border-teal-300 bg-teal-50 text-teal-800':'border-slate-200 bg-white text-slate-500'}`}>{attempt.committedCount+n+1}</button>)}</div>
-          <span className="max-w-md text-[11px] font-medium leading-4 text-amber-800">Batch {Math.floor(attempt.committedCount/SCORED_BATCH_SIZE)+1}/{Math.ceil(attempt.questionCount/SCORED_BATCH_SIZE)} · Edit before saving · Submitted batches locked</span>
+      {page==='scored'&&attempt&&<nav aria-label="Questions in current batch" className="space-y-2">
+        <div className="grid grid-cols-5 gap-2 sm:grid-cols-10">
+          {scoredBatch.map((q,n)=>{
+            const answered=Boolean(batchAnswers[q.questionId]&&validQuizResponse(q,batchAnswers[q.questionId]));
+            const current=question.questionId===q.questionId;
+            return <button type="button" key={q.questionId} disabled={busy} onClick={()=>changeScoredQuestion(attempt.committedCount+n)} aria-label={`Question ${attempt.committedCount+n+1}, ${answered?'answered':'unanswered'}`} aria-current={current?'step':undefined} className={`relative inline-flex min-h-11 min-w-0 items-center justify-center rounded-lg border text-sm font-bold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 disabled:opacity-50 ${current?'border-teal-700 bg-teal-700 text-white':answered?'border-teal-300 bg-teal-50 text-teal-800':'border-slate-200 bg-white text-slate-600'}`}>{attempt.committedCount+n+1}{answered&&!current&&<span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-teal-700" aria-hidden="true"/>}</button>;
+          })}
         </div>
-      </div>}
-      <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-4 py-4 sm:px-5"><h3 className="whitespace-pre-wrap text-base font-bold leading-relaxed text-slate-900">{question.question}</h3></div>
+        <p className="text-[11px] leading-4 text-slate-500">Filled: answered · Outline: unanswered · Submitted batches cannot be edited.</p>
+      </nav>}
+      <div className="rounded-lg bg-slate-50/70 px-3 py-3 sm:px-4"><h3 className="whitespace-pre-wrap break-words text-[15px] font-bold leading-[1.65] text-slate-900 sm:text-base">{question.question}</h3></div>
       <QuizImage question={question} attemptId={page==='scored'?attempt?.attemptId:undefined} getImage={getImage} invalidateImage={invalidateImage} onAvailabilityChange={handleImageAvailability}/>
       {!isCurrentImageReady && <p role="status" className="text-xs font-medium text-teal-800">Image question: answer options will unlock after the clinical image loads.</p>}
       <QuizResponseInput key={`${question.questionId}-${page}`} question={question} value={selected}
@@ -658,25 +676,25 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
         review={page==='practice'&&practiceSubmitted}/>
       {page==='practice'&&practiceSubmitted&&<div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5 sm:p-4" aria-label="Answer Review">
         <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="font-bold text-slate-900">Answer Review</h4><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${isCorrectResponse(question,selected)?'bg-emerald-100 text-emerald-800':'bg-rose-100 text-rose-800'}`}>{isCorrectResponse(question,selected)?'Correct · 1/1 mark':'Incorrect · 0/1 mark'}</span></div>
-        {responseFormat(question)!=='ORDERED_RESPONSE'&&<div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
-          <span className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-slate-700">Selected: {selected||'None'}</span>
-          <span className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-emerald-800">Correct: {question.correctOption||'Unavailable'}</span>
+        {responseFormat(question)==='MULTI_SELECT'&&<div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+          <span className="rounded-lg bg-white px-2.5 py-1 text-slate-700">Selected: {selected||'None'}</span>
+          <span className="rounded-lg bg-emerald-50 px-2.5 py-1 text-emerald-800">Correct: {question.correctOption||'Unavailable'}</span>
         </div>}
-        <div className="rounded-lg border border-teal-100 bg-teal-50/70 p-3"><h5 className="mb-1 text-xs font-bold text-teal-900">Clinical Explanation</h5><p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{question.explanation||'Explanation unavailable.'}</p></div>
+        <QuizClinicalExplanation question={question}/>
       </div>}
       {page==='scored'?<div className="space-y-3"><div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
-          <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={busy||!attempt||index<=attempt.committedCount} onClick={()=>changeScoredQuestion(index-1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"><ChevronLeft className="h-4 w-4"/> Previous</button>
-            <button type="button" disabled={busy||!attempt||index>=attempt.committedCount+scoredBatch.length-1} onClick={()=>changeScoredQuestion(index+1)} className="inline-flex items-center gap-1 rounded-xl border border-teal-200 bg-white px-3 py-2.5 text-xs font-bold text-teal-800 transition hover:bg-teal-50 disabled:opacity-40">Next <ChevronRight className="h-4 w-4"/></button></div>
+          <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={busy||!attempt||index<=attempt.committedCount} onClick={()=>changeScoredQuestion(index-1)} className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"><ChevronLeft className="h-4 w-4"/> Previous</button>
+            <button type="button" disabled={busy||!attempt||index>=attempt.committedCount+scoredBatch.length-1} onClick={()=>changeScoredQuestion(index+1)} className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-teal-200 bg-white px-3 py-2.5 text-xs font-bold text-teal-800 transition hover:bg-teal-50 disabled:opacity-40">Next <ChevronRight className="h-4 w-4"/></button></div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <button type="button" disabled={busy} onClick={()=>{if(attempt){setCancelError('');setCancelTarget(attempt.attemptId);}}} className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-white px-3.5 py-2.5 text-xs font-bold text-rose-700 transition hover:bg-rose-50 disabled:opacity-40"><XCircle className="h-4 w-4"/> Cancel Quiz</button>
-            <button type="button" disabled={busy||!isCurrentImageReady||scoredBatch.length===0||scoredBatch.some(q=>!batchAnswers[q.questionId])} onClick={()=>void submitScoredBatch()} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-teal-800 disabled:opacity-40">{busy?<><Loader2 className="h-4 w-4 animate-spin"/> Saving…</>:<>{attempt&&attempt.committedCount+scoredBatch.length>=attempt.questionCount?'Save & Finish':'Save & Next Batch'} <ChevronRight className="h-4 w-4"/></>}</button>
+            <button type="button" disabled={busy} onClick={()=>{if(attempt){setCancelError('');setCancelTarget(attempt.attemptId);}}} className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-rose-200 bg-white px-3.5 py-2.5 text-xs font-bold text-rose-700 transition hover:bg-rose-50 disabled:opacity-40"><XCircle className="h-4 w-4"/> Cancel Quiz</button>
+            <button type="button" disabled={busy||!isCurrentImageReady||scoredBatch.length===0||batchRemaining>0} onClick={()=>void submitScoredBatch()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-teal-800 disabled:opacity-40">{busy?<><Loader2 className="h-4 w-4 animate-spin"/> Saving…</>:<>{attempt&&attempt.committedCount+scoredBatch.length>=attempt.questionCount?'Save & Finish':'Save & Next Batch'} <ChevronRight className="h-4 w-4"/></>}</button>
           </div>
         </div>
         {busy&&batchMessage&&<div role="status" className="rounded-xl border border-teal-100 bg-teal-50 p-3 text-center text-sm font-medium text-teal-800"><Loader2 className="mr-2 inline h-4 w-4 animate-spin"/>{batchMessage}</div>}
-        <p className="text-xs text-slate-500">All {scoredBatch.length} answers are required before saving. Once submitted, this batch cannot be changed. Your unsent answers are kept temporarily in this browser tab.</p>
+        <p role="status" className="text-xs leading-relaxed text-slate-600">{batchRemaining>0?`Answer ${batchRemaining} remaining ${batchRemaining===1?'question':'questions'} to save this batch.`:'All questions answered. Ready to save this batch.'} Once submitted, this batch cannot be changed. Unsent answers are temporarily kept in this browser tab.</p>
       </div>:
         <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
-          <span role="status" className="text-[11px] text-slate-500 sm:flex-1">{practiceSubmitted ? (practiceBatchIndex<practiceBatch.length-1?'Next question ready':practiceNextMessage||'Next group preloading…') : 'Practice results are not saved.'}</span>
+          <span role="status" className="text-[11px] leading-relaxed text-slate-500 sm:flex-1">{practiceSubmitted ? (practiceBatchIndex<practiceBatch.length-1?'Next question ready':practiceNextMessage||'Next group preloading…') : 'Practice results are not saved.'}</span>
           <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
             {!practiceSubmitted?<button type="button" disabled={!question||!validQuizResponse(question,selected)||busy||!isCurrentImageReady} onClick={submitPractice} className="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-teal-800 disabled:opacity-50 sm:flex-none">Submit Answer</button>:(practiceBatchIndex===practiceBatch.length-1&&practiceExhausted?null:<button type="button" disabled={busy} onClick={()=>void advancePractice()} className="inline-flex min-h-11 flex-1 items-center justify-center gap-1 rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-teal-800 disabled:opacity-50 sm:flex-none">{busy?<><Loader2 className="h-4 w-4 animate-spin"/> Loading…</>:<>Next Question <ChevronRight className="h-4 w-4"/></>}</button>)}
             <button type="button" disabled={busy} onClick={finishPractice} className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 sm:flex-none"><CheckCircle2 className="h-4 w-4"/> Finish Practice</button>
@@ -723,41 +741,65 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
         </div>)}</div>
       </div>}
       {results.formatScores&&<div className="rounded-2xl border border-slate-200 bg-white p-4"><h3 className="mb-3 font-bold text-slate-800">Response Format Performance</h3><div className="grid gap-2 sm:grid-cols-3">{results.formatScores.map(f=><div key={f.format} className="rounded-lg bg-slate-50 p-3 text-sm"><strong>{f.format.replace('_',' ')}</strong><p>{f.correct}/{f.total} correct</p></div>)}</div></div>}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-0.5"><h3 className="flex items-center gap-2 text-sm font-bold text-slate-900 sm:text-base"><BookOpenCheck className="h-5 w-5 text-teal-700" aria-hidden="true"/> Question Review & Explanations</h3><span className="text-xs font-semibold text-slate-500">{results.review.length} questions</span></div>
-      {results.review.map((r,i)=>{
-        const correctOption=r.question.correctOption;
-        const wasCorrect=isCorrectResponse(r.question,r.selectedOption);
-        return <article key={`${r.question.questionId}-${i}`} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-3 sm:px-5">
-            <div className="flex min-w-0 flex-wrap items-center gap-2"><span className="rounded-lg bg-teal-100 px-2.5 py-1 text-xs font-bold text-teal-800">Question {i+1}</span><QuizFormatBadge question={r.question}/><span className="text-xs font-medium text-slate-500">{r.question.unit}</span></div>
-            <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold ${wasCorrect?'bg-emerald-100 text-emerald-800':'bg-rose-100 text-rose-800'}`}>
-              {wasCorrect?<CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true"/>:<XCircle className="h-3.5 w-3.5" aria-hidden="true"/>}{wasCorrect?'Correct':'Incorrect'}
-            </span>
-          </div>
-          <div className="space-y-4 p-4 sm:p-5">
-            <h4 className="whitespace-pre-wrap text-sm font-bold leading-relaxed text-slate-900 sm:text-base">{r.question.question}</h4>
-            <QuizImage question={r.question} attemptId={results.attemptId} getImage={getImage} invalidateImage={invalidateImage}/>
-            <QuizResponseInput key={`review-${r.question.questionId}`} question={r.question} value={r.selectedOption} review/>
-            {responseFormat(r.question)!=='ORDERED_RESPONSE'&&<div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2 text-xs font-semibold">
-              <span className="rounded-lg bg-white px-2.5 py-1.5 text-slate-700">Selected: {r.selectedOption||'None'}</span>
-              <span className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-emerald-800">Correct: {correctOption||'Unavailable'}</span>
-            </div>}
-            <div className="rounded-xl border border-teal-100 bg-teal-50/60 p-3.5 sm:p-4"><h5 className="mb-1.5 flex items-center gap-2 text-xs font-bold text-teal-900"><BookOpenCheck className="h-4 w-4" aria-hidden="true"/> Clinical Explanation</h5><p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{r.question.explanation||'Explanation unavailable.'}</p></div>
-          </div>
-        </article>;
-      })}
+      <section className="space-y-3" aria-label="Completed Scored Quiz question review">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
+          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900 sm:text-base"><BookOpenCheck className="h-5 w-5 text-teal-700" aria-hidden="true"/> Question Review & Explanations</h3>
+          <span className="text-xs font-semibold text-slate-500">{results.review.length} questions</span>
+        </div>
+        {/* Filters appear only on the COMPLETED result page, never in a scored batch. */}
+        <div role="group" aria-label="Filter completed question review" className="grid grid-cols-3 gap-1.5 rounded-xl border border-slate-200 bg-white p-1.5 sm:inline-flex sm:gap-2">
+          {([
+            {key:'all' as const,label:'All',total:results.review.length},
+            {key:'incorrect' as const,label:'Incorrect',total:results.review.filter(r=>!isCorrectResponse(r.question,r.selectedOption)).length},
+            {key:'correct' as const,label:'Correct',total:results.review.filter(r=>isCorrectResponse(r.question,r.selectedOption)).length}
+          ]).map(item=><button key={item.key} type="button" aria-pressed={resultFilter===item.key} onClick={()=>{setResultFilter(item.key);setExpandedReview(null);}} className={`inline-flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-lg px-2 text-xs font-bold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 sm:px-4 sm:text-sm ${resultFilter===item.key?'bg-teal-700 text-white shadow-sm':'text-slate-700 hover:bg-slate-100'}`}>
+            {item.label} <span className={resultFilter===item.key?'text-teal-100':'text-slate-500'}>({item.total})</span>
+          </button>)}
+        </div>
+        <p className="text-xs leading-relaxed text-slate-500">Select a question to expand its answer review and clinical explanation.</p>
+        <div role="status" aria-live="polite" className="sr-only">Showing {resultFilter} question reviews</div>
+        {results.review.map((r,i)=>({r,i,wasCorrect:isCorrectResponse(r.question,r.selectedOption)}))
+          .filter(({wasCorrect})=>resultFilter==='all'||(resultFilter==='correct'?wasCorrect:!wasCorrect))
+          .map(({r,i,wasCorrect})=>{
+            const isExpanded=expandedReview===i;
+            return <article key={`${r.question.questionId}-${i}`} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <h4>
+                <button type="button" aria-expanded={isExpanded} aria-controls={isExpanded?`cne-scored-review-${i}`:undefined} onClick={()=>setExpandedReview(isExpanded?null:i)} className="flex min-h-14 w-full min-w-0 items-center justify-between gap-3 px-3 py-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 sm:px-5">
+                  <span className="flex min-w-0 flex-1 items-center gap-2.5">
+                    <span className="shrink-0 rounded-lg bg-teal-50 px-2 py-1 text-xs font-bold text-teal-800">Q{i+1}</span>
+                    <span className="min-w-0 flex-1"><span className="block line-clamp-2 break-words text-sm font-semibold leading-relaxed text-slate-900">{r.question.question}</span><span className="mt-0.5 block truncate text-[11px] text-slate-500">{r.question.unit} · {responseFormat(r.question).replace('_',' ')}</span></span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    <span aria-label={wasCorrect?'Correct answer':'Incorrect answer'} className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-bold ${wasCorrect?'bg-emerald-100 text-emerald-800':'bg-rose-100 text-rose-800'}`}>{wasCorrect?<CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true"/>:<XCircle className="h-3.5 w-3.5" aria-hidden="true"/>}<span className="hidden min-[400px]:inline">{wasCorrect?'Correct':'Incorrect'}</span></span>
+                    <ChevronRight className={`h-4 w-4 text-slate-500 transition-transform ${isExpanded?'rotate-90':''}`} aria-hidden="true"/>
+                  </span>
+                </button>
+              </h4>
+              {isExpanded&&<div id={`cne-scored-review-${i}`} className="space-y-3 border-t border-slate-100 px-3 pb-4 pt-3 sm:px-5 sm:pb-5">
+                <QuizFormatBadge question={r.question}/>
+                <QuizImage question={r.question} attemptId={results.attemptId} getImage={getImage} invalidateImage={invalidateImage}/>
+                <QuizResponseInput key={`review-${r.question.questionId}`} question={r.question} value={r.selectedOption} review/>
+                {responseFormat(r.question)==='MULTI_SELECT'&&<div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+                  <span className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-slate-700">Selected: {r.selectedOption||'None'}</span>
+                  <span className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-emerald-800">Correct: {r.question.correctOption||'Unavailable'}</span>
+                </div>}
+                <QuizClinicalExplanation question={r.question}/>
+              </div>}
+            </article>;
+          })}
+      </section>
     </div>}
-    {confirmBack&&<div className="fixed inset-0 z-[155] flex items-center justify-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-label="Leave unfinished scored quiz">
+    {confirmBack&&<div ref={leaveDialogRef} tabIndex={-1} className="fixed inset-0 z-[155] flex items-center justify-center bg-slate-950/60 p-3 sm:p-4" role="dialog" aria-modal="true" aria-label="Leave unfinished scored quiz">
       <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h2 className="text-lg font-bold text-slate-900">Return to the Quiz dashboard?</h2>
         <p className="mt-2 text-sm leading-relaxed text-slate-600">This batch has unsent answers. They are saved temporarily in this browser session, but only submitted batches are permanently stored. Resume from the same browser to restore them.</p>
-        <div className="mt-5 flex justify-end gap-2"><button type="button" onClick={()=>setConfirmBack(false)} className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700">Stay Here</button><button type="button" onClick={goHome} className="rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white">Leave Quiz</button></div>
+        <div className="mt-5 flex justify-end gap-2"><button type="button" data-quiz-stay onClick={()=>setConfirmBack(false)} className="min-h-11 rounded-lg border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700">Stay Here</button><button type="button" onClick={goHome} className="rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white">Leave Quiz</button></div>
       </div>
     </div>}
-    {cancelTarget&&<div className="fixed inset-0 z-[160] flex items-center justify-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-label="Cancel unfinished quiz" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)setCancelTarget(null);}}>
+    {cancelTarget&&<div ref={cancelDialogRef} tabIndex={-1} className="fixed inset-0 z-[160] flex items-center justify-center bg-slate-950/60 p-3 sm:p-4" role="dialog" aria-modal="true" aria-label="Cancel unfinished quiz" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)setCancelTarget(null);}}>
       <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><div className="mb-3 flex items-center gap-2"><XCircle className="h-6 w-6 text-rose-600"/><h2 className="text-lg font-bold text-slate-900">Cancel unfinished quiz?</h2></div>
         <p className="text-sm leading-relaxed text-slate-600">This scored attempt will be cancelled. Its answers will not count toward My Progress or the leaderboard. You cannot undo this action.</p>
         {cancelError&&<div role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{cancelError}</div>}
-        <div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" disabled={busy} onClick={()=>{setCancelTarget(null);setCancelError('');}} className="rounded-lg border px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50">Keep Quiz</button>
+        <div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" data-quiz-keep disabled={busy} onClick={()=>{setCancelTarget(null);setCancelError('');}} className="min-h-11 rounded-lg border px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50">Keep Quiz</button>
           <button type="button" disabled={busy} onClick={()=>void cancelScored(cancelTarget)} className="inline-flex items-center gap-2 rounded-lg bg-rose-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{cancellingId===cancelTarget?<><Loader2 className="h-4 w-4 animate-spin"/> Cancelling Quiz…</>:"Confirm Cancel"}</button></div>
       </div>
     </div>}

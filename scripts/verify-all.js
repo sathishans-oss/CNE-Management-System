@@ -14009,7 +14009,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(!appLayout.includes('max-w-[1600px]') && !navbarLayout.includes('max-w-[1600px]'));
     }],
     ['Quiz home, setup, questions and results retain responsive distinct width caps', () => {
-      for (const cls of ['max-w-[1440px]', 'max-w-[1200px]', 'max-w-[1100px]', 'max-w-[1300px]'])
+      for (const cls of ['max-w-[1440px]', 'max-w-[1200px]', 'max-w-[900px]', 'max-w-[1100px]'])
         assert(quizLayout.includes(cls), 'Missing Quiz layout width '+cls);
       assert(quizLayout.includes('w-full min-w-0 ${quizMaxWidth}'));
       assert(quizLayout.includes("page === 'home'") && quizLayout.includes("page === 'scored'"));
@@ -14053,7 +14053,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     }],
     ['Results use styled score tiles, unit accuracy bars and full-answer review cards', () => {
       const result=quizUi.slice(quizUi.indexOf("page==='result'&&results"),quizUi.indexOf('confirmBack&&'));
-      for(const expected of ['Scored Quiz Results','Overall Score','Correct','Incorrect','Overall Accuracy','Unit-wise Performance','Question Review & Explanations','Clinical Explanation','results.review.map','QuizResponseInput'])
+      for(const expected of ['Scored Quiz Results','Overall Score','Correct','Incorrect','Overall Accuracy','Unit-wise Performance','Question Review & Explanations','QuizClinicalExplanation','results.review.map','QuizResponseInput'])
         assert(result.includes(expected),expected);
       assert(result.includes('role="progressbar"'));
       assert(result.includes('QuizImage question={r.question}'));
@@ -14701,12 +14701,13 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(summary.includes('text-[11px]') && summary.includes('px-3 py-2'), 'Use compact label size and padding');
       assert(!summary.includes('grid grid-cols-3') && !summary.includes('text-lg') && !summary.includes('sm:text-xl'), 'Oversized statistic tiles must not return');
       assert(summary.includes('practiceCorrect+practiceWrong') && summary.includes('{practiceCorrect}') && summary.includes('{practiceWrong}'));
-      assert(quiz.includes("page==='practice'?'space-y-3 sm:space-y-4':'space-y-5'"), 'Reduce spacing only in active Practice Quiz');
+      assert(quiz.includes("page==='practice'?'space-y-3 sm:space-y-4':'space-y-4 sm:space-y-5'"), 'Active quiz keeps compact spacing on phones');
     }],
     ['Scored Quiz shows only progress while answers remain private',()=>{
       const progress=quiz.slice(quiz.indexOf("page==='scored'&&attempt&&question&&<section"),quiz.indexOf('{error&&home&&'));
       assert(progress.includes('Scored Quiz progress') && progress.includes('role="progressbar"'));
-      assert(progress.includes('attempt.committedCount') && progress.includes('batchAnswers'));
+      assert(progress.includes('attempt.committedCount') && progress.includes('batchAnswered'));
+      assert(quiz.includes('const batchAnswered=scoredBatch.filter(') && quiz.includes('const batchRemaining=scoredBatch.length-batchAnswered'));
       assert(!progress.includes('practiceCorrect') && !progress.includes('practiceWrong'));
       assert(quiz.includes('Answers and explanations appear only after completing the quiz.'));
     }],
@@ -14725,15 +14726,15 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       const feedback=quiz.slice(quiz.indexOf("page==='practice'&&practiceSubmitted&&<div"),quiz.indexOf("{page==='scored'?<div",quiz.indexOf("page==='practice'&&practiceSubmitted&&<div")));
       assert(feedback.includes('Answer Review') && feedback.includes('1/1 mark') && feedback.includes('0/1 mark'));
       assert(feedback.includes('Selected: {selected') && feedback.includes('Correct: {question.correctOption'));
-      assert(feedback.includes("responseFormat(question)!=='ORDERED_RESPONSE'"), 'Ordered responses already show their complete sequences');
-      assert(feedback.includes('question.explanation'), 'Never truncate or replace the stored clinical rationale');
+      assert(feedback.includes("responseFormat(question)==='MULTI_SELECT'"), 'Compact selected/correct summary should be limited to multi-select, without duplicating single-select review');
+      assert(feedback.includes('<QuizClinicalExplanation question={question}/>'), 'Clinical explanation must render using the full source rationale');
       assert(!feedback.includes('quizAnswerText('), 'Avoid duplicating full option text in summary');
     }],
     ['Ordered reviews preserve both complete step lists and clinical rationale',()=>{
       assert(responseUI.includes('Your submitted order') && responseUI.includes('Correct clinical sequence'));
       assert(responseUI.includes('chosen.map((letter, position)') && responseUI.includes('correct.map((letter, position)'));
-      assert(quiz.includes('responseFormat(r.question)!==\'ORDERED_RESPONSE\''));
-      assert(quiz.includes("r.question.explanation||'Explanation unavailable.'"));
+      assert(quiz.includes("responseFormat(r.question)==='MULTI_SELECT'"));
+      assert(quiz.includes('<QuizClinicalExplanation question={r.question}/>'), 'Completed ordered reviews must display their clinical explanation');
     }],
     ['Practice navigation groups the actions and retains image readiness and prefetch status',()=>{
       const footer=quiz.slice(quiz.indexOf('className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row'),quiz.indexOf("Practice answers and scores exist only in this page session."));
@@ -14801,9 +14802,26 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(calendar.includes('aria-hidden="true" />') && calendar.includes('eventDialogRef'));
     }],
     ['Scored progress avoids duplicate question headings; practice counters remain small', () => {
-      assert(quiz.includes('Scored Quiz · Answer progress'));
+      assert(quiz.includes('Scored Quiz · Batch') && quiz.includes('Scored Quiz progress'));
       assert(quiz.includes('Current Practice Session') && quiz.includes('text-[11px] leading-5'));
       assert(quiz.includes("page!=='practice'&&page!=='scored'"));
+    }],
+    ['Mobile-first scored batch buttons are touch-sized and do not expose final-review filters', () => {
+      assert(quiz.includes('grid grid-cols-5 gap-2 sm:grid-cols-10'));
+      assert(quiz.includes('aria-label={`Question ${attempt.committedCount+n+1}, ${answered?'));
+      assert(quiz.includes('min-h-11 min-w-0'));
+      const scored = quiz.slice(quiz.indexOf("{page==='scored'&&attempt&&!question"),quiz.indexOf("{page==='result'&&results"));
+      assert(!scored.includes('resultFilter==='), 'Final-review filters must not appear while answering a batch');
+      assert(!scored.includes('Go to next unanswered'));
+    }],
+    ['Completed-result filters and clinical-rationale presentation are linked', () => {
+      const result = quiz.slice(quiz.indexOf("{page==='result'&&results"),quiz.indexOf('{confirmBack&&'));
+      assert(result.includes('resultFilter===item.key') && result.includes('Correct') && result.includes('Incorrect'));
+      assert(result.includes('setExpandedReview(isExpanded?null:i)') && result.includes('aria-expanded={isExpanded}'));
+      assert(result.includes('<QuizClinicalExplanation question={r.question}/>'));
+      const rationale=source('src/components/QuizClinicalExplanation.tsx');
+      assert(rationale.includes('splitQuizClinicalExplanation(') && rationale.includes('ORDERED_RESPONSE'));
+      assert(rationale.includes('whitespace-pre-wrap') && rationale.includes('Correct option'));
     }],
     ['CNE schedule and records keep primary actions while hiding secondary mobile filters', () => {
       assert(schedule.includes('ResponsiveFilterToggle') && schedule.includes('schedule-secondary-filters') && schedule.includes('md:contents'));
