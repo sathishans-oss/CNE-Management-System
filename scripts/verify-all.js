@@ -50,11 +50,11 @@ function spreadsheet(rows){
       setValues(values){values.forEach((row,i)=>row.forEach((v,j)=>{while(self.rows.length<r+i)self.rows.push([]);self.rows[r-1+i][c-1+j]=v;}));},setFontWeight(){return this;}};}
   };return self;
 }
-const HEADERS=['Question ID','Unit','Topic','Subtopic','Clinical Keywords','Question Type','Question Text','Option A','Option B','Option C','Option D','Option E','Option F','Correct Answer','Explanation / Rationale','Question PDF Page','Image / Table Reference','Verification Status','Updated At','Image Drive File ID','Original Question Format'];
+const HEADERS=['Question ID','Unit','Topic','Subtopic','Clinical Keywords','Question Type','Question Text','Option A','Option B','Option C','Option D','Option E','Option F','Correct Answer','Explanation / Rationale','Question PDF Page','Image / Table Reference','Verification Status','Updated At','Image Drive File ID','Original Question Format','Response Format','Scoring Method'];
 const QHEAD=['CNE ID','Question ID','Question Text','Option A','Option B','Option C','Option D','Correct Option','Explanation','Is Finalized','Is Locked','Created At','Created By','Authoritative Source','Status','Question Type','Image Drive File ID'];
 function question(sourceId='REF-001'){
- const row=Array(21).fill('');
- Object.assign(row,{0:sourceId,1:'Nursing Procedures',2:'IV Cannulation',3:'Site selection',4:'venipuncture, cannula insertion',5:'TEXT',6:'Which peripheral vein is appropriate for IV cannulation in this situation?',7:'Appropriate vein with intact skin',8:'Unassessed vein',9:'Inflamed vein',10:'Previous infiltration site',13:'A',14:'The clinical source explains the safe nursing assessment required for IV site selection.',15:101,16:'',17:'CLINICALLY_APPROVED',20:'Single best answer'});return row;
+ const row=Array(23).fill('');
+ Object.assign(row,{0:sourceId,1:'Nursing Procedures',2:'IV Cannulation',3:'Site selection',4:'venipuncture, cannula insertion',5:'TEXT',6:'Which peripheral vein is appropriate for IV cannulation in this situation?',7:'Appropriate vein with intact skin',8:'Unassessed vein',9:'Inflamed vein',10:'Previous infiltration site',13:'A',14:'The clinical source explains the safe nursing assessment required for IV site selection.',15:101,16:'',17:'CLINICALLY_APPROVED',20:'Single best answer',21:'SINGLE_SELECT',22:'EXACT_MATCH'});return row;
 }
 function fixture(){
  const b=spreadsheet([HEADERS,question(),question('REF-002')]);
@@ -177,11 +177,11 @@ const hybridChecks=[
     assert(r.data.length===0&&r.clinicalSearch.requiresClarification,'Manual override bypassed relevance threshold');
   }},
  {name:'Bank refuses malformed schema rather than guess answer column positions',run(){const {ctx,b}=fixture();b.rows[0][13]='Unknown Answer';const result=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);assert(result.errorCode==='QUESTION_BANK_SCHEMA_INVALID','Bad schema accepted');}},
- {name:'Testing-only index schemas use 21/10/11 columns without migration or a script property',run(){
+ {name:'Testing-only index schemas use 23/10/11 columns without migration or a script property',run(){
     const {ctx}=fixture();
     assert(typeof ctx.cneAdminMigrateIndexSchemas_==='undefined'&&typeof ctx.cneEvidenceSplitReady_==='undefined','Old migration or switch still callable');
     assert(!/CNE_EVIDENCE_INDEX_V2_READY/.test(gas),'Migration property still present');
-    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===21,'Question index schema is not 22 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===23,'Question index schema is not 23 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'].length===10,'Library schema is not 10 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE_Material_Index'].length===11,'Uploaded material schema is not 11 columns');
     assert(ctx.cneIndexProjectRows_([['ID','LOCAL_REFERENCE_LIB','','DOC','Source','Gastritis','Heading',1,'Evidence','Keyword','SUCCESS','Today']],ctx.CNE_SHEET_HEADERS['CNE_Reference_Index'])[0].length===10,'Library projection failed');
@@ -202,7 +202,7 @@ const hybridChecks=[
     assert(result.success,'Clean index initialization failed '+result.message);
     assert(created['CNE_Reference_Index'].rows[0].length===10,'Library headers not initialized');
     assert(created['CNE_Material_Index'].rows[0].length===11,'CNE material tab not created');
-    assert(created['CNE_Reference_Question_Index'].rows[0].length===21,'Question index tab not created');
+    assert(created['CNE_Reference_Question_Index'].rows[0].length===23,'Question index tab not created');
     assert(result.auditReport.some(x=>x.tab==='CNE_Material_Index'),'Material tab missing from verification results');
   }},
  {name:'Verify Sheets reports legacy extra index columns without deleting data',run(){
@@ -295,12 +295,12 @@ const hybridChecks=[
     const adminResult=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},{employeeId:'ADMIN-1',role:'ADMIN'});
     assert(adminResult.data[0].verificationStatus&&adminResult.data[0].unit==='Nursing Procedures'&&adminResult.data[0].questionPdfPage==='101','Admin review metadata was discarded');
   }},
- {name:'Approved 21-column Question Bank with Unit, original format, and image fields remains importable',run(){
+ {name:'Approved 23-column Question Bank with Unit, original format, and image fields remains importable',run(){
     const {ctx,b,q}=fixture();
-    assert(b.rows[0].length===21&&b.rows[0][1]==='Unit'&&b.rows[0][16]==='Image / Table Reference'&&b.rows[0][20]==='Original Question Format','Expected approved 21-column schema');
+    assert(b.rows[0].length===23&&b.rows[0][1]==='Unit'&&b.rows[0][16]==='Image / Table Reference'&&b.rows[0][20]==='Original Question Format','Expected approved 23-column schema');
     assert(!b.rows[0].includes('Image / Table Required'),'Obsolete image flag remained in approved schema');
     const found=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
-    assert(found.success&&found.data.length===2&&found.data[0].canImport,'Approved 21-column Question Bank header map failed');
+    assert(found.success&&found.data.length===2&&found.data[0].canImport,'Approved 23-column Question Bank header map failed');
     const result=ctx.handleImportCNEReferenceQuestion({cneId:'CNE-123',questionId:'REF-001',confirmReview:true},session);
     assert(result.success&&q.rows[1][13]==='Question Bank'&&q.rows[1][15]==='TEXT','Question Bank Draft did not save explicit TEXT and source label');
   }},
@@ -331,7 +331,8 @@ const hybridChecks=[
     row[19]='badID';assert(!ctx.cneHybridCanImportBank_(candidate()),'IMAGE with malformed ID was importable');
     row[19]='1B2C3D4E5F6G7H8I9J0K1L2M';assert(ctx.cneHybridCanImportBank_(candidate()),'Approved typed IMAGE with valid-format ID was blocked');
     row[20]='MULTIPLE_RESPONSE';assert(!ctx.cneHybridCanImportBank_(candidate()),'Legacy multi-response original format was imported');
-    row[21]='SATA';assert(!ctx.cneHybridCanImportBank_(candidate()),'Select-all-that-apply question was importable');
+    row[20]='Single best answer';row[21]='MULTI_SELECT';assert(!ctx.cneHybridCanImportBank_(candidate()),'Explicit MULTI_SELECT question was importable into a single-select CNE post-test');
+    row[21]='SINGLE_SELECT';row[22]='PARTIAL_CREDIT';assert(!ctx.cneHybridCanImportBank_(candidate()),'Unsupported scoring method was importable');
   }},
  {name:'Question Bank and Quiz use only canonical CLINICALLY_APPROVED status',run(){
     const {ctx,b}=fixture();const row=b.rows[1],cols=ctx.cneHybridBankFields_(b).cols;
@@ -451,7 +452,7 @@ const hybridChecks=[
   }}
  ,{name:'Image Description is absent from both Question Bank schemas and all MCQ interfaces',run(){
     const {ctx}=fixture();
-    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===21,'Question Bank must have 21 columns');
+    assert(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length===23,'Question Bank must have 23 columns');
     assert(ctx.CNE_SHEET_HEADERS['CNE Post Test Questions'].length===17,'Post Test must have 17 columns');
     assert(!gas.includes('imageDescription')&&!gas.includes('Image Description'),'Removed description persists in backend');
     assert(!MODAL.includes('imageDescription')&&!TYPES.includes('imageDescription'),'Removed description persists in frontend');
@@ -14536,7 +14537,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
 }
 
 // PHASE 1 THREE-FORMAT QUIZ ENGINE — integrated regression coverage.
-// New formats do not add columns to the authoritative 21-column bank.
+// Phase 1 response formats are stored directly in the 23-column bank; no metadata tab.
 {
   const code=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
   const ui=readFileSync(join(ROOT_DIR,'src/components/QuizPage.tsx'),'utf8');
@@ -14548,7 +14549,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     options:{A:'Check vitals',B:'Call the team',C:'Check identity',D:'Document findings',E:'',F:''},
     correctOption:'A',explanation:'The initial step is to check vital signs before subsequent actions.',questionType:'TEXT'};
   const tests=[
-    ['Legacy single-select defaults without response-details rows',()=>{
+    ['Legacy single-select defaults when Response Format is blank',()=>{
       const v=ctx.cneQuizValidate_(single,undefined);assert(v.valid&&v.format==='SINGLE_SELECT');
       assert(ctx.cneQuizCorrect_({...single,responseFormat:'SINGLE_SELECT'},'A'));
       assert(!ctx.cneQuizCorrect_({...single,responseFormat:'SINGLE_SELECT'},'B'));
@@ -14572,11 +14573,11 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(!ctx.cneQuizCorrect_(q,'A,C,D'));
       assert(ctx.cneQuizResponseValid_(q,'A,D,C'));
       assert(!ctx.cneQuizResponseValid_(q,'A,D,C,E'));
-      assert(!ctx.cneQuizValidate_(q,{...d,sequence:'D,A,C'}).valid);
+      assert(!ctx.cneQuizValidate_({...q,scoringMethod:'PARTIAL_CREDIT'}).valid);
     }],
-    ['A-F option support and clinical approval gate do not alter 21-column bank',()=>{
-      assert.equal(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length,21);
-      assert.equal(ctx.CNE_SHEET_HEADERS['CNE_Question_Response_Details'].length,6);
+    ['A-F option support and clinical approval gate preserve 23-column bank',()=>{
+      assert.equal(ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'].length,23);
+      assert(!Object.hasOwn(ctx.CNE_SHEET_HEADERS,'CNE_Question_Response_Details'), 'Obsolete metadata tab must not be a required sheet');
       assert(!ctx.cneQuizIsClinicallyApproved_({verificationStatus:'PENDING_REVIEW'}));
       const q={...single,options:{...single.options,E:'Reassess',F:'Escalate'},correctOption:'A,E,F'};
       assert(ctx.cneQuizValidate_(q,{format:'MULTI_SELECT'}).valid);
@@ -14631,7 +14632,8 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     ['Admin validation diagnostics are routed, and image checks remain private',()=>{
       assert(code.includes("case 'getQuizValidationDiagnostics':"));
       assert(code.includes("cneQuestionImageCheck_(q.imageFileId,'BANK')"));
-      assert(code.includes('cneQuizDetails_()'));
+      assert(code.includes('cneQuizValidate_(q)'));
+      assert(!code.includes('cneQuizDetails_('));
     }],
     ['Practice Quiz returns a mixed 50/30/20 group without persisting results',()=>{
       const pool=[];
@@ -14651,19 +14653,98 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(Math.abs((counts.ORDERED_RESPONSE||0)-2)<=1);
       assert.equal(new Set(r.data.questions.map(q=>q.questionId)).size,10);
     }],
-    ['Response metadata is read by headers regardless of physical column order',()=>{
-      ctx._cneQuizDetailsCache_=null;
-      const headers=['Scoring Method','Option Feedback JSON','Response Format','Question ID','Max Points','Correct Answer Sequence'];
-      const rows=[headers,['EXACT_MATCH','{"orderedItems":["A","C","D"]}','ORDERED_RESPONSE','METADATA-Q1',1,'C,A,D']];
-      ctx.getSpreadsheet=()=>({getSheetByName:()=>({getLastRow:()=>rows.length,getDataRange:()=>({getValues:()=>rows}),getLastColumn:()=>headers.length,getRange:()=>({getValues:()=>[headers]})})});
-      ctx.getHeaderMap=()=>({scoringmethod:0,optionfeedbackjson:1,responseformat:2,questionid:3,maxpoints:4,correctanswersequence:5});
-      const data=ctx.cneQuizDetails_();assert.equal(data['METADATA-Q1'].format,'ORDERED_RESPONSE');
-      assert.equal(data['METADATA-Q1'].sequence,'C,A,D');
+    ['23-column Question Bank mapping reads reordered physical headers and exact-match metadata',()=>{
+      const headers=ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'];
+      assert.equal(headers.length,23);
+      const values=Object.fromEntries(headers.map(x=>[x,'']));
+      Object.assign(values,{
+        'Question ID':'REORDER-Q1','Unit':'ICU','Topic':'Patient safety',
+        'Question Type':'TEXT','Question Text':'What are the proper steps in the clinical assessment?',
+        'Option A':'Assess','Option B':'Prepare','Option C':'Identify','Option D':'Document',
+        'Correct Answer':'C,A,D','Explanation / Rationale':'First identify, next assess, finally document the findings.',
+        'Verification Status':'CLINICALLY_APPROVED','Original Question Format':'Sequencing',
+        'Response Format':'ORDERED_RESPONSE','Scoring Method':'EXACT_MATCH'
+      });
+      const movedHeaders=[...headers.slice(7),...headers.slice(0,7)];
+      const movedRow=movedHeaders.map(x=>values[x]);
+      const sh={getLastColumn:()=>23,getRange:()=>({getValues:()=>[movedHeaders]})};
+      const fields=ctx.cneHybridBankFields_(sh);assert(fields.success);
+      const candidate=ctx.cneHybridBankCandidate_(movedRow,fields.cols,0);
+      candidate.options.E=movedRow[fields.cols.extraE];candidate.options.F=movedRow[fields.cols.extraF];
+      assert.equal(candidate.responseFormat,'ORDERED_RESPONSE');
+      assert.equal(candidate.scoringMethod,'EXACT_MATCH');
+      assert.equal(candidate.correctOption,'C,A,D');
+      assert(ctx.cneQuizValidate_(candidate).valid,'Reordered metadata was not interpreted as an ordered question');
+      assert(!code.includes('CNE_Question_Response_Details'), 'Obsolete metadata sheet is still referenced');
+    }],
+    ['Admin response-format update writes only bank columns by header name and leaves key intact',()=>{
+      const headers=ctx.CNE_SHEET_HEADERS['CNE_Reference_Question_Index'];
+      const physical=[...headers.slice(9),...headers.slice(0,9)];
+      const stored=physical.map(x=>({
+        'Question ID':'ADMIN-Q1','Unit':'ICU','Topic':'Patient safety',
+        'Question Type':'TEXT','Question Text':'What sequence should the nurse follow for safe assessment?',
+        'Option A':'Assess','Option B':'Prepare','Option C':'Identify','Option D':'Document',
+        'Correct Answer':'C,A,D','Explanation / Rationale':'First identify, next assess, finally document findings.',
+        'Verification Status':'CLINICALLY_APPROVED','Original Question Format':'Sequencing',
+        'Response Format':'','Scoring Method':''
+      })[x]||'');
+      const before=stored.slice();
+      const bank={
+        getLastRow:()=>2,getLastColumn:()=>23,getName:()=> 'CNE_Reference_Question_Index',
+        getRange(r,c,n=1,w=1){
+          return {
+            getValues(){return [Array.from({length:w},(_,j)=>r===1?physical[c-1+j]:stored[c-1+j])];},
+            getFormulas(){return [Array(w).fill('')];},
+            setValues(values){values[0].forEach((v,j)=>{stored[c-1+j]=v;});},
+            createTextFinder(needle){return {matchEntireCell(){return {findAll(){return stored[physical.indexOf('Question ID')]===needle?[{getRow:()=>2}]:[];}};}};}
+          };
+        }
+      };
+      ctx.cneHybridQuestionBankSheet_=()=>bank;
+      ctx.requireAdmin=()=>null;
+      ctx.requireFreshAdminMutation=(session)=>({success:true,session});
+      ctx.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
+      ctx.logAuditAction=()=>{};
+      ctx.cneQuizClearHomeCaches_=()=>{};
+      const admin={employeeId:'AUDIT-ADMIN',role:'ADMIN'};
+      const rejected=ctx.handleSaveQuizResponseDetails({questionId:'ADMIN-Q1',responseFormat:'ORDERED_RESPONSE',
+        correctAnswerSequence:'A,C,D'},admin);
+      assert.equal(rejected.errorCode,'ANSWER_MISMATCH');
+      assert.deepEqual(stored,before);
+      const save=ctx.handleSaveQuizResponseDetails({questionId:'ADMIN-Q1',responseFormat:'ORDERED_RESPONSE',
+        correctAnswerSequence:'C,A,D'},admin);
+      assert(save.success,'Admin header-based format update failed: '+save.message);
+      assert.equal(stored[physical.indexOf('Response Format')],'ORDERED_RESPONSE');
+      assert.equal(stored[physical.indexOf('Scoring Method')],'EXACT_MATCH');
+      for(let i=0;i<stored.length;i++) if(physical[i]!=='Response Format'&&physical[i]!=='Scoring Method')
+        assert.equal(stored[i],before[i],'Existing Question Bank field changed: '+physical[i]);
+      const noFeedback=ctx.handleSaveQuizResponseDetails({questionId:'ADMIN-Q1',responseFormat:'ORDERED_RESPONSE',
+        optionFeedback:{A:'do this'}},admin);
+      assert.equal(noFeedback.errorCode,'UNSUPPORTED_METADATA');
+    }],
+    ['Direct-bank format validation supports ordered subsets and rejects unsupported scoring',()=>{
+      const ordered={...single,correctOption:'C,A,D',responseFormat:'ORDERED_RESPONSE',scoringMethod:'EXACT_MATCH',
+        explanation:'First identify the patient, next assess findings, finally document the sequence.'};
+      const v=ctx.cneQuizValidate_(ordered);
+      assert(v.valid && v.orderedItems.join(',')==='C,A,D');
+      assert(!ctx.cneQuizValidate_({...ordered,scoringMethod:'PARTIAL_CREDIT'}).valid);
+      assert(!ctx.cneQuizValidate_({...ordered,responseFormat:'DRAG_SORT'}).valid);
+      assert(!ctx.cneQuizValidate_({...ordered,responseFormat:'',originalQuestionFormat:'SATA'}).valid);
+      assert(ctx.cneQuizCorrect_(ordered,'C,A,D'));
+      assert(!ctx.cneQuizCorrect_(ordered,'C,D,A'));
+    }],
+    ['Admin format endpoint writes only the two supported bank headers',()=>{
+      const handler=code.slice(code.indexOf('function handleSaveQuizResponseDetails('),code.indexOf('function cneQuizApprovedPool_()'));
+      assert(handler.includes("'Response Format':format,'Scoring Method':'EXACT_MATCH'"));
+      assert(handler.includes('requireFreshAdminMutation(session)') && handler.includes('cneUpdateHeaderFields_('));
+      assert(handler.includes('cneQuizValidate_(q,{format:format,scoring:'));
+      assert(handler.includes("'UNSUPPORTED_METADATA'"), 'Unsupported feedback cannot be silently discarded');
+      assert(!handler.includes("'Correct Answer':"), 'Admin must never modify Correct Answer');
     }],
     ['Old source multi-response questions are blocked until explicitly configured',()=>{
       const q={...single,originalQuestionFormat:'Select All That Apply'};
       assert(!ctx.cneQuizValidate_(q,undefined).valid);
-      assert(ctx.cneQuizValidate_(q,{format:'SINGLE_SELECT'}).valid);
+      assert(ctx.cneQuizValidate_({...q,responseFormat:'SINGLE_SELECT'}).valid);
       assert(!ctx.cneQuizValidate_({...single,questionType:'IMAGE',imageFileId:'abc'},{}).valid);
     }],
     ['Practice remains ephemeral and Scored quiz remains compact',()=>{
