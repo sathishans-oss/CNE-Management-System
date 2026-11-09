@@ -205,6 +205,7 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getMyCNERecordsPage',
   'getCNESchedulePage',
   'getCNEScheduleAll',
+  'getDepartmentalCneOutcomeReport',
   'getCNEAnalytics',
   'getCNECalendarMonth',
   'getCNEScheduleById',
@@ -1116,7 +1117,7 @@ export class ApiService {
         }
         const cleanAreas = Array.from(new Set(assignedAreas));
         const rawRole = (r.role || 'EMPLOYEE') as UserRole;
-        const effectiveRole: UserRole = rawRole !== 'ADMIN' && cleanAreas.length > 0 ? 'AREA_INCHARGE' : rawRole;
+        const effectiveRole: UserRole = rawRole; // Assigned wards do not grant AREA_INCHARGE privileges.
         return {
           ...r,
           employeeId: String(r.employeeId || '').trim(),
@@ -1901,7 +1902,8 @@ function generateLocalDepartmentalCneOutcomeReport(
         internalAttendanceCount: null,
         attendancePercentage: null,
         postTestOutcomePercentage: null,
-        date: ''
+        date: '',
+        activeArea: true
       });
     } else {
       for (const c of list) {
@@ -1918,7 +1920,8 @@ function generateLocalDepartmentalCneOutcomeReport(
           internalAttendanceCount: isCompleted ? (c.internalAttendanceCount ?? null) : null,
           attendancePercentage: isCompleted ? (c.attendancePercentage ?? null) : null,
           postTestOutcomePercentage: isCompleted ? (c.postTestOutcomePercentage ?? null) : null,
-          date: c.fromDate || c.date || ''
+          date: c.fromDate || c.date || '',
+          activeArea: true
         });
       }
     }

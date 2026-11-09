@@ -3,7 +3,6 @@ import {
   Printer,
   RotateCcw,
   RefreshCw,
-  Filter,
   AlertCircle,
   Clock,
   CheckCircle2,
@@ -14,7 +13,9 @@ import { ApiService } from '../services/api';
 import { useToast } from './Toast';
 import { SearchInput } from './SearchInput';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
-import { formatCneDateDisplay, getIndiaTodayIsoDate } from '../utils';
+import { formatCneDateDisplay, getIndiaTodayIsoDate, parseToIsoDateString } from '../utils';
+import { FilterBarShell } from './common/FilterBarShell';
+import { ResponsiveFilterToggle } from './common/ResponsiveFilterToggle';
 
 interface AdminDepartmentalCneOutcomeProps {
   user: SessionUser;
@@ -31,115 +32,97 @@ function getIndiaCurrentMonth(): OutcomePeriod {
   return { fromDate: first, toDate: `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`, allDates: false };
 }
 
-function periodKey(period: OutcomePeriod): string {
-  return period.allDates ? 'ALL' : `${period.fromDate}|${period.toDate}`;
-}
-
 export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomeProps> = ({ user }) => {
-  const { showToast } = useToast();
-  const [initialPeriod] = useState(getIndiaCurrentMonth);
-  const [draftPeriod, setDraftPeriod] = useState<OutcomePeriod>(initialPeriod);
-  const [appliedPeriod, setAppliedPeriod] = useState<OutcomePeriod>(initialPeriod);
+  const [period, setPeriod] = useState<OutcomePeriod>(getIndiaCurrentMonth);
   const [loading, setLoading] = useState(true);
   const [reportRows, setReportRows] = useState<DepartmentalCneOutcomeRow[]>([]);
-  const [loadedPeriodKey, setLoadedPeriodKey] = useState('');
   const [reportError, setReportError] = useState('');
   const [retryCount, setRetryCount] = useState(0);
   const [search, setSearch] = useState('');
-  const currentPeriodKey = periodKey(appliedPeriod);
-  const canShowData = !loading && !reportError && loadedPeriodKey === currentPeriodKey;
-  const isFilterChanged = periodKey(draftPeriod) !== currentPeriodKey;
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const invalidPeriod = !period.allDates && Boolean(period.fromDate && period.toDate && period.fromDate > period.toDate);
 
-  // Each effect owns its response. Unmounted or superseded requests cannot overwrite newer results.
+  // Fetch all historical Departmental CNE Outcome rows once per page entry.
+  // Month, date and search changes only select from these in-memory rows.
   useEffect(() => {
     if (user?.role !== 'ADMIN') return;
     let cancelled = false;
     setLoading(true);
     setReportError('');
+    setHasLoaded(false);
     setReportRows([]);
-    setLoadedPeriodKey('');
-
-    ApiService.getDepartmentalCneOutcomeReport(appliedPeriod.allDates
-      ? { allDates: true }
-      : { fromDate: appliedPeriod.fromDate || undefined, toDate: appliedPeriod.toDate || undefined })
-      .then((res) => {
+    ApiService.getDepartmentalCneOutcomeReport({ allDates: true })
+      .then(res => {
         if (cancelled) return;
         if (res.success && Array.isArray(res.data)) {
           setReportRows(res.data);
-          setLoadedPeriodKey(currentPeriodKey);
+          setHasLoaded(true);
         } else {
           setReportError(res.message || 'Unable to load Departmental CNE Outcome report.');
         }
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
-        setReportError(err instanceof Error ? err.message : 'Network error loading report.');
+        if (!cancelled) setReportError(err instanceof Error ? err.message : 'Network error loading report.');
       })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [user?.role, user?.employeeId, appliedPeriod, currentPeriodKey, retryCount]);
+  }, [user?.role, user?.employeeId, user?.token, retryCount]);
 
-  const handleApplyFilters = () => {
-    const nextPeriod: OutcomePeriod = !draftPeriod.fromDate && !draftPeriod.toDate
-      ? { fromDate: '', toDate: '', allDates: true }
-      : { ...draftPeriod, allDates: false };
-    if (nextPeriod.fromDate && nextPeriod.toDate && nextPeriod.fromDate > nextPeriod.toDate) {
-      showToast('From Date cannot be later than To Date.', 'error');
-      return;
-    }
-    setDraftPeriod(nextPeriod);
-    if (periodKey(nextPeriod) === currentPeriodKey) setRetryCount((n) => n + 1);
-    else setAppliedPeriod(nextPeriod);
-  };
+  const handleClearDates = () => setPeriod({ fromDate: '', toDate: '', allDates: true });
+  const canShowData = hasLoaded && !loading && !reportError && !invalidPeriod;
 
-  const handleClearDates = () => {
-    const all: OutcomePeriod = { fromDate: '', toDate: '', allDates: true };
-    setDraftPeriod(all);
-    if (periodKey(all) === currentPeriodKey) setRetryCount((n) => n + 1);
-    else setAppliedPeriod(all);
-  };
-
-  // Client-side filtering across report fields while preserving empty active area rows
   const filteredRows = useMemo(() => {
+    if (invalidPeriod) return [];
+    const from = period.allDates ? '' : period.fromDate;
+    const to = period.allDates ? '' : period.toDate;
+    // Active wards must remain visible even when none of their CNEs
+    // occur in the locally selected month. The backend marks these explicitly.
+    const activeAreas = new Map<string, string>();
+    const byArea = new Map<string, DepartmentalCneOutcomeRow[]>();
+    const keyOf = (s: string) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    for (const row of reportRows) {
+      const key = keyOf(row.area);
+      if (row.activeArea || !row.cneId) activeAreas.set(key, row.area);
+      if (!row.cneId) continue;
+      const date = parseToIsoDateString(row.date);
+      if (!date || (from && date < from) || (to && date > to)) {
+        if (from || to) continue;
+      }
+      if (!byArea.has(key)) byArea.set(key, []);
+      byArea.get(key)!.push(row);
+    }
+    const rows: DepartmentalCneOutcomeRow[] = [];
+    for (const [key, area] of activeAreas) {
+      const matching = byArea.get(key) || [];
+      if (matching.length) rows.push(...matching);
+      else rows.push({ area, cneId: '', topic: '', status: '', date: '', activeArea: true });
+      byArea.delete(key);
+    }
+    for (const matching of byArea.values()) rows.push(...matching);
     const q = search.trim().toLowerCase();
-    if (!q) return reportRows;
+    return q ? rows.filter(r => [r.area, r.topic, r.status, r.createdByName, r.remarks]
+      .some(value => String(value || '').toLowerCase().includes(q))) : rows;
+  }, [reportRows, period, search, invalidPeriod]);
 
-    return reportRows.filter((r) => {
-      const areaMatch = r.area.toLowerCase().includes(q);
-      const topicMatch = (r.topic || '').toLowerCase().includes(q);
-      const statusMatch = (r.status || '').toLowerCase().includes(q);
-      const createdByMatch = (r.createdByName || '').toLowerCase().includes(q);
-      const remarksMatch = (r.remarks || '').toLowerCase().includes(q);
-      return areaMatch || topicMatch || statusMatch || createdByMatch || remarksMatch;
-    });
-  }, [reportRows, search]);
-
-  // Print only the applied period, never dates still being edited in the picker.
   const printPeriodText = useMemo(() => {
-    if (appliedPeriod.allDates) return 'All Available Records';
-    const { fromDate, toDate } = appliedPeriod;
+    if (period.allDates || (!period.fromDate && !period.toDate)) return 'All Available Records';
+    const { fromDate, toDate } = period;
     if (fromDate && toDate) return `${formatCneDateDisplay(fromDate)} – ${formatCneDateDisplay(toDate)}`;
     if (fromDate) return `From ${formatCneDateDisplay(fromDate)}`;
-    if (toDate) return `Up to ${formatCneDateDisplay(toDate)}`;
-    return 'All Available Records';
-  }, [appliedPeriod]);
+    return `Up to ${formatCneDateDisplay(toDate)}`;
+  }, [period]);
 
-  const handlePrint = () => {
-    if (canShowData && !isFilterChanged) window.print();
-  };
+  const handlePrint = () => { if (canShowData) window.print(); };
 
   if (user?.role !== 'ADMIN') {
-    return (
-      <div className="max-w-7xl mx-auto px-4 py-12">
-        <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center text-rose-800">
-          <AlertCircle className="w-8 h-8 mx-auto mb-2 text-rose-600" />
-          <h2 className="text-lg font-bold">Access Denied</h2>
-          <p className="text-sm mt-1">Permission denied. Only Administrators can access Departmental CNE Outcome.</p>
-        </div>
+    return <div className="max-w-7xl mx-auto px-4 py-12">
+      <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center text-rose-800">
+        <AlertCircle className="w-8 h-8 mx-auto mb-2 text-rose-600" />
+        <h2 className="text-lg font-bold">Access Denied</h2>
+        <p className="text-sm mt-1">Permission denied. Only Administrators can access Departmental CNE Outcome.</p>
       </div>
-    );
+    </div>;
   }
 
   // Formatting attendance column
@@ -186,72 +169,43 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
         </p>
       </div>
 
-      {/* Filter Panel — same compact pattern used by CNE Schedule */}
-      <div className="print:hidden bg-white p-3 rounded-2xl border border-slate-200 shadow-xs mb-6">
-        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
-          <div className="w-full sm:w-[300px] sm:min-w-[220px] min-w-0">
-            <SearchInput
-              id="departmental-outcome-search"
-              placeholder="Search..."
-              value={search}
-              onChange={setSearch}
-            />
+      {/* Unified CNE Schedule-style filter bar; month/date/search are entirely local. */}
+      <div className="print:hidden mb-4">
+        <FilterBarShell title="Departmental CNE Outcome" subtitle="Filter the loaded report instantly" icon={<CheckCircle2 className="h-3.5 w-3.5" />}>
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2.5">
+            <div className="w-full sm:w-[220px] xl:w-[260px]">
+              <SearchInput id="departmental-outcome-search" placeholder="Search outcome..." value={search} onChange={setSearch} />
+            </div>
+            <ResponsiveFilterToggle expanded={showAdvancedFilters}
+              onToggle={() => setShowAdvancedFilters(v => !v)}
+              activeCount={Number(Boolean(period.fromDate)) + Number(Boolean(period.toDate))}
+              controlsId="departmental-outcome-dates" />
+            <div id="departmental-outcome-dates" className={`${showAdvancedFilters ? 'flex' : 'hidden'} w-full flex-col gap-2.5 md:contents`}>
+              <div className="w-full sm:w-[150px]">
+                <ConfirmDatePicker id="departmental-outcome-from-date"
+                  value={period.fromDate} onChange={fromDate => setPeriod(p => ({...p, fromDate, allDates: false}))}
+                  placeholder="From Date..." inlineLabel="From:" compact />
+              </div>
+              <div className="w-full sm:w-[150px]">
+                <ConfirmDatePicker id="departmental-outcome-to-date"
+                  value={period.toDate} onChange={toDate => setPeriod(p => ({...p, toDate, allDates: false}))}
+                  minDate={period.fromDate} placeholder="To Date..." inlineLabel="To:" compact />
+              </div>
+            </div>
+            <button type="button" onClick={handleClearDates}
+              title="Show all loaded historical outcome records" className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 hover:bg-slate-50">
+              <XCircle className="h-3.5 w-3.5" /> All Dates
+            </button>
+            <button type="button" onClick={handlePrint} disabled={!canShowData}
+              className="sm:ml-auto inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-4 text-xs font-bold text-white disabled:opacity-50">
+              <Printer className="w-3.5 h-3.5" /> Print
+            </button>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 min-w-0">
-            <ConfirmDatePicker
-              id="departmental-outcome-from-date"
-              value={draftPeriod.fromDate}
-              onChange={(fromDate) => setDraftPeriod((prev) => ({ ...prev, fromDate, allDates: false }))}
-              placeholder="From Date..."
-              inlineLabel="From:"
-              compact
-            />
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 min-w-0">
-            <ConfirmDatePicker
-              id="departmental-outcome-to-date"
-              value={draftPeriod.toDate}
-              onChange={(toDate) => setDraftPeriod((prev) => ({ ...prev, toDate, allDates: false }))}
-              minDate={draftPeriod.fromDate}
-              placeholder="To Date..."
-              inlineLabel="To:"
-              compact
-            />
-          </div>
-
-          <button
-            type="button"
-            onClick={handleApplyFilters}
-            disabled={loading || (!isFilterChanged && !reportError)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-indigo-700 hover:bg-indigo-800 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
-          >
-            <Filter className="w-3.5 h-3.5" />
-            <span>Show Results</span>
-          </button>
-
-          <button type="button" onClick={handleClearDates} disabled={loading}
-            title="Clear dates and load all historical records (may take longer)"
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl disabled:opacity-50">
-            <XCircle className="w-3.5 h-3.5" /> Clear Dates
-          </button>
-
-          <button
-            type="button"
-            onClick={handlePrint}
-            className="lg:ml-auto inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-purple-700 hover:bg-purple-800 rounded-xl shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Print current filtered report (A4 landscape)"
-          >
-            <Printer className="w-3.5 h-3.5" />
-            <span>Print</span>
-          </button>
-        </div>
-      </div>
-
-      <div className="print:hidden text-xs text-slate-600 mb-3" aria-live="polite">
-        {loading ? 'Loading selected reporting period…' : `Report period: ${printPeriodText}`}
-        {isFilterChanged && !loading && <span className="ml-2 font-semibold text-amber-700">Date changes not applied — click Show Results.</span>}
+        </FilterBarShell>
+        <p className="mt-2 text-xs text-slate-600" role="status" aria-live="polite">
+          {loading ? 'Loading all available Departmental CNE outcomes…' : `Report period: ${printPeriodText} · ${filteredRows.length} rows`}
+        </p>
+        {invalidPeriod && <p role="alert" className="mt-1 text-xs text-rose-700 font-semibold">From Date cannot be later than To Date.</p>}
       </div>
 
       {/* Report Table */}
@@ -277,7 +231,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
                 <tr>
                   <td colSpan={9} className="py-12 text-center text-slate-400">
                     <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-purple-600" />
-                    <p className="text-xs">Loading Departmental CNE Outcome report...</p>
+                    <p className="text-xs">Loading complete Departmental CNE Outcome report...</p>
                   </td>
                 </tr>
               ) : reportError ? (

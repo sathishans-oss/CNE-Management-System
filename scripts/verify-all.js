@@ -11425,11 +11425,13 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       throw Error('Print-only reporting period not correctly configured');
   });
   check('Reports: compact filter controls retain dates, search, generate and print', () => {
-    for (const token of ['p-3 sm:p-4', 'id="cne-report-from"', 'id="cne-report-to"',
+    for (const token of ['<FilterBarShell title="Reports & Statistics"', 'id="cne-report-from"', 'id="cne-report-to"',
       'value={draft.fromDate}', 'value={draft.toDate}', 'value={draft.search}',
-      'onClick={validateAndApply}', 'Generate Report', 'onClick={()=>window.print()}']) {
+      'onClick={validateAndApply}', 'Generate Report']) {
       if (!reports.includes(token)) throw Error('Report filter control missing: '+token);
     }
+    if (!/onClick=\{\(\)\s*=>\s*window\.print\(\)\}/.test(reports))
+      throw Error('Report print action missing or altered');
   });
   check('Reports: manual date validation and automatic analytics load still operate', () => {
     for (const token of ['draft.fromDate>draft.toDate',
@@ -14349,7 +14351,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(shell.includes('bg-gradient-to-r from-white via-cyan-50 to-teal-100'));
       assert(shell.includes('border-teal-100') && shell.includes('rounded-full bg-teal-100'));
       assert(sched.includes('<FilterBarShell title="CNE Schedule"') && sched.includes('setStatusFilter(status)'));
-      assert(records.includes('<FilterBarShell title="My CNE Records"') && records.includes('onClick={applyFilters}'));
+      assert(records.includes('<FilterBarShell title="My CNE Records"') && !records.includes('onClick={applyFilters}') && records.includes('const invalidDateRange'));
       assert(resources.includes('<FilterBarShell title="Learning Resources"') && resources.includes('setActiveCategory('));
     }],
     ['Mobile question popup is two-column, compact and keeps Save actions in safe area', () => {
@@ -15053,7 +15055,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(toolbar.includes("event.key === 'ArrowDown'") && toolbar.includes("event.key === 'End'"));
     }],
     ['Calendar preserves seven columns and uses tappable date buttons', () => {
-      assert(calendar.includes('grid grid-cols-7') && calendar.includes('flex flex-wrap items-center gap-x-4'));
+      assert(calendar.includes('grid grid-cols-7') && calendar.includes('aria-label="CNE Calendar legend"'));
       assert(calendar.includes('min-h-10 min-w-10') && calendar.includes('aria-pressed={selectedDay === dayNum}'));
       assert(calendar.includes('aria-hidden="true" />') && calendar.includes('eventDialogRef'));
     }],
@@ -15116,6 +15118,82 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     focusedChecks.push({ name });
     try { check(); focusedPassed++; console.log('✓ ' + name); }
     catch (error) { console.error('✗ ' + name + ': ' + (error.message || error)); }
+  }
+}
+
+
+// CNE November 2026: targeted checks for page-local filters and early Calendar shell.
+if (selected.length === passed) {
+  const files = {
+    records: readFileSync(join(ROOT_DIR,'src/components/MyCNERecords.tsx'),'utf8'),
+    outcome: readFileSync(join(ROOT_DIR,'src/components/AdminDepartmentalCneOutcome.tsx'),'utf8'),
+    calendar: readFileSync(join(ROOT_DIR,'src/components/CNECalendar.tsx'),'utf8'),
+    roles: readFileSync(join(ROOT_DIR,'src/components/AdminRoles.tsx'),'utf8'),
+    reports: readFileSync(join(ROOT_DIR,'src/components/AdminReports.tsx'),'utf8'),
+    backend: readFileSync(join(ROOT_DIR,'Code.gs'),'utf8'),
+    mock: readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8')
+  };
+  const cases = [
+    ['My Records searches and dates update immediately without Show Results', () => {
+      assert(!files.records.includes('Show Results'));
+      assert(!files.records.includes('setAppliedFilters') && !files.records.includes('appliedFilters'));
+      assert(files.records.includes('[records, searchTerm, startDate, endDate, invalidDateRange]'));
+      assert(files.records.includes('generateCNERecordsPdf(user, filteredRecords, {'));
+    }],
+    ['Departmental Outcomes fetch full history once per mount and filter dates locally', () => {
+      assert(files.outcome.includes('getDepartmentalCneOutcomeReport({ allDates: true })'));
+      assert(!files.outcome.includes('Show Results') && !files.outcome.includes('setAppliedPeriod'));
+      assert(files.outcome.includes('parseToIsoDateString(row.date)'));
+      assert(files.outcome.includes('const activeAreas = new Map'));
+      assert(files.outcome.includes('onClick={handleClearDates}'));
+      assert(files.outcome.includes('onClick={handlePrint}'));
+      assert(files.outcome.includes('setRetryCount((n) => n + 1)'));
+    }],
+    ['Departmental Outcomes preserve active ward placeholders in full-history responses', () => {
+      const start = files.backend.indexOf('function handleGetDepartmentalCneOutcomeReport(');
+      const end = files.backend.indexOf('function handleGetRoles(',start);
+      const fn = files.backend.slice(start,end);
+      assert(fn.includes('activeArea: Boolean(activeAreaKeys[areaKey])'));
+      assert(fn.includes('activeArea: true'));
+      assert(files.mock.includes('activeArea: true'));
+      assert(/const NEVER_CACHEABLE_PROTECTED_ACTIONS[\s\S]*?'getDepartmentalCneOutcomeReport'/.test(files.mock),
+        'Departmental outcome must never use persistent public browser cache');
+    }],
+    ['Calendar top bar and compact legend display before initial data arrives', () => {
+      const i=files.calendar.indexOf('if (!hasLoaded)');
+      assert(files.calendar.indexOf('const calendarHeader') < i);
+      assert(files.calendar.indexOf('const calendarLegend') < i);
+      const early=files.calendar.slice(i,files.calendar.indexOf('return (',i+10)+900);
+      assert(early.includes('{calendarHeader}') && early.includes('{calendarLegend}'));
+      assert(files.calendar.includes('>Completed</span>') && files.calendar.includes('>Upcoming</span>') && files.calendar.includes('>Canceled</span>'));
+      assert(!files.calendar.includes('Upcoming Scheduled Classes'));
+      assert(files.calendar.includes('overflow-x-auto whitespace-nowrap'),
+        'Calendar legend must remain a compact nonwrapping single row');
+      assert(!files.calendar.includes('flex flex-wrap items-center gap-x-4'),
+        'Calendar legend must not grow into multiple rows on small screens');
+    }],
+    ['Roles search is inside title header, and column headers stay fixed when scrolling', () => {
+      const title = files.roles.indexOf('>Role</h1>');
+      const search = files.roles.indexOf('id="role-search"');
+      const table = files.roles.indexOf('{/* Roles Table */}');
+      assert(title>=0 && search>title && search<table);
+      assert(files.roles.includes('max-h-[70dvh] overflow-auto'));
+      assert(files.roles.includes('sticky top-0 xl:top-[7.25rem]'));
+      assert(!files.mock.includes("cleanAreas.length > 0 ? 'AREA_INCHARGE'"), 'API role mapping must never promote via wards');
+      assert(files.mock.includes('const effectiveRole: UserRole = rawRole;'),
+        'Role API must preserve the explicitly assigned Role sheet value');
+    }],
+    ['Reports use unified filter bar without changing report generation API semantics', () => {
+      assert(files.reports.includes('<FilterBarShell title="Reports & Statistics"'));
+      assert(files.reports.includes('onClick={validateAndApply}'));
+      assert(files.reports.includes('ApiService.getCNEAnalytics({...applied,includeEmployees:false})'));
+    }]
+  ];
+  console.log('\n>>> CNE page filters, Calendar shell, and admin header checks');
+  for (const [name,fn] of cases) {
+    focusedChecks.push({name});
+    try {fn();focusedPassed++;console.log('✓ '+name)}
+    catch(e){console.error('✗ '+name+': '+(e.stack||e.message))}
   }
 }
 

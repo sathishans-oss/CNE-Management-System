@@ -567,41 +567,29 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
 
   return (
     <div className="space-y-6 pb-12">
-      {/* Header */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold text-slate-900">Role</h1>
-            <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-purple-100 text-purple-800">
-              Admin & Employee RBAC
-            </span>
+      {/* Schedule-inspired compact header with search beside the Role title. */}
+      <div className="relative rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 p-3 shadow-sm sm:p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-lg font-bold text-slate-900">Role</h1>
+              <span className="text-[10px] px-2.5 py-1 rounded-full font-semibold bg-teal-100 text-teal-800">Admin &amp; Employee RBAC</span>
+            </div>
+            <p className="text-xs text-slate-600 mt-1">Manage explicit roles and assigned wards.</p>
           </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Manage system permissions and credentials. Admins can assign roles and require employees to create a new password through registered-email OTP verification.
-          </p>
-        </div>
-
-        <button
-          onClick={handleSyncRoles}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          <span>Sync Roles</span>
-        </button>
-      </div>
-
-      {/* Search Bar */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
-        <div className="relative max-w-md">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-          <input
-            type="text"
-            placeholder="Search nursing officer by name, ID, designation..."
-            value={searchTerm}
-            onChange={(e) => handleSearchChange(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg"
-          />
+          <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto lg:items-center">
+            <div className="relative w-full sm:flex-1 lg:w-[330px]">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" aria-hidden="true" />
+              <input id="role-search" type="search" aria-label="Search nursing officer by name, ID or designation"
+                placeholder="Search name, ID, designation..." value={searchTerm}
+                onChange={e => handleSearchChange(e.target.value)}
+                className="w-full min-h-10 pl-9 pr-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus-visible:outline-2 focus-visible:outline-teal-600" />
+            </div>
+            <button type="button" onClick={handleSyncRoles} disabled={loading}
+              className="inline-flex min-h-10 justify-center items-center gap-2 px-3 border border-slate-200 bg-white rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Sync Roles
+            </button>
+          </div>
         </div>
       </div>
 
@@ -614,17 +602,17 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
           </div>
         ) : (
           <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+            <div className="max-h-[70dvh] overflow-auto overscroll-contain xl:max-h-none xl:overflow-visible" role="region" aria-label="Employee roles" tabIndex={0}>
+              <table className="w-full min-w-[860px] text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase text-[11px]">
-                  <th className="py-3 px-4">Employee ID</th>
-                  <th className="py-3 px-4">Officer Name</th>
-                  <th className="py-3 px-4">Designation</th>
-                  <th className="py-3 px-4">Assigned Role</th>
-                  <th className="py-3 px-4">Assign Ward</th>
-                  <th className="py-3 px-4">Assigned Wards</th>
-                  <th className="py-3 px-4 text-right">Password Access</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3 px-4">Employee ID</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3 px-4">Officer Name</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3 px-4">Designation</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3 px-4">Assigned Role</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3 px-4">Assign Ward</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3 px-4">Assigned Wards</th>
+                  <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 py-3 px-4 text-right">Password Access</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">

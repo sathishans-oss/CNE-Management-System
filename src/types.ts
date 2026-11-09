@@ -161,6 +161,7 @@ export interface CNERecord {
 }
 
 export interface DepartmentalCneOutcomeRow {
+  activeArea?: boolean; // preserves empty active-ward rows after client-side date filtering
   area: string;
   cneId?: string;
   topic?: string;

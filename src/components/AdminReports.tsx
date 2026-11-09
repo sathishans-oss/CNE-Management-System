@@ -3,6 +3,8 @@ import { AlertCircle, BarChart3, Download, Loader2, Printer, RefreshCw, Search }
 import type { CNEAnalytics, SessionUser } from '../types';
 import { ApiService } from '../services/api';
 import { getIndiaTodayIsoDate } from '../utils';
+import { FilterBarShell } from './common/FilterBarShell';
+import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 
 type View = 'overview' | 'participation' | 'training' | 'planning';
 interface Period { fromDate: string; toDate: string; search: string }
@@ -132,23 +134,39 @@ export const AdminReports:React.FC<{user:SessionUser}> = ({user}) => {
     const url=URL.createObjectURL(new Blob(['\ufeff',csv],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=`CNE_Training_Register_${applied.fromDate}_${applied.toDate}.csv`;link.click();URL.revokeObjectURL(url);
   };
   return <div className="space-y-5 pb-12">
-    <header className="bg-white rounded-2xl border border-slate-200 p-3 sm:p-4 print:border-0 print:p-0">
-      <h1 className="sr-only print:not-sr-only print:font-bold print:text-xl">CNE Reports &amp; Statistics</h1>
-      <div className="flex flex-wrap gap-2 items-center print:hidden">
-        <label className="flex items-center gap-1 text-xs font-medium text-slate-600" htmlFor="cne-report-from">
-          From
-          <input id="cne-report-from" aria-label="From Date" type="date" value={draft.fromDate} onChange={e=>setDraft(p=>({...p,fromDate:e.target.value}))} className="border border-slate-300 rounded-lg px-2 py-2 text-sm w-[150px] text-slate-900" />
-        </label>
-        <label className="flex items-center gap-1 text-xs font-medium text-slate-600" htmlFor="cne-report-to">
-          To
-          <input id="cne-report-to" aria-label="To Date" type="date" value={draft.toDate} onChange={e=>setDraft(p=>({...p,toDate:e.target.value}))} className="border border-slate-300 rounded-lg px-2 py-2 text-sm w-[150px] text-slate-900" />
-        </label>
-        <div className="border border-slate-300 rounded-lg flex items-center gap-1 px-2 w-full sm:w-[220px] bg-white"><Search size={15} className="text-slate-500 shrink-0"/><input aria-label="Search CNE topic, ID or area" placeholder="Search CNE, topic, area..." value={draft.search} onChange={e=>setDraft(p=>({...p,search:e.target.value}))} onKeyDown={e=>{if(e.key==='Enter')validateAndApply();}} className="w-full min-w-0 outline-none text-sm py-2"/></div>
-        <button onClick={validateAndApply} disabled={busy} className="px-3 py-2 text-xs rounded-lg bg-emerald-700 text-white font-bold flex items-center gap-1 disabled:opacity-50"><BarChart3 size={15}/> Generate Report</button>
-        <button onClick={()=>window.print()} disabled={busy||!data} className="ml-auto px-3 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50"><Printer size={15}/> Print</button>
-      </div>
-      <p className="hidden print:block text-xs text-slate-600 mt-1">From {applied.fromDate} to {applied.toDate}{applied.search?` · Search: ${applied.search}`:''}</p>
-    </header>
+    <div className="print:hidden p-3 sm:p-4">
+      <FilterBarShell title="Reports & Statistics" subtitle="Select a reporting period" icon={<BarChart3 className="h-3.5 w-3.5" />}>
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2.5">
+          <div className="w-full sm:w-[160px]">
+            <ConfirmDatePicker id="cne-report-from" value={draft.fromDate}
+              onChange={fromDate => setDraft(p => ({...p, fromDate}))}
+              placeholder="From Date" inlineLabel="From:" compact />
+          </div>
+          <div className="w-full sm:w-[160px]">
+            <ConfirmDatePicker id="cne-report-to" value={draft.toDate}
+              onChange={toDate => setDraft(p => ({...p, toDate}))}
+              minDate={draft.fromDate} placeholder="To Date" inlineLabel="To:" compact />
+          </div>
+          <div className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2 w-full sm:w-[225px]">
+            <Search size={15} className="text-slate-500 shrink-0" aria-hidden="true" />
+            <input aria-label="Search CNE topic, ID or area" placeholder="Search CNE, topic, area..."
+              value={draft.search} onChange={e => setDraft(p => ({...p, search:e.target.value}))}
+              onKeyDown={e => { if (e.key === 'Enter') validateAndApply(); }}
+              className="w-full min-w-0 outline-none text-xs py-2.5" />
+          </div>
+          <button type="button" onClick={validateAndApply} disabled={busy}
+            className="inline-flex min-h-10 justify-center items-center gap-1.5 rounded-xl bg-teal-700 text-white px-3.5 text-xs font-bold disabled:opacity-50 hover:bg-teal-800">
+            <BarChart3 size={15} /> Generate Report
+          </button>
+          <button type="button" onClick={()=>window.print()} disabled={busy || !data}
+            className="sm:ml-auto inline-flex min-h-10 justify-center items-center gap-1.5 rounded-xl bg-slate-900 text-white px-3.5 text-xs font-bold disabled:opacity-50">
+            <Printer size={15} /> Print
+          </button>
+        </div>
+      </FilterBarShell>
+    </div>
+    <h1 className="sr-only print:not-sr-only print:font-bold print:text-xl">CNE Reports &amp; Statistics</h1>
+    <p className="hidden print:block text-xs text-slate-600">From {applied.fromDate} to {applied.toDate}{applied.search ? ` · Search: ${applied.search}` : ''}</p>
     {error && !busy && <div role="alert" className="flex flex-col items-center justify-center gap-2 py-6 text-center print:hidden">
       <AlertCircle className="h-6 w-6 text-rose-600" aria-hidden="true" />
       <p className="max-w-lg text-sm font-medium text-slate-700">{error}</p>

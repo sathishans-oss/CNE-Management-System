@@ -196,46 +196,11 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
     );
   }
 
-  // Avoid rendering a false empty calendar before the initial authorized load.
-  if (!hasLoaded) {
-    return (
-      <div className="px-3 py-6 sm:px-6 sm:py-10">
-        <section
-          className="min-h-[400px] bg-white border border-slate-200 rounded-2xl shadow-xs flex flex-col items-center justify-center gap-4 px-5 py-12 text-center"
-          role={loading ? 'status' : 'alert'}
-          aria-live="polite"
-          aria-busy={loading}
-        >
-          {loading ? (
-            <>
-              <CalendarIcon className="h-8 w-8 text-teal-700" aria-hidden="true" />
-              <LoadingProgress label="Fetching CNE Calendar programmes" />
-            </>
-          ) : (
-            <>
-              <CalendarIcon className="w-10 h-10 text-slate-400" aria-hidden="true" />
-              <h1 className="text-lg sm:text-xl font-bold text-slate-900">Unable to load CNE Calendar</h1>
-              <p className="text-sm text-slate-600 max-w-md">{loadError ?? 'CNE programmes are currently unavailable.'}</p>
-              <button
-                type="button"
-                onClick={() => { void loadEvents(); }}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
-              >
-                <RefreshCw className="w-4 h-4" aria-hidden="true" /> Try Again
-              </button>
-            </>
-          )}
-        </section>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6 pb-12">
-      {/* Calendar Header & View Controls */}
-      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+  // Header and legend render immediately, independently of the initial data request.
+  const calendarHeader = (
+      <div className="relative rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 p-3 sm:p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>
-<h1 className="text-xl font-bold text-slate-900">CNE Calendar</h1>
+<h1 className="inline-flex items-center gap-2 text-lg font-bold text-teal-900"><CalendarIcon className="w-4 h-4" aria-hidden="true" /> CNE Calendar</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             Interactive schedule for clinical workshops, nursing classes, and department training sessions.
           </p>
@@ -243,7 +208,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
 
         <div className="flex flex-wrap items-center gap-3">
           {/* Month Navigation */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 rounded-xl border border-white/80 bg-white/70 px-2 py-1">
             <button
               id="btn-calendar-prev-month"
               onClick={prevMonth}
@@ -273,7 +238,39 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
           </div>
         </div>
       </div>
+  );
+  const calendarLegend = (
+      <div role="group" aria-label="CNE Calendar legend" className="flex items-center gap-3 overflow-x-auto whitespace-nowrap rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600 sm:gap-5">
+        <span className="font-semibold text-slate-700">Legend:</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500" aria-hidden="true" />Completed</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-purple-500" aria-hidden="true" />Upcoming</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-rose-500" aria-hidden="true" />Canceled</span>
+      </div>
+  );
 
+  if (!hasLoaded) {
+    return (
+      <div className="space-y-4 pb-12">
+        {calendarHeader}
+        {calendarLegend}
+        <section className="min-h-[240px] rounded-2xl border border-slate-200 bg-white p-6 flex flex-col justify-center items-center gap-3 text-center"
+          role={loading ? 'status' : 'alert'} aria-live="polite" aria-busy={loading}>
+          {loading ? <LoadingProgress label="Fetching CNE Calendar programmes" /> : <>
+            <CalendarIcon className="w-9 h-9 text-slate-400" aria-hidden="true" />
+            <h2 className="text-base font-bold text-slate-900">Unable to load CNE Calendar</h2>
+            <p className="text-sm text-slate-600">{loadError ?? 'CNE programmes are currently unavailable.'}</p>
+            <button type="button" onClick={() => { void loadEvents(); }} className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white hover:bg-teal-800">
+              <RefreshCw className="w-4 h-4" /> Retry
+            </button>
+          </>}
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 pb-12">
+      {calendarHeader}
       {/* Keep the previous successful calendar visible during refresh.
           If refresh fails, report the issue instead of silently hiding data. */}
       {loadError && !loading && (
@@ -291,22 +288,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
 
       {loading && <LoadingProgress label="Refreshing scheduled CNE programmes" className="mx-auto" />}
 
-      {/* Calendar Legend */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs bg-white px-3 sm:px-5 py-3 rounded-xl border border-slate-200 text-slate-600">
-        <span className="font-semibold text-slate-700">Legend:</span>
-        <div className="flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-          <span>Completed CNE Records</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-purple-500" />
-          <span>Upcoming Scheduled Classes</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
-          <span>Canceled CNE Sessions</span>
-        </div>
-      </div>
+      {calendarLegend}
 
       {/* Monthly Grid View */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">

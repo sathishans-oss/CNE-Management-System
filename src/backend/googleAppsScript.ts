@@ -6653,6 +6653,9 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
     }
   }
 
+  var activeAreaKeys = {};
+  for (var ak = 0; ak < activeAreas.length; ak++) activeAreaKeys[normalizeAreaMatchingKey_(activeAreas[ak])] = true;
+
   // 2. Read CNE Schedule sheet
   var cneSheet = getOrCreateSheet('CNE Schedule');
   var cneColMap = getHeaderMap(cneSheet);
@@ -6759,7 +6762,8 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
       internalAttendanceCount: internalAttCount,
       attendancePercentage: attendancePct,
       postTestOutcomePercentage: outcomePct,
-      date: formatDateValue(rawDate)
+      date: formatDateValue(rawDate),
+      activeArea: Boolean(activeAreaKeys[areaKey])
     });
   }
 
@@ -6786,7 +6790,8 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
         internalAttendanceCount: null,
         attendancePercentage: null,
         postTestOutcomePercentage: null,
-        date: ''
+        date: '',
+        activeArea: true
       });
     } else {
       for (var ac = 0; ac < areaCnes.length; ac++) {

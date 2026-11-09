@@ -6,7 +6,6 @@ import {
   X,
   CheckCircle2,
   Loader2,
-  Search
 } from 'lucide-react';
 import { CNERecord, SessionUser } from '../types';
 import { ApiService } from '../services/api';
@@ -108,7 +107,6 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   const [startDate, setStartDate] = useState('');
   const [showDateFilters, setShowDateFilters] = useState(false);
   const [endDate, setEndDate] = useState('');
-  const [appliedFilters, setAppliedFilters] = useState({search:'',fromDate:'',toDate:''});
   const [selectedRecord, setSelectedRecord] = useState<CNERecord | null>(null);
   const {success,error} = useToast();
   const identity = `${user.employeeId}:${user.token}`;
@@ -118,7 +116,6 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     if(previousIdentityRef.current === identity)return;
     previousIdentityRef.current=identity;
     setSearchTerm('');setStartDate('');setEndDate('');
-    setAppliedFilters({search:'',fromDate:'',toDate:''});
   },[identity]);
 
   useEffect(() => {
@@ -185,28 +182,26 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     return () => { if (recordsRequestIdRef.current === requestId) recordsRequestIdRef.current++; };
   }, [identity, error]);
 
-  const applyFilters = () => {
-    if(startDate && endDate && startDate>endDate){error('From Date must not be after To Date.');return;}
-    const next={search:searchTerm.trim(),fromDate:startDate,toDate:endDate};
-    setAppliedFilters(next);
-  };
+  // Filters are applied immediately against the complete authorized in-page dataset.
+  // They never trigger another Google Apps Script request.
   const clearFilters = () => {
-    setSearchTerm('');setStartDate('');setEndDate('');
-    setAppliedFilters({search:'',fromDate:'',toDate:''});
+    setSearchTerm(''); setStartDate(''); setEndDate('');
   };
+  const invalidDateRange = Boolean(startDate && endDate && startDate > endDate);
   // Authorized records are downloaded once and kept in memory. Search/date tabs
   // never trigger another Google Apps Script call; PDFs use these exact records.
   const filteredRecords = React.useMemo(() => {
-    const query = appliedFilters.search.toLowerCase();
+    if (invalidDateRange) return [];
+    const query = searchTerm.trim().toLowerCase();
     return records.filter(record => {
       const date = parseToIsoDateString(record.fromDate || record.date) || '';
-      if (appliedFilters.fromDate && (!date || date < appliedFilters.fromDate)) return false;
-      if (appliedFilters.toDate && (!date || date > appliedFilters.toDate)) return false;
+      if (startDate && (!date || date < startDate)) return false;
+      if (endDate && (!date || date > endDate)) return false;
       if (!query) return true;
       return [record.topic, record.area, record.modeOfTeaching, record.resourcePersonName,
         record.cneId, record.cneType].some(value => String(value || '').toLowerCase().includes(query));
     });
-  }, [records, appliedFilters]);
+  }, [records, searchTerm, startDate, endDate, invalidDateRange]);
   const filteredDuration = React.useMemo(() => {
     let participant = 0, resource = 0;
     for (const record of filteredRecords) {
@@ -251,9 +246,9 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
       // Uses exactly the complete filtered records already visible on this page.
       // No additional Apps Script requests are made when Generate PDF is clicked.
       generateCNERecordsPdf(user, filteredRecords, {
-        fromDate: appliedFilters.fromDate || undefined,
-        toDate: appliedFilters.toDate || undefined,
-        searchTerm: appliedFilters.search || undefined
+        fromDate: startDate || undefined,
+        toDate: endDate || undefined,
+        searchTerm: searchTerm.trim() || undefined
       });
       success('Filtered CNE records PDF downloaded.', 'PDF Generated');
     } catch (e: any) { error(e?.message || 'Failed to generate PDF document.'); }
@@ -314,11 +309,6 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
 
           </div>
 
-          <button type="button" onClick={applyFilters}
-            className="inline-flex min-h-10 items-center justify-center gap-1.5 px-3 rounded-lg bg-teal-700 text-white text-xs font-bold hover:bg-teal-800 cursor-pointer">
-            <Search className="w-3.5 h-3.5" /> Show Results
-          </button>
-
           <div className="whitespace-nowrap rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs text-slate-600">
             Participant Hours: <strong className="text-emerald-700">{trainingDurationStats.participant}</strong>
           </div>
@@ -363,6 +353,12 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
           </button>
         </div>
       </FilterBarShell>
+
+      {invalidDateRange && (
+        <p role="alert" className="text-xs font-semibold text-rose-700 px-2">
+          From Date cannot be later than To Date. Adjust the dates to view your records.
+        </p>
+      )}
 
       {/* CNE Records Data Table (Desktop) & Cards (Mobile) */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden xl:overflow-visible">
