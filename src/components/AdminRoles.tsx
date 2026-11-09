@@ -44,36 +44,9 @@ export const getUserRolePriority = (
   const empId = (officer.employeeId || '').toLowerCase().trim();
   const roleState = rolesMap ? rolesMap[empId] : undefined;
 
-  const rolesToEvaluate: string[] = [];
-
-  if (roleState) {
-    if (roleState.role) rolesToEvaluate.push(roleState.role);
-    if ((roleState as any).roles && Array.isArray((roleState as any).roles)) {
-      rolesToEvaluate.push(...(roleState as any).roles);
-    }
-    if (roleState.assignedAreas && roleState.assignedAreas.length > 0 && roleState.role !== 'ADMIN') {
-      rolesToEvaluate.push('AREA_INCHARGE');
-    }
-  }
-
-  if ((officer as any).role) rolesToEvaluate.push((officer as any).role);
-  if ((officer as any).roles && Array.isArray((officer as any).roles)) {
-    rolesToEvaluate.push(...(officer as any).roles);
-  }
-
-  if (rolesToEvaluate.length === 0) {
-    return getRolePriority('EMPLOYEE');
-  }
-
-  let highestPriority = 99;
-  for (const r of rolesToEvaluate) {
-    const p = getRolePriority(r);
-    if (p < highestPriority) {
-      highestPriority = p;
-    }
-  }
-
-  return highestPriority;
+  // Role sheet is authoritative. Areas, officer directory and job designation
+  // must never imply AREA_INCHARGE or ADMIN privileges.
+  return getRolePriority(roleState?.role || 'EMPLOYEE');
 };
 
 export const compareEmployeeIdOrName = (a: Employee, b: Employee): number => {
@@ -368,11 +341,9 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
             // Deduplicate assigned wards
             assignedAreas = Array.from(new Set(assignedAreas));
 
-            // Determine effective role: if assignedAreas exist and not ADMIN, ensure AREA_INCHARGE
-            let effectiveRole: UserRole = r.role || 'EMPLOYEE';
-            if (effectiveRole !== 'ADMIN' && assignedAreas.length > 0) {
-              effectiveRole = 'AREA_INCHARGE';
-            }
+            // Explicit Role sheet selection alone determines permissions.
+            const effectiveRole: UserRole = r.role === 'ADMIN' || r.role === 'AREA_INCHARGE'
+              ? r.role : 'EMPLOYEE';
 
             const areaString = assignedAreas.join(', ');
 
@@ -422,22 +393,20 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
       nextAssignedAreas = [];
     } else if (targetAssignedAreas !== undefined) {
       nextAssignedAreas = targetAssignedAreas.map((a) => a.trim()).filter(Boolean);
-    } else if (newRole === 'AREA_INCHARGE') {
-      nextAssignedAreas = prev.assignedAreas.length > 0
-        ? [...prev.assignedAreas]
-        : (prev.area ? prev.area.split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean) : []);
     } else {
-      // Switching to EMPLOYEE without targetAssignedAreas: clear assignedAreas
-      nextAssignedAreas = [];
+      // Area assignment is independent of role; even an EMPLOYEE can have
+      // descriptive assigned areas without management permissions.
+      nextAssignedAreas = [...prev.assignedAreas];
     }
 
     // Deduplicate
     nextAssignedAreas = Array.from(new Set(nextAssignedAreas));
 
-    // If assigned areas exist and not ADMIN, effective role is AREA_INCHARGE
-    const effectiveRole: UserRole = (newRole !== 'ADMIN' && nextAssignedAreas.length > 0)
-      ? 'AREA_INCHARGE'
-      : (newRole === 'AREA_INCHARGE' && nextAssignedAreas.length === 0 ? 'EMPLOYEE' : newRole);
+    const effectiveRole: UserRole = newRole;
+    if (newRole === 'AREA_INCHARGE' && nextAssignedAreas.length === 0) {
+      error('Assign at least one ward before setting AREA_INCHARGE. Wards alone never change the role.');
+      return;
+    }
 
     const nextAreaString = nextAssignedAreas.join(', ');
 
@@ -511,11 +480,11 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
       const current = rolesMap[normId];
       const currentAreas = current?.assignedAreas || [];
       const updatedAreas = currentAreas.filter((w) => w !== wardToRemove);
-      const targetRole: UserRole = current?.role === 'ADMIN'
-        ? 'ADMIN'
-        : updatedAreas.length > 0
-        ? 'AREA_INCHARGE'
-        : 'EMPLOYEE';
+      const targetRole: UserRole = current?.role || 'EMPLOYEE';
+      if (targetRole === 'AREA_INCHARGE' && updatedAreas.length === 0) {
+        error('Change the role to EMPLOYEE explicitly before removing the final assigned ward.');
+        return;
+      }
       await handleRoleChange(empId, targetRole, updatedAreas);
     } finally {
       removingWardsRef.current.delete(removeKey);
@@ -719,8 +688,9 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
                             areasList={areasList}
                             disabled={updatingEmpId === officer.employeeId}
                             onSave={(newAreas) => {
-                              const targetRole: UserRole = newAreas.length > 0 ? 'AREA_INCHARGE' : 'EMPLOYEE';
-                              handleRoleChange(officer.employeeId, targetRole, newAreas);
+                              // Editing wards cannot change role; server rejects
+                              // an Area Incharge with no assigned areas.
+                              handleRoleChange(officer.employeeId, role, newAreas);
                             }}
                           />
                         ) : (

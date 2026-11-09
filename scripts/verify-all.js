@@ -1088,7 +1088,7 @@ const suites = [
     originalFilename: "verify-security-and-access.js",
     mode: "module",
     expectedChecks: 30,
-    sha256: "4488d8454c59ecb211d9085130456685f8d83903ec92f06e28d33acbd8883fa3",
+    sha256: "f891a8a51df17c48d3725a5b1a96e0484eb5be0309fbf0dac0f335f2bfddf0f4",
     source: `/**
  * Security & Access Verification Suite
  *
@@ -1374,11 +1374,11 @@ function simulateCheckCNEActionAuthorized(session, record) {
       return null;
     }
 
-    // 2. Check if responsible Area Incharge for internal CNE (CENTRAL or DEPARTMENTAL)
+    // 2. Area Incharge operational authority applies only to Departmental CNE
     const type = String(record.cneType || '').trim().toUpperCase();
     if (
       (role === 'AREA_INCHARGE' || role === 'INCHARGE') &&
-      (type === 'CENTRAL' || type === 'DEPARTMENTAL' || type === 'DEPT')
+      type === 'DEPARTMENTAL'
     ) {
       const assignedAreas = (session.assignedAreas || (session.assignedArea ? [session.assignedArea] : []))
         .map(a => String(a).trim().toLowerCase());
@@ -1476,12 +1476,15 @@ runTest('Area Incharge operational authorization strictly excludes External CNE 
     resourcePersonEmpId: 'RP-900'
   };
 
-  // 1. AREA_INCHARGE + assigned matching area + CENTRAL -> allowed
+  // 1. AREA_INCHARGE alone cannot operate Central CNE even in their own area
   assert.strictEqual(
-    simulateCheckCNEActionAuthorized(matchingAreaIncharge, centralCne),
-    null,
-    'Area Incharge with matching area must be authorized for CENTRAL CNE operational actions'
+    simulateCheckCNEActionAuthorized(matchingAreaIncharge, centralCne).errorCode,
+    'FORBIDDEN',
+    'Area Incharge cannot manage Central CNE solely through their assigned area'
   );
+  assert.strictEqual(simulateCheckCNEActionAuthorized(
+    { employeeId: 'RP-900', role: 'AREA_INCHARGE', assignedAreas: ['ICU-A'] }, centralCne
+  ), null, 'Explicitly assigned Central CNE Resource Person must retain operational access');
 
   // 2. AREA_INCHARGE + assigned matching area + DEPARTMENTAL -> allowed
   assert.strictEqual(
@@ -1528,15 +1531,14 @@ runTest('Area Incharge operational authorization strictly excludes External CNE 
 
   // Backend Code.gs source verification
   assert.ok(
-    codeGs.includes("actionCneType === 'CENTRAL' || actionCneType === 'DEPARTMENTAL'"),
-    'Code.gs must restrict Area Incharge branch to CENTRAL or DEPARTMENTAL CNE types'
+    codeGs.includes("actionCneType === 'DEPARTMENTAL'"),
+    'Code.gs must restrict Area Incharge operational actions to Departmental CNE only'
   );
 
   // Frontend CNESchedule.tsx canOperateCne source verification
   assert.ok(
-    cneSchedule.includes("cne.cneType === 'CENTRAL' ||\\n      cne.cneType === 'DEPARTMENTAL'") ||
-    cneSchedule.includes("cne.cneType === 'CENTRAL' || cne.cneType === 'DEPARTMENTAL'"),
-    'CNESchedule.tsx canOperateCne must require internal CNE type before granting Area Incharge operational access'
+    cneSchedule.includes("cne.cneType === 'DEPARTMENTAL' && isConcernedAreaIncharge(cne)"),
+    'CNESchedule.tsx must authorize Area Incharge only for Departmental CNE'
   );
 });
 
@@ -1552,10 +1554,7 @@ runTest('Frontend canOperateCne strictly excludes Area Incharge from External CN
         .map(a => String(a).trim().toLowerCase());
       return assignedAreas.includes(targetArea);
     };
-    const isInternalOperationalType =
-      cne.cneType === 'CENTRAL' ||
-      cne.cneType === 'DEPARTMENTAL';
-    if (isInternalOperationalType && isConcernedAreaIncharge(cne)) return true;
+    if (cne.cneType === 'DEPARTMENTAL' && isConcernedAreaIncharge(cne)) return true;
     const userEmpId = String(user.employeeId || '').trim().toUpperCase();
     const rawRp = [cne.resourcePersonEmpId, ...(cne.resourcePersonEmpIds || [])].filter(Boolean).join(',');
     const rpList = rawRp.split(/[,;\\n]+/).map(s => String(s).trim().toUpperCase()).filter(Boolean);
@@ -1601,8 +1600,9 @@ runTest('Frontend canOperateCne strictly excludes Area Incharge from External CN
     resourcePersonEmpId: 'RP-900'
   };
 
-  // 1. AREA_INCHARGE + assigned matching area + CENTRAL -> allowed
-  assert.strictEqual(simulateCanOperateCne(matchingAreaIncharge, centralCne), true, 'Area Incharge must be allowed for CENTRAL');
+  // 1. AREA_INCHARGE alone cannot operate Central CNE even in their own area
+  assert.strictEqual(simulateCanOperateCne(matchingAreaIncharge, centralCne), false, 'Area Incharge must be denied for CENTRAL');
+  assert.strictEqual(simulateCanOperateCne({employeeId:'RP-900',role:'AREA_INCHARGE',assignedAreas:['ICU-A']},centralCne),true,'Assigned Central CNE RP must be allowed even when also Area Incharge');
 
   // 2. AREA_INCHARGE + assigned matching area + DEPARTMENTAL -> allowed
   assert.strictEqual(simulateCanOperateCne(matchingAreaIncharge, deptCne), true, 'Area Incharge must be allowed for DEPARTMENTAL');
@@ -7360,7 +7360,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-interest.js",
     mode: "module",
     expectedChecks: 46,
-    sha256: "8378434f7292c5e5e9f1970976c0196b02a382ba6c9b94d6c5abce5b3e245b44",
+    sha256: "21129a6d91265920f6946650679af7ebd4ab4adb194ac6be1577f9513c0089e0",
     source: `/**
  * ============================================================================
  * EXECUTABLE BEHAVIORAL TEST SUITE: CNE Expression of Interest (Phase 1)
@@ -8037,14 +8037,17 @@ runBehavioralTest('11. Area Incharge is authorized for CNEs within their assigne
     passwordVersion: 1
   };
 
-  // CNE-2026-FUT1 is in ICU -> Authorized
-  const inScopeRes = sandbox.handleGetCneInterestedParticipants({ cneId: 'CNE-2026-FUT1' }, inchargeIcuSession);
-  assert.strictEqual(inScopeRes.success, true, 'Area Incharge must be allowed for their assigned area (ICU)');
+  // Central CNE in ICU: incharge role and ICU scope alone must NOT grant access.
+  const centralRes = sandbox.handleGetCneInterestedParticipants({ cneId: 'CNE-2026-FUT1' }, inchargeIcuSession);
+  assert.strictEqual(centralRes.success, false, 'Area Incharge must not manage Central CNE');
+  assert.strictEqual(centralRes.errorCode, 'FORBIDDEN');
 
-  // CNE-2026-FUT2 is in OT -> Denied
+  // Departmental CNE in OT: a matching explicitly assigned Incharge is allowed.
+  const otIncharge = { ...inchargeIcuSession, assignedArea:'OT', assignedAreas:['OT'] };
+  const inScopeRes = sandbox.handleGetCneInterestedParticipants({ cneId: 'CNE-2026-FUT2' }, otIncharge);
+  assert.strictEqual(inScopeRes.success, true, 'OT Incharge must manage their Departmental CNE');
   const outOfScopeRes = sandbox.handleGetCneInterestedParticipants({ cneId: 'CNE-2026-FUT2' }, inchargeIcuSession);
-  assert.strictEqual(outOfScopeRes.success, false);
-  assert.strictEqual(outOfScopeRes.errorCode, 'FORBIDDEN', 'Area Incharge must be denied for out-of-scope area (OT)');
+  assert.strictEqual(outOfScopeRes.errorCode, 'FORBIDDEN', 'Unrelated Area Incharge cannot manage Departmental CNE');
 });
 
 runBehavioralTest('12. Assigned Resource Person is authorized for their assigned CNE and denied for unassigned CNEs', () => {
@@ -8810,7 +8813,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-read-performance.cjs",
     mode: "commonjs",
     expectedChecks: 40,
-    sha256: "467b3396bbf1e98d7ce196a9146fb94e5bdd197a11ebb957d34702d6085bfd0f",
+    sha256: "5a6c5350915ddc426295a4e70f68d486e7e5c2f0ebb6244a0f225c82501638c1",
     source: `/**
  * CNE Read Performance & Bounded Query Regression Verification Suite
  *
@@ -9288,8 +9291,8 @@ runTest('CNE Schedule records load independently of Area and Teaching Mode maste
     'CNESchedule must NOT gate schedule record rendering behind ward/staff master fetching'
   );
   assert.ok(
-    cneScheduleSource.includes('await ApiService.getCNESchedulePage({'),
-    'CNESchedule must await the status-scoped backend API without downloading the full history'
+    cneScheduleSource.includes('await ApiService.getCNEScheduleAll()'),
+    'CNESchedule must await one authorized complete Schedule dataset, independent of master data'
   );
 
   // 2. Behavioral simulation: verify that schedule records resolve independently of slow master data
@@ -9309,7 +9312,7 @@ runTest('CNE Schedule records load independently of Area and Teaching Mode maste
         resolve({ success: true, data: [{ name: 'Lecture', status: 'ACTIVE' }] });
       }, 250);
     }),
-    getCNESchedulePage: () => new Promise((resolve) => {
+    getCNEScheduleAll: () => new Promise((resolve) => {
       setTimeout(() => {
         scheduleLoaded = true;
         resolve({ success: true, data: { records: [{ cneId: 'CNE-2026-PERF1', topic: 'Trauma' }], total: 1, hasMore: false } });
@@ -9322,7 +9325,7 @@ runTest('CNE Schedule records load independently of Area and Teaching Mode maste
       void mockApiService.getAreas();
       void mockApiService.getTeachingModes();
     }
-    const res = await mockApiService.getCNESchedulePage({status: 'Scheduled'});
+    const res = await mockApiService.getCNEScheduleAll();
     return res.data.records;
   };
 
@@ -9346,8 +9349,8 @@ runTest('Ordinary staff are not blocked by or requested for unnecessary schedule
     'CNESchedule must compute canScheduleCne for Admin or Area Incharge roles only'
   );
   assert.ok(
-    cneScheduleSource.includes('if (canScheduleCne) {'),
-    'CNESchedule must gate master data requests strictly behind canScheduleCne'
+    cneScheduleSource.includes('if (!canScheduleCne || !(isAddClassOpen || isDeptScheduleOpen || isUnscheduledOpen || editingCne)) return;'),
+    'CNESchedule must defer master data requests until a permitted creation/edit dialog opens'
   );
 
   // 2. Behavioral verification: staff user triggers 0 master data calls
@@ -9365,7 +9368,7 @@ runTest('Ordinary staff are not blocked by or requested for unnecessary schedule
   const mockApi = {
     getAreas: () => { areasCallCount++; return Promise.resolve({ success: true, data: [] }); },
     getTeachingModes: () => { teachingModesCallCount++; return Promise.resolve({ success: true, data: [] }); },
-    getCNESchedulePage: () => { cneRecordsCallCount++; return Promise.resolve({ success: true, data: [{ cneId: 'CNE-1' }] }); }
+    getCNEScheduleAll: () => { cneRecordsCallCount++; return Promise.resolve({ success: true, data: [{ cneId: 'CNE-1' }] }); }
   };
 
   // Simulate CNESchedule loadData workflow for staff user
@@ -9373,10 +9376,10 @@ runTest('Ordinary staff are not blocked by or requested for unnecessary schedule
     void mockApi.getAreas();
     void mockApi.getTeachingModes();
   }
-  return mockApi.getCNESchedulePage({status:'Scheduled'}).then((res) => {
+  return mockApi.getCNEScheduleAll().then((res) => {
     assert.strictEqual(areasCallCount, 0, 'getAreas must NOT be called for ordinary staff');
     assert.strictEqual(teachingModesCallCount, 0, 'getTeachingModes must NOT be called for ordinary staff');
-    assert.strictEqual(cneRecordsCallCount, 1, 'getCNESchedulePage must be called for ordinary staff');
+    assert.strictEqual(cneRecordsCallCount, 1, 'getCNEScheduleAll must be called for ordinary staff');
     assert.strictEqual(res.success, true);
   });
 });
@@ -9598,7 +9601,7 @@ runTest('Authorization checks and employee role restrictions are strictly enforc
   assert.strictEqual(assignedRpRes.success, true, 'Assigned Resource Person must be authorized');
 
   const concernedIncRes = env.sandbox.handleGetCNEParticipants({ cneId: 'CNE-2026-PERF1' }, concernedAreaInchargeSession);
-  assert.strictEqual(concernedIncRes.success, true, 'Concerned Area Incharge must be authorized');
+  assert.strictEqual(concernedIncRes.errorCode, 'FORBIDDEN', 'Area Incharge must not access Central CNE participant management solely by ward');
 
   const adminRes = env.sandbox.handleGetCNEParticipants({ cneId: 'CNE-2026-PERF1' }, adminSession);
   assert.strictEqual(adminRes.success, true, 'Admin must be authorized');
@@ -9609,8 +9612,8 @@ runTest('Authorization checks and employee role restrictions are strictly enforc
   assert.strictEqual(progUnauth.errorCode, 'UNAUTHORIZED');
 
   const progStaff = env.sandbox.handleGetCNEActivityProgress({ cneId: 'CNE-2026-PERF1' }, staffSession);
-  assert.strictEqual(progStaff.success, false);
-  assert.strictEqual(progStaff.errorCode, 'FORBIDDEN');
+  assert.strictEqual(progStaff.success, true, 'Employees may view non-sensitive CNE progress status');
+  assert.ok(progStaff.data && typeof progStaff.data.questionsStatus === 'string');
 });
 
 // -----------------------------------------------------------------------------
@@ -9670,7 +9673,7 @@ runTest('Edge cases (empty CNEs, missing records, invalid IDs) are handled safel
 // -----------------------------------------------------------------------------
 // Schedule-specific endpoint regression: real Google Apps Script handlers
 // -----------------------------------------------------------------------------
-runTest('Schedule status endpoint filters before delivery and protects historical pages', () => {
+runTest('Schedule status endpoint filters history for all authenticated users and redacts management fields', () => {
   const env = createFreshTestEnvironment();
   const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
   const staff = {employeeId:'EMP-STF-001',role:'EMPLOYEE',assignedAreas:[]};
@@ -9681,8 +9684,10 @@ runTest('Schedule status endpoint filters before delivery and protects historica
   assert.ok(scheduled.data.records.every(c=>c.status==='Scheduled'));
   const staffHistory=env.sandbox.handleGetCNESchedulePage({status:'Completed'},staff);
   assert.strictEqual(staffHistory.success,true);
-  assert.strictEqual(staffHistory.data.total,0,'Staff must not see any restricted historical CNE count');
-  assert.strictEqual(staffHistory.data.records.length,0);
+  assert.strictEqual(staffHistory.data.total,1,'Authenticated staff can view completed CNE listings');
+  assert.strictEqual(staffHistory.data.records.length,1);
+  assert.strictEqual(staffHistory.data.records[0].adminRemarks,'','Staff must not see admin remarks');
+  assert.strictEqual(staffHistory.data.records[0].proposedByEmpId,'','Staff must not see proposer IDs');
   const adminHistory=env.sandbox.handleGetCNESchedulePage({status:'Completed',page:1,pageSize:1},admin);
   assert.strictEqual(adminHistory.success,true);
   assert.strictEqual(adminHistory.data.total,1);
@@ -9702,9 +9707,9 @@ runTest('Calendar deep-link reads only authorized CNE and fails closed', () => {
   const allowed=env.sandbox.handleGetCNEScheduleById({cneId:'CNE-2026-PERF2'},admin);
   assert.strictEqual(allowed.success,true);
   assert.strictEqual(allowed.data.status,'Completed');
-  const denied=env.sandbox.handleGetCNEScheduleById({cneId:'CNE-2026-PERF2'},staff);
-  assert.strictEqual(denied.success,false);
-  assert.strictEqual(denied.errorCode,'NOT_FOUND');
+  const staffHistoryDetail=env.sandbox.handleGetCNEScheduleById({cneId:'CNE-2026-PERF2'},staff);
+  assert.strictEqual(staffHistoryDetail.success,true,'Staff can view completed CNE details');
+  assert.strictEqual(staffHistoryDetail.data.adminRemarks,'','Private fields must be redacted');
   const anonymous=env.sandbox.handleGetCNESchedulePage({status:'Scheduled'},null);
   assert.strictEqual(anonymous.success,false);
   assert.strictEqual(anonymous.errorCode,'UNAUTHORIZED');
@@ -9753,7 +9758,8 @@ runTest('Calendar monthly endpoint returns only overlapping authorized CNEs', ()
   assert.strictEqual(sheet.getDataRangeCount,0,'Calendar must never call getDataRange for all CNEs');
   const restricted=env.sandbox.handleGetCNECalendarMonth({year:2026,month:10},staff);
   assert.strictEqual(restricted.success,true);
-  assert.strictEqual(restricted.data.length,0,'Historical CNEs must not leak to ordinary employees');
+  assert.strictEqual(restricted.data.length,1,'Authenticated staff may view historical CNE Calendar listings');
+  assert.strictEqual(restricted.data[0].adminRemarks,'','Calendar must redact admin remarks');
   const noSession=env.sandbox.handleGetCNECalendarMonth({year:2026,month:10},null);
   assert.strictEqual(noSession.success,false);
   assert.strictEqual(noSession.errorCode,'UNAUTHORIZED');
@@ -9940,7 +9946,7 @@ runTest('Stage 3 report response lookup uses sparse bounded rows and retains B:J
     'Sparse report response rows must avoid whole-history wide scans');
 });
 
-runTest('Schedule search first narrows by status/date and still enforces historical permissions', () => {
+runTest('Schedule search narrows by status/date and allows authenticated historical viewing', () => {
   const env=createFreshTestEnvironment();
   const sheet=env.cneSpreadsheet.getSheetByName('CNE Schedule');
   const historical=[...sheet.grid[2]];
@@ -9959,8 +9965,10 @@ runTest('Schedule search first narrows by status/date and still enforces histori
   assert.ok(sheet.readOps.filter(op=>op.numCols>1).every(op=>op.numRows<=160),
     'Search should materialize only status/date candidates, not full historic rows');
   const employee={employeeId:'EMP-STF-001',role:'EMPLOYEE',assignedAreas:[]};
-  const denied=env.sandbox.handleGetCNESchedulePage({status:'Completed',fromDate:'2026-10-01',toDate:'2026-10-31',search:'sterilization'},employee);
-  assert.strictEqual(denied.data.total,0,'Historical search must not disclose unauthorized records');
+  const staffResult=env.sandbox.handleGetCNESchedulePage({status:'Completed',fromDate:'2026-10-01',toDate:'2026-10-31',search:'sterilization'},employee);
+  assert.strictEqual(staffResult.success,true);
+  assert.strictEqual(staffResult.data.total,1,'Historical programme listing should be visible to authenticated staff');
+  assert.strictEqual(staffResult.data.records[0].cneId,'CNE-2026-PERF2');
 });
 
 runTest('Sparse Schedule rows use bounded windows instead of whole-history reads', () => {
@@ -12832,6 +12840,104 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   }
 }
 
+// Page-scoped CNE Schedule: initial authorized snapshot, local filters, no cross-view cache.
+{
+  const scheduleSource = readFileSync(join(ROOT_DIR,'src/components/CNESchedule.tsx'),'utf8');
+  const apiSource = readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+  const appSource = readFileSync(join(ROOT_DIR,'src/App.tsx'),'utf8');
+  const gasSource = readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const verifySchedule = (name, test) => {
+    focusedChecks.push({name});
+    try { test(); focusedPassed++; console.log('✓ ' + name); }
+    catch (e) { console.error('✗ ' + name + ': ' + e.message); }
+  };
+  console.log('\n>>> CNE Schedule single-load, page-only state regression checks');
+  verifySchedule('New Schedule endpoint requires authentication and returns exactly the authorized complete list', () => {
+    const env = {console,Date,Map,Set,Logger:{log:()=>{}}};
+    vm.createContext(env);
+    vm.runInContext(gasSource,env,{timeout:14000});
+    assert.equal(env.handleGetCNEScheduleAll({},null).errorCode,'UNAUTHORIZED');
+    const received=[];
+    env.handleGetCNERecords = (_,session) => {
+      received.push(session.employeeId);
+      return {success:true,data:[{cneId:'A',fromDate:'2026-09-02'}, {cneId:'B',fromDate:'2026-11-04'}, {cneId:'C',fromDate:'2026-11-04'}]};
+    };
+    const result=env.handleGetCNEScheduleAll({}, {employeeId:'E-123',role:'EMPLOYEE'});
+    assert(result.success && result.data.total===3);
+    assert.equal(result.data.records.map(v=>v.cneId).join(','),'C,B,A');
+    assert.equal(received.join(','),'E-123');
+    assert(gasSource.includes('var result = handleGetCNERecords({}, session)'));
+    assert(gasSource.includes("case 'getCNEScheduleAll'"));
+  });
+  verifySchedule('Schedule API action is prohibited from persistent browser storage', () => {
+    assert(apiSource.includes("'getCNEScheduleAll',"));
+    assert(apiSource.includes("return this.executeAction('getCNEScheduleAll')"));
+    const denied=apiSource.slice(apiSource.indexOf('const NEVER_CACHEABLE_PROTECTED_ACTIONS'), apiSource.indexOf('export function isPublicCacheableAction'));
+    assert(denied.includes("'getCNEScheduleAll'"));
+  });
+  verifySchedule('Filters and pagination never appear in the Schedule dataset effect dependencies', () => {
+    assert(scheduleSource.includes('}, [sessionKey, isScheduleMainPage]);'));
+    assert(scheduleSource.includes('}, [statusFilter, searchTerm, fromDateFilter, toDateFilter]);'));
+    assert(!scheduleSource.includes('loadNextHistoryPage'));
+    assert(!scheduleSource.includes('historyHasMore'));
+    assert(!scheduleSource.includes('debouncedSearch'));
+  });
+  verifySchedule('Leaving main Schedule or opening CNE Details discards records and rejects late results', () => {
+    assert(scheduleSource.includes('const isScheduleMainPage = !('));
+    for (const flag of ['selectedDetailCne','activeReferenceCne','activeQuestionsCne','activeQRCne','activeParticipantsCne','activeFinalizeCne','activePostTest','editingCne']) {
+      const block=scheduleSource.slice(scheduleSource.indexOf('const isScheduleMainPage'),scheduleSource.indexOf('const loadData = async'));
+      assert(block.includes(flag), flag+' is not treated as a detail view');
+    }
+    assert(scheduleSource.includes('dataRequestRef.current += 1; // Ignore any late response'));
+    assert(scheduleSource.includes('return () => { dataRequestRef.current += 1; };'));
+    assert(appSource.includes("activeView === 'cne-schedule' && (") && appSource.includes('<CNESchedule user={user}'));
+    assert(scheduleSource.includes('deepLinkPending || selectedDetailCne') && scheduleSource.includes('setDeepLinkPending(false)'));
+  });
+  verifySchedule('CNE detail mutation refreshes one detail record; returning to list fetches again', () => {
+    const segment=scheduleSource.slice(scheduleSource.indexOf('const handleChildModalUpdated'),scheduleSource.indexOf('const handleAddExternalRp'));
+    assert(segment.includes('ApiService.getCNEScheduleById(cneId)'));
+    assert(!segment.includes('loadData('));
+    assert(scheduleSource.includes('onClose={() => setSelectedDetailCne(null)}'));
+    assert(!scheduleSource.includes('invalidateCNECalendarCache(user)'));
+  });
+  verifySchedule('Page-level retry is shown below an error and uses the fresh authenticated API', () => {
+    assert(scheduleSource.includes('loadError ? ('));
+    assert(scheduleSource.includes('onClick={() => void loadData()} disabled={loading}'));
+    assert(scheduleSource.includes('Retry</button>'));
+    assert(scheduleSource.includes("setLoadError(e?.message || 'Unable to load CNE Schedule.')"));
+  });
+  verifySchedule('Local Schedule status/date/search filters preserve former descending order before pagination', () => {
+    const section=scheduleSource.slice(scheduleSource.indexOf('const availableClasses = useMemo('), scheduleSource.indexOf('// Schedule Table Pagination:'));
+    assert(section.includes('statusFilter.toLowerCase()'));
+    assert(section.includes("status === 'cancelled'"));
+    assert(section.includes('if (fromDateFilter && (end || start) < fromDateFilter) return false;'));
+    assert(section.includes('if (toDateFilter && (start || end) > toDateFilter) return false;'));
+    assert(section.includes('searchable.includes(needle)'));
+    assert(section.includes('bDate.localeCompare(aDate) || b.index - a.index'));
+    assert(scheduleSource.includes('availableClasses.slice(start, start + pageSize)'));
+    // Evaluate the very memo body from the React component with a tiny React/useMemo fixture.
+    const expr=section.slice(section.indexOf('const availableClasses = '),section.lastIndexOf(';')+1);
+    const compile=new Function('classes','statusFilter','searchTerm','fromDateFilter','toDateFilter','canViewScheduleRecord',
+      'parseToIsoDateString','getCneStatus', 'useMemo', expr+'\nreturn availableClasses;');
+    const fixture=[
+      {cneId:'A',status:'Scheduled',fromDate:'2026-11-01',toDate:'2026-11-03',topic:'Safe Care',area:'ICU'},
+      {cneId:'B',status:'Completed',fromDate:'2026-11-10',toDate:'2026-11-10',topic:'Sepsis',area:'NICU'},
+      {cneId:'C',status:'Canceled',fromDate:'2026-11-05',toDate:'2026-11-07',topic:'Maternal Care',area:'Ward'},
+      {cneId:'D',status:'Scheduled',fromDate:'2026-11-01',toDate:'2026-11-03',topic:'Safe Care',area:'ICU'}
+    ];
+    let calls=0; const useMemo=(fn)=>{calls++;return fn();};
+    const calc=(status,search='',from='',to='')=>compile(fixture,status,search,from,to,()=>true,x=>String(x||'').slice(0,10),x=>String(x?.status||'Scheduled').toLowerCase(),useMemo);
+    assert.equal(calc('Scheduled').map(r=>r.cneId).join(','),'D,A');
+    assert.equal(calc('ALL').map(r=>r.cneId).join(','),'B,C,D,A');
+    assert.equal(calc('Completed').map(r=>r.cneId).join(','),'B');
+    assert.equal(calc('Canceled').map(r=>r.cneId).join(','),'C');
+    assert.equal(calc('ALL','nICu').map(r=>r.cneId).join(','),'B');
+    assert.equal(calc('ALL','','2026-11-02','2026-11-06').map(r=>r.cneId).join(','),'C,D,A');
+    assert.equal(calc('ALL','','2026-11-08','2026-11-09').length,0);
+    assert.equal(calls,7);
+  });
+}
+
 // CNE details action consolidation, EOI load gating and date-descending schedule ordering.
 // The same runner tests actual backend sorting functions, not just source strings.
 if (selected.some(item => item.id === 'performance') && passed === selected.length) {
@@ -13409,7 +13515,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     ['Central new-CNE mode starts blank and is reset on reopening or success',()=>{
       assert(central.includes("const [newMode, setNewMode] = useState('')"));
       assert(central.includes("setNewMode('');\n                  setIsAddClassOpen(true)"));
-      assert(central.includes("setNewMode('');\n        loadData(true);"));
+      assert(central.includes("setNewMode('');"));
+      assert(!central.includes('invalidateCNECalendarCache(user)'));
       assert(!central.includes('setNewMode(preferredTeachingMode)'));
     }],
     ['Central mode-master refresh cannot silently select a mode',()=>{
@@ -14221,7 +14328,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       const calendar = readFileSync(join(ROOT_DIR,'src/components/CNECalendar.tsx'),'utf8');
       const schedule = readFileSync(join(ROOT_DIR,'src/components/CNESchedule.tsx'),'utf8');
       assert(!calendar.includes('Loading CNE Calendar...') && !calendar.includes('cne-calendar-loading-spinner'));
-      assert(calendar.includes('<LoadingProgress label="Fetching scheduled CNE programmes"'));
+      assert(calendar.includes('<LoadingProgress label="Fetching CNE Calendar programmes"'));
       assert(calendar.includes('<LoadingProgress label="Refreshing scheduled CNE programmes"'));
       assert(!/\{loading \? \([\s\S]*?<Loader2 className="w-8 h-8 animate-spin text-teal-600" \/>\s*<LoadingProgress/.test(schedule));
       assert(!/\{loading && records.length === 0 \? \([\s\S]*?<Loader2 className="w-8 h-8 animate-spin text-teal-600" \/>\s*<LoadingProgress/.test(records));
@@ -14257,16 +14364,23 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(quiz.includes('getQuizHomeCore()')&&quiz.includes('getQuizHomeDashboard()'));
       assert(quiz.includes('!coreReady || dashboardLoading'));
     }],
-    ['CNE Schedule caches authorized pages, invalidates after mutations', () => {
-      assert(schedule.includes('scheduleCache.current.get(key)'));
-      assert(schedule.includes('loadData(true)'));
-      assert(schedule.includes('invalidateCNECalendarCache(user)'));
-      assert(schedule.includes('getCNESchedulePage({'));
+    ['CNE Schedule stores one authorized dataset only while the main page is active', () => {
+      assert(schedule.includes('const [classes, setClasses] = useState<CNERecord[]>([])'));
+      assert(schedule.includes('await ApiService.getCNEScheduleAll()'));
+      assert(!schedule.includes('getCNESchedulePage({'));
+      assert(!schedule.includes('scheduleCache.current.get(key)'));
+      assert(schedule.includes('if (!isScheduleMainPage) {') && schedule.includes('setClasses([])'));
+      assert(!schedule.includes('invalidateCNECalendarCache(user)'));
     }],
-    ['CNE Calendar reuses month cache until expiration or mutation', () => {
-      assert(calendar.includes('CALENDAR_CACHE_TTL_MS'));
-      assert(calendar.includes('if (!cached || Date.now() - cached.loadedAt > CALENDAR_CACHE_TTL_MS)'));
-      assert(calendar.includes('invalidateCNECalendarCache'));
+    ['CNE Calendar loads once per mounted visit and changes months locally', () => {
+      assert(calendar.includes('ApiService.getCNEScheduleAll()'));
+      assert(!calendar.includes('ApiService.getCNECalendarMonth('));
+      assert(!calendar.includes('calendarRecordsForSession') && !calendar.includes('CALENDAR_CACHE_TTL_MS'));
+      assert(calendar.includes('return () => { requestGeneration.current += 1; };'));
+      assert(calendar.includes('setCneRecords([])') && calendar.includes('setHasLoaded(false)'));
+      assert(calendar.includes('onClose={() => { setFullDetailsCne(null); void loadEvents(); }}'));
+      const prevMonth = calendar.slice(calendar.indexOf('const prevMonth ='),calendar.indexOf('const monthNames ='));
+      assert(!prevMonth.includes('ApiService.') && !prevMonth.includes('loadEvents('));
     }],
     ['My CNE Records filters locally and PDF exports only matching records', () => {
       assert(records.includes('const filteredRecords = React.useMemo('));
@@ -14291,8 +14405,69 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(progress.includes('Math.round((loaded / total) * 100)'));
       assert(progress.includes('cne-loading-indeterminate'));
       assert(recordsUi.includes('loaded={loadProgress.loaded} total={loadProgress.total}'));
-      assert(calendarUi.includes('<LoadingProgress label="Fetching scheduled CNE programmes"'));
+      assert(calendarUi.includes('<LoadingProgress label="Fetching CNE Calendar programmes"'));
       assert(quiz.includes('<LoadingProgress className="mt-2"'));
+    }],
+    ['Role elevation needs explicit Role-sheet assignment, not ward or Area-sheet membership', () => {
+      const gs=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+      const roles=readFileSync(join(ROOT_DIR,'src/components/AdminRoles.tsx'),'utf8');
+      const api=readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+      const utils=readFileSync(join(ROOT_DIR,'src/utils.ts'),'utf8');
+      const roleSection=gs.slice(gs.indexOf('function getUserRoleInfo('), gs.indexOf('function invalidateUserRoleCache'));
+      assert(!roleSection.includes("result.assignedAreas.length > 0) result.role = 'AREA_INCHARGE'"));
+      assert(!roleSection.includes("result.role = 'AREA_INCHARGE';\n        result.assignedArea = areaName"));
+      assert(roleSection.includes("rVal === 'AREA_INCHARGE'"));
+      assert(gs.includes("if (targetRole === 'AREA_INCHARGE' && !rawArea.trim())"));
+      assert(!api.includes("assignedAreas.length > 0 ? 'AREA_INCHARGE' : role"));
+      assert(!roles.includes("newAreas.length > 0 ? 'AREA_INCHARGE' : 'EMPLOYEE'"));
+      assert(roles.includes('role: effectiveRole'));
+      assert(utils.includes("!== 'DEPARTMENTAL') return false"));
+    }],
+    ['Role resolution grants Area Incharge only from explicit Role-sheet value', () => {
+      const gs=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+      const ctx={console,Date,Logger:{log:()=>{}}};vm.createContext(ctx);vm.runInContext(gs,ctx,{timeout:13000});
+      const roleRows=[
+        ['EMP-AREA','Staff nurse','Nurse','EMPLOYEE','ICU'],
+        ['EMP-INCH','Nursing officer','Nurse','AREA_INCHARGE','ICU'],
+        ['EMP-ADMIN','Administrator','Nurse','ADMIN','ICU']
+      ];
+      const sheet={
+        getLastRow:()=>roleRows.length+1,
+        getLastColumn:()=>5,
+        getRange:(r,c,n=1,w=5)=>({getValues:()=>Array.from({length:n},(_,i)=>roleRows[r-2+i]?.slice(c-1,c-1+w)??Array(w).fill(''))})
+      };
+      ctx.getRoleHeaderMeta_=()=>({sheet,empIdCol:0,roleCol:3,areaCol:4,lastCol:5});
+      ctx.findExactEmployeeRow_=(_sheet,_col,id)=>{const i=roleRows.findIndex(r=>r[0]===id);return i<0?-1:i+2;};
+      const cache={get:()=>null,put:()=>{},remove:()=>{}};
+      ctx.CacheService={getScriptCache:()=>cache};
+      const ordinary=ctx.getUserRoleInfo('EMP-AREA',true);
+      assert(ordinary.role==='EMPLOYEE' && ordinary.assignedArea==='ICU','Assigning a ward must not elevate an employee');
+      const assigned=ctx.getUserRoleInfo('EMP-INCH',true);
+      assert(assigned.role==='AREA_INCHARGE' && assigned.assignedAreas[0]==='ICU','Explicit Incharge assignment lost');
+      assert(ctx.getUserRoleInfo('EMP-ADMIN',true).role==='ADMIN','Explicit Admin role lost');
+      assert(ctx.getUserRoleInfo('EMP-NO-ROLE',true).role==='EMPLOYEE','Missing Role row must default to EMPLOYEE');
+    }],
+    ['Central CNE operations deny area-only managers but retain assigned RP access', () => {
+      const gs=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+      const ctx={};vm.createContext(ctx);vm.runInContext(gs,ctx,{timeout:13000});
+      const manager={employeeId:'INC-1',role:'AREA_INCHARGE',assignedAreas:['ICU']};
+      const central={cneId:'C-1',cneType:'CENTRAL',area:'ICU',instructor:'RP-5'};
+      const dept={cneId:'D-1',cneType:'DEPARTMENTAL',area:'ICU',instructor:'RP-5'};
+      assert(ctx.checkCNEActionAuthorized(manager,central).errorCode==='FORBIDDEN');
+      assert(ctx.checkCNEActionAuthorized(manager,dept)===null);
+      assert(ctx.checkCNEActionAuthorized({employeeId:'RP-5',role:'AREA_INCHARGE',assignedAreas:['OT']},central)===null);
+      assert(ctx.checkCNEActionAuthorized({employeeId:'RP-5',role:'EMPLOYEE'},central)===null);
+      assert(ctx.checkCNEActionAuthorized({employeeId:'ADMIN',role:'ADMIN'},central)===null);
+    }],
+    ['Schedule and Calendar share full-data endpoint but never share a browser cache', () => {
+      const gs=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+      const sc=readFileSync(join(ROOT_DIR,'src/components/CNESchedule.tsx'),'utf8');
+      const cal=readFileSync(join(ROOT_DIR,'src/components/CNECalendar.tsx'),'utf8');
+      assert(gs.includes('function handleGetCNEScheduleAll('));
+      assert(sc.includes('ApiService.getCNEScheduleAll()') && cal.includes('ApiService.getCNEScheduleAll()'));
+      assert(!sc.includes('invalidateCNECalendarCache') && !cal.includes('WeakMap'));
+      assert(!sc.includes('localStorage.setItem') && !cal.includes('localStorage.setItem'));
+      assert(cal.includes('const getIndiaCalendarDate') && cal.includes('eventsByDay'));
     }],
     ['CNE index uses clinical keywords and narrowed retrieval', () => {
       assert(bank.includes('cneMaterialClinicalKeywords_(chunkText,chunks[c].heading)'));

@@ -34,18 +34,8 @@ const CalendarInterestControls = lazy(() => import('./cne/CalendarInterestContro
 
 type CalendarEventType = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
 
-/**
- * Short-lived UI hydration while navigating between pages in the SAME login.
- * A WeakMap uses the actual authenticated SessionUser object as its key: no
- * protected CNE data is written to localStorage or shared across logins.
- * Every Calendar visit still requests fresh server-authoritative records.
- */
-const CALENDAR_CACHE_TTL_MS = 3 * 60 * 1000;
-const calendarRecordsForSession = new WeakMap<SessionUser, Map<string, { records: CNERecord[]; loadedAt: number }>>();
-// After a schedule mutation, all cached calendar months must revalidate.
-export const invalidateCNECalendarCache = (user: SessionUser) => { calendarRecordsForSession.delete(user); };
-const calendarMonthKey = (year: number, monthIndex: number) => `${year}-${monthIndex + 1}`;
-
+/** Calendar datasets are held only in this mounted component. Never persist or
+ * share month records across routes, sessions or users. */
 const getIndiaCalendarDate = () => {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kolkata',
@@ -79,13 +69,9 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
-  const monthKey = calendarMonthKey(year, month);
-  const cachedMonth = calendarRecordsForSession.get(user)?.get(monthKey)?.records;
-  // Each month has its own independent load state. A successful empty list is loaded.
-  const [cneRecords, setCneRecords] = useState<CNERecord[]>(cachedMonth ?? []);
-  const [loadedMonthKey, setLoadedMonthKey] = useState<string | null>(cachedMonth !== undefined ? monthKey : null);
-  const hasLoaded = loadedMonthKey === monthKey;
-  const [loading, setLoading] = useState(cachedMonth === undefined);
+  const [cneRecords, setCneRecords] = useState<CNERecord[]>([]);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
   const [fullDetailsCne, setFullDetailsCne] = useState<CNERecord | null>(null);
@@ -94,43 +80,41 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
     onRequestClose: () => setSelectedEvent(null),
     initialFocus: '[aria-label="Close selected CNE event"]' });
 
+  // One full authorized data request when Calendar mounts. Month changes only
+  // change currentDate; they never call Apps Script again.
   const loadEvents = useCallback(async () => {
     const generation = ++requestGeneration.current;
     setLoading(true);
     setLoadError(null);
     try {
-      const recordsRes = await ApiService.getCNECalendarMonth(year, month + 1);
+      const response = await ApiService.getCNEScheduleAll();
       if (generation !== requestGeneration.current) return;
-      if (!recordsRes.success || !Array.isArray(recordsRes.data)) {
-        setLoadError('Unable to load CNE programmes for this month. Please try again.');
+      if (!response.success || !response.data || !Array.isArray(response.data.records)) {
+        setLoadError(response.message || 'Unable to load CNE Calendar. Please try again.');
         return;
       }
-      let months = calendarRecordsForSession.get(user);
-      if (!months) { months = new Map(); calendarRecordsForSession.set(user, months); }
-      months.set(monthKey, { records: recordsRes.data, loadedAt: Date.now() });
-      setCneRecords(recordsRes.data);
-      setLoadedMonthKey(monthKey);
-    } catch (error) {
+      setCneRecords(response.data.records);
+      setHasLoaded(true); // An empty authorized dataset is a successful load.
+    } catch (err) {
       if (generation !== requestGeneration.current) return;
-      console.error('[CNE Calendar] Monthly load failed:', error);
-      setLoadError('Unable to load CNE programmes for this month. Please try again.');
+      console.error('[CNE Calendar] Complete dataset load failed:', err);
+      setLoadError('Unable to load CNE Calendar. Please try again.');
     } finally {
       if (generation === requestGeneration.current) setLoading(false);
     }
-  }, [user, year, month, monthKey]);
+  }, []);
 
   useEffect(() => {
-    const cached = calendarRecordsForSession.get(user)?.get(monthKey);
-    setCneRecords(cached?.records ?? []);
-    setLoadedMonthKey(cached !== undefined ? monthKey : null);
+    setHasLoaded(false);
+    setCneRecords([]);
+    void loadEvents();
+    return () => { requestGeneration.current += 1; };
+  }, [user.employeeId, user.token, loadEvents]);
+
+  useEffect(() => {
     setSelectedEvent(null);
     setSelectedDay(null);
-    // Switching between already-loaded months is instant. Force-refresh only
-    // after the short TTL expires, or when the user explicitly retries.
-    if (!cached || Date.now() - cached.loadedAt > CALENDAR_CACHE_TTL_MS) void loadEvents();
-    else { setLoading(false); setLoadError(null); }
-    return () => { requestGeneration.current += 1; };
-  }, [user, monthKey, loadEvents]);
+  }, [year, month]);
 
   // Unified calendar events from single authoritative CNE Schedule
   const allEvents = useMemo(() => {
@@ -152,11 +136,16 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
 
   const handleViewFullDetails = () => {
     if (!selectedEvent?.raw?.cneId) return;
+    // Leaving the main month view disposes of the complete Calendar dataset.
+    // Details keep only their currently selected record for authorization recheck.
+    requestGeneration.current += 1;
+    setCneRecords([]);
+    setHasLoaded(false);
     setFullDetailsCne(selectedEvent.raw as CNERecord);
     setSelectedEvent(null);
   };
 
-  // Month is loaded independently. Navigating to a different month never pulls full history.
+  // Month navigation is fully local, even across years.
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const firstDayIndex = new Date(year, month, 1).getDay(); // 0 is Sunday
 
@@ -191,8 +180,23 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
     return map;
   }, [allEvents, year, month, daysInMonth]);
 
-  // Do not show empty calendar cells until the authoritative CNE fetch has
-  // succeeded. This also provides a real retry action when the API fails.
+  // Full CNE Details is a separate view within Calendar; the full month dataset
+  // is gone until the user returns, when it is fetched from Google Sheets again.
+  if (fullDetailsCne) {
+    return (
+      <Suspense fallback={<div role="status" className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center text-white">Loading CNE details…</div>}>
+        <CalendarFullCneDetails
+          initialCne={fullDetailsCne}
+          user={user}
+          onClose={() => { setFullDetailsCne(null); void loadEvents(); }}
+          onManageInSchedule={() => onViewFullCneDetails(fullDetailsCne.cneId, { year, month, viewMode })}
+          onCneUpdated={() => { /* Fetch once when returning to the month view. */ }}
+        />
+      </Suspense>
+    );
+  }
+
+  // Avoid rendering a false empty calendar before the initial authorized load.
   if (!hasLoaded) {
     return (
       <div className="px-3 py-6 sm:px-6 sm:py-10">
@@ -205,12 +209,12 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
           {loading ? (
             <>
               <CalendarIcon className="h-8 w-8 text-teal-700" aria-hidden="true" />
-              <LoadingProgress label="Fetching scheduled CNE programmes" />
+              <LoadingProgress label="Fetching CNE Calendar programmes" />
             </>
           ) : (
             <>
               <CalendarIcon className="w-10 h-10 text-slate-400" aria-hidden="true" />
-              <h1 className="text-lg sm:text-xl font-bold text-slate-900">Calendar could not be loaded</h1>
+              <h1 className="text-lg sm:text-xl font-bold text-slate-900">Unable to load CNE Calendar</h1>
               <p className="text-sm text-slate-600 max-w-md">{loadError ?? 'CNE programmes are currently unavailable.'}</p>
               <button
                 type="button"
@@ -274,7 +278,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
           If refresh fails, report the issue instead of silently hiding data. */}
       {loadError && !loading && (
         <div role="alert" className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <p className="text-sm text-amber-900">Could not refresh the calendar. Showing previously loaded CNE information.</p>
+          <p className="text-sm text-amber-900">Could not refresh Calendar data. Showing the last successfully loaded records.</p>
           <button
             type="button"
             onClick={() => { void loadEvents(); }}
@@ -528,19 +532,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
           </div>
         </div>
       )}
-      {fullDetailsCne && (
-        <Suspense fallback={<div role="status" className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center text-white">Loading CNE details…</div>}>
-          <CalendarFullCneDetails
-            initialCne={fullDetailsCne}
-            user={user}
-            onClose={() => setFullDetailsCne(null)}
-            onManageInSchedule={() => {
-              onViewFullCneDetails(fullDetailsCne.cneId, { year, month, viewMode });
-            }}
-            onCneUpdated={() => { void loadEvents(); }}
-          />
-        </Suspense>
-      )}
+
     </div>
   );
 };

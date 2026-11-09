@@ -204,6 +204,7 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getCNERecords',
   'getMyCNERecordsPage',
   'getCNESchedulePage',
+  'getCNEScheduleAll',
   'getCNEAnalytics',
   'getCNECalendarMonth',
   'getCNEScheduleById',
@@ -1143,7 +1144,7 @@ export class ApiService {
 
     // For ADMIN, assignedAreas should be empty; for non-admin, keep assigned areas
     const assignedAreas = role === 'ADMIN' ? [] : rawAreas;
-    const effectiveRole: UserRole = role !== 'ADMIN' && assignedAreas.length > 0 ? 'AREA_INCHARGE' : role;
+    const effectiveRole: UserRole = role; // Only the explicit role selection grants management authority.
     const areaString = assignedAreas.join(', ');
 
     const res = await this.executeAction('updateRole', {
@@ -1196,6 +1197,11 @@ export class ApiService {
     toDate?: string;
   }): Promise<ApiResponse<{ records: CNERecord[]; total: number; page: number; pageSize: number; hasMore: boolean }>> {
     return this.executeAction('getCNESchedulePage', params);
+  }
+
+  /** One complete authorized Schedule dataset per mounted main Schedule view. Never persisted. */
+  static async getCNEScheduleAll(): Promise<ApiResponse<{records: CNERecord[]; total: number}>> {
+    return this.executeAction('getCNEScheduleAll');
   }
 
   static async getCNECalendarMonth(year: number, month: number): Promise<ApiResponse<CNERecord[]>> {

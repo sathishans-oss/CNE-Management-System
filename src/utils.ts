@@ -810,9 +810,8 @@ export function getUserAssignedAreas(user?: SessionUser | null): string[] {
 /**
  * Checks whether an Area/Ward Incharge is responsible for the CNE's area.
  *
- * This is an AREA-SCOPE helper only. It must not be used to grant Edit/Cancel/Finalize
- * lifecycle authority. Operational Progress actions may use it for both Central and
- * Departmental CNEs; lifecycle rules stay stricter in the Schedule/backend layers.
+ * AREA_INCHARGE has management authority for DEPARTMENTAL CNEs in their
+ * assigned area only. Assigned Resource Person checks are independent.
  */
 export function isCneAuthorized(
   user?: SessionUser | null,
@@ -826,13 +825,8 @@ export function isCneAuthorized(
   if (normalizedRole !== 'AREA_INCHARGE' && normalizedRole !== 'INCHARGE') return false;
   if (!cneArea) return false;
 
-  // External or non-internal CNE types never grant Area Incharge operational authority
-  if (cneType) {
-    const normType = String(cneType).trim().toUpperCase();
-    if (normType !== 'CENTRAL' && normType !== 'DEPARTMENTAL') {
-      return false;
-    }
-  }
+  // AREA_INCHARGE role alone never grants Central or External CNE authority.
+  if (String(cneType || '').trim().toUpperCase() !== 'DEPARTMENTAL') return false;
 
   const targetArea = cneArea.trim().toLowerCase();
   if (!targetArea) return false;
@@ -863,8 +857,8 @@ export function isUserAssignedResourcePerson(
  *
  * Allowed for Material, Questions, QR, Post-Test management and Attendance:
  * 1. Admin
- * 2. Concerned Area/Ward Incharge for the CNE area (Central or Departmental only)
- * 3. Resource Person assigned to this specific CNE
+ * 2. Concerned Area/Ward Incharge for DEPARTMENTAL CNE only
+ * 3. Resource Person assigned to this specific CNE (including Central)
  *
  * This helper intentionally does NOT grant Edit/Cancel/Finalize lifecycle authority.
  */
@@ -880,10 +874,7 @@ export function canManageCneActions(
   if (!user || !cne) return false;
   if (user.role === 'ADMIN') return true;
 
-  const normType = String(cne.cneType || '').trim().toUpperCase();
-  const isInternalOperationalType = normType === 'CENTRAL' || normType === 'DEPARTMENTAL';
-
-  if (isInternalOperationalType && isCneAuthorized(user, cne.area, cne.cneType)) return true;
+  if (isCneAuthorized(user, cne.area, cne.cneType)) return true;
 
   const assignedRpIds = [
     ...(cne.resourcePersonEmpIds || []),

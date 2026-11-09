@@ -904,6 +904,9 @@ function handleRequest(e, method) {
       case 'getCNESchedulePage':
         output = handleGetCNESchedulePage(params, session);
         break;
+      case 'getCNEScheduleAll':
+        output = handleGetCNEScheduleAll(params, session);
+        break;
 
       case 'getCNEScheduleById':
         output = handleGetCNEScheduleById(params, session);
@@ -1321,7 +1324,7 @@ function getUserRoleInfo(employeeId, forceFresh) {
   }
 
   var startedAt = Date.now();
-  var cacheKey = 'cne_user_role_' + normId;
+  var cacheKey = 'cne_user_role_' + normId + '_explicit_role_v2';
   try {
     var cached = forceFresh ? null : CacheService.getScriptCache().get(cacheKey);
     if (cached) {
@@ -1342,16 +1345,15 @@ function getUserRoleInfo(employeeId, forceFresh) {
         var width = Math.max(1, roleMeta.lastCol || roleMeta.sheet.getLastColumn());
         var row = roleMeta.sheet.getRange(roleRowIndex, 1, 1, width).getValues()[0];
         var rVal = String(row[roleMeta.roleCol] || '').toUpperCase().trim();
-        if (rVal === 'ADMIN' || rVal.indexOf('ADMIN') !== -1) {
+        if (rVal === 'ADMIN') {
           result.role = 'ADMIN';
-        } else if (rVal === 'AREA_INCHARGE' || rVal === 'INCHARGE' || rVal.indexOf('INCHARGE') !== -1) {
+        } else if (rVal === 'AREA_INCHARGE') {
           result.role = 'AREA_INCHARGE';
         }
         if (roleMeta.areaCol !== -1 && row[roleMeta.areaCol]) {
           var rawArea = String(row[roleMeta.areaCol]).trim();
           result.assignedArea = rawArea;
           result.assignedAreas = rawArea.split(/[,;\n]+/).map(function(v) { return v.trim(); }).filter(Boolean);
-          if (result.role !== 'ADMIN' && result.assignedAreas.length > 0) result.role = 'AREA_INCHARGE';
         }
         try { CacheService.getScriptCache().put(cacheKey, JSON.stringify(result), 60); } catch (ce) {}
         _inMemoryRoleCache[normId] = result;
@@ -1360,18 +1362,9 @@ function getUserRoleInfo(employeeId, forceFresh) {
       }
     }
 
-    // Backward-compatible fallback for installations that still store an Incharge ID
-    // directly in the Area sheet. Read only the Incharge-ID column and the matching area name.
-    var areaMeta = getAreaInchargeHeaderMeta_();
-    if (areaMeta.sheet && areaMeta.inchargeCol !== -1 && areaMeta.sheet.getLastRow() > 1) {
-      var areaRowIndex = findExactEmployeeRow_(areaMeta.sheet, areaMeta.inchargeCol + 1, normId, 2);
-      if (areaRowIndex >= 2) {
-        var areaName = String(areaMeta.sheet.getRange(areaRowIndex,cneHeaderColumn_(areaMeta.sheet,'Area')).getDisplayValue() || '').trim();
-        result.role = 'AREA_INCHARGE';
-        result.assignedArea = areaName;
-        result.assignedAreas = areaName ? [areaName] : [];
-      }
-    }
+    // The Role sheet's explicit Role cell is the ONLY authority for AREA_INCHARGE.
+    // Being listed as an Area-sheet Incharge or having an assigned ward never
+    // elevates an employee. Missing Role rows default to EMPLOYEE.
   } catch (e) {
     console.warn('Error reading role info: ' + e.message);
   }
@@ -1390,12 +1383,14 @@ function invalidateUserRoleCache(employeeId) {
     if (normId) {
       try {
         cache.remove('cne_user_role_' + normId);
+        cache.remove('cne_user_role_' + normId + '_explicit_role_v2');
       } catch (e) {}
       delete _inMemoryRoleCache[normId];
     }
     if (rawId && rawId.toLowerCase() !== normId) {
       try {
         cache.remove('cne_user_role_' + rawId.toLowerCase());
+        cache.remove('cne_user_role_' + rawId.toLowerCase() + '_explicit_role_v2');
       } catch (e) {}
       delete _inMemoryRoleCache[rawId.toLowerCase()];
     }
@@ -1502,13 +1497,13 @@ function checkCNEActionAuthorized(session, record) {
     }
 
     // 2. Operational Progress actions are allowed to the concerned Area/Ward Incharge
-    // ONLY for internal CNEs (Central and Departmental). External CNE types (EXTERNAL_OFFSITE,
-    // EXTERNAL_ONSITE) never grant Area Incharge operational authority. Lifecycle authority is
-    // intentionally stricter and remains enforced separately by checkCNEAuthorized().
+    // ONLY for DEPARTMENTAL CNEs within their assigned areas. CENTRAL CNE
+    // operations are Admin or explicitly assigned Resource Person only; External
+    // CNE types never grant Area Incharge authority. Lifecycle rules are stricter.
     var actionCneType = normalizeCNEType(record.cneType);
     if (
       (role === 'AREA_INCHARGE' || role === 'INCHARGE') &&
-      (actionCneType === 'CENTRAL' || actionCneType === 'DEPARTMENTAL')
+      actionCneType === 'DEPARTMENTAL'
     ) {
       var assignedAreas = [];
       if (session.assignedAreas && Array.isArray(session.assignedAreas)) {
@@ -1532,7 +1527,7 @@ function checkCNEActionAuthorized(session, record) {
       if (targetArea) {
         for (var ai = 0; ai < assignedAreas.length; ai++) {
           if (String(assignedAreas[ai] || '').trim().toLowerCase() === targetArea) {
-            return null; // Concerned Area/Ward Incharge for this internal CNE
+            return null; // Concerned Area/Ward Incharge for this Departmental CNE
           }
         }
       }
@@ -4485,29 +4480,11 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
     var isResourcePerson = loggedInId ? (rpArray.indexOf(loggedInId) !== -1) : false;
     var isStaffParticipant = loggedInId ? (staffArray.indexOf(loggedInId) !== -1) : false;
 
-    // CNE Schedule visibility is enforced server-side as well as in the UI:
-    // - Scheduled/non-historical records remain available for the public upcoming preview and all authenticated users.
-    // - Completed/Canceled records are visible in CNE Schedule only to Admin, the concerned Area/Ward Incharge,
-    //   or an assigned Resource Person for that CNE.
-    // - My CNE Records is handled separately below so an employee can still see their own completed participation.
-    var normalizedStatusForVisibility = String(status || '').trim().toLowerCase();
-    var isHistoricalScheduleRecord = normalizedStatusForVisibility === 'completed' || normalizedStatusForVisibility === 'canceled' || normalizedStatusForVisibility === 'cancelled';
-    if (!isMyRecordsOnly && isHistoricalScheduleRecord) {
-      if (!session) {
-        continue;
-      }
-      if (!isAdmin) {
-        var scheduleVisibilityRecord = {
-          area: area,
-          cneType: cneType,
-          resourcePersonEmpId: resourcePersonEmpId,
-          instructor: resourcePersonEmpId
-        };
-        if (checkCNEActionAuthorized(session, scheduleVisibilityRecord) !== null) {
-          continue;
-        }
-      }
-    }
+    // All authenticated employees may VIEW Scheduled, Completed and Canceled CNEs.
+    // Unauthenticated homepage previews remain Scheduled-only. This row policy
+    // is separate from write authorization and never exposes private admin fields.
+    var isHistoricalScheduleRecord = status === 'Completed' || status === 'Canceled';
+    if (!isMyRecordsOnly && isHistoricalScheduleRecord && !session) continue;
 
     // My CNE Records is always personal, regardless of role.
     // Admins and Incharges see only CNEs where they personally participated
@@ -4831,6 +4808,34 @@ function handleGetCNECalendarMonth(params, session) {
   return handleGetCNERecords({}, session, snapshot);
 }
 
+/**
+ * Page-scoped CNE Schedule entry point. Return the complete authorized dataset
+ * in one call. The existing CNE Records handler enforces both historical row
+ * visibility and field-level redaction before anything is sent to the browser.
+ * Status/search/date/pagination happen only in the mounted Schedule component.
+ * No shared or persisted Schedule cache is created here.
+ */
+function handleGetCNEScheduleAll(params, session) {
+  if (!session || !session.employeeId) {
+    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required.' };
+  }
+  var startedAt = Date.now();
+  var result = handleGetCNERecords({}, session);
+  if (!result.success) return result;
+  var records = result.data || [];
+  // Preserve existing Schedule ordering: From Date newest first and later
+  // worksheet rows first when dates tie. Stable sort indexes represent rows.
+  records = records.map(function(record, index) { return { record: record, index: index }; });
+  records.sort(function(a, b) {
+    var aDate = cneScheduleDateKey_(a.record.fromDate || a.record.date);
+    var bDate = cneScheduleDateKey_(b.record.fromDate || b.record.date);
+    return bDate.localeCompare(aDate) || b.index - a.index;
+  });
+  var authorized = records.map(function(item) { return item.record; });
+  logPerf('handleGetCNEScheduleAll', startedAt, 'authorized:' + authorized.length);
+  return { success: true, data: { records: authorized, total: authorized.length } };
+}
+
 function handleGetCNESchedulePage(params, session) {
   if (!session || !session.employeeId) return {success:false,errorCode:'UNAUTHORIZED',message:'Authentication required.'};
   params=params||{};
@@ -4869,23 +4874,9 @@ function handleGetCNESchedulePage(params, session) {
     if(!cneScheduleDateMatches_(start,end,fromDate,toDate)) continue;
     candidates.push({rowNumber:i+2,status:st,fromDate:start});
   }
-  // Historical access MUST be enforced before pagination, otherwise page totals
-  // can reveal restricted rows and pages can appear artificially empty.
-  var requiresHistory=candidates.some(function(c){return c.status!=='Scheduled';});
-  if(requiresHistory && String(session.role||'').toUpperCase()!=='ADMIN') {
-    var areaCol=cols['area']!==undefined?cols['area']:(cols['wardnamearea']!==undefined?cols['wardnamearea']:1);
-    var typeCol=cols['typeofcne']!==undefined?cols['typeofcne']:(cols['cnetype']!==undefined?cols['cnetype']:15);
-    var rpCol=cols['resourcepersonempid']!==undefined?cols['resourcepersonempid']:6;
-    var areas=getCneScheduleColumnValues_(sheet,areaCol,sheet.getLastRow());
-    var types=getCneScheduleColumnValues_(sheet,typeCol,sheet.getLastRow());
-    var rps=getCneScheduleColumnValues_(sheet,rpCol,sheet.getLastRow());
-    candidates=candidates.filter(function(c) {
-      if(c.status==='Scheduled') return true;
-      var idx=c.rowNumber-2;
-      return checkCNEActionAuthorized(session,{area:String(areas[idx]||''),cneType:normalizeCNEType(types[idx]),resourcePersonEmpId:String(rps[idx]||'')})===null;
-    });
-  }
-  // Search only the already status/date/role-filtered candidates. Preserve the
+  // All authenticated staff can browse historical Schedule records. Sensitive
+  // fields remain redacted by handleGetCNERecords before they leave the server.
+  // Search only the already status/date-filtered candidates. Preserve the
   // authoritative enrichment and exact search terms, including officer names.
   if (search) {
     var searchRows = candidates.map(function(c) { return c.rowNumber; });
@@ -6915,9 +6906,9 @@ function handleGetRoles(params, session) {
       
       var rawRole = String(data[r][roleCol] || 'EMPLOYEE').toUpperCase().trim();
       var normalizedRole = 'EMPLOYEE';
-      if (rawRole.indexOf('ADMIN') !== -1) {
+      if (rawRole === 'ADMIN') {
         normalizedRole = 'ADMIN';
-      } else if (rawRole.indexOf('INCHARGE') !== -1 || assignedAreas.length > 0) {
+      } else if (rawRole === 'AREA_INCHARGE') {
         normalizedRole = 'AREA_INCHARGE';
       }
 
@@ -6944,10 +6935,10 @@ function handleUpdateRole(params, session) {
   var employeeId = normalizeEmpId(params.employeeId);
   if (!employeeId) return { success: false, message: 'Employee ID is required.' };
   
-  var rawRole = String(params.role || 'EMPLOYEE').toUpperCase().trim();
-  var targetRole = 'EMPLOYEE';
-  if (rawRole.indexOf('ADMIN') !== -1) targetRole = 'ADMIN';
-  else if (rawRole.indexOf('INCHARGE') !== -1) targetRole = 'AREA_INCHARGE';
+  var targetRole = String(params.role || 'EMPLOYEE').toUpperCase().trim();
+  if (['EMPLOYEE', 'AREA_INCHARGE', 'ADMIN'].indexOf(targetRole) === -1) {
+    return { success: false, errorCode: 'INVALID_ROLE', message: 'Select an explicit valid Role.' };
+  }
 
   var rawArea = '';
   if (Array.isArray(params.assignedAreas)) {
@@ -6957,9 +6948,10 @@ function handleUpdateRole(params, session) {
   }
   var area = sanitizeCellInput(rawArea);
   
-  // If assigned areas exist and not ADMIN, targetRole is AREA_INCHARGE
-  if (targetRole !== 'ADMIN' && area) {
-    targetRole = 'AREA_INCHARGE';
+  // Area assignment alone cannot grant AREA_INCHARGE authority. An explicit
+  // AREA_INCHARGE role must have at least one assigned clinical area.
+  if (targetRole === 'AREA_INCHARGE' && !rawArea.trim()) {
+    return { success: false, errorCode: 'AREA_REQUIRED', message: 'Assign at least one area before setting AREA_INCHARGE.' };
   }
   
   var lock = LockService.getScriptLock();
@@ -7044,7 +7036,7 @@ function handleUpdateRole(params, session) {
     for (var r = 1; r < data.length; r++) {
       var rowEmpId = normalizeEmpId(data[r][empIdCol]);
       var rVal = String(data[r][roleCol] || 'EMPLOYEE').toUpperCase().trim();
-      if (rVal.indexOf('ADMIN') !== -1) {
+      if (rVal === 'ADMIN') {
         adminCount++;
       }
       if (rowEmpId === employeeId) {
@@ -7054,7 +7046,7 @@ function handleUpdateRole(params, session) {
     }
     
     // Prevent accidental removal of the last administrator
-    if (currentRole.indexOf('ADMIN') !== -1 && targetRole !== 'ADMIN' && adminCount <= 1) {
+    if (currentRole === 'ADMIN' && targetRole !== 'ADMIN' && adminCount <= 1) {
       return {
         success: false,
         message: 'Cannot remove the last administrator account. Please assign another administrator first.'
@@ -12739,10 +12731,10 @@ function handleGetCNEActivityProgress(params, session) {
   var record = getCNEScheduleRecord(cneId);
   if (!record) return { success: false, message: 'CNE record not found for ID: ' + cneId };
 
-  // Authorization is always checked against authoritative CNE data before any
-  // shared advisory cache is consulted.
-  var progressAuthErr = checkCNEActionAuthorized(session, record);
-  if (progressAuthErr) return progressAuthErr;
+  // Read-only programme readiness summary is available to authenticated users,
+  // including historic Central CNEs. No participant IDs, QR tokens, assessment
+  // answers or management-only fields are returned here. Mutation endpoints
+  // keep independent server-side authorization via checkCNEActionAuthorized.
 
   var progressReadStartedAt = Date.now();
   var cleanId = cneId.toUpperCase();
