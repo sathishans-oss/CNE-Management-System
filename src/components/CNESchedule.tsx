@@ -194,7 +194,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
   const { success, error } = useToast();
   const isAdmin = user?.role === 'ADMIN';
-  const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
+  const isAreaIncharge = user?.role === 'AREA_INCHARGE';
   const canScheduleCne = isAdmin || isAreaIncharge;
 
   // Load both authoritative Sheets-backed masters as one dropdown readiness check.
@@ -250,7 +250,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const dataRequestRef = useRef(0);
   const activityRequestRef = useRef(0);
   const selectedCneIdRef = useRef('');
-  selectedCneIdRef.current = selectedDetailCne?.cneId || selectedDetailCne?.classId || '';
+  selectedCneIdRef.current = selectedDetailCne?.cneId || '';
   const sessionKey = `${user?.employeeId || ''}:${user?.role || ''}:${user?.token || ''}`;
   const sessionKeyRef = useRef(sessionKey);
   sessionKeyRef.current = sessionKey;
@@ -275,7 +275,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const isFromComplete = Boolean(scheduleFromDate && scheduleFromTime);
 
   const isConcernedAreaIncharge = useCallback((cne: CNERecord) => {
-    if (!user || !(user.role === 'AREA_INCHARGE' || (user.role as string) === 'INCHARGE')) return false;
+    if (!user || !(user.role === 'AREA_INCHARGE')) return false;
     const targetArea = (cne.area || '').trim().toLowerCase();
     if (!targetArea) return false;
     return getUserAssignedAreas(user).some((area) => area.trim().toLowerCase() === targetArea);
@@ -402,7 +402,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
   // Fetch real-time CNE Activity Progress whenever a CNE details modal is opened
   useEffect(() => {
-    const selectedId = selectedDetailCne?.cneId || selectedDetailCne?.classId;
+    const selectedId = selectedDetailCne?.cneId;
     if (!selectedId) {
       setActivityProgress(null);
       setIsActivityLoading(false);
@@ -412,7 +412,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
     fetchActivityProgress(selectedId);
     return () => { activityRequestRef.current += 1; };
-  }, [selectedDetailCne?.cneId, selectedDetailCne?.classId, fetchActivityProgress]);
+  }, [selectedDetailCne?.cneId, fetchActivityProgress]);
 
   // A CNE details/progress/material/action dialog is a separate working view.
   // Discard the main-list dataset on entry and reload from Sheets on return.
@@ -506,7 +506,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   }, [canScheduleCne, isAddClassOpen, editingCne?.cneId, officersList.length, sessionKey]);
 
   const handleChildModalUpdated = async (targetCneId?: string) => {
-    const cneId = targetCneId || selectedDetailCne?.cneId || selectedDetailCne?.classId;
+    const cneId = targetCneId || selectedDetailCne?.cneId;
     if (cneId && selectedCneIdRef.current === cneId) {
       // Immediately refresh activity progress so checks, readiness counter & progress bar update
       fetchActivityProgress(cneId, true);
@@ -517,7 +517,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     try {
       const response = await ApiService.getCNEScheduleById(cneId);
       if (response.success && response.data) {
-        setSelectedDetailCne((current) => current && (current.cneId || current.classId) === cneId ? response.data! : current);
+        setSelectedDetailCne((current) => current && (current.cneId) === cneId ? response.data! : current);
       }
     } catch (err) {
       console.warn('Failed to refresh CNE modal after child update:', err);
@@ -907,7 +907,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setIsEditSubmitting(true);
     try {
       // NOTE: CNE ID is permanently immutable and cannot be changed or overwritten.
-      const targetCneId = editingCne.cneId || editingCne.classId || '';
+      const targetCneId = editingCne.cneId || '';
       const res = await ApiService.updateCNE(targetCneId, {
         topic: editTopic.trim(),
         area: editArea,
@@ -1016,7 +1016,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
     setIsCancellingCne(true);
     try {
-      const targetId = cancelTargetCne.cneId || cancelTargetCne.classId || '';
+      const targetId = cancelTargetCne.cneId || '';
       const res = await ApiService.cancelCNE(targetId, cancelReason.trim());
       if (!res.success) {
         error(res.message || 'Failed to cancel CNE.');
@@ -1041,7 +1041,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       return;
     }
     if (!deleteTargetCne || isDeletingCne) return;
-    const targetId = deleteTargetCne.cneId || deleteTargetCne.classId || '';
+    const targetId = deleteTargetCne.cneId || '';
     if (deleteConfirmId !== targetId) {
       error('Confirmation CNE ID does not match.');
       return;
@@ -1074,7 +1074,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     if (isDownloadingReport || !isCneCompleted(cne) || !canOperateCne(cne)) return;
     setIsDownloadingReport(true);
     try {
-      const cneId = cne.cneId || cne.classId || '';
+      const cneId = cne.cneId || '';
       const res = await ApiService.getCNEParticipants(cneId);
       if (!res.success || !res.data) {
         error(res.message || 'Unable to load participant data for the session report.');
@@ -1108,7 +1108,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         if (toDateFilter && (start || end) > toDateFilter) return false;
       }
       if (!needle) return true;
-      const searchable = [record.cneId, record.classId, record.dataId, record.topic,
+      const searchable = [record.cneId, record.topic,
         record.area, record.resourcePersonEmpId, record.resourcePersonName,
         ...(record.externalResourcePersons || []), record.modeOfTeaching,
         record.description, record.staffEmpId, ...(record.staffEmpIds || []), ...(record.staffNames || []),
@@ -2142,7 +2142,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           cne={activeReferenceCne}
           isAuthorized={canOperateCne(activeReferenceCne) && !isCneClosed(activeReferenceCne)}
           onClose={() => setActiveReferenceCne(null)}
-          onUpdated={() => handleChildModalUpdated(activeReferenceCne.cneId || activeReferenceCne.classId)}
+          onUpdated={() => handleChildModalUpdated(activeReferenceCne.cneId)}
           onNavigateToQuestions={() => {
             const currentCne = activeReferenceCne;
             setActiveReferenceCne(null);
@@ -2158,7 +2158,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           onClose={() => {
             setActiveQuestionsCne(null);
           }}
-          onUpdated={() => handleChildModalUpdated(activeQuestionsCne.cneId || activeQuestionsCne.classId)}
+          onUpdated={() => handleChildModalUpdated(activeQuestionsCne.cneId)}
           onNavigateToMaterial={() => {
             const selected = activeQuestionsCne;
             setActiveQuestionsCne(null);
@@ -2177,7 +2177,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           cne={activeQRCne}
           isAuthorized={canOperateCne(activeQRCne) && !isCneClosed(activeQRCne)}
           onClose={() => {
-            const targetId = activeQRCne.cneId || activeQRCne.classId;
+            const targetId = activeQRCne.cneId;
             setActiveQRCne(null);
             handleChildModalUpdated(targetId);
           }}
@@ -2187,7 +2187,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           }}
           onOpenPostTest={(tok) => {
             if (!canOperateCne(activeQRCne) || isCneClosed(activeQRCne)) return;
-            const targetId = activeQRCne.cneId || activeQRCne.classId;
+            const targetId = activeQRCne.cneId;
             setActiveQRCne(null);
             setActivePostTest({ cneId: targetId, qrToken: tok });
           }}
@@ -2200,7 +2200,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           isAuthorized={canOperateCne(activeParticipantsCne) && !isCneClosed(activeParticipantsCne)}
           officersList={officersList}
           onClose={() => setActiveParticipantsCne(null)}
-          onUpdated={() => handleChildModalUpdated(activeParticipantsCne.cneId || activeParticipantsCne.classId)}
+          onUpdated={() => handleChildModalUpdated(activeParticipantsCne.cneId)}
         />
       )}
 
@@ -2210,7 +2210,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           isAuthorized={canManageLifecycle(activeFinalizeCne) && !isCneClosed(activeFinalizeCne)}
           onClose={() => setActiveFinalizeCne(null)}
           onCompleted={() => {
-            const targetId = activeFinalizeCne.cneId || activeFinalizeCne.classId;
+            const targetId = activeFinalizeCne.cneId;
             setActiveFinalizeCne(null);
             handleChildModalUpdated(targetId);
           }}

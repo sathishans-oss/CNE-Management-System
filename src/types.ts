@@ -1,4 +1,4 @@
-export type UserRole = 'ADMIN' | 'AREA_INCHARGE' | 'INCHARGE' | 'RESOURCE_PERSON' | 'EMPLOYEE';
+export type UserRole = 'ADMIN' | 'AREA_INCHARGE' | 'EMPLOYEE';
 
 export type CNEStatus =
   | 'Scheduled'
@@ -119,8 +119,6 @@ export type CNEType =
  */
 export interface CNERecord {
   cneId: string;
-  classId?: string; // Backward-compatibility alias for cneId
-  dataId?: string; // Backward-compatibility alias for cneId
   topic: string;
   area: string;
   fromDate: string;

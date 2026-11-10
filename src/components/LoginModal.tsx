@@ -39,7 +39,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     try {
       const response = await ApiService.login(empId.trim(), pass.trim());
       const sessionData = response.data;
-      const validRoles = ['ADMIN', 'AREA_INCHARGE', 'INCHARGE', 'RESOURCE_PERSON', 'EMPLOYEE'];
+      const validRoles = ['ADMIN', 'AREA_INCHARGE', 'EMPLOYEE'];
       const hasValidSession =
         response.success === true &&
         Boolean(sessionData) &&

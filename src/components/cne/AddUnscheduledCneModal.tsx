@@ -18,7 +18,7 @@ import { CneDateTimeFields } from './CneDateTimeFields';
 import { WardMultiSelect, WardStaffCounts } from './WardMultiSelect';
 import { SmartCneTopicInput } from './SmartCneTopicInput';
 import { DropdownRetry } from './DropdownRetry';
-import { getCneTypeLabel, validateCneDuration,
+import { CNE_TYPE_CONFIG, RETROSPECTIVE_CNE_TYPES, getCneTypeLabel, validateCneDuration,
   parseCneStartTimestamp
 } from '../../utils';
 
@@ -251,7 +251,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       return;
     }
 
-    if (!cneType || !['UNSCHEDULED_CENTRAL', 'UNSCHEDULED_WARD_LEVEL', 'EXTERNAL_OFFSITE', 'EXTERNAL_ONSITE', 'DEPARTMENTAL'].includes(cneType)) {
+    if (!cneType || !RETROSPECTIVE_CNE_TYPES.includes(cneType)) {
       error('Please select a valid CNE type.');
       return;
     }
@@ -439,11 +439,9 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                     onChange={(e) => setCneType(e.target.value as CNEType)}
                     className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   >
-                    <option value="UNSCHEDULED_CENTRAL">Unscheduled Central CNE</option>
-                    <option value="UNSCHEDULED_WARD_LEVEL">Unscheduled Ward-Level CNE</option>
-                    <option value="EXTERNAL_OFFSITE">External CNE – Outside AIIMS</option>
-                    <option value="EXTERNAL_ONSITE">External CNE – Hosted at AIIMS</option>
-                    <option value="DEPARTMENTAL">Departmental CNE</option>
+                    {RETROSPECTIVE_CNE_TYPES.map((type) => (
+                      <option key={type} value={type}>{CNE_TYPE_CONFIG[type].label}</option>
+                    ))}
                   </select>
                 </div>
 

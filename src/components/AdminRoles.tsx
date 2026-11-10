@@ -33,7 +33,6 @@ export const ROLE_SORT_PRIORITY: Record<string, number> = {
 
 export const getRolePriority = (role?: string): number => {
   const norm = String(role || '').trim().toUpperCase();
-  if (norm === 'INCHARGE') return ROLE_SORT_PRIORITY.AREA_INCHARGE;
   return ROLE_SORT_PRIORITY[norm] ?? 99;
 };
 

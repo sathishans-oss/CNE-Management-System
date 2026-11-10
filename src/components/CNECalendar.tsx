@@ -489,7 +489,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
               </div>
               {selectedEvent.raw && (
                 <Suspense fallback={<div className="pt-4 text-xs text-slate-500">Loading interest options…</div>}>
-                  <CalendarInterestControls key={`${user.employeeId}:${selectedEvent.raw.cneId || selectedEvent.raw.classId}`}
+                  <CalendarInterestControls key={`${user.employeeId}:${selectedEvent.raw.cneId}`}
                     cne={selectedEvent.raw} user={user} />
                 </Suspense>
               )}
@@ -499,7 +499,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
               <button
                 type="button"
                 onClick={handleViewFullDetails}
-                disabled={!selectedEvent.raw?.cneId && !selectedEvent.raw?.classId}
+                disabled={!selectedEvent.raw?.cneId}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-teal-600 text-white rounded-xl text-xs font-semibold hover:bg-teal-700 disabled:opacity-50"
               >
                 <ExternalLink className="w-4 h-4" /> View Full CNE Details

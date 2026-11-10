@@ -81,7 +81,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   onNavigateToQR,
   onNavigateToMaterial
 }) => {
-  const cneId = cne.cneId || cne.classId || '';
+  const cneId = cne.cneId || '';
   const [questions, setQuestions] = useState<CNEQuestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [questionLoadError, setQuestionLoadError] = useState<string | null>(null);

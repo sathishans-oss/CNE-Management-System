@@ -774,7 +774,7 @@ export function generateCNESessionPdf(
 
       leftLabel: 'CNE ID:',
 
-      leftValue: doc.splitTextToSize(cne.cneId || cne.classId || '—', leftColValWidth),
+      leftValue: doc.splitTextToSize(cne.cneId || '—', leftColValWidth),
 
       rightLabel: 'Resource Person:',
 
@@ -1220,7 +1220,7 @@ export function generateCNESessionPdf(
 
 
 
-  const cleanCneId = (cne.cneId || cne.classId || 'CNE').replace(/[^a-zA-Z0-9-]/g, '_');
+  const cleanCneId = (cne.cneId || 'CNE').replace(/[^a-zA-Z0-9-]/g, '_');
 
   doc.save(`CNE_Report_${cleanCneId}.pdf`);
 

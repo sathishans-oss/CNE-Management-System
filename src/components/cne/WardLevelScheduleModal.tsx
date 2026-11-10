@@ -96,7 +96,7 @@ export const WardLevelScheduleModal: React.FC<WardLevelScheduleModalProps> = ({
   onSuccess
 }) => {
   const { success, error } = useToast();
-  const isAreaIncharge = user?.role === 'AREA_INCHARGE' || user?.role === 'INCHARGE';
+  const isAreaIncharge = user?.role === 'AREA_INCHARGE';
   const assignedAreas = getUserAssignedAreas(user);
   const activeAreaNames = useMemo(
     () => new Set(areasList.map((areaName) => String(areaName || '').trim().toUpperCase()).filter(Boolean)),

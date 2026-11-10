@@ -26,7 +26,7 @@ export const CNEQRModal: React.FC<CNEQRModalProps> = ({
   onClose,
   onOpenPostTest
 }) => {
-  const cneId = cne.cneId || cne.classId || '';
+  const cneId = cne.cneId || '';
   const closed = isCneClosed(cne);
   const canManageQr = Boolean(isAuthorized && !closed && cneId);
 

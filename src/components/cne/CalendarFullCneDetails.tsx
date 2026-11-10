@@ -29,7 +29,7 @@ interface Props {
 
 const getStatus = (cne: CNERecord) => String(cne.status || 'Scheduled').trim().toLowerCase();
 const isClosed = (cne: CNERecord) => ['completed', 'canceled', 'cancelled'].includes(getStatus(cne));
-const getId = (cne: CNERecord) => cne.cneId || cne.classId || '';
+const getId = (cne: CNERecord) => cne.cneId || '';
 
 /** Same lifecycle authority as CNESchedule: Admin, or the concerned Area
  * Incharge for WARD_LEVEL CNEs only. Assigned RPs do not gain lifecycle rights.
@@ -38,7 +38,7 @@ const getId = (cne: CNERecord) => cne.cneId || cne.classId || '';
  */
 function canManageLifecycle(user: SessionUser, cne: CNERecord): boolean {
   if (user.role === 'ADMIN') return true;
-  if (user.role !== 'AREA_INCHARGE' && user.role !== 'INCHARGE') return false;
+  if (user.role !== 'AREA_INCHARGE') return false;
   if (String(cne.cneType || 'CENTRAL').trim().toUpperCase() !== 'WARD_LEVEL') return false;
   const targetArea = String(cne.area || '').trim().toLowerCase();
   return Boolean(targetArea) && getUserAssignedAreas(user).some(area => area.trim().toLowerCase() === targetArea);

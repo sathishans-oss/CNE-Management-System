@@ -151,7 +151,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
           }
           for (const r of res.data.records) {
             if (String(r.status || '').toLowerCase() !== 'completed') continue;
-            const id = String(r.cneId || r.dataId || '').trim().toUpperCase();
+            const id = String(r.cneId || '').trim().toUpperCase();
             if (!id || seen.has(id)) throw new Error('Duplicate or invalid CNE record received. Please reload.');
             seen.add(id);
             complete.push(r);
@@ -389,7 +389,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                   const globalIdx = index;
                   return (
                     <div
-                      key={rec.cneId || rec.dataId || `mob-rec-${globalIdx}`}
+                      key={rec.cneId || `mob-rec-${globalIdx}`}
                       onClick={() => setSelectedRecord(rec)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
@@ -468,7 +468,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
                       const globalIdx = index;
                       return (
                         <tr
-                          key={rec.cneId || rec.dataId || `rec-${globalIdx}`}
+                          key={rec.cneId || `rec-${globalIdx}`}
                           onClick={() => setSelectedRecord(rec)}
                           className="hover:bg-slate-50/90 cursor-pointer transition-colors"
                         >
@@ -562,7 +562,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
               <div>
                 <h3 id="my-cne-record-details-title" className="text-base font-bold text-slate-900">CNE Record</h3>
                 <div className="flex flex-wrap items-center gap-2 mt-0.5">
-                  <span className="text-xs text-slate-500 font-mono">ID: {selectedRecord.cneId || selectedRecord.dataId}</span>
+                  <span className="text-xs text-slate-500 font-mono">ID: {selectedRecord.cneId}</span>
                   <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-700 border border-slate-200">
                     {getCneTypeLabel(selectedRecord.cneType)}
                   </span>

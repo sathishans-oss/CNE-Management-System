@@ -19,7 +19,7 @@ export const CalendarInterestControls: React.FC<CalendarInterestControlsProps> =
   const [submitting, setSubmitting] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
 
-  const cneId = String(cne.cneId || cne.classId || '').trim();
+  const cneId = String(cne.cneId || '').trim();
   const startMs = useMemo(() => parseCneStartTimestamp(
     cne.date || cne.fromDate,
     (cne as any).fromTime || (cne as any).startTime || (cne as any).time

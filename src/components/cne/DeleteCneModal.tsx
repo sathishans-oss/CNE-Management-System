@@ -31,7 +31,7 @@ export const DeleteCneModal: React.FC<DeleteCneModalProps> = ({
   if (!isOpen || !cne) return null;
 
   const isAdmin = user?.role === 'ADMIN';
-  const targetId = cne.cneId || cne.classId || '';
+  const targetId = cne.cneId || '';
   const isReasonValid = Boolean(reason.trim());
   // Exact CNE ID confirmation: no whitespace or case leniency allowed
   const isIdConfirmed = confirmId === targetId && targetId.length > 0;

@@ -32,7 +32,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   onUpdated,
   onNavigateToQuestions
 }) => {
-  const cneId = cne.cneId || cne.classId || '';
+  const cneId = cne.cneId || '';
   const normalizedStatus = String(cne.status || '').trim().toLowerCase();
   const isClosed = normalizedStatus === 'completed' || normalizedStatus === 'finalized' || normalizedStatus === 'finalised' || normalizedStatus === 'canceled' || normalizedStatus === 'cancelled';
   const canModify = isAuthorized && !isClosed;

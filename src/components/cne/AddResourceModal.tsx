@@ -61,7 +61,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
     event.preventDefault();
     if (submitRef.current) return;
     if (!selectedCneId || !file) { error('Choose a CNE session and a PDF learning material file.'); return; }
-    const selected = classes.find(record => (record.cneId || record.classId) === selectedCneId);
+    const selected = classes.find(record => record.cneId === selectedCneId);
     if (!selected) { error('The selected CNE is no longer available. Refresh the page.'); return; }
     submitRef.current = true; setSubmitting(true);setUploadStage('upload');setStageError('');
     try {
@@ -87,7 +87,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
   };
 
   if (!isOpen) return null;
-  const selected = classes.find(record => (record.cneId || record.classId) === selectedCneId);
+  const selected = classes.find(record => record.cneId === selectedCneId);
   return (
     <div role="dialog" aria-modal="true" aria-label="Upload CNE learning material" className="fixed inset-0 z-50 bg-slate-900/80 flex items-stretch sm:items-center justify-center p-0 sm:p-5">
       <div className="w-full max-w-2xl h-[100dvh] sm:h-auto sm:max-h-[92dvh] bg-white rounded-none sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden">
@@ -102,7 +102,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
               <select required value={selectedCneId} onChange={e => setSelectedCneId(e.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white p-3 text-xs font-normal text-slate-900">
                 <option value="">Select a scheduled CNE</option>
                 {classes.map(record => {
-                  const id = record.cneId || record.classId || '';
+                  const id = record.cneId || '';
                   return <option key={id} value={id}>{record.topic} — {formatCneDateTimeDisplay(record.date, record.toDate)} — {record.area}</option>;
                 })}
               </select>

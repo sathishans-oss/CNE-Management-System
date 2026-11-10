@@ -251,8 +251,6 @@ function purgeNonPublicCaches(): void {
 const RECOGNIZED_USER_ROLES: ReadonlySet<string> = new Set([
   'ADMIN',
   'AREA_INCHARGE',
-  'INCHARGE',
-  'RESOURCE_PERSON',
   'EMPLOYEE'
 ]);
 
@@ -1227,7 +1225,7 @@ export class ApiService {
   }
 
   static async updateCNE(cneId: string, cneData: Partial<CNERecord>): Promise<ApiResponse> {
-    const res = await this.executeAction('updateCNE', { cneId, classId: cneId, dataId: cneId, ...cneData });
+    const res = await this.executeAction('updateCNE', { ...cneData, cneId });
     if (res.success) {
       this.invalidateCache('getCNERecords');
       this.invalidateCache('getProgramImpact');
@@ -1715,8 +1713,8 @@ export class ApiService {
   /**
    * CNE Lifecycle Completion & Cancellation APIs
    */
-  static async finalizeCNE(cneId: string, remarks?: string): Promise<ApiResponse<{ dataId: string }>> {
-    const res = await this.executeAction<{ dataId: string }>('finalizeCNE', { cneId, remarks });
+  static async finalizeCNE(cneId: string, remarks?: string): Promise<ApiResponse<{ cneId: string }>> {
+    const res = await this.executeAction<{ cneId: string }>('finalizeCNE', { cneId, remarks });
     if (res.success) {
       this.invalidateCache('getCNERecords');
       this.invalidateCache('getProgramImpact');

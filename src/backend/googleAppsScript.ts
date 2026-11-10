@@ -17,54 +17,27 @@ function normalizeEmpId(id) {
   return String(id).trim().toUpperCase();
 }
 
-// Seven authoritative CNE types. CNE ID prefixes are identifiers, NEVER used to infer classification.
-function normalizeCNEType(typeStr) {
-  if (typeStr === null || typeStr === undefined) return null;
-  var s = String(typeStr).trim().toUpperCase();
-  if (!s) return null;
-  if (s === 'CENTRAL' || s === 'CENTRAL CNE') return 'CENTRAL';
-  if (s === 'WARD_LEVEL' || s === 'WARD LEVEL CNE' || s === 'WARD-LEVEL CNE' || s === 'DEPT') return 'WARD_LEVEL';
-  if (s === 'UNSCHEDULED_CENTRAL' || s === 'U-CENTRAL' || s === 'UNSCHEDULED CENTRAL') return 'UNSCHEDULED_CENTRAL';
-  if (s === 'UNSCHEDULED_WARD_LEVEL' || s === 'UNSCHEDULED WARD-LEVEL CNE' || s === 'UNSCHEDULED WARD LEVEL CNE') return 'UNSCHEDULED_WARD_LEVEL';
-  // Hospital-department programme: separate from regular Ward-Level CNE.
-  // Keep the historic DEPT abbreviation mapped to Ward-Level (not Departmental).
-  if (s === 'DEPARTMENTAL' || s === 'DEPARTMENTAL CNE') return 'DEPARTMENTAL';
-  if (
-    s === 'EXTERNAL_OFFSITE' ||
-    s === 'EXTERNAL OFFSITE' ||
-    s === 'EXTERNAL_CNE_OFFSITE' ||
-    s === 'EXTERNAL CNE OFFSITE' ||
-    s === 'EXTERNAL CNE – OUTSIDE AIIMS' ||
-    s === 'EXTERNAL CNE - OUTSIDE AIIMS' ||
-    s === 'EXTERNAL CNE – OUTSIDE' ||
-    s === 'EXTERNAL CNE - OUTSIDE' ||
-    s === 'EXTERNAL_OUTSIDE' ||
-    s === 'OUTSIDE AIIMS'
-  ) return 'EXTERNAL_OFFSITE';
-  if (
-    s === 'EXTERNAL_ONSITE' ||
-    s === 'EXTERNAL ONSITE' ||
-    s === 'EXTERNAL_CNE_ONSITE' ||
-    s === 'EXTERNAL CNE ONSITE' ||
-    s === 'EXTERNAL CNE – HOSTED AT AIIMS' ||
-    s === 'EXTERNAL CNE - HOSTED AT AIIMS' ||
-    s === 'EXTERNAL CNE – HOSTED' ||
-    s === 'EXTERNAL CNE - HOSTED' ||
-    s === 'HOSTED AT AIIMS' ||
-    s === 'EXTERNAL_HOSTED' ||
-    s === 'EXTERNAL_ONSITE_AIIMS'
-  ) return 'EXTERNAL_ONSITE';
-  return null;
+// Seven canonical CNE values; legacy names from unreleased builds are not accepted.
+// Backend has its own small allowlist because browser-supplied values are not trusted.
+var CNE_TYPE_CONFIG = Object.freeze({
+  CENTRAL: { prefix: 'C', workflow: 'SCHEDULED' },
+  WARD_LEVEL: { prefix: 'W', workflow: 'SCHEDULED' },
+  UNSCHEDULED_CENTRAL: { prefix: 'UC', workflow: 'RETROSPECTIVE' },
+  UNSCHEDULED_WARD_LEVEL: { prefix: 'UW', workflow: 'RETROSPECTIVE' },
+  EXTERNAL_OFFSITE: { prefix: 'UO', workflow: 'RETROSPECTIVE' },
+  EXTERNAL_ONSITE: { prefix: 'UI', workflow: 'RETROSPECTIVE' },
+  DEPARTMENTAL: { prefix: 'UD', workflow: 'RETROSPECTIVE' }
+});
+function normalizeCNEType(value) {
+  return typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(CNE_TYPE_CONFIG, value) ? value : null;
 }
 
-// Authoritative Normalization: CNE Scheduling Status (Strictly Scheduled, Completed, or Canceled)
+// A single canonical lifecycle vocabulary. Unknown values must never be silently
+// converted into Scheduled: a mistyped update could otherwise reopen a CNE.
 function normalizeCNEStatus(statusStr) {
-  if (!statusStr) return 'Scheduled';
-  var s = String(statusStr).trim();
-  var upper = s.toUpperCase();
-  if (upper === 'COMPLETED' || upper === 'FINALIZED' || upper === 'FINALISED') return 'Completed';
-  if (upper === 'CANCELED' || upper === 'CANCELLED') return 'Canceled';
-  return 'Scheduled';
+  if (statusStr === 'Scheduled' || statusStr === 'Completed' || statusStr === 'Canceled') return statusStr;
+  return null;
 }
 
 // Formula Injection Prevention: Prepend apostrophe to user strings starting with =, +, -, @, \\t, \\r
@@ -1427,7 +1400,7 @@ function checkCNEAuthorized(session, cneArea, cneType) {
     return null; // Admin has full control
   }
   
-  if (role === 'AREA_INCHARGE' || role === 'INCHARGE') {
+  if (role === 'AREA_INCHARGE') {
     var type = normalizeCNEType(cneType);
     // FAIL CLOSED: Only strictly valid WARD_LEVEL CNE is manageable by Area Incharge
     if (type === 'WARD_LEVEL') {
@@ -1513,7 +1486,7 @@ function checkCNEActionAuthorized(session, record) {
     // CNE types never grant Area Incharge authority. Lifecycle rules are stricter.
     var actionCneType = normalizeCNEType(record.cneType);
     if (
-      (role === 'AREA_INCHARGE' || role === 'INCHARGE') &&
+      (role === 'AREA_INCHARGE') &&
       actionCneType === 'WARD_LEVEL' && normalizeCNEStatus(record.status) === 'Scheduled'
     ) {
       var assignedAreas = [];
@@ -2062,13 +2035,13 @@ function getFromScriptCache(baseKey) {
 }
 
 /**
- * Officers Dropdown (Restricted to ADMIN, AREA_INCHARGE, INCHARGE, or CNE-authorized Resource Person; Sanitized: ONLY employeeId, name, designation returned)
+ * Officers Dropdown (Restricted to ADMIN, AREA_INCHARGE, or CNE-authorized Resource Person; Sanitized: ONLY employeeId, name, designation returned)
  * Uses CacheService (TTL 60s) with chunking protection to eliminate repeated full-roster sheet reads.
  */
 function handleGetOfficersDropdown(params, session) {
   if (!session) return { success:false,errorCode:'UNAUTHORIZED',message:'Authentication required. Please sign in.' };
   var role=String(session.role||'').trim().toUpperCase();
-  var isDirectoryRole=(role==='ADMIN'||role==='AREA_INCHARGE'||role==='INCHARGE');
+  var isDirectoryRole=(role==='ADMIN'||role==='AREA_INCHARGE');
   if (!isDirectoryRole) {
     var cneId=(params&&params.cneId)?sanitizeCellInput(params.cneId):''; var ok=false;
     if (cneId) { var rec=getCNEScheduleRecord(cneId); if (rec&&checkCNEActionAuthorized(session,rec)===null) ok=true; }
@@ -3424,7 +3397,7 @@ function resolveCneParticipatingWards_(input, primary, session, staffMap, status
 
 /** Management-only read endpoint for exact ward staff counts (not employee rosters). */
 function handleGetWardStaffCounts(params, session) {
-  if (!session || (session.role !== 'ADMIN' && session.role !== 'AREA_INCHARGE' && session.role !== 'INCHARGE')) {
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'AREA_INCHARGE')) {
     return { success: false, errorCode: 'FORBIDDEN', message: 'Only CNE schedulers may access allotted staff counts.' };
   }
   var names = getAreaStatusMap_(true);
@@ -4413,7 +4386,8 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
   var officerMap = getOfficerNameMap();
   var colMap = snapshot.colMap || buildHeaderMapFromRow_(data[0] || []);
 
-  var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : (colMap['dataid'] !== undefined ? colMap['dataid'] : 0));
+  var idCol = colMap['cneid'];
+  if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var areaCol = colMap['area'] !== undefined ? colMap['area'] : (colMap['wardnamearea'] !== undefined ? colMap['wardnamearea'] : 1);
   var fromDateCol = colMap['fromdate'] !== undefined ? colMap['fromdate'] : (colMap['date'] !== undefined ? colMap['date'] : 2);
   var toDateCol = colMap['todate'] !== undefined ? colMap['todate'] : 3;
@@ -4549,7 +4523,7 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
 
     // Management fields are available only to Admin or the responsible Area Incharge/Incharge.
     var canSeeInternalManagementFields = isAdmin;
-    if (!canSeeInternalManagementFields && session && (sessionRole === 'AREA_INCHARGE' || sessionRole === 'INCHARGE')) {
+    if (!canSeeInternalManagementFields && session && (sessionRole === 'AREA_INCHARGE')) {
       canSeeInternalManagementFields = (checkCNEAuthorized(session, area, cneType) === null);
     }
 
@@ -4576,8 +4550,6 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
 
     records.push({
       cneId: dataId,
-      dataId: dataId,
-      classId: dataId,
       area: area,
       fromDate: fromDate,
       date: fromDate,
@@ -4643,7 +4615,8 @@ function handleGetMyCNERecordsPage(params, session) {
   var pick = function(keys, fallback) {for(var c=0;c<keys.length;c++)if(cols[keys[c]]!==undefined)return cols[keys[c]];return fallback;};
   var statusCol=pick(['status'],-1),fromCol=pick(['fromdate','date'],2),
     staffCol=pick(['staffempids','staffempid'],15),rpCol=pick(['resourcepersonempid'],6),
-    durationCol=pick(['duration'],5),idCol=pick(['cneid','classid','dataid'],0);
+    durationCol=pick(['duration'],5),idCol=cols['cneid'];
+    if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   // No matching identities or status field means no defensible personal history.
   if(statusCol<0 || staffCol<0 || rpCol<0) return {success:true,data:empty};
   var n=sheet.getLastRow()-1;
@@ -4788,7 +4761,7 @@ function cneSchedulePageResult_(authorized, status, page, pageSize, search, from
   var matches = authorized.filter(function(c) {
     if (!cneScheduleDateMatches_(cneScheduleDateKey_(c.fromDate || c.date), cneScheduleDateKey_(c.toDate || c.fromDate || c.date), fromDate, toDate)) return false;
     if (!needle) return true;
-    var terms = [c.cneId,c.classId,c.dataId,c.topic,c.area,c.resourcePersonEmpId,
+    var terms = [c.cneId,c.topic,c.area,c.resourcePersonEmpId,
       c.resourcePersonName,(c.externalResourcePersons||[]).join(' '),c.modeOfTeaching,
       c.description,c.staffEmpId,(c.staffEmpIds||[]).join(' '),(c.staffNames||[]).join(' '),
       c.proposedByEmpId,c.proposedByName,c.adminRemarks,c.remarks,c.cneType].join(' ').toLowerCase();
@@ -4797,7 +4770,7 @@ function cneSchedulePageResult_(authorized, status, page, pageSize, search, from
   // Search results follow the same newest-From-Date-first ordering as normal pages.
   matches.sort(function(a,b) {
     var da=cneScheduleDateKey_(a.fromDate || a.date), db=cneScheduleDateKey_(b.fromDate || b.date);
-    return db.localeCompare(da) || String(a.cneId || a.classId || '').localeCompare(String(b.cneId || b.classId || ''));
+    return db.localeCompare(da) || String(a.cneId || '').localeCompare(String(b.cneId || ''));
   });
   var total=matches.length;
   var begin=status==='Scheduled'?0:(page-1)*pageSize;
@@ -4866,9 +4839,9 @@ function handleGetCNESchedulePage(params, session) {
   if (!session || !session.employeeId) return {success:false,errorCode:'UNAUTHORIZED',message:'Authentication required.'};
   params=params||{};
   var requested=String(params.status||'Scheduled').trim().toUpperCase();
-  if (['SCHEDULED','COMPLETED','CANCELED','CANCELLED','ALL'].indexOf(requested)===-1)
+  if (['SCHEDULED','COMPLETED','CANCELED','ALL'].indexOf(requested)===-1)
     return {success:false,errorCode:'INVALID_STATUS',message:'Invalid Schedule status.'};
-  var status=requested==='ALL'?'ALL':normalizeCNEStatus(requested);
+  var status=requested==='ALL'?'ALL':({SCHEDULED:'Scheduled',COMPLETED:'Completed',CANCELED:'Canceled'})[requested];
   var page=Math.max(1,Math.min(100000,parseInt(params.page,10)||1));
   var pageSize=status==='Scheduled'?10000:Math.max(1,Math.min(50,parseInt(params.pageSize,10)||50));
   var search=String(params.search||'').trim().slice(0,160);
@@ -4882,7 +4855,8 @@ function handleGetCNESchedulePage(params, session) {
   if (!sheet || sheet.getLastRow()<2) return {success:true,data:{records:[],total:0,page:page,pageSize:pageSize,hasMore:false}};
   var headers=sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0];
   var cols=buildHeaderMapFromRow_(headers);
-  var idCol=cols['cneid']!==undefined?cols['cneid']:(cols['classid']!==undefined?cols['classid']:(cols['dataid']!==undefined?cols['dataid']:0));
+  var idCol=cols['cneid'];
+  if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var statusCol=cols['status']!==undefined?cols['status']:-1;
   var fromCol=cols['fromdate']!==undefined?cols['fromdate']:(cols['date']!==undefined?cols['date']:2);
   var toCol=cols['todate']!==undefined?cols['todate']:fromCol;
@@ -4930,7 +4904,8 @@ function handleGetCNEScheduleById(params, session) {
   if(!sheet || sheet.getLastRow()<2) return {success:false,errorCode:'NOT_FOUND',message:'CNE not found or not authorized.'};
   var headers=sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0];
   var cols=buildHeaderMapFromRow_(headers);
-  var idCol=cols['cneid']!==undefined?cols['cneid']:(cols['classid']!==undefined?cols['classid']:(cols['dataid']!==undefined?cols['dataid']:0));
+  var idCol=cols['cneid'];
+  if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var ids=getCneScheduleColumnValues_(sheet,idCol,sheet.getLastRow());
   var rowNumber=-1;
   for(var i=0;i<ids.length;i++) if(String(ids[i]||'').trim()===wanted){ rowNumber=i+2;break; }
@@ -4948,9 +4923,8 @@ function handleGetCNEScheduleById(params, session) {
  * Caller MUST hold ScriptLock; reservedIds handles not-yet-written batch siblings.
  */
 function generateUniqueCneId_(cneType, reservedIds) {
-  var codes = {CENTRAL:'C',WARD_LEVEL:'W',UNSCHEDULED_CENTRAL:'UC',
-    UNSCHEDULED_WARD_LEVEL:'UW',EXTERNAL_OFFSITE:'UO',EXTERNAL_ONSITE:'UI',DEPARTMENTAL:'UD'};
-  var prefix = codes[normalizeCNEType(cneType)];
+  var type = normalizeCNEType(cneType);
+  var prefix = type ? CNE_TYPE_CONFIG[type].prefix : null;
   if (!prefix) throw new Error('INVALID_CNE_TYPE');
   var alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   var reserved = reservedIds || {};
@@ -4977,10 +4951,9 @@ function handleCreateCNE(params, session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
   }
 
-  // Normalize any client-supplied lifecycle status BEFORE authorization decisions.
-  // This prevents aliases/casing such as "Finalized", "Finalised", or "completed"
-  // from bypassing the Admin-only retrospective CNE path.
-  var requestedCreateStatus = normalizeCNEStatus(params.status || 'Scheduled');
+  // Validate canonical lifecycle state before deciding the creation workflow.
+  var requestedCreateStatus = normalizeCNEStatus(params.status === undefined ? 'Scheduled' : params.status);
+  if (!requestedCreateStatus) return { success: false, errorCode: 'INVALID_STATUS', message: 'Invalid CNE lifecycle status.' };
   var explicitlyUnscheduled = Boolean(
     params.isUnscheduled === true ||
     params.isUnscheduled === 'true' ||
@@ -5003,14 +4976,14 @@ function handleCreateCNE(params, session) {
 
   var cneType = normalizeCNEType(params.cneType);
   if (!cneType) return { success:false, errorCode:'INVALID_CNE_TYPE', message:'Please select one of the seven valid CNE types.' };
-  var retrospectiveType = ['UNSCHEDULED_CENTRAL','UNSCHEDULED_WARD_LEVEL','EXTERNAL_OFFSITE','EXTERNAL_ONSITE','DEPARTMENTAL'].indexOf(cneType) !== -1;
+  var retrospectiveType = !!(cneType && CNE_TYPE_CONFIG[cneType].workflow === 'RETROSPECTIVE');
   if (isUnscheduled !== retrospectiveType) {
     return { success:false, errorCode:'CNE_TYPE_WORKFLOW_MISMATCH',
       message: retrospectiveType ? 'This CNE type must be recorded through Unscheduled CNE.' : 'Regular Central/Ward-Level CNEs must be created using Schedule CNE.' };
   }
 
   var isAdmin = session.role === 'ADMIN';
-  var isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
+  var isAreaIncharge = session.role === 'AREA_INCHARGE';
 
   // Retrospective Record & Finalize is an Admin-only lifecycle operation.
   if (isUnscheduled && !isAdmin) {
@@ -5200,9 +5173,7 @@ function handleCreateCNE(params, session) {
     return { success: false, message: 'At least one participant is required before an unscheduled CNE can be recorded as Completed.' };
   }
 
-  // Authoritative create-state assignment. Because Completed aliases were already routed
-  // through the Admin-only retrospective path and Canceled was rejected above, the normal
-  // branch can only resolve to Scheduled. Keep normalization here for schema compatibility.
+  // Retrospective records are Completed; the scheduled workflow starts Scheduled.
   var status = isUnscheduled ? 'Completed' : normalizeCNEStatus(params.status || 'Scheduled');
 
   // Read the external staff-count master before entering ScriptLock. The resulting map is
@@ -5228,7 +5199,7 @@ function handleCreateCNE(params, session) {
     // Re-run role/area authorization after waiting for the lock. A role or assigned
     // area can change while the request is queued.
     isAdmin = session.role === 'ADMIN';
-    isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
+    isAreaIncharge = session.role === 'AREA_INCHARGE';
     if (isUnscheduled && !isAdmin) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can record and finalize an unscheduled CNE.' };
     }
@@ -5287,7 +5258,8 @@ function handleCreateCNE(params, session) {
       rowData[idx] = val;
     };
 
-    var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : (colMap['dataid'] !== undefined ? colMap['dataid'] : 0));
+    var idCol = colMap['cneid'];
+    if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
     while (rowData.length <= idCol) rowData.push('');
     rowData[idCol] = cneId;
 
@@ -5342,7 +5314,7 @@ function handleCreateCNE(params, session) {
     return {
       success: true,
       message: isUnscheduled ? 'Unscheduled CNE activity recorded successfully.' : ((cneType === 'WARD_LEVEL' ? 'Ward-Level' : 'Central') + ' CNE class scheduled successfully.'),
-      data: { cneId: cneId, classId: cneId, dataId: cneId, status: status, cneType: cneType }
+      data: { cneId: cneId, status: status, cneType: cneType }
     };
   } finally {
     lock.releaseLock();
@@ -5357,7 +5329,7 @@ function handleUpdateCNE(params, session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Unauthorized session.' };
   }
 
-  var cneId = String(params.cneId || params.classId || params.dataId || '').trim();
+  var cneId = String(params.cneId || '').trim();
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
 
   // Strict CNE ID immutability: Backend must reject any attempt to modify an existing CNE ID
@@ -5366,8 +5338,7 @@ function handleUpdateCNE(params, session) {
     params.newCneId ||
     params.updatedClassId ||
     params.updatedCneId ||
-    (params.id && String(params.id).trim().toLowerCase() !== cneId.toLowerCase()) ||
-    (params.cneId && params.classId && String(params.cneId).trim().toLowerCase() !== String(params.classId).trim().toLowerCase())
+    (params.id && String(params.id).trim().toLowerCase() !== cneId.toLowerCase())
   ) {
     return {
       success: false,
@@ -5404,6 +5375,7 @@ function handleUpdateCNE(params, session) {
   // Prevent updateCNE from bypassing official Finalize or Cancel lifecycle
   if (params.status !== undefined) {
     var proposedStatus = normalizeCNEStatus(params.status);
+    if (!proposedStatus) return { success: false, errorCode: 'INVALID_STATUS', message: 'Invalid CNE lifecycle status.' };
     var currentStatus = normalizeCNEStatus(record.status);
     if (proposedStatus !== currentStatus) {
       return {
@@ -5415,7 +5387,7 @@ function handleUpdateCNE(params, session) {
   }
 
   // Fix 1: Prevent Area Incharge from transferring a Ward-Level CNE to another ward/area
-  if (session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE') {
+  if (session.role === 'AREA_INCHARGE') {
     if (params.area !== undefined) {
       var proposedArea = String(params.area || '').trim().toLowerCase();
       var currentArea = String(record.area || '').trim().toLowerCase();
@@ -5494,7 +5466,7 @@ function handleUpdateCNE(params, session) {
     }
 
     // Re-check Area Incharge scope against the live authoritative area.
-    if (session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE') {
+    if (session.role === 'AREA_INCHARGE') {
       if (params.area !== undefined) {
         var liveProposedArea = String(params.area || '').trim().toLowerCase();
         var liveCurrentArea = String(liveUpdateRecord.area || '').trim().toLowerCase();
@@ -5528,6 +5500,7 @@ function handleUpdateCNE(params, session) {
 
     if (params.status !== undefined) {
       var liveProposedStatus = normalizeCNEStatus(params.status);
+      if (!liveProposedStatus) return { success: false, errorCode: 'INVALID_STATUS', message: 'Invalid CNE lifecycle status.' };
       if (liveProposedStatus !== liveUpdateStatus) {
         return {
           success: false,
@@ -5582,7 +5555,8 @@ function handleUpdateCNE(params, session) {
 
     var data = sheet.getDataRange().getValues();
     var colMap = getHeaderMap(sheet);
-    var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : (colMap['dataid'] !== undefined ? colMap['dataid'] : 0));
+    var idCol = colMap['cneid'];
+    if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
 
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][idCol]).trim().toLowerCase() === cneId.toLowerCase()) {
@@ -5782,6 +5756,7 @@ function handleUpdateCNE(params, session) {
         // Status transitions cannot be performed through handleUpdateCNE; identical status is safely ignored
         if (params.status !== undefined) {
           var proposedStatus = normalizeCNEStatus(params.status);
+          if (!proposedStatus) return { success: false, errorCode: 'INVALID_STATUS', message: 'Invalid CNE lifecycle status.' };
           var currentStatus = normalizeCNEStatus(liveUpdateRecord.status);
           if (proposedStatus !== currentStatus) {
             return {
@@ -6081,7 +6056,7 @@ function handleAddWardLevelSchedule(params, session) {
   }
 
   var isAdmin = session.role === 'ADMIN';
-  var isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
+  var isAreaIncharge = session.role === 'AREA_INCHARGE';
   if (!isAdmin && !isAreaIncharge) {
     return { success: false, errorCode: 'FORBIDDEN', message: 'Only an Administrator or designated Area Incharge can schedule Ward-Level CNEs.' };
   }
@@ -6216,7 +6191,7 @@ function handleAddWardLevelSchedule(params, session) {
     if (!freshWardLevelSession.success) return freshWardLevelSession;
     session = freshWardLevelSession.session;
     isAdmin = session.role === 'ADMIN';
-    isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
+    isAreaIncharge = session.role === 'AREA_INCHARGE';
     if (!isAdmin && !isAreaIncharge) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Only an Administrator or designated Area Incharge can schedule Ward-Level CNEs.' };
     }
@@ -6294,7 +6269,8 @@ function handleAddWardLevelSchedule(params, session) {
         rowData[idx] = val;
       };
 
-      var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 0);
+      var idCol = colMap['cneid'];
+      if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
       while (rowData.length <= idCol) rowData.push('');
       rowData[idCol] = cneId;
 
@@ -6676,7 +6652,8 @@ function handleGetWardLevelCneOutcomeReport(params, session) {
   var cneSheet = getOrCreateSheet('CNE Schedule');
   var cneColMap = getHeaderMap(cneSheet);
 
-  var idCol = cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : (cneColMap['classid'] !== undefined ? cneColMap['classid'] : 0);
+  var idCol = cneColMap['cneid'];
+  if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var topicCol = cneColMap['topic'] !== undefined ? cneColMap['topic'] : 1;
   var areaCol = cneColMap['area'] !== undefined ? cneColMap['area'] : (cneColMap['wardnamearea'] !== undefined ? cneColMap['wardnamearea'] : 2);
   var fromDateCol = cneColMap['fromdate'] !== undefined ? cneColMap['fromdate'] : (cneColMap['date'] !== undefined ? cneColMap['date'] : 3);
@@ -8049,7 +8026,8 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
   }
   
   var colMap = snapshot.colMap || buildHeaderMapFromRow_(data[0] || []);
-  var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['dataid'] !== undefined ? colMap['dataid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 0));
+  var idCol = colMap['cneid'];
+  if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var durCol = colMap['duration'] !== undefined ? colMap['duration'] : (colMap['dur'] !== undefined ? colMap['dur'] : 4);
   var rpCol = colMap['resourcepersonempid'] !== undefined ? colMap['resourcepersonempid'] : 6;
   var staffCol = colMap['staffempid'] !== undefined ? colMap['staffempid'] : 8;
@@ -8280,7 +8258,9 @@ var CNE_SHEET_HEADERS = {
     'Type of CNE', 'External Resource Persons', 'Staff Emp ID', 'Staff Count', 'External Staff Participants',
     'Proposed By', 'Admin Remarks', 'Remarks', 'CreatedAt', 'CreatedBy',
     'Coverage Areas Snapshot', 'Total Allotted Staff', 'Internal Attendance Count',
-    'Attendance Percentage', 'Post-Test Outcome Percentage', 'Coverage Finalized At'
+    'Attendance Percentage', 'Post-Test Outcome Percentage', 'Coverage Finalized At',
+    'Participating Wards', 'Departmental Submission ID', 'Departmental Submission Digest',
+    'Departmental Submission Count'
   ],
   'Area': ['Area', 'Status', 'CreatedAt'],
   'Teaching Mode': ['Mode Name', 'Status', 'Updated At'],
@@ -8318,6 +8298,8 @@ var CNE_SHEET_HEADERS = {
     'Proposed By', 'Admin Remarks', 'Remarks', 'CreatedAt', 'CreatedBy',
     'Coverage Areas Snapshot', 'Total Allotted Staff', 'Internal Attendance Count',
     'Attendance Percentage', 'Post-Test Outcome Percentage', 'Coverage Finalized At',
+    'Participating Wards', 'Departmental Submission ID', 'Departmental Submission Digest',
+    'Departmental Submission Count',
     'Deleted At', 'Deleted By', 'Delete Reason'
   ],
   'CNE Interest Registrations': [
@@ -8330,8 +8312,6 @@ var CNE_SHEET_HEADERS = {
  * Header alias normalization map to prevent duplicate or mismatched headers
  */
 var CNE_HEADER_ALIASES = {
-  'cneid': ['cneid', 'classid'],
-  'classid': ['cneid', 'classid'],
   'typeofcne': ['typeofcne', 'cnetype', 'type'],
   'fromdate': ['fromdate', 'date'],
   'todate': ['todate'],
@@ -8674,7 +8654,8 @@ function getCNEScheduleRecord(cneId) {
 
   var colMap = getHeaderMap(sheet);
   var cleanId = String(cneId).trim().toUpperCase();
-  var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : (colMap['classid'] !== undefined ? colMap['classid'] : 0);
+  var idCol = colMap['cneid'];
+  if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var rowIndex = findExactRowInColumn_(sheet, idCol, cleanId, 2);
   if (rowIndex < 2) return null;
 
@@ -9829,7 +9810,8 @@ function handleListLearningResources(params, session) {
     var classData = classSheet.getDataRange().getValues();
     if (classData.length > 1) {
       var classColMap = getHeaderMap(classSheet);
-      var classIdCol = classColMap['cneid'] !== undefined ? classColMap['cneid'] : (classColMap['classid'] !== undefined ? classColMap['classid'] : 0);
+      var classIdCol = classColMap['cneid'];
+      if (classIdCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
 
       for (var c = 1; c < classData.length; c++) {
         var cRow = classData[c];
@@ -17944,11 +17926,9 @@ function handleFinalizeCNE(params, session) {
         alreadyFinalized: true,
         message: 'This CNE has already been marked as Completed.',
         data: {
-          cneId: cneId,
-          dataId: cneId
+          cneId: cneId
         },
-        cneId: cneId,
-        dataId: cneId
+        cneId: cneId
       };
     }
     if (liveFinalizeStatus === 'Canceled') {
@@ -18078,11 +18058,10 @@ function handleFinalizeCNE(params, session) {
       success: true,
       message: 'CNE finalized successfully.',
       data: {
-        cneId: cneId,
-        dataId: cneId
+        cneId: cneId
       },
       cneId: cneId,
-      dataId: cneId
+      cneId: cneId
     };
   } finally {
     lock.releaseLock();
@@ -18288,7 +18267,8 @@ function isCneIdInUse_(cneId) {
     } catch (schedMapErr) {
       throw new Error('CNE Schedule sheet headers could not be read: ' + schedMapErr.message);
     }
-    var sCol = sColMap['cneid'] !== undefined ? sColMap['cneid'] : (sColMap['classid'] !== undefined ? sColMap['classid'] : -1);
+    var sCol = sColMap['cneid'];
+    if (sCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
     if (sCol < 0) {
       throw new Error('CNE Schedule sheet is missing mandatory CNE ID header.');
     }
@@ -18870,7 +18850,7 @@ function handleDeleteCNE(params, session) {
     function cleanupThisDeletionArchiveRow_() {
       try {
         var activeRows = findExactRowsInColumn_(
-          cneSheet, cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : cneColMap['classid'], cneId, 2
+          cneSheet, cneColMap['cneid'], cneId, 2
         );
         if (activeRows.length !== 1) return 'UNCERTAIN';
         // No physical row at the expected append position means our append did
@@ -19100,7 +19080,8 @@ function handleDeleteCNE(params, session) {
         // committed deletion. Read the authoritative schedule again under
         // the ScriptLock and require the target ID to be completely absent.
         // An exception or a residual row enters state-aware compensation below.
-        var scheduleIdColumn = cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : cneColMap['classid'];
+        var scheduleIdColumn = cneColMap['cneid'];
+        if (scheduleIdColumn === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
         if (scheduleIdColumn === undefined || scheduleIdColumn < 0) {
           throw new Error('CNE Schedule ID column is unavailable for final deletion verification.');
         }
@@ -20190,9 +20171,10 @@ function handleGetCNEAnalytics(params, session) {
   if (!sheet || sheet.getLastRow()<2) return {success:true,data:empty};
   var map = getHeaderMap(sheet);
   var getCol = function(keys,fallback){for(var i=0;i<keys.length;i++) if(map[keys[i]]!==undefined)return map[keys[i]];return fallback;};
-  var cId=getCol(['cneid','classid','dataid'],0), cDate=getCol(['fromdate','date'],2), cDuration=getCol(['duration'],4);
+  var cId=getCol(['cneid'],-1), cDate=getCol(['fromdate','date'],2), cDuration=getCol(['duration'],4);
   var cTopic=getCol(['topic'],5), cArea=getCol(['area','wardnamearea'],1), cStatus=getCol(['status'],-1);
   var cMode=getCol(['modeofteaching','mode'],7), cRp=getCol(['resourcepersonempid'],6), cAllot=getCol(['totalallottedstaff'],-1), cCapacity=getCol(['maxparticipants'],-1);
+  if (cId < 0) throw new Error('CNE Schedule is missing the required CNE ID header. Run Verify Sheets.');
   // This helper reads the date column first and fetches only matching full rows where efficient.
   var rows=readWardLevelOutcomeScheduleRows_(sheet,cDate,from,to);
   var selected={}, statuses={Scheduled:0,Completed:0,Canceled:0}, months={}, areas={}, topics={}, modes={}, testTopics={};

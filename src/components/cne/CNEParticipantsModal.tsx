@@ -31,7 +31,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
   onClose,
   onUpdated
 }) => {
-  const cneId = cne.cneId || cne.classId || '';
+  const cneId = cne.cneId || '';
   const normalizedStatus = String(cne.status || 'Scheduled').trim().toLowerCase();
   const isSessionClosed = normalizedStatus === 'completed' || normalizedStatus === 'canceled' || normalizedStatus === 'cancelled';
   const canModifyAttendance = isAuthorized && !isSessionClosed;

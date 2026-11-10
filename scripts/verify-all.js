@@ -1088,7 +1088,7 @@ const suites = [
     originalFilename: "verify-security-and-access.js",
     mode: "module",
     expectedChecks: 30,
-    sha256: "d759b2462eff0dc9b03d5623540bed1b411c646d841d583b14d7327e5a8c1a95",
+    sha256: "760cde124c6fcda4644e13af76cef46ddf00cdf5caba89ff5328da65827b3314",
     source: `/**
  * Security & Access Verification Suite
  *
@@ -2247,8 +2247,8 @@ runTest('Officer directory access is restricted to Admin, Area Incharge/Incharge
 
   const compactOfficerDirectorySection = officersDropdownSection.replace(/\\s+/g, '');
   assert.ok(
-    compactOfficerDirectorySection.includes("role==='ADMIN'||role==='AREA_INCHARGE'||role==='INCHARGE'"),
-    'handleGetOfficersDropdown must explicitly check for ADMIN, AREA_INCHARGE, or INCHARGE roles'
+    compactOfficerDirectorySection.includes("role==='ADMIN'||role==='AREA_INCHARGE'"),
+    'handleGetOfficersDropdown must explicitly check for ADMIN or AREA_INCHARGE roles'
   );
   assert.ok(
     compactOfficerDirectorySection.includes("errorCode:'FORBIDDEN'") &&
@@ -2452,7 +2452,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-workflows.js",
     mode: "module",
     expectedChecks: 75,
-    sha256: "8db335651a47b5aff041ae1c0c1a67cd36baa442d2956f493115a41fc1fbe680",
+    sha256: "eddb4b166b14ed6ee7cd67721489bd48b48e626fe72ae4ffddf58a1a49c90601",
     source: `/**
  * CNE Business Workflows & Schema Verification Suite
  *
@@ -2631,8 +2631,8 @@ runTest('Unscheduled types create Completed records with seven-type collision-ch
     'handleCreateCNE must calculate isUnscheduled flag'
   );
   assert.ok(codeGs.includes('function generateUniqueCneId_(') &&
-    codeGs.includes("UNSCHEDULED_CENTRAL:'UC'") &&
-    codeGs.includes("UNSCHEDULED_WARD_LEVEL:'UW'") &&
+    codeGs.includes("UNSCHEDULED_CENTRAL: { prefix: 'UC'") &&
+    codeGs.includes("UNSCHEDULED_WARD_LEVEL: { prefix: 'UW'") &&
     handleAddSection.includes('generateUniqueCneId_(cneType)'),
     'Unscheduled CNEs use explicit seven-type ID prefixes, not an ID substring');
   assert.ok(
@@ -3658,18 +3658,15 @@ runTest('Edit CNE displays current inactive Teaching Mode while new selections r
 // -----------------------------------------------------------------------------
 // 7. External CNE Types & Workflow Enforcement
 // -----------------------------------------------------------------------------
-runTest('Authoritative normalizeCNEType recognizes all seven types and fails closed on unknown inputs', () => {
-  const normalizeDef = codeGs.substring(
-    codeGs.indexOf('function normalizeCNEType'),
-    codeGs.indexOf('function normalizeCNEStatus')
-  );
-
-  assert.ok(normalizeDef.includes("'CENTRAL'"), 'Must normalize CENTRAL');
-  assert.ok(normalizeDef.includes("'WARD_LEVEL'"), 'Must normalize WARD_LEVEL');
-  assert.ok(normalizeDef.includes("'EXTERNAL_OFFSITE'"), 'Must normalize EXTERNAL_OFFSITE');
-  assert.ok(normalizeDef.includes("'EXTERNAL_ONSITE'"), 'Must normalize EXTERNAL_ONSITE');
-  assert.ok(normalizeDef.includes("'UNSCHEDULED_CENTRAL'") && normalizeDef.includes("'UNSCHEDULED_WARD_LEVEL'"), 'Must normalize seven CNE types');
-  assert.ok(normalizeDef.includes('return null;'), 'Must return null for unknown values');
+runTest('Authoritative normalizeCNEType accepts only seven canonical codes', () => {
+  const canonical = codeGs.substring(codeGs.indexOf('var CNE_TYPE_CONFIG'),codeGs.indexOf('function normalizeCNEStatus'));
+  const normalizeCneType = new Function(canonical + String.fromCharCode(10) + 'return normalizeCNEType;')();
+  for (const type of ['CENTRAL','WARD_LEVEL','UNSCHEDULED_CENTRAL','UNSCHEDULED_WARD_LEVEL','EXTERNAL_OFFSITE','EXTERNAL_ONSITE','DEPARTMENTAL']) {
+    assert.equal(normalizeCneType(type), type);
+  }
+  for (const obsolete of ['Ward-Level CNE','DEPT','CENTRAL CNE','EXTERNAL CNE – OUTSIDE AIIMS','UNKNOWN','']) {
+    assert.equal(normalizeCneType(obsolete), null);
+  }
 });
 
 runTest('handleCreateCNE fails closed on invalid CNE type and enforces unscheduled-only for External types', () => {
@@ -3703,13 +3700,13 @@ runTest('handleCreateCNE fails closed on invalid CNE type and enforces unschedul
 runTest('AddUnscheduledCneModal provides mandatory CNE Type dropdown and Associated Department label for External types', () => {
   const unscheduledModal = fs.readFileSync('src/components/cne/AddUnscheduledCneModal.tsx', 'utf8');
 
-  // Mandatory dropdown with 5 options
+  // Canonical retrospective options are derived from one frontend configuration.
+  const utils = fs.readFileSync('src/utils.ts', 'utf8');
   assert.ok(unscheduledModal.includes('id="unscheduled-cne-type"'), 'Must have CNE Type select input');
-  assert.ok(unscheduledModal.includes('value="UNSCHEDULED_CENTRAL"'), 'Must have UNSCHEDULED_CENTRAL option');
-  assert.ok(unscheduledModal.includes('value="UNSCHEDULED_WARD_LEVEL"'), 'Must have UNSCHEDULED_WARD_LEVEL option');
-  assert.ok(unscheduledModal.includes('value="EXTERNAL_OFFSITE"'), 'Must have EXTERNAL_OFFSITE option');
-  assert.ok(unscheduledModal.includes('value="EXTERNAL_ONSITE"'), 'Must have EXTERNAL_ONSITE option');
-  assert.ok(unscheduledModal.includes('value="DEPARTMENTAL"'), 'Must have DEPARTMENTAL option');
+  assert.ok(unscheduledModal.includes('RETROSPECTIVE_CNE_TYPES.map('), 'Dropdown must use shared retrospective type config');
+  for (const type of ['UNSCHEDULED_CENTRAL','UNSCHEDULED_WARD_LEVEL','EXTERNAL_OFFSITE','EXTERNAL_ONSITE','DEPARTMENTAL']) {
+    assert.ok(utils.includes(type+': {'), 'Missing configured retrospective type '+type);
+  }
 
   // Dynamic label for Area
   assert.ok(
@@ -4390,7 +4387,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 27,
-    sha256: "d5e23b24af19ee3c87dd2815448deb7ea07300bb137c815d6e94d5c0f313cd40",
+    sha256: "810d45097eac6ad15919bc9dace75db938c82662727012a82ebba4428c954c5f",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -5510,7 +5507,7 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
   );
   const compactOfficerDropdownSection = officerDropdownSection.replace(/\\s+/g, '');
   assert.ok(
-    compactOfficerDropdownSection.includes("role==='ADMIN'||role==='AREA_INCHARGE'||role==='INCHARGE'") &&
+    compactOfficerDropdownSection.includes("role==='ADMIN'||role==='AREA_INCHARGE'") &&
     compactOfficerDropdownSection.includes("errorCode:'FORBIDDEN'") &&
     compactOfficerDropdownSection.includes('checkCNEActionAuthorized(session,rec)===null'),
     'handleGetOfficersDropdown must enforce Admin/Incharge or CNE-scoped authorization and return FORBIDDEN for unauthorized callers'
@@ -11229,7 +11226,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if (gas.includes('password === enteredPassword')) throw Error('Plaintext password comparison detected');
   });
   retainCheck('Restored 43-runner parity: CNE lifecycle and QR entry restrictions', () => {
-    for (const token of ['function normalizeCNEType(typeStr)','function normalizeCNEStatus(statusStr)',
+    for (const token of ['function normalizeCNEType(value)','function normalizeCNEStatus(statusStr)',
       'function isCNEQuestionsLocked(cneId)','QUESTIONS_LOCKED','function handleSaveCNEQuestions(params, session)']) {
       if (!gas.includes(token)) throw Error('CNE lifecycle safeguard missing: ' + token);
     }
@@ -13520,7 +13517,7 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
   const checks = [
     ['Seven explicit CNE Type codes are shared across frontend/backend',()=>{
       for(const t of ['CENTRAL','WARD_LEVEL','UNSCHEDULED_CENTRAL','UNSCHEDULED_WARD_LEVEL','EXTERNAL_OFFSITE','EXTERNAL_ONSITE','DEPARTMENTAL']){
-        assert(types.includes("'"+t+"'"));assert(gas.includes("'"+t+"'"));
+        assert(types.includes("'"+t+"'"));assert(gas.includes(t+": { prefix:"));
       }
     }],
     ['ID creation has type prefix, 12 random characters, no year and collision checks',()=>{
@@ -13573,7 +13570,7 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
   const outcome = readFileSync(join(ROOT_DIR, 'src/components/AdminWardLevelCneOutcome.tsx'), 'utf8');
   const header = readFileSync(join(ROOT_DIR, 'src/components/TopToolbar.tsx'), 'utf8');
   const api = readFileSync(join(ROOT_DIR, 'src/services/api.ts'), 'utf8');
-  const normalizeCode = gs.slice(gs.indexOf('function normalizeCNEType('), gs.indexOf('function normalizeCNEStatus('));
+  const normalizeCode = gs.slice(gs.indexOf('var CNE_TYPE_CONFIG'), gs.indexOf('function normalizeCNEStatus('));
   const generatorCode = gs.slice(gs.indexOf('function generateUniqueCneId_('), gs.indexOf('function handleCreateCNE('));
   const checks = [
     ['Seven CNE codes and all prefix formats execute correctly', () => {
@@ -13601,15 +13598,15 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
         assert.notEqual(a,b,'Collision retry did not make a new ID for '+type);
         allocated.add(b);
       }
-      assert.equal(ctx.normalizeCNEType('Ward-Level CNE'), 'WARD_LEVEL');
-      assert.equal(ctx.normalizeCNEType('Unscheduled Ward-Level CNE'), 'UNSCHEDULED_WARD_LEVEL');
-      assert.equal(ctx.normalizeCNEType('Departmental CNE'), 'DEPARTMENTAL');
-      assert.equal(ctx.normalizeCNEType('DEPT'), 'WARD_LEVEL', 'Historic DEPT shorthand must remain Ward-Level');
+      assert.equal(ctx.normalizeCNEType('Ward-Level CNE'), null);
+      assert.equal(ctx.normalizeCNEType('Unscheduled Ward-Level CNE'), null);
+      assert.equal(ctx.normalizeCNEType('Departmental CNE'), null);
+      assert.equal(ctx.normalizeCNEType('DEPT'), null, 'Obsolete type aliases must be rejected');
     }],
     ['Frontend selectors, backend type, Outcome, and navigation use Ward-Level terminology', () => {
       assert(schedule.includes('value="WARD_LEVEL">Ward-Level CNE</option>'));
       assert(schedule.includes('value="UNSCHEDULED_WARD_LEVEL">Unscheduled Ward-Level CNE</option>'));
-      assert(unscheduled.includes('value="UNSCHEDULED_WARD_LEVEL">Unscheduled Ward-Level CNE</option>'));
+      assert(unscheduled.includes('RETROSPECTIVE_CNE_TYPES.map('));
       assert(outcome.includes('title="Ward-Level CNE Outcome"'));
       assert(header.includes("id: 'admin-ward-level-cne-outcome'"));
       assert(api.includes("'getWardLevelCneOutcomeReport'"));
@@ -13653,17 +13650,17 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
   const checks = [
     ['DEPARTMENTAL classification is explicit, not a renamed WARD_LEVEL type',()=>{
       assert(ts.includes("| 'DEPARTMENTAL'"));
-      assert(gs.includes("if (s === 'DEPARTMENTAL' || s === 'DEPARTMENTAL CNE') return 'DEPARTMENTAL'"));
-      assert(utils.includes("case 'DEPARTMENTAL':") && utils.includes("return 'Departmental CNE';"));
-      assert(gs.includes("DEPARTMENTAL:'UD'"));
+      assert(gs.includes("DEPARTMENTAL: { prefix: 'UD'"));
+      assert(utils.includes('Departmental CNE'));
+      assert(gs.includes("DEPARTMENTAL: { prefix: 'UD'"));
       assert(!gs.includes("'DEPT') return 'DEPARTMENTAL'"));
     }],
     ['New Departmental CNE is available only in retrospective create and Admin Edit forms',()=>{
-      assert(popup.includes('value="DEPARTMENTAL">Departmental CNE</option>'));
-      assert(popup.includes("'DEPARTMENTAL'].includes(cneType)"));
+      assert(popup.includes('RETROSPECTIVE_CNE_TYPES.map('));
+      assert(popup.includes('RETROSPECTIVE_CNE_TYPES.includes(cneType)'));
       assert(schedule.includes('value="DEPARTMENTAL">Departmental CNE</option>'));
       assert(!readFileSync(join(ROOT_DIR,'src/components/cne/WardLevelScheduleModal.tsx'),'utf8').includes('value="DEPARTMENTAL"'));
-      assert(create.includes("'EXTERNAL_ONSITE','DEPARTMENTAL'].indexOf(cneType) !== -1"));
+      assert(create.includes('CNE_TYPE_CONFIG[cneType].workflow'));
       assert(create.includes('isUnscheduled !== retrospectiveType'));
       assert(create.includes("isUnscheduled ? 'Completed' : normalizeCNEStatus"));
       assert(create.includes('if (isUnscheduled && !isAdmin)'));
@@ -13673,7 +13670,7 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
       assert(!popup.includes('id="conducting-department"'));
     }],
     ['DEPARTMENTAL retrospective creation is Admin-only and rejects regular scheduling',()=>{
-      const norm=gs.slice(gs.indexOf('function normalizeCNEType('),gs.indexOf('function normalizeCNEStatus('));
+      const norm=gs.slice(gs.indexOf('var CNE_TYPE_CONFIG'),gs.indexOf('function normalizeCNEStatus('));
       const stat=gs.slice(gs.indexOf('function normalizeCNEStatus('),gs.indexOf('function sanitizeCellInput('));
       const createCode=gs.slice(gs.indexOf('function handleCreateCNE('),gs.indexOf('function handleUpdateCNE('));
       const ctx={}; vm.createContext(ctx);
@@ -13694,7 +13691,7 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
       assert.equal(invalid.errorCode,'INVALID_CNE_TYPE');
     }],
     ['Admin alone has operational authority for Departmental; RP/Incharge remain view-only',()=>{
-      const norm = gs.slice(gs.indexOf('function normalizeCNEType('),gs.indexOf('function normalizeCNEStatus('));
+      const norm = gs.slice(gs.indexOf('var CNE_TYPE_CONFIG'),gs.indexOf('function normalizeCNEStatus('));
       const stat = gs.slice(gs.indexOf('function normalizeCNEStatus('),gs.indexOf('function sanitizeCellInput('));
       const auth = gs.slice(gs.indexOf('function checkCNEAuthorized('),gs.indexOf('/**\n * Safe Header Detection for the authoritative',gs.indexOf('function checkCNEAuthorized(')));
       const ctx={}; vm.createContext(ctx);
@@ -14705,8 +14702,8 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       const gs=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
       const ctx={};vm.createContext(ctx);vm.runInContext(gs,ctx,{timeout:13000});
       const manager={employeeId:'INC-1',role:'AREA_INCHARGE',assignedAreas:['ICU']};
-      const central={cneId:'C-1',cneType:'CENTRAL',area:'ICU',instructor:'RP-5'};
-      const dept={cneId:'D-1',cneType:'WARD_LEVEL',area:'ICU',instructor:'RP-5'};
+      const central={cneId:'C-1',cneType:'CENTRAL',status:'Scheduled',area:'ICU',instructor:'RP-5'};
+      const dept={cneId:'D-1',cneType:'WARD_LEVEL',status:'Scheduled',area:'ICU',instructor:'RP-5'};
       assert(ctx.checkCNEActionAuthorized(manager,central).errorCode==='FORBIDDEN');
       assert(ctx.checkCNEActionAuthorized(manager,dept)===null);
       assert(ctx.checkCNEActionAuthorized({employeeId:'RP-5',role:'AREA_INCHARGE',assignedAreas:['OT']},central)===null);

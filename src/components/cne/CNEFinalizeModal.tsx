@@ -20,7 +20,7 @@ export const CNEFinalizeModal: React.FC<CNEFinalizeModalProps> = ({
   onClose,
   onCompleted
 }) => {
-  const cneId = cne.cneId || cne.classId || '';
+  const cneId = cne.cneId || '';
   const status = normalizeStatus(cne.status);
   const isClosed = status === 'completed' || status === 'canceled' || status === 'cancelled';
 

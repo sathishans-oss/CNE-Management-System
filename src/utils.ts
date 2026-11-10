@@ -822,7 +822,7 @@ export function isCneAuthorized(
   if (user.role === 'ADMIN') return true;
 
   const normalizedRole = String(user.role || '').trim().toUpperCase();
-  if (normalizedRole !== 'AREA_INCHARGE' && normalizedRole !== 'INCHARGE') return false;
+  if (normalizedRole !== 'AREA_INCHARGE') return false;
   if (!cneArea) return false;
 
   // AREA_INCHARGE role alone never grants Central or External CNE authority.
@@ -880,6 +880,8 @@ export function canManageCneActions(
     ...(cne.resourcePersonEmpIds || []),
     ...(cne.resourcePersonEmpId ? String(cne.resourcePersonEmpId).split(/[,;\n]+/) : [])
   ];
+  // Assignment is operational authority only for regular Central and Ward-Level CNE.
+  if (cne.cneType !== 'CENTRAL' && cne.cneType !== 'WARD_LEVEL') return false;
   return isUserAssignedResourcePerson(user, assignedRpIds);
 }
 
@@ -899,81 +901,27 @@ export function getSafeExternalUrl(value?: string | null): string | null {
     return null;
   }
 }
-/**
- * Authoritative human-facing CNE type display label.
- *
- * CENTRAL -> "Central CNE"
- * WARD_LEVEL -> "Ward-Level CNE"
- * EXTERNAL_OFFSITE -> "External CNE – Outside AIIMS"
- * EXTERNAL_ONSITE -> "External CNE – Hosted at AIIMS"
- * Fallback -> "CNE"
- */
+/** One frontend source for CNE display labels, badges, and retrospective dropdowns. */
+export const CNE_TYPE_CONFIG = {
+  CENTRAL: { label: 'Central CNE', prefix: 'C', workflow: 'SCHEDULED', badge: 'bg-blue-50 text-blue-700 border border-blue-200' },
+  WARD_LEVEL: { label: 'Ward-Level CNE', prefix: 'W', workflow: 'SCHEDULED', badge: 'bg-teal-50 text-teal-700 border border-teal-200' },
+  UNSCHEDULED_CENTRAL: { label: 'Unscheduled Central CNE', prefix: 'UC', workflow: 'RETROSPECTIVE', badge: 'bg-slate-100 text-slate-700 border border-slate-200' },
+  UNSCHEDULED_WARD_LEVEL: { label: 'Unscheduled Ward-Level CNE', prefix: 'UW', workflow: 'RETROSPECTIVE', badge: 'bg-slate-100 text-slate-700 border border-slate-200' },
+  EXTERNAL_OFFSITE: { label: 'External CNE – Outside AIIMS', prefix: 'UO', workflow: 'RETROSPECTIVE', badge: 'bg-amber-50 text-amber-800 border border-amber-200' },
+  EXTERNAL_ONSITE: { label: 'External CNE – Hosted at AIIMS', prefix: 'UI', workflow: 'RETROSPECTIVE', badge: 'bg-purple-50 text-purple-700 border border-purple-200' },
+  DEPARTMENTAL: { label: 'Departmental CNE', prefix: 'UD', workflow: 'RETROSPECTIVE', badge: 'bg-indigo-50 text-indigo-700 border border-indigo-200' }
+} as const;
+
+export const RETROSPECTIVE_CNE_TYPES = (Object.keys(CNE_TYPE_CONFIG) as Array<keyof typeof CNE_TYPE_CONFIG>)
+  .filter((type) => CNE_TYPE_CONFIG[type].workflow === 'RETROSPECTIVE');
+
 export function getCneTypeLabel(type?: string | null): string {
-  if (!type) return 'CNE';
-  const norm = String(type).trim().toUpperCase();
-  switch (norm) {
-    case 'CENTRAL':
-    case 'CENTRAL CNE':
-      return 'Central CNE';
-    case 'WARD_LEVEL':
-    case 'WARD-LEVEL CNE':
-    case 'WARD LEVEL CNE':
-    case 'DEPT':
-      return 'Ward-Level CNE';
-    case 'UNSCHEDULED_CENTRAL':
-      return 'Unscheduled Central CNE';
-    case 'UNSCHEDULED_WARD_LEVEL':
-      return 'Unscheduled Ward-Level CNE';
-    case 'DEPARTMENTAL':
-    case 'DEPARTMENTAL CNE':
-      return 'Departmental CNE';
-    case 'EXTERNAL_OFFSITE':
-    case 'EXTERNAL OFFSITE':
-    case 'EXTERNAL_CNE_OFFSITE':
-    case 'EXTERNAL CNE OFFSITE':
-    case 'EXTERNAL CNE – OUTSIDE AIIMS':
-    case 'EXTERNAL CNE - OUTSIDE AIIMS':
-    case 'EXTERNAL CNE – OUTSIDE':
-    case 'EXTERNAL CNE - OUTSIDE':
-    case 'EXTERNAL_OUTSIDE':
-    case 'OUTSIDE AIIMS':
-      return 'External CNE – Outside AIIMS';
-    case 'EXTERNAL_ONSITE':
-    case 'EXTERNAL ONSITE':
-    case 'EXTERNAL_CNE_ONSITE':
-    case 'EXTERNAL CNE ONSITE':
-    case 'EXTERNAL CNE – HOSTED AT AIIMS':
-    case 'EXTERNAL CNE - HOSTED AT AIIMS':
-    case 'EXTERNAL CNE – HOSTED':
-    case 'EXTERNAL CNE - HOSTED':
-    case 'EXTERNAL_HOSTED':
-    case 'HOSTED AT AIIMS':
-    case 'EXTERNAL_ONSITE_AIIMS':
-      return 'External CNE – Hosted at AIIMS';
-    default:
-      return 'CNE';
-  }
+  return type && Object.prototype.hasOwnProperty.call(CNE_TYPE_CONFIG, type)
+    ? CNE_TYPE_CONFIG[type as keyof typeof CNE_TYPE_CONFIG].label : 'CNE';
 }
 
-/**
- * Returns Tailwind badge styling classes based on CNE type.
- */
 export function getCneTypeBadgeClass(type?: string | null): string {
-  const norm = String(type || '').trim().toUpperCase();
-  if (norm === 'CENTRAL' || norm === 'CENTRAL CNE') {
-    return 'bg-blue-50 text-blue-700 border border-blue-200';
-  }
-  if (norm === 'WARD_LEVEL' || norm === 'WARD-LEVEL CNE' || norm === 'WARD LEVEL CNE' || norm === 'DEPT') {
-    return 'bg-teal-50 text-teal-700 border border-teal-200';
-  }
-  if (norm === 'DEPARTMENTAL' || norm === 'DEPARTMENTAL CNE') {
-    return 'bg-indigo-50 text-indigo-700 border border-indigo-200';
-  }
-  if (norm.includes('OFFSITE') || norm.includes('OUTSIDE')) {
-    return 'bg-amber-50 text-amber-800 border border-amber-200';
-  }
-  if (norm.includes('ONSITE') || norm.includes('HOSTED')) {
-    return 'bg-purple-50 text-purple-700 border border-purple-200';
-  }
-  return 'bg-slate-100 text-slate-700 border border-slate-200';
+  return type && Object.prototype.hasOwnProperty.call(CNE_TYPE_CONFIG, type)
+    ? CNE_TYPE_CONFIG[type as keyof typeof CNE_TYPE_CONFIG].badge
+    : 'bg-slate-100 text-slate-700 border border-slate-200';
 }
