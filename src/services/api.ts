@@ -1905,7 +1905,7 @@ function generateLocalWardLevelCneOutcomeReport(
       });
     } else {
       for (const c of list) {
-        const isCancelled = c.status === 'Canceled' || c.status === 'Cancelled';
+        const isCancelled = c.status === 'Canceled';
         const isCompleted = c.status === 'Completed';
         rows.push({
           area: c.area,
@@ -1928,7 +1928,7 @@ function generateLocalWardLevelCneOutcomeReport(
   for (const [k, list] of Object.entries(cnesByArea)) {
     if (!processedKeys.has(k)) {
       for (const c of list) {
-        const isCancelled = c.status === 'Canceled' || c.status === 'Cancelled';
+        const isCancelled = c.status === 'Canceled';
         const isCompleted = c.status === 'Completed';
         rows.push({
           area: c.area,

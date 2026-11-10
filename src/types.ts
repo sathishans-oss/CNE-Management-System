@@ -1,14 +1,6 @@
 export type UserRole = 'ADMIN' | 'AREA_INCHARGE' | 'EMPLOYEE';
 
-export type CNEStatus =
-  | 'Scheduled'
-  | 'Completed'
-  | 'Canceled'
-  | 'Cancelled'
-  | 'Finalized'
-  | 'Finalised'
-  | 'Draft'
-  | 'Pending';
+export type CNEStatus = 'Scheduled' | 'Completed' | 'Canceled';
 
 export type ViewMode =
   | 'home'

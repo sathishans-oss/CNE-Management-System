@@ -40,6 +40,7 @@ import {
   toDateTimeLocalString,
   parseToIsoDateString,
   getCneTypeLabel,
+  CNE_TYPE_CONFIG,
   parseCneStartTimestamp
 } from '../utils';
 import { SmartCneTopicInput } from './cne/SmartCneTopicInput';
@@ -76,7 +77,7 @@ const isCneCompleted = (cne?: CNERecord | null) => getCneStatus(cne) === 'comple
 
 const isCneCanceled = (cne?: CNERecord | null) => {
   const status = getCneStatus(cne);
-  return status === 'canceled' || status === 'cancelled';
+  return status === 'canceled';
 };
 
 const isCneClosed = (cne?: CNERecord | null) => isCneCompleted(cne) || isCneCanceled(cne);
@@ -1829,13 +1830,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       {isAdmin ? (
                         <select id="edit-cne-type" value={editCneType} onChange={e => setEditCneType(e.target.value as CNEType)}
                           disabled={isEditSubmitting} className="w-full p-2.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold focus:ring-2 focus:ring-teal-500">
-                          <option value="CENTRAL">Central CNE</option>
-                          <option value="WARD_LEVEL">Ward-Level CNE</option>
-                          <option value="UNSCHEDULED_CENTRAL">Unscheduled Central CNE</option>
-                          <option value="UNSCHEDULED_WARD_LEVEL">Unscheduled Ward-Level CNE</option>
-                          <option value="EXTERNAL_OFFSITE">External CNE — Outside AIIMS</option>
-                          <option value="EXTERNAL_ONSITE">External CNE — Hosted at AIIMS</option>
-                          <option value="DEPARTMENTAL">Departmental CNE</option>
+                          {(Object.keys(CNE_TYPE_CONFIG) as CNEType[]).map(type => (
+                            <option key={type} value={type}>{CNE_TYPE_CONFIG[type].label}</option>
+                          ))}
                         </select>
                       ) : (
                         <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-100 text-xs font-bold text-slate-800">

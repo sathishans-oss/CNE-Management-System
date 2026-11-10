@@ -148,7 +148,7 @@ export const AdminWardLevelCneOutcome: React.FC<AdminWardLevelCneOutcomeProps> =
 
   // Formatting remarks: ONLY Cancelled sessions show cancellation reason
   const formatRemarks = (row: WardLevelCneOutcomeRow) => {
-    if (row.status === 'Canceled' || row.status === 'Cancelled') {
+    if (row.status === 'Canceled') {
       return row.remarks || '—';
     }
     return '—';
@@ -250,7 +250,7 @@ export const AdminWardLevelCneOutcome: React.FC<AdminWardLevelCneOutcomeProps> =
                 filteredRows.map((row, idx) => {
                   const isEmptyArea = !row.cneId;
                   const isCompleted = row.status === 'Completed';
-                  const isCancelled = row.status === 'Canceled' || row.status === 'Cancelled';
+                  const isCancelled = row.status === 'Canceled';
                   const isScheduled = row.status === 'Scheduled';
 
                   return (

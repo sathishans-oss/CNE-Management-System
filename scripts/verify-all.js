@@ -11613,6 +11613,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   const modal = readFileSync(join(ROOT_DIR, 'src/components/cne/WardLevelScheduleModal.tsx'), 'utf8');
   const selector = readFileSync(join(ROOT_DIR, 'src/components/cne/WardMultiSelect.tsx'), 'utf8');
   const schedule = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
+  const utils = readFileSync(join(ROOT_DIR, 'src/utils.ts'), 'utf8');
   const desktop = readFileSync(join(ROOT_DIR, 'src/components/cne/ScheduleRow.tsx'), 'utf8');
   const mobile = readFileSync(join(ROOT_DIR, 'src/components/cne/ScheduleMobileCard.tsx'), 'utf8');
   const api = readFileSync(join(ROOT_DIR, 'src/services/api.ts'), 'utf8');
@@ -13509,6 +13510,7 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
   const types = readFileSync(join(ROOT_DIR, 'src/types.ts'),'utf8');
   const ward = readFileSync(join(ROOT_DIR, 'src/components/cne/WardMultiSelect.tsx'),'utf8');
   const schedule = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'),'utf8');
+  const utils = readFileSync(join(ROOT_DIR, 'src/utils.ts'),'utf8');
   const report = gas.slice(gas.indexOf('function handleGetWardLevelCneOutcomeReport'),gas.indexOf('function handleGetRoles'));
   const create = gas.slice(gas.indexOf('function handleCreateCNE'),gas.indexOf('function handleUpdateCNE'));
   const edit = gas.slice(gas.indexOf('function handleUpdateCNE'),gas.indexOf('function parseDurationToSeconds'));
@@ -13528,8 +13530,10 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
     }],
     ['Admin edits all seven types in same Edit CNE, without changing ID or linked resources',()=>{
       assert(schedule.includes('id="edit-cne-type"'));
-      assert(schedule.includes('value="UNSCHEDULED_WARD_LEVEL"'));
-      assert(schedule.includes('value="DEPARTMENTAL"')); 
+      assert(schedule.includes('(Object.keys(CNE_TYPE_CONFIG) as CNEType[]).map(type => ('));
+      assert(schedule.includes('value={type}>{CNE_TYPE_CONFIG[type].label}'));
+      assert(utils.includes('UNSCHEDULED_WARD_LEVEL: { label:'));
+      assert(utils.includes('DEPARTMENTAL: { label:')); 
       assert(edit.includes("setColVal('cnetype', 12, liveTargetType)"));
       assert(edit.includes("session.role !== 'ADMIN'"));
       assert(edit.includes('IMMUTABLE_CNE_ID'));
@@ -13564,6 +13568,7 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
   const gs = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
   const types = readFileSync(join(ROOT_DIR, 'src/types.ts'), 'utf8');
   const schedule = readFileSync(join(ROOT_DIR, 'src/components/CNESchedule.tsx'), 'utf8');
+  const utils = readFileSync(join(ROOT_DIR, 'src/utils.ts'), 'utf8');
   const unscheduled = readFileSync(join(ROOT_DIR, 'src/components/cne/AddUnscheduledCneModal.tsx'), 'utf8');
   const outcome = readFileSync(join(ROOT_DIR, 'src/components/AdminWardLevelCneOutcome.tsx'), 'utf8');
   const header = readFileSync(join(ROOT_DIR, 'src/components/TopToolbar.tsx'), 'utf8');
@@ -13602,8 +13607,9 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
       assert.equal(ctx.normalizeCNEType('DEPT'), null, 'Obsolete type aliases must be rejected');
     }],
     ['Frontend selectors, backend type, Outcome, and navigation use Ward-Level terminology', () => {
-      assert(schedule.includes('value="WARD_LEVEL">Ward-Level CNE</option>'));
-      assert(schedule.includes('value="UNSCHEDULED_WARD_LEVEL">Unscheduled Ward-Level CNE</option>'));
+      assert(schedule.includes('(Object.keys(CNE_TYPE_CONFIG) as CNEType[]).map(type => ('));
+      assert(utils.includes("WARD_LEVEL: { label: 'Ward-Level CNE'"));
+      assert(utils.includes("UNSCHEDULED_WARD_LEVEL: { label: 'Unscheduled Ward-Level CNE'"));
       assert(unscheduled.includes('RETROSPECTIVE_CNE_TYPES.map('));
       assert(outcome.includes('title="Ward-Level CNE Outcome"'));
       assert(header.includes("id: 'admin-ward-level-cne-outcome'"));
@@ -13656,7 +13662,8 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
     ['New Departmental CNE is available only in retrospective create and Admin Edit forms',()=>{
       assert(popup.includes('RETROSPECTIVE_CNE_TYPES.map('));
       assert(popup.includes('RETROSPECTIVE_CNE_TYPES.includes(cneType)'));
-      assert(schedule.includes('value="DEPARTMENTAL">Departmental CNE</option>'));
+      assert(schedule.includes('(Object.keys(CNE_TYPE_CONFIG) as CNEType[]).map(type => ('));
+      assert(utils.includes("DEPARTMENTAL: { label: 'Departmental CNE'"));
       assert(!readFileSync(join(ROOT_DIR,'src/components/cne/WardLevelScheduleModal.tsx'),'utf8').includes('value="DEPARTMENTAL"'));
       assert(create.includes('CNE_TYPE_CONFIG[cneType].workflow'));
       assert(create.includes('isUnscheduled !== retrospectiveType'));
