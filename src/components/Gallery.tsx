@@ -132,9 +132,9 @@ export const Gallery: React.FC<GalleryProps> = ({ user }) => {
   return (
     <div className="space-y-6 pb-12">
       {/* Header */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Recent CNE Highlights</h1>
+          <h1 className="text-lg font-bold text-slate-900">Recent CNE Highlights</h1>
           <p className="text-xs text-slate-500 mt-1">
             Photo gallery documenting simulation workshops, clinical skills stations, and academic forums.
           </p>

@@ -44,7 +44,7 @@ export const INITIAL_QUICK_LINKS: QuickLinkItem[] = [
   {
     id: "ql-calendar",
     title: "CNE Interactive Calendar",
-    description: "View monthly training schedules, departmental rotations, and upcoming skill sessions.",
+    description: "View monthly training schedules, ward-level rotations, and upcoming skill sessions.",
     iconName: "Calendar",
     target: "calendar",
     badge: "Monthly View",
@@ -72,7 +72,7 @@ export const INITIAL_QUICK_LINKS: QuickLinkItem[] = [
   {
     id: "ql-cell-info",
     title: "Nursing Education Cell",
-    description: "Overview of CNE Committee mandate, organizational hierarchy, and departmental coordinators.",
+    description: "Overview of CNE Committee mandate, organizational hierarchy, and ward-level coordinators.",
     iconName: "GraduationCap",
     target: "cell-info",
     badge: "Committee Info",

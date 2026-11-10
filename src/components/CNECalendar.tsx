@@ -198,7 +198,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
 
   // Header and legend render immediately, independently of the initial data request.
   const calendarHeader = (
-      <div className="relative rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 p-3 sm:p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+      <div className="relative rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 p-2.5 sm:p-3 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-2">
         <div>
 <h1 className="inline-flex items-center gap-2 text-lg font-bold text-teal-900"><CalendarIcon className="w-4 h-4" aria-hidden="true" /> CNE Calendar</h1>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -206,7 +206,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Month Navigation */}
           <div className="flex items-center gap-2 rounded-xl border border-white/80 bg-white/70 px-2 py-1">
             <button

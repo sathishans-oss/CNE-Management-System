@@ -80,8 +80,8 @@ export const ClinicalInsightsAdmin: React.FC = () => {
   };
 
   return <div className="space-y-5">
-    <div className="rounded-2xl border border-teal-200 bg-gradient-to-r from-teal-50 to-white p-5 shadow-sm">
-      <div className="flex items-center gap-3"><div className="rounded-xl bg-teal-700 p-2 text-white"><BookImage className="h-5 w-5"/></div><div><h2 className="text-lg font-extrabold text-slate-900">Daily Clinical Insight Images</h2><p className="text-sm text-slate-600">One complete poster with embedded explanation per day. No Gemini or text fields.</p></div></div>
+    <div className="rounded-2xl border border-teal-200 bg-gradient-to-r from-teal-50 to-white p-3 sm:p-4 shadow-sm">
+      <div className="flex items-center gap-3"><div className="rounded-xl bg-teal-700 p-2 text-white"><BookImage className="h-5 w-5"/></div><div><h2 className="text-base font-extrabold text-slate-900">Daily Clinical Insight Images</h2><p className="text-sm text-slate-600">One complete poster with embedded explanation per day. No Gemini or text fields.</p></div></div>
     </div>
     {error&&<div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div>}
     {notice&&<div role="status" className="rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm text-teal-800">{notice}</div>}

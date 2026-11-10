@@ -25,7 +25,7 @@ import {
   CNEActivityProgress,
   PostTestSubmissionResult,
   SheetAuditItem,
-  DepartmentalCneOutcomeRow,
+  WardLevelCneOutcomeRow,
   CneInterestRegistration,
   CneInterestStatusResponse,
   CneInterestedParticipantsResponse,
@@ -205,7 +205,7 @@ const NEVER_CACHEABLE_PROTECTED_ACTIONS: ReadonlySet<string> = new Set([
   'getMyCNERecordsPage',
   'getCNESchedulePage',
   'getCNEScheduleAll',
-  'getDepartmentalCneOutcomeReport',
+  'getWardLevelCneOutcomeReport',
   'getCNEAnalytics',
   'getCNECalendarMonth',
   'getCNEScheduleById',
@@ -478,8 +478,8 @@ export class ApiService {
       case 'updateArea':
       case 'createCNE':
       case 'addUnscheduledCNE':
-      case 'addDepartmentalSchedule':
-      case 'getDepartmentalScheduleSubmissionStatus':
+      case 'addWardLevelSchedule':
+      case 'getWardLevelScheduleSubmissionStatus':
       case 'updateCNE':
       case 'finalizeCNE':
       case 'cancelCNE':
@@ -586,17 +586,17 @@ export class ApiService {
       case 'getGallery':
         return { success: true, data: [..._inMemoryGallery] as any };
 
-      case 'getDepartmentalCneOutcomeReport': {
+      case 'getWardLevelCneOutcomeReport': {
         if (!session || session.role !== 'ADMIN') {
           return {
             success: false,
             errorCode: 'FORBIDDEN',
-            message: 'Permission denied. Only Administrators can view Departmental CNE Outcome.'
+            message: 'Permission denied. Only Administrators can view Ward-Level CNE Outcome.'
           };
         }
         return {
           success: true,
-          data: generateLocalDepartmentalCneOutcomeReport(_params) as any
+          data: generateLocalWardLevelCneOutcomeReport(_params) as any
         };
       }
 
@@ -1241,30 +1241,30 @@ export class ApiService {
     return this.executeAction<Record<string, number | null>>('getWardStaffCounts');
   }
 
-  static async getDepartmentalScheduleSubmissionStatus(
+  static async getWardLevelScheduleSubmissionStatus(
     submissionId: string
   ): Promise<ApiResponse<{ status: 'COMMITTED' | 'NOT_FOUND' | 'IN_PROGRESS'; count?: number; createdIds?: string[]; recovered?: boolean }>> {
-    const res = await this.executeAction<{ status: 'COMMITTED' | 'NOT_FOUND' | 'IN_PROGRESS'; count?: number; createdIds?: string[]; recovered?: boolean }>('getDepartmentalScheduleSubmissionStatus', { submissionId });
+    const res = await this.executeAction<{ status: 'COMMITTED' | 'NOT_FOUND' | 'IN_PROGRESS'; count?: number; createdIds?: string[]; recovered?: boolean }>('getWardLevelScheduleSubmissionStatus', { submissionId });
     if (res.success && res.data?.status === 'COMMITTED') {
       this.invalidateCache('getCNERecords');
       this.invalidateCache('getProgramImpact');
-      this.invalidateCache('getDepartmentalCneOutcomeReport');
+      this.invalidateCache('getWardLevelCneOutcomeReport');
     }
     return res;
   }
 
-  static async addDepartmentalSchedule(
+  static async addWardLevelSchedule(
     schedules: any[],
     submissionId: string
   ): Promise<ApiResponse<{ count: number; createdIds: string[]; createdClasses?: string[]; recovered?: boolean; status?: string }>> {
-    const res = await this.executeAction<{ count: number; createdIds: string[]; createdClasses?: string[]; recovered?: boolean; status?: string }>('addDepartmentalSchedule', {
+    const res = await this.executeAction<{ count: number; createdIds: string[]; createdClasses?: string[]; recovered?: boolean; status?: string }>('addWardLevelSchedule', {
       schedules,
       submissionId
     });
     if (res.success) {
       this.invalidateCache('getCNERecords');
       this.invalidateCache('getProgramImpact');
-      this.invalidateCache('getDepartmentalCneOutcomeReport');
+      this.invalidateCache('getWardLevelCneOutcomeReport');
     }
     return res;
   }
@@ -1749,22 +1749,22 @@ export class ApiService {
     if (res.success) {
       this.invalidateCache('getCNERecords');
       this.invalidateCache('getProgramImpact');
-      this.invalidateCache('getDepartmentalCneOutcomeReport');
+      this.invalidateCache('getWardLevelCneOutcomeReport');
     }
     return res;
   }
 
   /**
-   * Admin-Only: Departmental CNE Outcome Report API
+   * Admin-Only: Ward-Level CNE Outcome Report API
    */
-  static async getDepartmentalCneOutcomeReport(params?: {
+  static async getWardLevelCneOutcomeReport(params?: {
     fromDate?: string;
     toDate?: string;
     search?: string;
     allDates?: boolean;
-  }): Promise<ApiResponse<DepartmentalCneOutcomeRow[]>> {
-    return this.executeAction<DepartmentalCneOutcomeRow[]>(
-      'getDepartmentalCneOutcomeReport',
+  }): Promise<ApiResponse<WardLevelCneOutcomeRow[]>> {
+    return this.executeAction<WardLevelCneOutcomeRow[]>(
+      'getWardLevelCneOutcomeReport',
       params || {}
     );
   }
@@ -1854,9 +1854,9 @@ export class ApiService {
   }
 }
 
-function generateLocalDepartmentalCneOutcomeReport(
+function generateLocalWardLevelCneOutcomeReport(
   params: Record<string, any> = {}
-): DepartmentalCneOutcomeRow[] {
+): WardLevelCneOutcomeRow[] {
   // Match the production endpoint: default to the current month in India.
   const indiaToday = new Date(Date.now() + 330 * 60 * 1000);
   const monthStart = `${indiaToday.getUTCFullYear()}-${String(indiaToday.getUTCMonth() + 1).padStart(2, '0')}-01`;
@@ -1865,9 +1865,9 @@ function generateLocalDepartmentalCneOutcomeReport(
   const toFilter = params.allDates === true ? '' : (params.toDate || (!params.fromDate ? monthEnd : ''));
   const activeAreas = _inMemoryAreas.filter((a) => a.status === 'ACTIVE').map((a) => a.name);
   const deptCnes = _inMemoryCNERecords.filter((c) => {
-    const isDept = c.cneType === 'DEPARTMENTAL';
-    const isUnscheduled = c.isUnscheduled || (c.cneId && c.cneId.includes('-U-'));
-    if (!isDept || isUnscheduled) return false;
+    const isDept = c.cneType === 'WARD_LEVEL';
+    // Only the authoritative CNE Type determines Ward-Level Outcome eligibility.
+    if (!isDept) return false;
     const cneDay = (c.fromDate || c.date || '').slice(0, 10);
     if ((fromFilter || toFilter) && !cneDay) return false;
     if (fromFilter && cneDay < fromFilter) return false;
@@ -1883,7 +1883,7 @@ function generateLocalDepartmentalCneOutcomeReport(
     cnesByArea[k].push(c);
   }
 
-  const rows: DepartmentalCneOutcomeRow[] = [];
+  const rows: WardLevelCneOutcomeRow[] = [];
   const processedKeys = new Set<string>();
 
   for (const actName of activeAreas) {

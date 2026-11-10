@@ -568,8 +568,8 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
   return (
     <div className="space-y-6 pb-12">
       {/* Schedule-inspired compact header with search beside the Role title. */}
-      <div className="relative rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 p-3 shadow-sm sm:p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="relative rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 p-2.5 shadow-sm sm:p-3">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-lg font-bold text-slate-900">Role</h1>

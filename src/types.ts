@@ -24,7 +24,7 @@ export type ViewMode =
   | 'admin-content'
   | 'admin-reports'
   | 'admin-teaching-modes'
-  | 'admin-departmental-cne-outcome';
+  | 'admin-ward-level-cne-outcome';
 
 export interface NewsEventItem {
   id: string;
@@ -106,9 +106,12 @@ export interface RoleMapping {
 
 export type CNEType =
   | 'CENTRAL'
-  | 'DEPARTMENTAL'
+  | 'WARD_LEVEL'
+  | 'UNSCHEDULED_CENTRAL'
+  | 'UNSCHEDULED_WARD_LEVEL'
   | 'EXTERNAL_OFFSITE'
-  | 'EXTERNAL_ONSITE';
+  | 'EXTERNAL_ONSITE'
+  | 'DEPARTMENTAL';
 
 /**
  * Authoritative Unified CNE Record
@@ -160,7 +163,7 @@ export interface CNERecord {
   updatedBy?: string;
 }
 
-export interface DepartmentalCneOutcomeRow {
+export interface WardLevelCneOutcomeRow {
   activeArea?: boolean; // preserves empty active-ward rows after client-side date filtering
   area: string;
   cneId?: string;
@@ -187,7 +190,7 @@ export interface CNEActivityProgress {
   finalizationStatus: 'Finalized' | 'Not Finalized';
 }
 
-export interface DepartmentalScheduleRow {
+export interface WardLevelScheduleRow {
   id: string;
   topic: string;
   area: string;

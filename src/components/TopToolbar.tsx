@@ -81,7 +81,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   }, [isAdmin]);
   useEffect(() => {
     const scrollArea = navScrollRef.current;
-    const activeId = ['admin-content', 'admin-roles', 'admin-departmental-cne-outcome', 'admin-areas', 'admin-teaching-modes'].includes(activeView)
+    const activeId = ['admin-content', 'admin-roles', 'admin-ward-level-cne-outcome', 'admin-areas', 'admin-teaching-modes'].includes(activeView)
       ? 'top-tab-control-center' : `top-tab-${activeView}`;
     const target = document.getElementById(activeId);
     if (scrollArea && target) {
@@ -95,12 +95,12 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   const controlCenterBtnRef = useRef<HTMLButtonElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
 
-  const isControlCenterActive = (['admin-content', 'admin-roles', 'admin-departmental-cne-outcome'] as ViewMode[]).includes(activeView);
+  const isControlCenterActive = (['admin-content', 'admin-roles', 'admin-ward-level-cne-outcome'] as ViewMode[]).includes(activeView);
 
   const controlCenterItems = [
     { id: 'admin-content' as ViewMode, label: 'Admin Content', icon: FileText, desc: 'Circulars, Desk, Quick Links, Photos, Wards, Modes' },
     { id: 'admin-roles' as ViewMode, label: 'Role', icon: ShieldCheck, desc: 'Staff roles & permissions' },
-    { id: 'admin-departmental-cne-outcome' as ViewMode, label: 'Departmental CNE Outcome', icon: FileSpreadsheet, desc: 'Staff coverage & outcome metrics' }
+    { id: 'admin-ward-level-cne-outcome' as ViewMode, label: 'Ward-Level CNE Outcome', icon: FileSpreadsheet, desc: 'Staff coverage & outcome metrics' }
   ];
 
   const updateDropdownPos = () => {

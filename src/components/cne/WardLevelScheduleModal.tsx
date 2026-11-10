@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo } from 'react';
 import { Plus, Trash2, Loader2, X, PlusCircle } from 'lucide-react';
-import { DepartmentalScheduleRow, Employee, SessionUser } from '../../types';
+import { WardLevelScheduleRow, Employee, SessionUser } from '../../types';
 import { ApiService } from '../../services/api';
 import { getCachedOfficers, loadOfficersSingleFlight, isOfficersInFlight } from '../../services/officerLoader';
 import { useToast } from '../Toast';
@@ -21,7 +21,7 @@ function parseDateTimeParts(dateTimeStr?: string, defaultTime: string = '09:00')
   return { date: dateTimeStr, time: defaultTime };
 }
 
-interface DepartmentalScheduleModalProps {
+interface WardLevelScheduleModalProps {
   isOpen: boolean;
   onClose: () => void;
   user: SessionUser | null;
@@ -37,7 +37,7 @@ interface DepartmentalScheduleModalProps {
   onSuccess: () => void;
 }
 
-const createInitialRow = (userArea: string = '', teachingMode: string = ''): DepartmentalScheduleRow => ({
+const createInitialRow = (userArea: string = '', teachingMode: string = ''): WardLevelScheduleRow => ({
   id: `dept-row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
   topic: '',
   area: userArea,
@@ -60,7 +60,7 @@ const createInitialRow = (userArea: string = '', teachingMode: string = ''): Dep
  * the backend independently binds it to the authenticated creator and SHA-256
  * digest of its authoritative validated inputs.
  */
-function newDepartmentalSubmissionId(): string {
+function newWardLevelSubmissionId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
@@ -70,17 +70,17 @@ function newDepartmentalSubmissionId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function departmentalPayloadFingerprint(payload: unknown): Promise<string> {
+async function wardLevelPayloadFingerprint(payload: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function departmentalSubmissionStorageKey(employeeId: string): string {
-  return `cne_pending_departmental_submission_${employeeId.trim().toUpperCase()}`;
+function wardLevelSubmissionStorageKey(employeeId: string): string {
+  return `cne_pending_ward_level_submission_${employeeId.trim().toUpperCase()}`;
 }
 
-export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps> = ({
+export const WardLevelScheduleModal: React.FC<WardLevelScheduleModalProps> = ({
   isOpen,
   onClose,
   user,
@@ -123,7 +123,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
   }).format(new Date());
 
   // Initially show exactly 1 blank CNE schedule row
-  const [rows, setRows] = useState<DepartmentalScheduleRow[]>([
+  const [rows, setRows] = useState<WardLevelScheduleRow[]>([
     createInitialRow('')
   ]);
   const [internalOfficers, setInternalOfficers] = useState<Employee[]>(() => {
@@ -239,16 +239,16 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
       // request. Its ID remains in sessionStorage and is reused if the same
       // fields are resubmitted. Check status without publishing again.
       try {
-        const saved = sessionStorage.getItem(departmentalSubmissionStorageKey(user?.employeeId || ''));
+        const saved = sessionStorage.getItem(wardLevelSubmissionStorageKey(user?.employeeId || ''));
         const parsed = saved ? JSON.parse(saved) : null;
         if (parsed && typeof parsed.submissionId === 'string' && typeof parsed.fingerprint === 'string') {
           pendingSubmissionRef.current = parsed;
-          void ApiService.getDepartmentalScheduleSubmissionStatus(parsed.submissionId).then(status => {
+          void ApiService.getWardLevelScheduleSubmissionStatus(parsed.submissionId).then(status => {
             if (!active) return;
             if (status.success && status.data?.status === 'COMMITTED') {
-              try { sessionStorage.removeItem(departmentalSubmissionStorageKey(user?.employeeId || '')); } catch (_) {}
+              try { sessionStorage.removeItem(wardLevelSubmissionStorageKey(user?.employeeId || '')); } catch (_) {}
               pendingSubmissionRef.current = null;
-              success('Your previous Departmental CNE submission was saved successfully. No duplicate was created.', 'Schedule Recovered');
+              success('Your previous Ward-Level CNE submission was saved successfully. No duplicate was created.', 'Schedule Recovered');
               onSuccess();
               onClose();
             }
@@ -300,7 +300,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
     });
   };
 
-  const handleFieldChange = (index: number, field: keyof DepartmentalScheduleRow, value: any) => {
+  const handleFieldChange = (index: number, field: keyof WardLevelScheduleRow, value: any) => {
     setRows((prev) => {
       const updated = [...prev];
       updated[index] = { ...updated[index], [field]: value };
@@ -425,7 +425,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
           topic: r.topic.trim(),
           area: primaryWard,
           participatingWards: [...selectedWards],
-          cneType: 'DEPARTMENTAL',
+          cneType: 'WARD_LEVEL',
           date: r.date,
           toDate: r.toDate,
           duration: r.duration.trim() || '00:00:00',
@@ -441,8 +441,8 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         };
       });
 
-      const fingerprint = await departmentalPayloadFingerprint(payload);
-      const storageKey = departmentalSubmissionStorageKey(user?.employeeId || '');
+      const fingerprint = await wardLevelPayloadFingerprint(payload);
+      const storageKey = wardLevelSubmissionStorageKey(user?.employeeId || '');
       let pending = pendingSubmissionRef.current;
       let reusedPending = !!pending && pending.fingerprint === fingerprint;
       try {
@@ -458,11 +458,11 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
       if (pending && pending.fingerprint !== fingerprint) {
         // Do not turn a refreshed/reopened, still-uncertain submission into a
         // second batch simply because the form fields were re-entered.
-        const previous = await ApiService.getDepartmentalScheduleSubmissionStatus(pending.submissionId);
+        const previous = await ApiService.getWardLevelScheduleSubmissionStatus(pending.submissionId);
         if (previous.success && previous.data?.status === 'COMMITTED') {
           try { sessionStorage.removeItem(storageKey); } catch (_) {}
           pendingSubmissionRef.current = null;
-          success('Your previous Departmental CNE was already scheduled. No duplicate was created.', 'Schedule Recovered');
+          success('Your previous Ward-Level CNE was already scheduled. No duplicate was created.', 'Schedule Recovered');
           onSuccess();
           onClose();
           return;
@@ -477,7 +477,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         pending = null;
       }
       if (!pending || pending.fingerprint !== fingerprint) {
-        pending = { fingerprint, submissionId: newDepartmentalSubmissionId(), createdAt: Date.now() };
+        pending = { fingerprint, submissionId: newWardLevelSubmissionId(), createdAt: Date.now() };
       }
       pendingSubmissionRef.current = pending;
       try { sessionStorage.setItem(storageKey, JSON.stringify(pending)); } catch (_) {}
@@ -486,7 +486,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
       // first. This also works if staff-master data later becomes unavailable.
       let recoveredResult = null;
       if (reusedPending) {
-        const prior = await ApiService.getDepartmentalScheduleSubmissionStatus(pending.submissionId);
+        const prior = await ApiService.getWardLevelScheduleSubmissionStatus(pending.submissionId);
         if (prior.success && prior.data?.status === 'COMMITTED') {
           recoveredResult = { success: true, data: { count: prior.data.count || 0, createdIds: prior.data.createdIds || [], recovered: true } };
         } else if (!prior.success || prior.data?.status === 'IN_PROGRESS') {
@@ -494,11 +494,11 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
           return;
         }
       }
-      let res = recoveredResult || await ApiService.addDepartmentalSchedule(payload, pending.submissionId);
+      let res = recoveredResult || await ApiService.addWardLevelSchedule(payload, pending.submissionId);
       // The browser timing out does not cancel an Apps Script execution. Check
       // for the original receipt, never create a fresh request ID on retry.
       if (!res.success && ['BACKEND_UNAVAILABLE', 'HTTP_ERROR', 'SUBMISSION_COMMIT_UNCERTAIN', 'SERVER_BUSY'].includes(res.errorCode || '')) {
-        const status = await ApiService.getDepartmentalScheduleSubmissionStatus(pending.submissionId);
+        const status = await ApiService.getWardLevelScheduleSubmissionStatus(pending.submissionId);
         if (status.success && status.data?.status === 'COMMITTED') {
           res = { success: true, data: { count: status.data.count || 0, createdIds: status.data.createdIds || [], recovered: true }, message: 'Original CNE scheduling request was recovered.' };
         } else {
@@ -510,7 +510,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         try { sessionStorage.removeItem(storageKey); } catch (_) {}
         pendingSubmissionRef.current = null;
         const count = res.data?.count || rows.length;
-        success(`Successfully scheduled ${count} departmental CNE workshop${count > 1 ? 's' : ''}.`, 'Batch Scheduled');
+        success(`Successfully scheduled ${count} ward-level CNE workshop${count > 1 ? 's' : ''}.`, 'Batch Scheduled');
         onSuccess();
         onClose();
       } else {
@@ -519,11 +519,11 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
         } else if (res.errorCode === 'TEACHING_MODE_INACTIVE') {
           error('The selected Teaching Mode is inactive. Please select an active Teaching Mode.');
         } else {
-          error(res.message || 'Failed to schedule departmental CNE sessions.');
+          error(res.message || 'Failed to schedule ward-level CNE sessions.');
         }
       }
     } catch (err: any) {
-      error(err?.message || 'Error scheduling departmental CNE batch.');
+      error(err?.message || 'Error scheduling ward-level CNE batch.');
     } finally {
       submittingRef.current = false;
       setIsSubmitting(false);
@@ -541,18 +541,18 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
             </div>
             <div>
               <h3 className="text-base font-bold text-slate-900">
-                Departmental CNE Schedule
+                Ward-Level CNE Schedule
               </h3>
               <p className="text-xs text-slate-500">
                 {isAreaIncharge
-                  ? `Schedule departmental CNE classes for ${user?.assignedArea || 'your department'}`
-                  : 'Schedule departmental clinical nursing education workshops'}
+                  ? `Schedule ward-level CNE classes for ${user?.assignedArea || 'your department'}`
+                  : 'Schedule ward-level clinical nursing education workshops'}
               </p>
             </div>
           </div>
 
           <button
-            id="btn-close-departmental-modal"
+            id="btn-close-ward-level-modal"
             type="button"
             onClick={onClose}
             disabled={isSubmitting}
@@ -592,7 +592,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
                           {idx + 1}
                         </span>
                         <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                          Departmental Session #{idx + 1}
+                          Ward-Level Session #{idx + 1}
                         </span>
                       </div>
                       <button
@@ -896,7 +896,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
             {/* Add Row Button */}
             <div className="flex justify-start pt-1">
               <button
-                id="btn-add-departmental-row"
+                id="btn-add-ward-level-row"
                 type="button"
                 onClick={handleAddRow}
                 className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-300 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-50 transition-colors cursor-pointer shadow-xs"
@@ -910,7 +910,7 @@ export const DepartmentalScheduleModal: React.FC<DepartmentalScheduleModalProps>
           {/* Sticky Footer */}
           <div className="px-6 py-3.5 border-t border-slate-200 flex items-center justify-end bg-slate-50/70 shrink-0">
             <button
-              id="btn-submit-departmental-schedule"
+              id="btn-submit-ward-level-schedule"
               type="submit"
               disabled={isSubmitting}
               className="flex items-center gap-1.5 px-5 py-2 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 disabled:opacity-50 cursor-pointer transition-colors shadow-xs"

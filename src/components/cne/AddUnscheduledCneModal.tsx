@@ -63,7 +63,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form State
-  const [cneType, setCneType] = useState<CNEType>('CENTRAL');
+  const [cneType, setCneType] = useState<CNEType>('UNSCHEDULED_CENTRAL');
   const [topic, setTopic] = useState('');
   const [area, setArea] = useState('');
   const [selectedWards, setSelectedWards] = useState<string[]>([]);
@@ -251,7 +251,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
       return;
     }
 
-    if (!cneType || !['CENTRAL', 'DEPARTMENTAL', 'EXTERNAL_OFFSITE', 'EXTERNAL_ONSITE'].includes(cneType)) {
+    if (!cneType || !['UNSCHEDULED_CENTRAL', 'UNSCHEDULED_WARD_LEVEL', 'EXTERNAL_OFFSITE', 'EXTERNAL_ONSITE', 'DEPARTMENTAL'].includes(cneType)) {
       error('Please select a valid CNE type.');
       return;
     }
@@ -439,10 +439,11 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                     onChange={(e) => setCneType(e.target.value as CNEType)}
                     className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   >
-                    <option value="CENTRAL">Central CNE</option>
-                    <option value="DEPARTMENTAL">Departmental CNE</option>
+                    <option value="UNSCHEDULED_CENTRAL">Unscheduled Central CNE</option>
+                    <option value="UNSCHEDULED_WARD_LEVEL">Unscheduled Ward-Level CNE</option>
                     <option value="EXTERNAL_OFFSITE">External CNE – Outside AIIMS</option>
                     <option value="EXTERNAL_ONSITE">External CNE – Hosted at AIIMS</option>
+                    <option value="DEPARTMENTAL">Departmental CNE</option>
                   </select>
                 </div>
 
@@ -459,7 +460,9 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                   <label htmlFor="unscheduled-area" className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                     {cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE'
                       ? 'Associated Department / Area *'
-                      : 'Clinical Ward / Area *'}
+                      : cneType === 'DEPARTMENTAL'
+                        ? 'Venue / Ward / Area *'
+                        : 'Clinical Ward / Area *'}
                   </label>
                   <WardMultiSelect
                     availableWards={areasList}
@@ -473,6 +476,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
                     onRetry={onRetryWards}
                     onChange={(wards, primary) => { setSelectedWards(wards); setArea(primary); }}
                     disabled={isSubmitting}
+                    allowSelectAll={user?.role === 'ADMIN'}
                   />
                 </div>
 

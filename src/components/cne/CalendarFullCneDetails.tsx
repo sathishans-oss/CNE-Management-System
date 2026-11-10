@@ -32,14 +32,14 @@ const isClosed = (cne: CNERecord) => ['completed', 'canceled', 'cancelled'].incl
 const getId = (cne: CNERecord) => cne.cneId || cne.classId || '';
 
 /** Same lifecycle authority as CNESchedule: Admin, or the concerned Area
- * Incharge for DEPARTMENTAL CNEs only. Assigned RPs do not gain lifecycle rights.
+ * Incharge for WARD_LEVEL CNEs only. Assigned RPs do not gain lifecycle rights.
  * These UI checks are supplementary; every protected mutation is validated by
  * the existing Apps Script backend on each request.
  */
 function canManageLifecycle(user: SessionUser, cne: CNERecord): boolean {
   if (user.role === 'ADMIN') return true;
   if (user.role !== 'AREA_INCHARGE' && user.role !== 'INCHARGE') return false;
-  if (String(cne.cneType || 'CENTRAL').trim().toUpperCase() !== 'DEPARTMENTAL') return false;
+  if (String(cne.cneType || 'CENTRAL').trim().toUpperCase() !== 'WARD_LEVEL') return false;
   const targetArea = String(cne.area || '').trim().toLowerCase();
   return Boolean(targetArea) && getUserAssignedAreas(user).some(area => area.trim().toLowerCase() === targetArea);
 }

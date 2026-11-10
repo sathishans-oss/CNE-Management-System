@@ -26,6 +26,7 @@ interface Props {
   showCounts?: boolean;
   onChange: (selected: string[], primary: string) => void;
   disabled?: boolean;
+  allowSelectAll?: boolean; // Admin-only: caller MUST gate by authenticated role
 }
 
 export const WardMultiSelect: React.FC<Props> = ({
@@ -40,7 +41,8 @@ export const WardMultiSelect: React.FC<Props> = ({
   onRetry,
   showCounts = true,
   onChange,
-  disabled
+  disabled,
+  allowSelectAll = false
 }) => {
   const [expanded, setExpanded] = useState(false);
   const [query, setQuery] = useState('');
@@ -73,23 +75,26 @@ export const WardMultiSelect: React.FC<Props> = ({
   }, [expanded]);
 
   const displayed = useMemo(
-    () => availableWards.filter((name) => name.toLowerCase().includes(query.toLowerCase().trim())),
-    [availableWards, query]
+    () => (allowSelectAll && selected.some(x => x.trim().toUpperCase() === 'CNE CELL') ? ['CNE Cell', ...availableWards.filter(w => w.trim().toUpperCase() !== 'CNE CELL')] : availableWards).filter((name) => name.toLowerCase().includes(query.toLowerCase().trim())),
+    [availableWards, query, allowSelectAll, selected]
   );
 
   const selectedTotal = selected.reduce((sum: number, name) => {
+    if (name.trim().toUpperCase() === 'CNE CELL') return sum;
     const value = staffCounts[name.trim().toUpperCase()];
     return sum + (typeof value === 'number' && Number.isFinite(value) ? value : 0);
   }, 0);
 
-  const eligible = new Set(eligiblePrimaryWards.map((x) => x.trim().toUpperCase()));
+  const eligible = new Set([...eligiblePrimaryWards, ...(allowSelectAll ? ['CNE Cell'] : [])].map((x) => x.trim().toUpperCase()));
+  const allWardNames = useMemo(() => ['CNE Cell', ...availableWards.filter(w => w.trim().toUpperCase() !== 'CNE CELL')], [availableWards]);
+  const allSelected = allowSelectAll && allWardNames.every(w => selected.some(s => s.trim().toUpperCase() === w.trim().toUpperCase()));
 
   const toggleWard = (name: string) => {
     if (disabled || isLoading || loadError) return;
     const next = selected.some((x) => x.toUpperCase() === name.toUpperCase())
       ? selected.filter((x) => x.toUpperCase() !== name.toUpperCase())
       : [...selected, name];
-    onChange(next, choosePrimaryWard(primaryWard, next, eligiblePrimaryWards));
+    onChange(next, choosePrimaryWard(primaryWard, next, allowSelectAll ? [...eligiblePrimaryWards, 'CNE Cell'] : eligiblePrimaryWards));
   };
 
   return (
@@ -122,6 +127,15 @@ export const WardMultiSelect: React.FC<Props> = ({
               className="text-xs w-full outline-none"
             />
           </label>
+          {allowSelectAll && <label className="flex items-center gap-2 rounded-md border border-teal-200 bg-teal-50 px-2 py-2 mb-2 cursor-pointer">
+            <input type="checkbox" checked={allSelected} disabled={disabled} onChange={(e) => {
+              if (disabled) return;
+              if (e.target.checked) onChange(allWardNames, 'CNE Cell');
+              else onChange([], '');
+            }} className="accent-teal-700" />
+            <span className="text-xs font-bold text-teal-900">Select All Active Wards</span>
+            <span className="text-[10px] text-teal-700">Primary: CNE Cell</span>
+          </label>}
           <div className="space-y-0.5 max-h-40 overflow-auto">
             {displayed.map((name) => {
               const active = selected.some((x) => x.trim().toUpperCase() === name.trim().toUpperCase());

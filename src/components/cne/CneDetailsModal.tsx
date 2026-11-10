@@ -91,7 +91,7 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   const isCanceled = statusStr === 'canceled' || statusStr === 'cancelled';
   const isScheduled = statusStr === 'scheduled';
   // Completed records are editable by ADMIN only; cancel and delete stay closed.
-  const canEditCne = canLifecycle && !isCanceled && (!isCompleted || user?.role === 'ADMIN');
+  const canEditCne = canLifecycle && (user?.role === 'ADMIN' || (!isCompleted && !isCanceled));
   const canCancelCne = canLifecycle && !isCompleted && !isCanceled;
   const showDeleteButton = Boolean(canDeleteCne && !isCompleted && onDelete);
   const showManageMenu = Boolean(canEditCne || canCancelCne || showDeleteButton);

@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Award, BookOpenCheck, CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Image as ImageIcon, Loader2, RefreshCw, Trophy, XCircle, HeartPulse, Hourglass, Lightbulb, Target, ShieldCheck, Medal, CalendarDays, History, ListOrdered, ListChecks, CircleDot } from 'lucide-react';
+import { Activity, Award, BookOpenCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, Image as ImageIcon, Loader2, RefreshCw, Trophy, XCircle, HeartPulse, Hourglass, Lightbulb, Target, ShieldCheck, Medal, CalendarDays, History, ListOrdered, ListChecks, CircleDot } from 'lucide-react';
 import { ApiService } from '../services/api';
-import { LoadingProgress } from './common/LoadingProgress';
 import type { QuizAttempt, QuizHomeData, QuizQuestion, QuizResult, QuizHistoryItem, SessionUser } from '../types';
 import {normalizeResponse, isValidResponse, isCorrectResponse, responseFormat} from '../utils/quizResponse';
 import { QuizResponseInput } from './QuizResponseInput';
@@ -77,6 +76,20 @@ const QuizFormatBadge: React.FC<{question:QuizQuestion}> = ({question}) => {
     <Icon className="h-3.5 w-3.5" aria-hidden="true"/>{label}
   </span>;
 };
+
+const QUIZ_FORMAT_LABELS: Record<string,string> = {
+  ALL:'All Response Formats (Mixed)', SINGLE_SELECT:'Single Select',
+  MULTI_SELECT:'Multiple Select', ORDERED_RESPONSE:'Ordered Response'
+};
+
+// Each dashboard card owns its own visible loading state; no Quiz progress bar.
+const QuizCardPending: React.FC<{label:string; error?:string; onRetry?:()=>void}> = ({label,error,onRetry}) => (
+  <div className="flex min-h-14 items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600" role={error?'alert':'status'} aria-live="polite">
+    {error ? <XCircle aria-hidden="true" className="h-4 w-4 shrink-0 text-rose-600"/> : <Loader2 aria-hidden="true" className="h-4 w-4 shrink-0 animate-spin text-teal-700"/>}
+    <span className="min-w-0 flex-1">{error || label}</span>
+    {error && onRetry && <button type="button" className="min-h-9 shrink-0 rounded-lg border border-teal-200 bg-white px-2.5 font-bold text-teal-800" onClick={onRetry}>Retry</button>}
+  </div>
+);
 
 // Keep response validation explicit at every submission boundary; the backend is authoritative.
 const validQuizResponse = (q: QuizQuestion, value: string) => isValidResponse(q, value);
@@ -525,7 +538,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       : 'max-w-[1100px]';
 
   return <section className={`mx-auto w-full min-w-0 ${quizMaxWidth} ${page==='practice'?'space-y-3 sm:space-y-4':'space-y-4 sm:space-y-5'} pb-[calc(2rem+env(safe-area-inset-bottom))]`} aria-label="Quiz">
-    <div className={`relative overflow-hidden rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 shadow-sm ${page==='practice'||page==='scored'?'px-3 py-2 sm:px-4':'px-5 py-3 sm:px-7'}`}>
+    <div className={`relative overflow-hidden rounded-2xl border border-teal-100 bg-gradient-to-r from-white via-cyan-50 to-teal-100 shadow-sm ${page==='practice'||page==='scored'?'px-3 py-2 sm:px-4':'px-3 py-2 sm:px-4'}`}>
       {page!=='practice'&&page!=='scored'&&<div className="pointer-events-none absolute -right-4 -top-12 h-40 w-40 rounded-full border-[24px] border-white/30" aria-hidden="true" />}
       <div className="relative flex flex-wrap items-center justify-between gap-3">
         <h1 className="inline-flex items-center gap-1.5 rounded-full bg-teal-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-teal-800"><ShieldCheck className="h-3.5 w-3.5"/> Quiz & Clinical Learning</h1>
@@ -557,29 +570,27 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
       <span className="flex-1">{notice}</span>
       <button type="button" aria-label="Dismiss notification" onClick={()=>setNotice('')} className="rounded-md p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"><XCircle className="h-4 w-4"/></button>
     </div>}
-    {page === 'home' && (homeLoading || dashboardLoading || dashboardError || !coreReady) &&
-      <div className="mb-3 rounded-xl border border-teal-100 bg-teal-50/70 px-4 py-2 text-xs text-teal-800" role="status">
-        {homeLoading ? 'Checking unfinished Quiz… ' : ''}
-        {dashboardLoading ? 'Loading approved Units, My Progress, leaderboard and clinical insight in the background…' : ''}
-        {dashboardError && <span role="alert">{dashboardError} <button type="button" className="underline font-semibold" onClick={() => void refreshHome().catch(() => {})}>Retry</button></span>}
-        {!coreReady && !homeLoading && !dashboardError && 'Unable to verify active Quiz. Retry before starting a new test.'}
-        {(homeLoading || dashboardLoading) && <LoadingProgress className="mt-2" label={homeLoading ? 'Checking unfinished Quiz' : 'Loading Quiz dashboard'} />}
-      </div>}
+    {page === 'home' && !coreReady && !homeLoading && <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+      Unable to verify unfinished Quiz. <button type="button" className="font-bold underline" onClick={() => void refreshHome().catch(() => {})}>Retry</button>
+    </div>}
     {page==='home'&&<>
       <div className="grid items-start gap-4 xl:grid-cols-12">
         <div className="min-w-0 space-y-4 xl:col-span-8">
           <div className="grid gap-3 sm:grid-cols-2">
-            <button type="button" className="group rounded-2xl border border-teal-200 bg-white p-4 text-left shadow-sm transition hover:border-teal-500 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-55" disabled={!coreReady || dashboardLoading || !!home.activeAttempt || busy} onClick={()=>{setSelectedUnits([]);setCount(10);setPage('scored-setup');}}>
+            <button type="button" className="group rounded-2xl border border-teal-200 bg-white p-4 text-left shadow-sm transition hover:border-teal-500 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-55" disabled={!coreReady || dashboardLoading || !!dashboardError || !!home.activeAttempt || busy} onClick={()=>{setSelectedUnits([]);setCount(10);setPage('scored-setup');}}>
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-teal-50 text-teal-700"><ClipboardCheck className="h-5 w-5"/></div>
               <h2 className="font-bold text-slate-900">Scored Quiz</h2><p className="mt-1 min-h-9 text-xs leading-relaxed text-slate-500">1–50 approved questions · marks and explanations.</p>
+              {(dashboardLoading || homeLoading || dashboardError) && <div className="my-2"><QuizCardPending label="Checking scored quiz availability…" error={dashboardError}/></div>}
               <span className="mt-3 inline-flex items-center gap-1 rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white">Start Scored Quiz <ChevronRight className="h-3.5 w-3.5"/></span>
             </button>
-            <button type="button" className="group rounded-2xl border border-violet-200 bg-white p-4 text-left shadow-sm transition hover:border-violet-500 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60" disabled={!coreReady || dashboardLoading || !!home.activeAttempt || busy} onClick={()=>{setSelectedUnits([]);setPage('practice-setup');}}>
+            <button type="button" className="group rounded-2xl border border-violet-200 bg-white p-4 text-left shadow-sm transition hover:border-violet-500 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60" disabled={!coreReady || dashboardLoading || !!dashboardError || !!home.activeAttempt || busy} onClick={()=>{setSelectedUnits([]);setPage('practice-setup');}}>
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><BookOpenCheck className="h-5 w-5"/></div>
               <h2 className="font-bold text-slate-900">Practice Quiz</h2><p className="mt-1 min-h-9 text-xs leading-relaxed text-slate-500">Instant feedback · no scores or answers stored.</p>
+              {(dashboardLoading || homeLoading || dashboardError) && <div className="my-2"><QuizCardPending label="Checking practice quiz availability…" error={dashboardError}/></div>}
               <span className="mt-3 inline-flex items-center gap-1 rounded-lg border border-violet-500 px-3 py-2 text-xs font-bold text-violet-700">Start Practice <ChevronRight className="h-3.5 w-3.5"/></span>
             </button>
           </div>
+          {homeLoading && <QuizCardPending label="Checking unfinished scored Quiz…"/>}
           {home.activeAttempt&&<div className="rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 to-white p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700"><Hourglass className="h-5 w-5"/></div>
               <div><h3 className="font-bold text-slate-900">Resume Unfinished Quiz</h3><p className="text-xs text-slate-600">{home.activeAttempt.answeredCount} of {home.activeAttempt.questionCount} answers saved</p></div></div>
@@ -588,7 +599,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
           </div>}
           <div className="overflow-hidden rounded-2xl border border-teal-100 bg-white shadow-sm">
             <div className="border-b border-teal-100 bg-teal-50/60 px-4 py-3 sm:px-5"><h2 className="flex items-center gap-2 font-bold text-slate-900"><Lightbulb className="h-5 w-5 text-teal-700"/>Today's Clinical Insight</h2></div>
-            {dashboardLoading ? <div role="status" className="p-5 text-xs text-slate-500"><Loader2 className="inline h-4 w-4 animate-spin mr-2" />Loading insight…</div> : home.clinicalInsight ? <div className="p-3 sm:p-4">
+            {dashboardLoading || dashboardError ? <div className="p-3"><QuizCardPending label="Loading clinical insight…" error={dashboardError} onRetry={() => void refreshHome().catch(() => {})}/></div> : home.clinicalInsight ? <div className="p-3 sm:p-4">
               {insightImage ? <button type="button" className="block w-full overflow-hidden rounded-xl border border-teal-100 bg-slate-50" aria-label="Enlarge today's clinical insight poster" onClick={()=>setInsightImageExpanded(true)}><img src={insightImage} alt="Today's clinical nursing educational poster with embedded explanation" className="mx-auto max-h-[510px] w-full object-contain"/></button>
                 : insightImageError ? <div role="alert" className="rounded-lg bg-rose-50 p-4 text-sm text-rose-700">{insightImageError}</div>
                   : <div role="status" className="flex flex-col items-center gap-2 py-16 text-slate-500"><Loader2 className="h-7 w-7 animate-spin text-teal-600"/><span className="text-xs">Loading today's insight…</span></div>}
@@ -598,42 +609,51 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
         </div>
         <aside className="min-w-0 space-y-4 xl:col-span-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><div className="mb-4 flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-900"><Trophy className="h-5 w-5 text-amber-500"/> Top 5 Leaderboard</h2><span className="text-[10px] text-slate-500">Last 30 days</span></div>
-            {dashboardLoading ? <p role="status" className="text-xs text-slate-500">Loading leaderboard…</p> : home.leaderboard.length?<ol className="space-y-2">{home.leaderboard.map(p=><li key={`${p.rank}-${p.name}`} className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${p.rank===1?'bg-amber-100 text-amber-800':p.rank===2?'bg-slate-200 text-slate-700':p.rank===3?'bg-orange-100 text-orange-800':'bg-white text-slate-600'}`}>#{p.rank}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-slate-900">{p.name}</span><span className="block text-[10px] text-slate-500">{p.answered} unique answered</span></span><span className="shrink-0 text-xs font-bold text-teal-800">{p.accuracy.toFixed(1)}%</span></li>)}</ol>:<div className="flex flex-col items-center gap-2 py-8 text-center"><Medal className="h-9 w-9 text-slate-300"/><p className="text-sm font-semibold text-slate-700">Leaderboard awaits its first achievers</p><p className="max-w-48 text-xs text-slate-500">Completed scored quizzes will appear here.</p></div>}
+            {dashboardLoading || dashboardError ? <QuizCardPending label="Loading leaderboard…" error={dashboardError} onRetry={() => void refreshHome().catch(() => {})}/> : home.leaderboard.length?<ol className="space-y-2">{home.leaderboard.map(p=><li key={`${p.rank}-${p.name}`} className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${p.rank===1?'bg-amber-100 text-amber-800':p.rank===2?'bg-slate-200 text-slate-700':p.rank===3?'bg-orange-100 text-orange-800':'bg-white text-slate-600'}`}>#{p.rank}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-slate-900">{p.name}</span><span className="block text-[10px] text-slate-500">{p.answered} unique answered</span></span><span className="shrink-0 text-xs font-bold text-teal-800">{p.accuracy.toFixed(1)}%</span></li>)}</ol>:<div className="flex flex-col items-center gap-2 py-8 text-center"><Medal className="h-9 w-9 text-slate-300"/><p className="text-sm font-semibold text-slate-700">Leaderboard awaits its first achievers</p><p className="max-w-48 text-xs text-slate-500">Completed scored quizzes will appear here.</p></div>}
             <p className="mt-4 border-t border-slate-100 pt-3 text-[11px] leading-relaxed text-slate-500">Ranked by unique questions answered, then accuracy. Practice attempts never count.</p>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
             <div className="mb-3 flex items-center justify-between gap-3"><h2 className="flex items-center gap-2 font-bold text-slate-900"><Activity className="h-5 w-5 text-teal-700"/> My Progress</h2><span className="text-[11px] text-slate-500">Scored quizzes only</span></div>
-            {dashboardLoading && <p role="status" className="mb-2 text-xs text-slate-500">Loading My Progress…</p>}
+            {dashboardLoading || dashboardError ? <QuizCardPending label="Loading My Progress…" error={dashboardError} onRetry={() => void refreshHome().catch(() => {})}/> : <>
             <div className="grid grid-cols-3 gap-2 sm:gap-3">
               {([{label:'Completed Tests',value:home.myProgress?.completedTests??0,Icon:Award},{label:'Questions Answered',value:home.myProgress?.questionsAnswered??0,Icon:ClipboardCheck},{label:'Overall Accuracy',value:`${(home.myProgress?.accuracy??0).toFixed(1)}%`,Icon:Target}]).map(stat=><div className="min-w-0 rounded-xl bg-slate-50 p-3" key={stat.label}><stat.Icon className="mb-2 h-4 w-4 text-teal-700"/><p className="text-lg font-extrabold text-slate-900 sm:text-2xl">{stat.value}</p><p className="text-[10px] font-medium leading-4 text-slate-500 sm:text-xs">{stat.label}</p></div>)}
             </div>
             <div className="mt-4 flex items-center justify-between gap-2"><h3 className="text-xs font-bold text-slate-700">Recent completed tests</h3><button type="button" className="text-xs font-bold text-teal-700 hover:underline" disabled={historyBusy||!(home.myProgress?.completedTests)} onClick={()=>showHistory?setShowHistory(false):void fetchHistory(0)}>{showHistory?'Hide history':'View history'}</button></div>
             <div className="mt-2 space-y-2">{(showHistory?history:home.myProgress?.recent||[]).length?(showHistory?history:home.myProgress!.recent).map(r=><button type="button" key={r.attemptId} disabled={busy} onClick={()=>void openCompletedResult(r.attemptId)} className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-left text-xs hover:bg-slate-50 disabled:opacity-50"><span className="flex min-w-0 items-center gap-2"><CalendarDays className="h-4 w-4 shrink-0 text-slate-400"/><span className="truncate">{r.completedAt?new Date(r.completedAt).toLocaleDateString('en-IN'): 'Completed test'} · {r.correct}/{r.total} correct</span></span><strong className="shrink-0 text-teal-800">{r.percentage.toFixed(1)}%</strong></button>):<p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">Your completed scored quizzes will appear here.</p>}
               {showHistory&&historyMore&&<button type="button" disabled={historyBusy} className="text-xs font-semibold text-teal-700" onClick={()=>void fetchHistory(history.length)}>{historyBusy?'Loading…':'Load more results'}</button>}
-            </div>
+            </div></>}
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><h2 className="mb-3 text-sm font-bold text-slate-900">Approved Question Bank</h2>{dashboardLoading && <p role="status" className="mb-2 text-xs text-slate-500">Loading approved question summary…</p>}
-            <div className="grid grid-cols-3 gap-2">{[{value:home.total,label:'MCQs'},{value:home.units.length,label:'Units'},{value:home.imageCount,label:'Images'}].map(s=><div key={s.label} className="rounded-lg bg-slate-50 px-2 py-3 text-center"><p className="text-lg font-extrabold text-teal-800">{s.value}</p><p className="text-[10px] text-slate-500">{s.label}</p></div>)}</div><p className="mt-3 text-[11px] text-slate-500">Only clinically approved questions are available. Drafts are excluded.</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><h2 className="mb-3 text-sm font-bold text-slate-900">Approved Question Bank</h2>
+            {dashboardLoading || dashboardError ? <QuizCardPending label="Loading approved question summary…" error={dashboardError} onRetry={() => void refreshHome().catch(() => {})}/> : <><div className="grid grid-cols-3 gap-2">{[{value:home.total,label:'MCQs'},{value:home.units.length,label:'Units'},{value:home.imageCount,label:'Images'}].map(s=><div key={s.label} className="rounded-lg bg-slate-50 px-2 py-2.5 text-center"><p className="text-lg font-extrabold text-teal-800">{s.value}</p><p className="text-[10px] text-slate-500">{s.label}</p></div>)}</div><p className="mt-2 text-[11px] text-slate-500">Only clinically approved questions are available. Drafts are excluded.</p></>}</div>
         </aside>
       </div>
     </>}
     {(page==='scored-setup'||page==='practice-setup')&&home&&<div className="mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-teal-100 bg-gradient-to-r from-teal-50 via-white to-sky-50 px-5 py-5 sm:px-7">
-        <div className="flex items-center gap-3"><span className="rounded-xl bg-teal-700 p-2.5 text-white">{page==='scored-setup'?<ClipboardCheck className="h-5 w-5"/>:<BookOpenCheck className="h-5 w-5"/>}</span><div><h2 className="text-lg font-extrabold text-slate-900">{page==='scored-setup'?'Scored Quiz':'Practice Quiz'} Setup</h2><p className="text-sm text-slate-600">Choose your preferred clinical learning units.</p></div></div>
+      <div className="border-b border-teal-100 bg-gradient-to-r from-teal-50 via-white to-sky-50 px-3 py-3 sm:px-4">
+        <div className="flex items-center gap-2"><span className="rounded-lg bg-teal-700 p-2 text-white">{page==='scored-setup'?<ClipboardCheck className="h-4 w-4"/>:<BookOpenCheck className="h-4 w-4"/>}</span><div><h2 className="text-base font-extrabold text-slate-900">{page==='scored-setup'?'Scored Quiz':'Practice Quiz'} Setup</h2><p className="text-xs text-slate-600">Tap a section to change your selection.</p></div></div>
       </div>
-      <div className="space-y-5 px-5 py-6 sm:px-7">
-        {page==='scored-setup'&&<section className="space-y-3" aria-label="Step 1 - Number of questions">
-          <h3 className="text-sm font-bold text-slate-900"><span className="mr-2 rounded-full bg-teal-100 px-2 py-1 text-xs text-teal-700">1</span>Number of Questions</h3>
-          <div className="grid grid-cols-5 gap-2">{[10,20,30,40,50].map(n=><button type="button" key={n} onClick={()=>setCount(n)} aria-pressed={count===n} className={`rounded-xl border py-3 text-sm font-bold transition ${count===n?'border-teal-600 bg-teal-50 text-teal-800 ring-1 ring-teal-600':'border-slate-200 bg-slate-50 text-slate-600 hover:border-teal-300'}`}>{n}</button>)}</div>
-          <label className="flex items-center gap-3 text-xs font-medium text-slate-600">Custom (1–50)<input className="w-20 rounded-lg border border-slate-300 bg-white px-3 py-2 text-base font-semibold text-slate-900" type="number" min={1} max={50} value={count} onChange={e=>setCount(Math.max(1,Math.min(50,Number(e.target.value)||1)))}/></label>
-        </section>}
-        <fieldset className="space-y-3"><legend className="mb-2 text-sm font-bold text-slate-900">{page==='scored-setup'&&<span className="mr-2 rounded-full bg-teal-100 px-2 py-1 text-xs text-teal-700">2</span>}Select Units</legend>
-          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-teal-100 bg-teal-50 p-3 text-sm font-semibold text-slate-800"><input type="checkbox" className="accent-teal-700" checked={!selectedUnits.length} onChange={()=>setSelectedUnits([])}/> All Units <span className="ml-auto text-xs font-normal text-teal-700">Default</span></label>
-          <div className="grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2">{home.units.map(u=><label key={u.name} className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-100 bg-white p-3 text-sm hover:bg-slate-50"><input type="checkbox" className="accent-teal-700" checked={selectedUnits.includes(u.name)} onChange={e=>setSelectedUnits(prev=>e.target.checked?(prev.length===allUnitNames.length-1?[]:[...prev,u.name]):prev.length===0?allUnitNames.filter(x=>x!==u.name):prev.filter(x=>x!==u.name))}/><span className="min-w-0 flex-1 text-slate-700">{u.name}</span><span className="text-xs text-slate-500">{u.available}</span></label>)}</div>
-        </fieldset>
-        <fieldset className="space-y-2"><legend className="text-sm font-bold text-slate-800">Response Format</legend>
-          <div className="grid gap-2 sm:grid-cols-2">{[['ALL','All Response Formats (Mixed)'],['SINGLE_SELECT','Single Select'],['MULTI_SELECT','Multiple Select'],['ORDERED_RESPONSE','Ordered Response']].map(([key,label])=><label key={key} className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"><input type="radio" name="quiz-response-format" checked={selectedFormat===key} onChange={()=>setSelectedFormat(key)} className="accent-teal-700"/>{label}</label>)}</div>
-        </fieldset>
+      <div className="space-y-3 px-3 py-3 sm:px-4 sm:py-4">
+        {(page==='scored-setup' ? ['count','format','units'] : ['format','units']).map((section,order)=> (
+          <details key={section} className="group rounded-xl border border-slate-200 bg-white shadow-sm open:border-teal-200 open:bg-teal-50/30">
+            <summary className="flex min-h-12 cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 [&::-webkit-details-marker]:hidden">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-100 text-xs font-extrabold text-teal-800">{order+1}</span>
+              <span className="min-w-0 flex-1"><span className="block font-bold text-slate-900">{section==='count'?'Number of Questions':section==='format'?'Response Format':'Select Units'}</span>
+              <span className="block truncate text-xs text-teal-800">{section==='count'?`${count} questions`:section==='format'?(QUIZ_FORMAT_LABELS[selectedFormat]||'All Response Formats'):selectedUnits.length?`${selectedUnits.length} units selected · ${selectedUnits.slice(0,2).join(', ')}${selectedUnits.length>2?'…':''}`:'All Units'}</span></span>
+              <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-slate-500 transition-transform group-open:rotate-180"/>
+            </summary>
+            <div className="border-t border-slate-200 px-3 py-3">
+              {section==='count'&&<section aria-label="Step 1 - Number of questions" className="space-y-3">
+                <div className="grid grid-cols-5 gap-1.5">{[10,20,30,40,50].map(n=><button type="button" key={n} onClick={()=>setCount(n)} aria-pressed={count===n} className={`min-h-10 rounded-lg border px-1 text-sm font-bold transition ${count===n?'border-teal-600 bg-teal-50 text-teal-800 ring-1 ring-teal-600':'border-slate-200 bg-white text-slate-600 hover:border-teal-300'}`}>{n}</button>)}</div>
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-600">Custom (1–50)<input aria-label="Custom number of questions" className="w-20 rounded-lg border border-slate-300 bg-white px-2 py-2 text-base font-semibold text-slate-900" type="number" min={1} max={50} value={count} onChange={e=>setCount(Math.max(1,Math.min(50,Number(e.target.value)||1)))}/></label>
+              </section>}
+              {section==='format'&&<fieldset aria-label="Response Format"><div className="grid gap-2 sm:grid-cols-2">{[['ALL','All Response Formats (Mixed)'],['SINGLE_SELECT','Single Select'],['MULTI_SELECT','Multiple Select'],['ORDERED_RESPONSE','Ordered Response']].map(([key,label])=><label key={key} className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><input type="radio" name="quiz-response-format" checked={selectedFormat===key} onChange={()=>setSelectedFormat(key)} className="accent-teal-700"/>{label}</label>)}</div></fieldset>}
+              {section==='units'&&<fieldset aria-label="Select Units" className="space-y-2">
+                <label className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg border border-teal-100 bg-teal-50 p-2.5 text-sm font-semibold text-slate-800"><input type="checkbox" className="accent-teal-700" checked={!selectedUnits.length} onChange={()=>setSelectedUnits([])}/> All Units <span className="ml-auto text-xs font-normal text-teal-700">Default</span></label>
+                <div className="grid max-h-52 gap-1.5 overflow-y-auto sm:grid-cols-2">{home.units.map(u=><label key={u.name} className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-slate-100 bg-white p-2.5 text-sm hover:bg-slate-50"><input type="checkbox" className="accent-teal-700" checked={selectedUnits.includes(u.name)} onChange={e=>setSelectedUnits(prev=>e.target.checked?(prev.length===allUnitNames.length-1?[]:[...prev,u.name]):prev.length===0?allUnitNames.filter(x=>x!==u.name):prev.filter(x=>x!==u.name))}/><span className="min-w-0 flex-1 text-slate-700">{u.name}</span><span className="text-xs text-slate-500">{u.available}</span></label>)}</div>
+              </fieldset>}
+            </div>
+          </details>
+        ))}
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><div className="flex items-center justify-between gap-2 text-sm"><span className="font-bold text-slate-800">Your assessment</span><span className="font-bold text-teal-700">{page==='scored-setup'?`${count} questions`:'Practice mode'}</span></div>
           <p className="mt-1 text-xs leading-relaxed text-slate-600">{available} clinically approved questions available. {page==='practice-setup'?'Answers and scores are not stored.':'Answer locally, then permanently submit each batch of up to 10 questions. Submitted answers cannot be changed.'}</p>
           <p className="mt-2 text-xs text-slate-500">Units are balanced with shortage redistribution. Image MCQs are spaced when available.</p>
@@ -704,7 +724,7 @@ export const QuizPage: React.FC<{user: SessionUser}> = ({user}) => {
     </div>}
     {page==='result'&&results&&<div className="space-y-5">
       <div className="overflow-hidden rounded-2xl border border-teal-100 bg-white shadow-sm">
-        <div className="flex items-center gap-3 border-b border-teal-100 bg-gradient-to-r from-teal-50 via-white to-cyan-50 px-5 py-4 sm:px-6">
+        <div className="flex items-center gap-2 border-b border-teal-100 bg-gradient-to-r from-teal-50 via-white to-cyan-50 px-3 py-2.5 sm:px-4">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-teal-700 text-white"><Award className="h-6 w-6" aria-hidden="true"/></span>
           <div><h2 className="text-lg font-extrabold tracking-tight text-slate-900 sm:text-xl">Scored Quiz Results</h2><p className="text-xs text-slate-600">Clinical knowledge assessment summary</p></div>
         </div>

@@ -172,7 +172,7 @@ export const AdminTeachingModes: React.FC<AdminTeachingModesProps> = () => {
 
   return (
     <div className="space-y-6 pb-12">
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
           <div className="flex items-center gap-2">
             <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center border border-teal-100">
@@ -180,7 +180,7 @@ export const AdminTeachingModes: React.FC<AdminTeachingModesProps> = () => {
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h1 className="text-xl font-bold text-slate-900">Teaching Modes</h1>
+                <h1 className="text-lg font-bold text-slate-900">Teaching Modes</h1>
                 <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-purple-100 text-purple-800">
                   Total: {modes.length}
                 </span>

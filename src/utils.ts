@@ -810,7 +810,7 @@ export function getUserAssignedAreas(user?: SessionUser | null): string[] {
 /**
  * Checks whether an Area/Ward Incharge is responsible for the CNE's area.
  *
- * AREA_INCHARGE has management authority for DEPARTMENTAL CNEs in their
+ * AREA_INCHARGE has management authority for WARD_LEVEL CNEs in their
  * assigned area only. Assigned Resource Person checks are independent.
  */
 export function isCneAuthorized(
@@ -826,7 +826,7 @@ export function isCneAuthorized(
   if (!cneArea) return false;
 
   // AREA_INCHARGE role alone never grants Central or External CNE authority.
-  if (String(cneType || '').trim().toUpperCase() !== 'DEPARTMENTAL') return false;
+  if (String(cneType || '').trim().toUpperCase() !== 'WARD_LEVEL') return false;
 
   const targetArea = cneArea.trim().toLowerCase();
   if (!targetArea) return false;
@@ -857,7 +857,7 @@ export function isUserAssignedResourcePerson(
  *
  * Allowed for Material, Questions, QR, Post-Test management and Attendance:
  * 1. Admin
- * 2. Concerned Area/Ward Incharge for DEPARTMENTAL CNE only
+ * 2. Concerned Area/Ward Incharge for WARD_LEVEL CNE only
  * 3. Resource Person assigned to this specific CNE (including Central)
  *
  * This helper intentionally does NOT grant Edit/Cancel/Finalize lifecycle authority.
@@ -903,7 +903,7 @@ export function getSafeExternalUrl(value?: string | null): string | null {
  * Authoritative human-facing CNE type display label.
  *
  * CENTRAL -> "Central CNE"
- * DEPARTMENTAL -> "Departmental CNE"
+ * WARD_LEVEL -> "Ward-Level CNE"
  * EXTERNAL_OFFSITE -> "External CNE – Outside AIIMS"
  * EXTERNAL_ONSITE -> "External CNE – Hosted at AIIMS"
  * Fallback -> "CNE"
@@ -915,9 +915,17 @@ export function getCneTypeLabel(type?: string | null): string {
     case 'CENTRAL':
     case 'CENTRAL CNE':
       return 'Central CNE';
+    case 'WARD_LEVEL':
+    case 'WARD-LEVEL CNE':
+    case 'WARD LEVEL CNE':
+    case 'DEPT':
+      return 'Ward-Level CNE';
+    case 'UNSCHEDULED_CENTRAL':
+      return 'Unscheduled Central CNE';
+    case 'UNSCHEDULED_WARD_LEVEL':
+      return 'Unscheduled Ward-Level CNE';
     case 'DEPARTMENTAL':
     case 'DEPARTMENTAL CNE':
-    case 'DEPT':
       return 'Departmental CNE';
     case 'EXTERNAL_OFFSITE':
     case 'EXTERNAL OFFSITE':
@@ -955,8 +963,11 @@ export function getCneTypeBadgeClass(type?: string | null): string {
   if (norm === 'CENTRAL' || norm === 'CENTRAL CNE') {
     return 'bg-blue-50 text-blue-700 border border-blue-200';
   }
-  if (norm === 'DEPARTMENTAL' || norm === 'DEPARTMENTAL CNE' || norm === 'DEPT') {
+  if (norm === 'WARD_LEVEL' || norm === 'WARD-LEVEL CNE' || norm === 'WARD LEVEL CNE' || norm === 'DEPT') {
     return 'bg-teal-50 text-teal-700 border border-teal-200';
+  }
+  if (norm === 'DEPARTMENTAL' || norm === 'DEPARTMENTAL CNE') {
+    return 'bg-indigo-50 text-indigo-700 border border-indigo-200';
   }
   if (norm.includes('OFFSITE') || norm.includes('OUTSIDE')) {
     return 'bg-amber-50 text-amber-800 border border-amber-200';

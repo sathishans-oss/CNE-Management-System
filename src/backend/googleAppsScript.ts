@@ -17,13 +17,18 @@ function normalizeEmpId(id) {
   return String(id).trim().toUpperCase();
 }
 
-// Authoritative Normalization: CNE Type (Strictly CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE) - FAIL CLOSED
+// Seven authoritative CNE types. CNE ID prefixes are identifiers, NEVER used to infer classification.
 function normalizeCNEType(typeStr) {
   if (typeStr === null || typeStr === undefined) return null;
   var s = String(typeStr).trim().toUpperCase();
   if (!s) return null;
   if (s === 'CENTRAL' || s === 'CENTRAL CNE') return 'CENTRAL';
-  if (s === 'DEPARTMENTAL' || s === 'DEPT' || s === 'DEPARTMENTAL CNE') return 'DEPARTMENTAL';
+  if (s === 'WARD_LEVEL' || s === 'WARD LEVEL CNE' || s === 'WARD-LEVEL CNE' || s === 'DEPT') return 'WARD_LEVEL';
+  if (s === 'UNSCHEDULED_CENTRAL' || s === 'U-CENTRAL' || s === 'UNSCHEDULED CENTRAL') return 'UNSCHEDULED_CENTRAL';
+  if (s === 'UNSCHEDULED_WARD_LEVEL' || s === 'UNSCHEDULED WARD-LEVEL CNE' || s === 'UNSCHEDULED WARD LEVEL CNE') return 'UNSCHEDULED_WARD_LEVEL';
+  // Hospital-department programme: separate from regular Ward-Level CNE.
+  // Keep the historic DEPT abbreviation mapped to Ward-Level (not Departmental).
+  if (s === 'DEPARTMENTAL' || s === 'DEPARTMENTAL CNE') return 'DEPARTMENTAL';
   if (
     s === 'EXTERNAL_OFFSITE' ||
     s === 'EXTERNAL OFFSITE' ||
@@ -975,8 +980,8 @@ function handleRequest(e, method) {
         output = handleAdminAction(params, session, handleUpdateRole, 'UPDATE_ROLE');
         break;
 
-      case 'getDepartmentalCneOutcomeReport':
-        output = handleAdminAction(params, session, handleGetDepartmentalCneOutcomeReport, 'GET_DEPARTMENTAL_CNE_OUTCOME_REPORT');
+      case 'getWardLevelCneOutcomeReport':
+        output = handleAdminAction(params, session, handleGetWardLevelCneOutcomeReport, 'GET_WARD_LEVEL_CNE_OUTCOME_REPORT');
         break;
         
       case 'createCNE':
@@ -996,15 +1001,15 @@ function handleRequest(e, method) {
         }
         break;
         
-      case 'getDepartmentalScheduleSubmissionStatus':
-        output = handleGetDepartmentalSubmissionStatus(params, session);
+      case 'getWardLevelScheduleSubmissionStatus':
+        output = handleGetWardLevelSubmissionStatus(params, session);
         break;
 
-      case 'addDepartmentalSchedule':
+      case 'addWardLevelSchedule':
         if (!session) {
           output = { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
         } else {
-          output = handleAddDepartmentalSchedule(params, session);
+          output = handleAddWardLevelSchedule(params, session);
         }
         break;
 
@@ -1404,8 +1409,8 @@ function invalidateUserRoleCache(employeeId) {
 
 /**
  * Authorization Helper for CNE Management
- * Admin = full control over both Central and Departmental CNE
- * Area Incharge = Departmental CNE only within assigned Area(s)/Department(s)
+ * Admin = full control over both Central and Ward-Level CNE
+ * Area Incharge = Ward-Level CNE only within assigned Area(s)/Department(s)
  * Normal users = no administrative controls
  */
 function checkCNEAuthorized(session, cneArea, cneType) {
@@ -1424,8 +1429,8 @@ function checkCNEAuthorized(session, cneArea, cneType) {
   
   if (role === 'AREA_INCHARGE' || role === 'INCHARGE') {
     var type = normalizeCNEType(cneType);
-    // FAIL CLOSED: Only strictly valid DEPARTMENTAL CNE is manageable by Area Incharge
-    if (type === 'DEPARTMENTAL') {
+    // FAIL CLOSED: Only strictly valid WARD_LEVEL CNE is manageable by Area Incharge
+    if (type === 'WARD_LEVEL') {
       var assignedAreas = [];
       if (session.assignedAreas && Array.isArray(session.assignedAreas)) {
         for (var i = 0; i < session.assignedAreas.length; i++) {
@@ -1448,7 +1453,7 @@ function checkCNEAuthorized(session, cneArea, cneType) {
       if (targetArea && assignedAreas.length > 0) {
         for (var j = 0; j < assignedAreas.length; j++) {
           if (String(assignedAreas[j]).trim().toLowerCase() === targetArea) {
-            return null; // Authorized for this Departmental CNE
+            return null; // Authorized for this Ward-Level CNE
           }
         }
       }
@@ -1468,7 +1473,7 @@ function checkCNEAuthorized(session, cneArea, cneType) {
  *
  * Allowed:
  * 1. Admin
- * 2. Responsible Area Incharge (Departmental CNE within their assigned area)
+ * 2. Responsible Area Incharge (Ward-Level CNE within their assigned area)
  * 3. Resource Person ONLY when the authenticated user is actually assigned as a Resource Person for THIS PARTICULAR CNE.
  *
  * Forbidden:
@@ -1497,18 +1502,19 @@ function checkCNEActionAuthorized(session, record) {
       return normalizeEmpId(s);
     }).filter(Boolean);
 
-    if (loggedInId && rpList.indexOf(loggedInId) !== -1) {
+    var assignedCneType = normalizeCNEType(record.cneType);
+    if ((assignedCneType === 'CENTRAL' || assignedCneType === 'WARD_LEVEL') && loggedInId && rpList.indexOf(loggedInId) !== -1) {
       return null; // Assigned Resource Person for this specific CNE
     }
 
     // 2. Operational Progress actions are allowed to the concerned Area/Ward Incharge
-    // ONLY for DEPARTMENTAL CNEs within their assigned areas. CENTRAL CNE
+    // ONLY for WARD_LEVEL CNEs within their assigned areas. CENTRAL CNE
     // operations are Admin or explicitly assigned Resource Person only; External
     // CNE types never grant Area Incharge authority. Lifecycle rules are stricter.
     var actionCneType = normalizeCNEType(record.cneType);
     if (
       (role === 'AREA_INCHARGE' || role === 'INCHARGE') &&
-      actionCneType === 'DEPARTMENTAL'
+      actionCneType === 'WARD_LEVEL' && normalizeCNEStatus(record.status) === 'Scheduled'
     ) {
       var assignedAreas = [];
       if (session.assignedAreas && Array.isArray(session.assignedAreas)) {
@@ -1532,7 +1538,7 @@ function checkCNEActionAuthorized(session, record) {
       if (targetArea) {
         for (var ai = 0; ai < assignedAreas.length; ai++) {
           if (String(assignedAreas[ai] || '').trim().toLowerCase() === targetArea) {
-            return null; // Concerned Area/Ward Incharge for this Departmental CNE
+            return null; // Concerned Area/Ward Incharge for this Ward-Level CNE
           }
         }
       }
@@ -3194,6 +3200,9 @@ function isAreaActive_(areaName, forceFresh) {
 }
 
 function requireActiveArea_(areaName, forceFresh) {
+  // CNE Cell is a reserved administrative primary area. It is NOT an employee ward
+  // and is deliberately excluded from allocated-staff calculations.
+  if (String(areaName || '').trim().toUpperCase() === 'CNE CELL') return null;
   if (!isAreaActive_(areaName, forceFresh)) {
     return {
       success: false,
@@ -3345,16 +3354,20 @@ function getStaffCountForArea_(areaName, staffMap) {
 }
 
 /**
- * Canonical participating wards for a Departmental CNE. The primary/reporting
+ * Canonical participating wards for a Ward-Level CNE. The primary/reporting
  * ward remains in the existing Area column: only that column grants authority
  * and drives statistics. Other selected wards affect display and staffing only.
  * Uses exact active-name matching and rejects duplicate/unknown/inactive wards.
  */
-function resolveDepartmentalWards_(wardInput, primaryArea, session, staffMap, statusMap) {
+function resolveWardLevelWards_(wardInput, primaryArea, session, staffMap, statusMap) {
   if (!Array.isArray(wardInput) || wardInput.length === 0 || wardInput.length > 100) {
     return { success: false, errorCode: 'WARD_SELECTION_INVALID', message: 'Select at least one active participating ward.' };
   }
   var status = statusMap || getAreaStatusMap_(true);
+  // Reserve CNE Cell for explicit ADMIN-led cross-ward selection.
+  if (String(session && session.role || '').toUpperCase() === 'ADMIN') {
+    status = Object.assign({}, status, { 'CNE CELL': 'ACTIVE' });
+  }
   var staff = staffMap || getCneStaffCountMap_(true);
   if (staff.__staff_master_unavailable__) return {success: false, errorCode: 'WARD_STAFF_MASTER_UNAVAILABLE', message: 'CNE staff count master is unavailable. Please retry or contact Admin.'};
   var wards = [];
@@ -3373,25 +3386,33 @@ function resolveDepartmentalWards_(wardInput, primaryArea, session, staffMap, st
   if (!seen[primary.toUpperCase()]) {
     return { success: false, errorCode: 'WARD_PRIMARY_INVALID', message: 'The Primary Ward must be included in the selected wards.' };
   }
-  var authorized = checkCNEAuthorized(session, primary, 'DEPARTMENTAL');
+  // Only Admin may select every active ward or use the reserved CNE Cell primary.
+  // Enforce server-side; hiding Select All in React is insufficient.
+  if (String(session && session.role || '').toUpperCase() !== 'ADMIN') {
+    var activeKeys = Object.keys(status).filter(function(k) { return status[k] === 'ACTIVE' && k !== 'CNE CELL'; });
+    if (seen['CNE CELL'] || (activeKeys.length > 0 && activeKeys.every(function(k){return !!seen[k];}))) {
+      return { success:false,errorCode:'FORBIDDEN_ALL_WARDS',message:'Only Admin may select all active wards or use CNE Cell.' };
+    }
+  }
+  var authorized = checkCNEAuthorized(session, primary, 'WARD_LEVEL');
   if (authorized) return { success: false, errorCode: 'FORBIDDEN', message: 'Primary Ward must be one of your authorized wards.' };
   var total = 0;
   // Each unique selected ward contributes its valid allotted count or zero.
   // Allotment is a planning denominator, not an attendance registration.
   for (var k = 0; k < wards.length; k++) {
-    total += getStaffCountForArea_(wards[k], staff);
+    if (wards[k].trim().toUpperCase() !== 'CNE CELL') total += getStaffCountForArea_(wards[k], staff);
   }
   return { success: true, wards: wards, coverageAreasSnapshot: wards.join(', '), totalAllottedStaff: total };
 }
 
 /**
- * Common explicit ward validation. Reuses the Departmental resolver's strict
+ * Common explicit ward validation. Reuses the Ward-Level resolver's strict
  * active-ward, deduplication and ownership rules. Only scheduled Central and
- * Departmental CNEs record an allotted-staff snapshot; completed unscheduled
+ * Ward-Level CNEs record an allotted-staff snapshot; completed unscheduled
  * CNEs only store ward names and the single reporting Area.
  */
 function resolveCneParticipatingWards_(input, primary, session, staffMap, statusMap, countAllotted) {
-  var result = resolveDepartmentalWards_(input, primary, session,
+  var result = resolveWardLevelWards_(input, primary, session,
     countAllotted ? staffMap : {}, statusMap);
   if (!result.success) return result;
   if (!countAllotted) {
@@ -3420,7 +3441,7 @@ function handleGetWardStaffCounts(params, session) {
 }
 
 /**
- * Idempotently ensures the 6 Departmental CNE Coverage headers exist on CNE Schedule sheet.
+ * Idempotently ensures the 6 Ward-Level CNE Coverage headers exist on CNE Schedule sheet.
  */
 function ensureCneScheduleCoverageHeaders_(sheet) {
   if (!sheet) return;
@@ -4921,6 +4942,36 @@ function handleGetCNEScheduleById(params, session) {
   return one?{success:true,data:one}:{success:false,errorCode:'NOT_FOUND',message:'CNE not found or not authorized.'};
 }
 
+
+/** Generate a permanent, collision-checked, year-free CNE identifier.
+ * Prefix describes the type at CREATION; current Type of CNE is authoritative thereafter.
+ * Caller MUST hold ScriptLock; reservedIds handles not-yet-written batch siblings.
+ */
+function generateUniqueCneId_(cneType, reservedIds) {
+  var codes = {CENTRAL:'C',WARD_LEVEL:'W',UNSCHEDULED_CENTRAL:'UC',
+    UNSCHEDULED_WARD_LEVEL:'UW',EXTERNAL_OFFSITE:'UO',EXTERNAL_ONSITE:'UI',DEPARTMENTAL:'UD'};
+  var prefix = codes[normalizeCNEType(cneType)];
+  if (!prefix) throw new Error('INVALID_CNE_TYPE');
+  var alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  var reserved = reservedIds || {};
+  for (var attempt = 0; attempt < 50; attempt++) {
+    var code = '';
+    // Utilities.getUuid is provided by Google Apps Script. Entropy from two independent
+    // UUIDs avoids reliance on Math.random and prevents timestamp/year leakage.
+    var seed = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '').toUpperCase();
+    for (var k = 0; k < 12; k++) {
+      var pair = seed.slice(k*2, k*2+2);
+      code += alphabet.charAt(parseInt(pair, 16) % alphabet.length);
+    }
+    var candidate = 'CNE-' + prefix + '-' + code;
+    if (!reserved[candidate] && !isCneIdInUse_(candidate)) {
+      reserved[candidate] = true;
+      return candidate;
+    }
+  }
+  throw new Error('Unable to allocate a unique CNE ID. Retry.');
+}
+
 function handleCreateCNE(params, session) {
   if (!session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
@@ -4950,23 +5001,12 @@ function handleCreateCNE(params, session) {
     };
   }
 
-  var rawType = params.cneType;
-  var cneType = normalizeCNEType(rawType);
-  if (!cneType) {
-    return {
-      success: false,
-      errorCode: 'INVALID_CNE_TYPE',
-      message: 'Please select a valid CNE type.'
-    };
-  }
-
-  // Authoritative workflow rule: External CNE types are strictly unscheduled / retrospective
-  if ((cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE') && !isUnscheduled) {
-    return {
-      success: false,
-      errorCode: 'EXTERNAL_CNE_UNSCHEDULED_ONLY',
-      message: 'External CNE categories can only be recorded through the Unscheduled CNE workflow.'
-    };
+  var cneType = normalizeCNEType(params.cneType);
+  if (!cneType) return { success:false, errorCode:'INVALID_CNE_TYPE', message:'Please select one of the seven valid CNE types.' };
+  var retrospectiveType = ['UNSCHEDULED_CENTRAL','UNSCHEDULED_WARD_LEVEL','EXTERNAL_OFFSITE','EXTERNAL_ONSITE','DEPARTMENTAL'].indexOf(cneType) !== -1;
+  if (isUnscheduled !== retrospectiveType) {
+    return { success:false, errorCode:'CNE_TYPE_WORKFLOW_MISMATCH',
+      message: retrospectiveType ? 'This CNE type must be recorded through Unscheduled CNE.' : 'Regular Central/Ward-Level CNEs must be created using Schedule CNE.' };
   }
 
   var isAdmin = session.role === 'ADMIN';
@@ -4981,7 +5021,7 @@ function handleCreateCNE(params, session) {
     };
   }
 
-  // Authorization check: Central CNE requires Admin; Departmental requires Admin or Area Incharge; External requires Admin
+  // Authorization check: Central CNE requires Admin; Ward-Level requires Admin or Area Incharge; External requires Admin
   if (cneType === 'CENTRAL' && !isAdmin) {
     return {
       success: false,
@@ -4989,18 +5029,18 @@ function handleCreateCNE(params, session) {
       message: 'Permission denied. Only Administrators can create Central CNE programs.'
     };
   }
-  if (cneType === 'DEPARTMENTAL' && !isAdmin && !isAreaIncharge) {
+  if (cneType === 'WARD_LEVEL' && !isAdmin && !isAreaIncharge) {
     return {
       success: false,
       errorCode: 'FORBIDDEN',
-      message: 'Permission denied. Only Administrators or designated Area Incharges can create Departmental CNE programs.'
+      message: 'Permission denied. Only Administrators or designated Area Incharges can create Ward-Level CNE programs.'
     };
   }
-  if ((cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE') && !isAdmin) {
+  if (retrospectiveType && !isAdmin) {
     return {
       success: false,
       errorCode: 'FORBIDDEN',
-      message: 'Permission denied. Only Administrators can record External CNE programs.'
+      message: 'Permission denied. Only Administrators can record retrospective CNE programs, including Departmental CNE.'
     };
   }
 
@@ -5017,7 +5057,7 @@ function handleCreateCNE(params, session) {
     return { success: false, message: 'To Date & Time is required and cannot be blank.' };
   }
 
-  // FIX 1: Enforce server-side authoritative area/ward authorization for Departmental CNE creation
+  // FIX 1: Enforce server-side authoritative area/ward authorization for Ward-Level CNE creation
   var areaAuthErr = checkCNEAuthorized(session, area, cneType);
   if (areaAuthErr) {
     return areaAuthErr;
@@ -5169,7 +5209,7 @@ function handleCreateCNE(params, session) {
   // the scheduling-time staffing snapshot source; commit-time role/Area authorization is still
   // revalidated under the lock below.
   var schedulingStaffMap = null;
-  if (!isUnscheduled && (cneType === 'DEPARTMENTAL' || cneType === 'CENTRAL')) {
+  if (!isUnscheduled && (cneType === 'WARD_LEVEL' || cneType === 'CENTRAL')) {
     schedulingStaffMap = getCneStaffCountMap_(true);
   }
 
@@ -5192,21 +5232,14 @@ function handleCreateCNE(params, session) {
     if (isUnscheduled && !isAdmin) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can record and finalize an unscheduled CNE.' };
     }
-    if ((cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE') && !isUnscheduled) {
-      return {
-        success: false,
-        errorCode: 'EXTERNAL_CNE_UNSCHEDULED_ONLY',
-        message: 'External CNE categories can only be recorded through the Unscheduled CNE workflow.'
-      };
-    }
     if (cneType === 'CENTRAL' && !isAdmin) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can create Central CNE programs.' };
     }
-    if (cneType === 'DEPARTMENTAL' && !isAdmin && !isAreaIncharge) {
-      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators or designated Area Incharges can create Departmental CNE programs.' };
+    if (cneType === 'WARD_LEVEL' && !isAdmin && !isAreaIncharge) {
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators or designated Area Incharges can create Ward-Level CNE programs.' };
     }
-    if ((cneType === 'EXTERNAL_OFFSITE' || cneType === 'EXTERNAL_ONSITE') && !isAdmin) {
-      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can record External CNE programs.' };
+    if (retrospectiveType && !isAdmin) {
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can record retrospective CNE programs, including Departmental CNE.' };
     }
     var liveAreaAuthErr = checkCNEAuthorized(session, area, cneType);
     if (liveAreaAuthErr) return liveAreaAuthErr;
@@ -5241,16 +5274,7 @@ function handleCreateCNE(params, session) {
     var sheet = getOrCreateSheet('CNE Schedule');
     ensureCneScheduleCoverageHeaders_(sheet);
     ensureParticipatingWardsHeader_(sheet);
-    var curYear = parseInt(getIndiaTodayString().slice(0, 4), 10) || new Date().getFullYear();
-    var timestampSuffix = Date.now().toString().slice(-4);
-    var randSuffix = ('000' + Math.floor(Math.random() * 1000)).slice(-3);
-    var typePrefix = cneType === 'DEPARTMENTAL' ? 'D-' : (cneType === 'EXTERNAL_OFFSITE' ? 'EXT-OUT-' : (cneType === 'EXTERNAL_ONSITE' ? 'EXT-IN-' : ''));
-    var cneId = 'CLS-' + curYear + '-' + typePrefix + (isUnscheduled ? 'U-' : '') + timestampSuffix + randSuffix;
-    while (isCneIdInUse_(cneId)) {
-      randSuffix = ('000' + Math.floor(Math.random() * 1000)).slice(-3);
-      timestampSuffix = Date.now().toString().slice(-4);
-      cneId = 'CLS-' + curYear + '-' + typePrefix + (isUnscheduled ? 'U-' : '') + timestampSuffix + randSuffix;
-    }
+    var cneId = generateUniqueCneId_(cneType);
 
     var colMap = getHeaderMap(sheet);
     var maxCol = Math.max(sheet.getLastColumn(), 28);
@@ -5317,7 +5341,7 @@ function handleCreateCNE(params, session) {
     logAuditAction('CREATE_CNE', session.employeeId, 'Created ' + (isUnscheduled ? 'Unscheduled ' : '') + cneType + ' CNE: ' + cneId + ' (' + topic + ') Status: ' + status, 'SUCCESS');
     return {
       success: true,
-      message: isUnscheduled ? 'Unscheduled CNE activity recorded successfully.' : ((cneType === 'DEPARTMENTAL' ? 'Departmental' : 'Central') + ' CNE class scheduled successfully.'),
+      message: isUnscheduled ? 'Unscheduled CNE activity recorded successfully.' : ((cneType === 'WARD_LEVEL' ? 'Ward-Level' : 'Central') + ' CNE class scheduled successfully.'),
       data: { cneId: cneId, classId: cneId, dataId: cneId, status: status, cneType: cneType }
     };
   } finally {
@@ -5357,6 +5381,11 @@ function handleUpdateCNE(params, session) {
 
   var authErr = checkCNEAuthorized(session, record.area, record.cneType);
   if (authErr) return authErr;
+  var requestedNewType = params.cneType !== undefined ? normalizeCNEType(params.cneType) : normalizeCNEType(record.cneType);
+  if (!requestedNewType) return { success:false, errorCode:'INVALID_CNE_TYPE', message:'Invalid CNE Type.' };
+  if (requestedNewType !== normalizeCNEType(record.cneType) && session.role !== 'ADMIN') {
+    return { success:false, errorCode:'FORBIDDEN_CNE_TYPE_EDIT', message:'Only Administrators may change CNE Type.' };
+  }
 
   // Completed CNE historical details may be corrected by ADMIN only.
   // This does not reopen the CNE, permit status changes, or unlock participants/tests.
@@ -5368,12 +5397,8 @@ function handleUpdateCNE(params, session) {
       message: 'Only an administrator can edit details of a Completed CNE.'
     };
   }
-  if (normalizedRecordStatus === 'Canceled') {
-    return {
-      success: false,
-      errorCode: 'CNE_ALREADY_CANCELED',
-      message: 'This CNE has been canceled. Details cannot be modified.'
-    };
+  if (normalizedRecordStatus === 'Canceled' && String(session.role || '').toUpperCase() !== 'ADMIN') {
+    return { success:false, errorCode:'CANCELED_CNE_ADMIN_ONLY', message:'Only an administrator can correct canceled CNE details.' };
   }
 
   // Prevent updateCNE from bypassing official Finalize or Cancel lifecycle
@@ -5389,16 +5414,16 @@ function handleUpdateCNE(params, session) {
     }
   }
 
-  // Fix 1: Prevent Area Incharge from transferring a Departmental CNE to another ward/area
+  // Fix 1: Prevent Area Incharge from transferring a Ward-Level CNE to another ward/area
   if (session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE') {
     if (params.area !== undefined) {
       var proposedArea = String(params.area || '').trim().toLowerCase();
       var currentArea = String(record.area || '').trim().toLowerCase();
-      if (proposedArea !== currentArea && params.participatingWards === undefined) {
+      if (proposedArea !== currentArea) {
         return {
           success: false,
           errorCode: 'FORBIDDEN_WARD_TRANSFER',
-          message: 'Permission denied. Area Incharge cannot transfer a Departmental CNE to another area/ward.'
+          message: 'Permission denied. Area Incharge cannot transfer a Ward-Level CNE to another area/ward.'
         };
       }
     }
@@ -5457,22 +5482,15 @@ function handleUpdateCNE(params, session) {
         message: 'Only an administrator can edit details of a Completed CNE.'
       };
     }
-    // Do not modify participant coverage, recorded staff or maximum capacity after finalization.
-    if (liveUpdateStatus === 'Completed') {
-      if (params.participatingWards !== undefined || params.staffEmpIds !== undefined ||
-          params.staffEmpId !== undefined || params.externalStaffParticipants !== undefined ||
-          params.maxParticipants !== undefined ||
-          (params.area !== undefined && String(params.area || '').trim().toUpperCase() !== String(liveUpdateRecord.area || '').trim().toUpperCase())) {
-        return { success: false, errorCode: 'COMPLETED_CNE_COVERAGE_LOCKED',
-          message: 'Participating wards, department, attendance and capacity cannot be changed after CNE completion.' };
-      }
+    // Admin may correct Completed/Canceled records without reopening their lifecycle.
+    // No linked materials, attendance records, question rows or IDs are mutated here.
+    if (liveUpdateStatus === 'Canceled' && session.role !== 'ADMIN') {
+      return { success:false, errorCode:'CANCELED_CNE_ADMIN_ONLY', message:'Only an administrator can correct canceled CNE details.' };
     }
-    if (liveUpdateStatus === 'Canceled') {
-      return {
-        success: false,
-        errorCode: 'CNE_ALREADY_CANCELED',
-        message: 'This CNE has been canceled. Details cannot be modified.'
-      };
+    var liveTargetType = params.cneType !== undefined ? normalizeCNEType(params.cneType) : normalizeCNEType(liveUpdateRecord.cneType);
+    if (!liveTargetType) return { success:false, errorCode:'INVALID_CNE_TYPE', message:'Invalid CNE Type.' };
+    if (liveTargetType !== normalizeCNEType(liveUpdateRecord.cneType) && session.role !== 'ADMIN') {
+      return { success:false, errorCode:'FORBIDDEN_CNE_TYPE_EDIT', message:'Only Administrators may change CNE Type.' };
     }
 
     // Re-check Area Incharge scope against the live authoritative area.
@@ -5480,11 +5498,11 @@ function handleUpdateCNE(params, session) {
       if (params.area !== undefined) {
         var liveProposedArea = String(params.area || '').trim().toLowerCase();
         var liveCurrentArea = String(liveUpdateRecord.area || '').trim().toLowerCase();
-        if (liveProposedArea !== liveCurrentArea && params.participatingWards === undefined) {
+        if (liveProposedArea !== liveCurrentArea) {
           return {
             success: false,
             errorCode: 'FORBIDDEN_WARD_TRANSFER',
-            message: 'Permission denied. Area Incharge cannot transfer a Departmental CNE to another area/ward.'
+            message: 'Permission denied. Area Incharge cannot transfer a Ward-Level CNE to another area/ward.'
           };
         }
       }
@@ -5526,33 +5544,39 @@ function handleUpdateCNE(params, session) {
 
     var editedCoverage = null;
     if (params.participatingWards !== undefined) {
-      if (['DEPARTMENTAL', 'CENTRAL'].indexOf(normalizeCNEType(liveUpdateRecord.cneType)) < 0) {
-        return { success: false, errorCode: 'WARD_SELECTION_INVALID', message: 'Participating wards apply only to scheduled internal CNEs.' };
-      }
       var targetPrimary = params.area !== undefined ? String(params.area).trim() : liveUpdateRecord.area;
-      // Incharge transfer is permitted only between authorized primary wards when the
-      // explicit multi-ward selection changes; historical unrelated edits remain locked.
-      var proposedStaffMap = getCneStaffCountMap_(true);
-      editedCoverage = resolveDepartmentalWards_(params.participatingWards, targetPrimary, session, proposedStaffMap, getAreaStatusMap_(true));
-      if (!editedCoverage.success) return editedCoverage;
-      var previousWards = liveUpdateRecord.participatingWards || [liveUpdateRecord.area];
-      var wardsChanged = editedCoverage.wards.join('\\u0001').toUpperCase() !== previousWards.join('\\u0001').toUpperCase() || targetPrimary.toUpperCase() !== String(liveUpdateRecord.area || '').trim().toUpperCase();
-      if (wardsChanged) {
-        var hasAttendance = Number(liveUpdateRecord.internalAttendanceCount || 0) > 0 || Number(liveUpdateRecord.staffCount || 0) > 0;
-        // Fail closed if authoritative recorded post-test responses cannot be inspected.
-        var responses = ss.getSheetByName('CNE Post Test Responses');
-        if (!responses) return { success: false, errorCode: 'WARD_EDIT_LOCKED', message: 'Cannot verify attendance history; ward selection changes are blocked.' };
-        try {
-          var responseMap = getHeaderMap(responses);
-          if (responseMap['cneid'] === undefined) throw new Error('Missing CNE ID header');
-          var responseRows = responses.getDataRange().getValues();
-          for (var ri = 1; ri < responseRows.length; ri++) {
-            if (String(responseRows[ri][responseMap['cneid']] || '').trim().toUpperCase() === cneId.toUpperCase()) { hasAttendance = true; break; }
-          }
-        } catch (wardHistoryError) {
-          return { success: false, errorCode: 'WARD_EDIT_LOCKED', message: 'Unable to verify attendance history; ward changes are blocked.' };
+      if (session.role === 'ADMIN') {
+        // Admin corrections are classification/ward metadata only: preserve existing
+        // allotted staffing, confirmed attendance, materials and outcome figures.
+        var correctedWards = resolveCneParticipatingWards_(params.participatingWards,
+          targetPrimary, session, {}, getAreaStatusMap_(true), false);
+        if (!correctedWards.success) return correctedWards;
+        editedCoverage = { wards: correctedWards.wards, metadataOnly: true };
+      } else {
+        if (liveUpdateStatus !== 'Scheduled' || liveTargetType !== 'WARD_LEVEL') {
+          return {success:false,errorCode:'FORBIDDEN',message:'Only Admin can change wards outside scheduled Ward-Level CNEs.'};
         }
-        if (hasAttendance) return { success: false, errorCode: 'WARD_EDIT_LOCKED', message: 'Participating wards cannot be changed after attendance or Post-Test activity.' };
+        var proposedStaffMap = getCneStaffCountMap_(true);
+        editedCoverage = resolveWardLevelWards_(params.participatingWards, targetPrimary, session,
+          proposedStaffMap, getAreaStatusMap_(true));
+        if (!editedCoverage.success) return editedCoverage;
+        // Existing attendance history still blocks non-admin ward changes.
+        var previousWards = liveUpdateRecord.participatingWards || [liveUpdateRecord.area];
+        var wardsChanged = editedCoverage.wards.join('\\u0001').toUpperCase() !== previousWards.join('\\u0001').toUpperCase() || targetPrimary.toUpperCase() !== String(liveUpdateRecord.area || '').trim().toUpperCase();
+        if (wardsChanged) {
+          var hasAttendance = Number(liveUpdateRecord.internalAttendanceCount || 0) > 0 || Number(liveUpdateRecord.staffCount || 0) > 0;
+          var responses = getSpreadsheet('CNE').getSheetByName('CNE Post Test Responses');
+          if (!responses) return { success:false,errorCode:'WARD_EDIT_LOCKED',message:'Cannot verify attendance history.' };
+          try {
+            var responseMap = getHeaderMap(responses);
+            if (responseMap['cneid'] === undefined) throw new Error('Missing CNE ID header');
+            var responseRows = responses.getDataRange().getValues();
+            for (var ri=1;ri<responseRows.length;ri++) {
+              if (String(responseRows[ri][responseMap['cneid']]||'').trim().toUpperCase() === cneId.toUpperCase()) {hasAttendance=true;break;}
+            }
+          } catch(e) {return {success:false,errorCode:'WARD_EDIT_LOCKED',message:'Unable to verify attendance history.'};}
+          if (hasAttendance) return {success:false,errorCode:'WARD_EDIT_LOCKED',message:'Cannot change participating wards after attendance activity.'};
+        }
       }
     }
 
@@ -5577,8 +5601,10 @@ function handleUpdateCNE(params, session) {
         if (params.topic !== undefined) setColVal('topic', 1, sanitizeCellInput(params.topic));
         if (params.area !== undefined) setColVal('area', 2, sanitizeCellInput(params.area));
         if (editedCoverage) {
-          setColVal('coverageareassnapshot', 23, editedCoverage.coverageAreasSnapshot);
-          setColVal('totalallottedstaff', 24, editedCoverage.totalAllottedStaff);
+          if (!editedCoverage.metadataOnly) {
+            setColVal('coverageareassnapshot', 23, editedCoverage.coverageAreasSnapshot);
+            setColVal('totalallottedstaff', 24, editedCoverage.totalAllottedStaff);
+          }
           setColVal('participatingwards', -1, JSON.stringify(editedCoverage.wards));
         }
 
@@ -5602,7 +5628,7 @@ function handleUpdateCNE(params, session) {
             return { success: false, message: 'To Date & Time must be equal to or later than From Date & Time.' };
           }
           var editFromDay = getCNECanonicalDay(effDate);
-          if (!editFromDay || (liveUpdateStatus !== 'Completed' && editFromDay < getIndiaTodayString())) {
+          if (!editFromDay || (session.role !== 'ADMIN' && liveUpdateStatus === 'Scheduled' && editFromDay < getIndiaTodayString())) {
             return { success: false, message: 'Scheduled CNE date cannot be in the past.' };
           }
           if (liveUpdateStatus === 'Completed' && getCNECanonicalDay(effToDate) > getIndiaTodayString()) {
@@ -5749,7 +5775,7 @@ function handleUpdateCNE(params, session) {
 
         // Central CNE only maxParticipants
         var currentCneType = normalizeCNEType(liveUpdateRecord.cneType);
-        if (currentCneType === 'CENTRAL' && params.maxParticipants !== undefined) {
+        if (params.maxParticipants !== undefined && session.role === 'ADMIN') {
           setColVal('maxparticipants', 10, parseInt(params.maxParticipants, 10) || 50);
         }
 
@@ -5766,16 +5792,11 @@ function handleUpdateCNE(params, session) {
           }
         }
 
-        // CNE Category / Type immutability
-        if (params.cneType !== undefined) {
-          var normType = normalizeCNEType(params.cneType);
-          if (normType && normType !== currentCneType) {
-            return {
-              success: false,
-              errorCode: 'IMMUTABLE_CNE_TYPE',
-              message: 'CNE Category / Type is immutable and cannot be changed.'
-            };
-          }
+        // The administrator may reclassify between all seven types. This writes ONLY
+        // the Type cell: no CNE ID or linked materials/participants are rewritten.
+        if (params.cneType !== undefined && liveTargetType !== currentCneType) {
+          if (session.role !== 'ADMIN') return {success:false,errorCode:'FORBIDDEN_CNE_TYPE_EDIT',message:'Admin only.'};
+          setColVal('typeofcne', 12, liveTargetType);
         }
 
         if (params.remarks !== undefined || params.adminRemarks !== undefined) {
@@ -5795,9 +5816,10 @@ function handleUpdateCNE(params, session) {
 
         logAuditAction(liveUpdateStatus === 'Completed' ? 'ADMIN_CORRECT_COMPLETED_CNE' : 'UPDATE_CNE',
           session.employeeId, 'Updated CNE ID: ' + cneId + '; changed fields: ' + (changedFields.join(', ') || 'none') +
+          '; CNE Type: ' + currentCneType + ' -> ' + liveTargetType + '; Area: ' + liveUpdateRecord.area + ' -> ' + (params.area !== undefined ? params.area : liveUpdateRecord.area) +
           '; lifecycle status preserved: ' + liveUpdateStatus, 'SUCCESS');
         return { success: true, message: 'CNE record updated successfully.',
-          data: editedCoverage ? { participatingWards: editedCoverage.wards, coverageAreasSnapshot: editedCoverage.coverageAreasSnapshot, totalAllottedStaff: editedCoverage.totalAllottedStaff } : null };
+          data: editedCoverage ? { participatingWards: editedCoverage.wards, ...(editedCoverage.metadataOnly ? {} : { coverageAreasSnapshot: editedCoverage.coverageAreasSnapshot, totalAllottedStaff: editedCoverage.totalAllottedStaff }) } : null };
       }
     }
     return { success: false, message: 'CNE record with ID ' + cneId + ' not found.' };
@@ -5893,7 +5915,7 @@ function calculateCneDuration_(fromDtStr, toDtStr) {
 }
 
 /**
- * Authoritative duration validator for Central, Departmental and Unscheduled
+ * Authoritative duration validator for Central, Ward-Level and Unscheduled
  * scheduling, including edits. Accept a manual duration >= 5 minutes only up
  * to the actual classroom-hours maximum between the selected dates/times.
  */
@@ -5925,7 +5947,7 @@ function validateCneDuration(durationStr, fromDtStr, toDtStr) {
 }
 
 /**
- * Departmental scheduling idempotency. A submission ID belongs to one intended
+ * Ward-Level scheduling idempotency. A submission ID belongs to one intended
  * Publish operation, not to a CNE topic/date. Multiple legitimate batches may
  * therefore share all teaching details without being blocked.
  *
@@ -5934,11 +5956,11 @@ function validateCneDuration(durationStr, fromDtStr, toDtStr) {
  * recovered without allocating more IDs. All receipt reads/writes by the
  * mutation handler occur under ScriptLock.
  */
-function ensureDepartmentalSubmissionHeaders_(sheet) {
+function ensureWardLevelSubmissionHeaders_(sheet) {
   var wanted = [
-    { key: 'departmentalsubmissionid', name: 'Departmental Submission ID' },
-    { key: 'departmentalsubmissiondigest', name: 'Departmental Submission Digest' },
-    { key: 'departmentalsubmissioncount', name: 'Departmental Submission Count' }
+    { key: 'wardlevelsubmissionid', name: 'Ward-Level Submission ID' },
+    { key: 'wardlevelsubmissiondigest', name: 'Ward-Level Submission Digest' },
+    { key: 'wardlevelsubmissioncount', name: 'Ward-Level Submission Count' }
   ];
   var headers = getHeaderMap(sheet);
   var missing = wanted.filter(function(c) { return headers[c.key] === undefined; });
@@ -5952,23 +5974,23 @@ function ensureDepartmentalSubmissionHeaders_(sheet) {
   sheet.getRange(1, nextCol, 1, missing.length).setFontWeight('bold');
 }
 
-function isValidDepartmentalSubmissionId_(raw) {
+function isValidWardLevelSubmissionId_(raw) {
   return typeof raw === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw);
 }
 
-function departmentalSubmissionDigest_(validatedList) {
+function wardLevelSubmissionDigest_(validatedList) {
   var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, JSON.stringify(validatedList));
   return bytes.map(function(v) { return ('0' + (v & 255).toString(16)).slice(-2); }).join('');
 }
 
 /** Read all matching rows, fail closed on partial/ambiguous receipts. */
-function readDepartmentalSubmissionReceipt_(sheet, submissionId, employeeId, expectedDigest) {
+function readWardLevelSubmissionReceipt_(sheet, submissionId, employeeId, expectedDigest) {
   var cols = getHeaderMap(sheet);
-  var needed = ['departmentalsubmissionid', 'departmentalsubmissiondigest', 'departmentalsubmissioncount', 'cneid', 'proposedby'];
+  var needed = ['wardlevelsubmissionid', 'wardlevelsubmissiondigest', 'wardlevelsubmissioncount', 'cneid', 'proposedby'];
   if (needed.some(function(k) { return cols[k] === undefined; })) {
-    return { success: false, errorCode: 'SUBMISSION_RECEIPT_UNAVAILABLE', message: 'Cannot verify departmental submission columns.' };
+    return { success: false, errorCode: 'SUBMISSION_RECEIPT_UNAVAILABLE', message: 'Cannot verify ward-level submission columns.' };
   }
-  var hits = findExactRowsInColumn_(sheet, cols.departmentalsubmissionid, submissionId, 2);
+  var hits = findExactRowsInColumn_(sheet, cols.wardlevelsubmissionid, submissionId, 2);
   if (!hits.length) return { success: true, status: 'NOT_FOUND', data: { status: 'NOT_FOUND' } };
   var ids = [];
   var expectedCount = -1;
@@ -5980,8 +6002,8 @@ function readDepartmentalSubmissionReceipt_(sheet, submissionId, employeeId, exp
     if (owner !== normalizeEmpId(employeeId)) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'This scheduling submission belongs to another account.' };
     }
-    var rowDigest = String(values[cols.departmentalsubmissiondigest] || '').trim();
-    var rowCount = Number(values[cols.departmentalsubmissioncount]);
+    var rowDigest = String(values[cols.wardlevelsubmissiondigest] || '').trim();
+    var rowCount = Number(values[cols.wardlevelsubmissioncount]);
     if (!rowDigest || !Number.isInteger(rowCount) || rowCount < 1 || rowCount > 50 ||
         (expectedCount !== -1 && expectedCount !== rowCount) ||
         (actualDigest && actualDigest !== rowDigest)) {
@@ -6010,10 +6032,10 @@ function readDepartmentalSubmissionReceipt_(sheet, submissionId, employeeId, exp
 }
 
 /** Status check has no write side effects and is scoped to the submitting user. */
-function handleGetDepartmentalSubmissionStatus(params, session) {
+function handleGetWardLevelSubmissionStatus(params, session) {
   if (!session) return { success: false, errorCode: 'UNAUTHORIZED', message: 'Sign in to check scheduling status.' };
   var submissionId = String(params.submissionId || '').trim();
-  if (!isValidDepartmentalSubmissionId_(submissionId)) {
+  if (!isValidWardLevelSubmissionId_(submissionId)) {
     return { success: false, errorCode: 'INVALID_SUBMISSION_ID', message: 'Invalid scheduling submission ID.' };
   }
   var lock = LockService.getScriptLock();
@@ -6028,10 +6050,10 @@ function handleGetDepartmentalSubmissionStatus(params, session) {
     var sheet = getSpreadsheet('CNE').getSheetByName('CNE Schedule');
     if (!sheet) return { success: true, data: { status: 'NOT_FOUND' } };
     var cols = getHeaderMap(sheet);
-    if (cols.departmentalsubmissionid === undefined) {
+    if (cols.wardlevelsubmissionid === undefined) {
       return { success: true, data: { status: 'NOT_FOUND' } };
     }
-    return readDepartmentalSubmissionReceipt_(sheet, submissionId, session.employeeId, '');
+    return readWardLevelSubmissionReceipt_(sheet, submissionId, session.employeeId, '');
   } catch (e) {
     return { success: false, errorCode: 'SUBMISSION_STATUS_UNAVAILABLE', message: 'Cannot verify the original scheduling result. Do not publish a new batch yet.' };
   } finally {
@@ -6040,28 +6062,28 @@ function handleGetDepartmentalSubmissionStatus(params, session) {
 }
 
 /**
- * Batch Schedule Departmental CNEs (Admin and Area Incharge)
+ * Batch Schedule Ward-Level CNEs (Admin and Area Incharge)
  * Creates separate, independent records in CNE Schedule for each schedule row.
  */
-function handleAddDepartmentalSchedule(params, session) {
+function handleAddWardLevelSchedule(params, session) {
   if (!session) {
     return { success: false, errorCode: 'UNAUTHORIZED', message: 'Authentication required. Please sign in.' };
   }
 
   var submissionId = String(params.submissionId || '').trim();
-  if (!isValidDepartmentalSubmissionId_(submissionId)) {
+  if (!isValidWardLevelSubmissionId_(submissionId)) {
     return { success: false, errorCode: 'INVALID_SUBMISSION_ID', message: 'A valid scheduling submission ID is required to prevent duplicate CNE creation.' };
   }
 
   var rawClasses = params.schedules || params.classes;
   if (!rawClasses || !Array.isArray(rawClasses) || rawClasses.length === 0) {
-    return { success: false, message: 'At least one departmental CNE schedule row is required.' };
+    return { success: false, message: 'At least one ward-level CNE schedule row is required.' };
   }
 
   var isAdmin = session.role === 'ADMIN';
   var isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
   if (!isAdmin && !isAreaIncharge) {
-    return { success: false, errorCode: 'FORBIDDEN', message: 'Only an Administrator or designated Area Incharge can schedule Departmental CNEs.' };
+    return { success: false, errorCode: 'FORBIDDEN', message: 'Only an Administrator or designated Area Incharge can schedule Ward-Level CNEs.' };
   }
 
   var todayStr = getIndiaTodayString();
@@ -6114,7 +6136,7 @@ function handleAddDepartmentalSchedule(params, session) {
     }
 
     // Check authorization for this department
-    var authErr = checkCNEAuthorized(session, area, 'DEPARTMENTAL');
+    var authErr = checkCNEAuthorized(session, area, 'WARD_LEVEL');
     if (authErr) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Row ' + (i + 1) + ' (' + area + '): ' + authErr.message };
     }
@@ -6190,13 +6212,13 @@ function handleAddDepartmentalSchedule(params, session) {
   }
 
   try {
-    var freshDepartmentalSession = refreshMutationSession(session);
-    if (!freshDepartmentalSession.success) return freshDepartmentalSession;
-    session = freshDepartmentalSession.session;
+    var freshWardLevelSession = refreshMutationSession(session);
+    if (!freshWardLevelSession.success) return freshWardLevelSession;
+    session = freshWardLevelSession.session;
     isAdmin = session.role === 'ADMIN';
     isAreaIncharge = session.role === 'AREA_INCHARGE' || session.role === 'INCHARGE';
     if (!isAdmin && !isAreaIncharge) {
-      return { success: false, errorCode: 'FORBIDDEN', message: 'Only an Administrator or designated Area Incharge can schedule Departmental CNEs.' };
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Only an Administrator or designated Area Incharge can schedule Ward-Level CNEs.' };
     }
     _executionRosterData = null;
     _inMemoryOfficerMap = null;
@@ -6204,7 +6226,7 @@ function handleAddDepartmentalSchedule(params, session) {
     var liveTeachingModeStatusMap = getTeachingModeStatusMap_(true);
     for (var liveIdx = 0; liveIdx < validatedList.length; liveIdx++) {
       var liveItem = validatedList[liveIdx];
-      var liveDeptAuth = checkCNEAuthorized(session, liveItem.area, 'DEPARTMENTAL');
+      var liveDeptAuth = checkCNEAuthorized(session, liveItem.area, 'WARD_LEVEL');
       if (liveDeptAuth) return { success: false, errorCode: 'FORBIDDEN', message: 'Row ' + (liveIdx + 1) + ' (' + liveItem.area + '): ' + liveDeptAuth.message };
       var normLiveArea = String(liveItem.area || '').trim().toUpperCase();
       if (liveAreaStatusMap[normLiveArea] !== 'ACTIVE') {
@@ -6232,16 +6254,15 @@ function handleAddDepartmentalSchedule(params, session) {
     var sheet = getOrCreateSheet('CNE Schedule');
     ensureCneScheduleCoverageHeaders_(sheet);
     ensureParticipatingWardsHeader_(sheet);
-    ensureDepartmentalSubmissionHeaders_(sheet);
+    ensureWardLevelSubmissionHeaders_(sheet);
 
     // Recover a successful previous write before allocating any new CNE IDs.
-    var requestDigest = departmentalSubmissionDigest_(validatedList);
-    var previousReceipt = readDepartmentalSubmissionReceipt_(sheet, submissionId, session.employeeId, requestDigest);
+    var requestDigest = wardLevelSubmissionDigest_(validatedList);
+    var previousReceipt = readWardLevelSubmissionReceipt_(sheet, submissionId, session.employeeId, requestDigest);
     if (!previousReceipt.success) return previousReceipt;
     if (previousReceipt.status === 'COMMITTED') return previousReceipt;
 
     var colMap = getHeaderMap(sheet);
-    var curYear = new Date().getFullYear();
     var createdIds = [];
     var allRows = [];
     var targetCols = Math.max(sheet.getLastColumn(), 28);
@@ -6251,7 +6272,7 @@ function handleAddDepartmentalSchedule(params, session) {
     for (var bw = 0; bw < validatedList.length; bw++) {
       var v = validatedList[bw];
       var selection = v.participatingWards !== undefined ? v.participatingWards : [v.area];
-      var checked = resolveDepartmentalWards_(selection, v.area, session, schedulingStaffMap || {}, liveAreaStatusMap);
+      var checked = resolveWardLevelWards_(selection, v.area, session, schedulingStaffMap || {}, liveAreaStatusMap);
       if (!checked.success) return checked;
       if (batchWards && (batchWards.wards.join('\\u0001') !== checked.wards.join('\\u0001') || validatedList[0].area.toUpperCase() !== v.area.toUpperCase())) {
         return { success: false, errorCode: 'WARD_SELECTION_MISMATCH', message: 'Every session in this batch must use the same selected wards and Primary Ward.' };
@@ -6259,15 +6280,10 @@ function handleAddDepartmentalSchedule(params, session) {
       batchWards = checked;
     }
 
+    var reservedBatchCneIds = {};
     for (var j = 0; j < validatedList.length; j++) {
       var item = validatedList[j];
-      var timestampSuffix = Date.now().toString().slice(-4);
-      var randSuffix = ('000' + Math.floor(Math.random() * 1000)).slice(-3) + j;
-      var cneId = 'CLS-' + curYear + '-D-' + timestampSuffix + randSuffix;
-      while (isCneIdInUse_(cneId)) {
-        randSuffix = ('000' + Math.floor(Math.random() * 1000)).slice(-3) + (j + Math.floor(Math.random() * 100));
-        cneId = 'CLS-' + curYear + '-D-' + timestampSuffix + randSuffix;
-      }
+      var cneId = generateUniqueCneId_('WARD_LEVEL', reservedBatchCneIds);
 
       var rowData = [];
       for (var col = 0; col < targetCols; col++) rowData.push('');
@@ -6298,16 +6314,16 @@ function handleAddDepartmentalSchedule(params, session) {
       setCell('description', 9, item.description);
       setCell('maxparticipants', 10, item.maxParticipants);
       setCell('status', 11, 'Scheduled');
-      setCell('typeofcne', 12, 'DEPARTMENTAL');
+      setCell('typeofcne', 12, 'WARD_LEVEL');
       setCell('externalresourcepersons', 13, item.extRpClean.join(', '));
       setCell('proposedby', 14, session.employeeId || '');
       setCell('adminremarks', 15, item.adminRemarks);
       setCell('coverageareassnapshot', 23, rowCoverageSnapshot);
       setCell('totalallottedstaff', 24, rowAllottedStaff !== null ? rowAllottedStaff : 0);
       setCell('participatingwards', 29, JSON.stringify(batchWards.wards));
-      setCell('departmentalsubmissionid', -1, submissionId);
-      setCell('departmentalsubmissiondigest', -1, requestDigest);
-      setCell('departmentalsubmissioncount', -1, validatedList.length);
+      setCell('wardlevelsubmissionid', -1, submissionId);
+      setCell('wardlevelsubmissiondigest', -1, requestDigest);
+      setCell('wardlevelsubmissioncount', -1, validatedList.length);
       setCell('internalattendancecount', 25, '');
       setCell('attendancepercentage', 26, '');
       setCell('posttestoutcomepercentage', 27, '');
@@ -6351,7 +6367,7 @@ function handleAddDepartmentalSchedule(params, session) {
       }
       var confirmed;
       try {
-        confirmed = readDepartmentalSubmissionReceipt_(sheet, submissionId, session.employeeId, requestDigest);
+        confirmed = readWardLevelSubmissionReceipt_(sheet, submissionId, session.employeeId, requestDigest);
       } catch (readErr) {
         return { success: false, errorCode: 'SUBMISSION_COMMIT_UNCERTAIN', message: 'Scheduling was sent to the sheet, but its receipt could not be verified. Check status before retrying.' };
       }
@@ -6360,11 +6376,11 @@ function handleAddDepartmentalSchedule(params, session) {
       }
     }
 
-    logAuditAction('ADD_DEPARTMENTAL_SCHEDULE', session.employeeId, 'Submission ' + submissionId + ' scheduled ' + createdIds.length + ' departmental CNE(s): ' + createdIds.join(', '), 'SUCCESS');
+    logAuditAction('ADD_WARD_LEVEL_SCHEDULE', session.employeeId, 'Submission ' + submissionId + ' scheduled ' + createdIds.length + ' ward-level CNE(s): ' + createdIds.join(', '), 'SUCCESS');
 
     return {
       success: true,
-      message: 'Scheduled ' + createdIds.length + ' Departmental CNE session(s) successfully.',
+      message: 'Scheduled ' + createdIds.length + ' Ward-Level CNE session(s) successfully.',
       data: { createdIds: createdIds, createdClasses: createdIds, count: createdIds.length, status: 'COMMITTED', recovered: false }
     };
   } finally {
@@ -6576,11 +6592,11 @@ function handleDeleteGalleryItem(params, session) {
 }
 
 /**
- * Admin-Only: Departmental CNE Outcome Report
+ * Admin-Only: Ward-Level CNE Outcome Report
  * Batched, single-call report generator:
  * - Authoritative Area master (ACTIVE areas drive the table; empty placeholder if no CNE)
- * - CNE Schedule (normally scheduled DEPARTMENTAL CNEs only; excludes Central, External, Unscheduled)
- * - Inactive Areas appear ONLY if they have historical Departmental CNEs in the selected period
+ * - CNE Schedule (normally scheduled WARD_LEVEL CNEs only; excludes Central, External, Unscheduled)
+ * - Inactive Areas appear ONLY if they have historical Ward-Level CNEs in the selected period
  * - Officers data (resolves creator names only; never exposes Employee ID)
  * - Remarks ONLY for Cancelled CNEs (never shows finalization summary)
  */
@@ -6591,7 +6607,7 @@ function handleDeleteGalleryItem(params, session) {
  * calls; fall back only in that case. Never changes the CNE Schedule sheet.
  * A date-scoped report excludes undated/unparseable CNEs (fail closed).
  */
-function readDepartmentalOutcomeScheduleRows_(sheet, dateCol, fromDay, toDay) {
+function readWardLevelOutcomeScheduleRows_(sheet, dateCol, fromDay, toDay) {
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
   if (lastRow < 2 || lastCol < 1) return [];
@@ -6616,7 +6632,7 @@ function readDepartmentalOutcomeScheduleRows_(sheet, dateCol, fromDay, toDay) {
     .map(function(item) { return item.data; });
 }
 
-function handleGetDepartmentalCneOutcomeReport(params, session) {
+function handleGetWardLevelCneOutcomeReport(params, session) {
   var adminError = requireAdmin(session);
   if (adminError) return adminError;
 
@@ -6664,7 +6680,7 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
   var topicCol = cneColMap['topic'] !== undefined ? cneColMap['topic'] : 1;
   var areaCol = cneColMap['area'] !== undefined ? cneColMap['area'] : (cneColMap['wardnamearea'] !== undefined ? cneColMap['wardnamearea'] : 2);
   var fromDateCol = cneColMap['fromdate'] !== undefined ? cneColMap['fromdate'] : (cneColMap['date'] !== undefined ? cneColMap['date'] : 3);
-  var cneData = readDepartmentalOutcomeScheduleRows_(cneSheet, fromDateCol, fromDateFilter, toDateFilter);
+  var cneData = readWardLevelOutcomeScheduleRows_(cneSheet, fromDateCol, fromDateFilter, toDateFilter);
   var statusCol = cneColMap['status'] !== undefined ? cneColMap['status'] : 10;
   var typeCol = cneColMap['typeofcne'] !== undefined ? cneColMap['typeofcne'] : (cneColMap['cnetype'] !== undefined ? cneColMap['cnetype'] : 11);
   var adminRemarksCol = cneColMap['adminremarks'] !== undefined ? cneColMap['adminremarks'] : (cneColMap['remarks'] !== undefined ? cneColMap['remarks'] : 17);
@@ -6676,10 +6692,10 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
   var attPctCol = cneColMap['attendancepercentage'];
   var outcomeCol = cneColMap['posttestoutcomepercentage'];
 
-  // Resolve officer names only when at least one matching departmental CNE needs it.
+  // Resolve officer names only when at least one matching ward-level CNE needs it.
   var officerMap = null;
 
-  // 4. Filter CNE Schedule records for normally scheduled DEPARTMENTAL CNEs
+  // 4. Filter CNE Schedule records for normally scheduled WARD_LEVEL CNEs
   var cnesByAreaKey = {};
   for (var r = 0; r < cneData.length; r++) {
     var row = cneData[r];
@@ -6689,8 +6705,9 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
     var rawType = row[typeCol];
     var cneType = normalizeCNEType(rawType);
     // Exclude Central, External, and unscheduled CNEs
-    if (cneType !== 'DEPARTMENTAL') continue;
-    if (cneId.indexOf('-U-') !== -1) continue;
+    if (cneType !== 'WARD_LEVEL') continue;
+    // Exact Type of CNE alone determines Ward-Level Outcome eligibility.
+
 
     var rawDate = row[fromDateCol];
     var canonicalDay = getCNECanonicalDay(rawDate);
@@ -6800,7 +6817,7 @@ function handleGetDepartmentalCneOutcomeReport(params, session) {
     }
   }
 
-  // B. INACTIVE Areas that have real historical Departmental CNEs in the period
+  // B. INACTIVE Areas that have real historical Ward-Level CNEs in the period
   Object.keys(cnesByAreaKey).forEach(function(key) {
     if (!processedAreaKeys[key]) {
       var inactCnes = cnesByAreaKey[key];
@@ -7500,7 +7517,7 @@ function getDefaultQuickLinks_() {
     {
       id: 'ql-calendar',
       title: 'CNE Interactive Calendar',
-      description: 'View monthly training schedules, departmental rotations, and upcoming skill sessions.',
+      description: 'View monthly training schedules, ward-level rotations, and upcoming skill sessions.',
       iconName: 'Calendar',
       target: 'calendar',
       badge: 'Monthly View',
@@ -9901,7 +9918,7 @@ function handleListLearningResources(params, session) {
       cneId: cneId,
       topic: String(data[r][topicCol] || record.topic),
       area: record.area || '',
-      cneType: record.cneType || 'DEPARTMENTAL',
+      cneType: record.cneType || 'WARD_LEVEL',
       fileName: fileName,
       fileType: fileType,
       fileSize: fileSize,
@@ -17864,7 +17881,7 @@ function handleFinalizeCNE(params, session) {
     return {
       success: false,
       errorCode: 'INVALID_CNE_TYPE',
-      message: 'Cannot finalize CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE).'
+      message: 'Cannot finalize CNE: Session record has an invalid or missing Type of CNE (must be one of the seven supported CNE types).'
     };
   }
 
@@ -17913,7 +17930,7 @@ function handleFinalizeCNE(params, session) {
       return {
         success: false,
         errorCode: 'INVALID_CNE_TYPE',
-        message: 'Cannot finalize CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE).'
+        message: 'Cannot finalize CNE: Session record has an invalid or missing Type of CNE (must be one of the seven supported CNE types).'
       };
     }
     var liveFinalizeAuthErr = checkCNEAuthorized(session, liveRecord.area, liveFinalizeType);
@@ -18021,10 +18038,9 @@ function handleFinalizeCNE(params, session) {
       cneSheet.getRange(liveRecord.rowIndex, colMap['externalstaffparticipants'] + 1).setValue(externalParticipants.join(', '));
     }
 
-    // For eligible normally scheduled Departmental CNEs: calculate and store authoritative final coverage metrics
-    var isDeptFinalize = (liveFinalizeType === 'DEPARTMENTAL');
-    var isUnscheduledFinalize = (cneId.indexOf('-U-') !== -1);
-    if (isDeptFinalize && !isUnscheduledFinalize) {
+    // For eligible normally scheduled Ward-Level CNEs: calculate and store authoritative final coverage metrics
+    var isDeptFinalize = (liveFinalizeType === 'WARD_LEVEL');
+    if (isDeptFinalize) {
       ensureCneScheduleCoverageHeaders_(cneSheet);
       colMap = getHeaderMap(cneSheet);
 
@@ -18088,7 +18104,7 @@ function handleCancelCNE(params, session) {
     return {
       success: false,
       errorCode: 'INVALID_CNE_TYPE',
-      message: 'Cannot cancel CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE).'
+      message: 'Cannot cancel CNE: Session record has an invalid or missing Type of CNE (must be one of the seven supported CNE types).'
     };
   }
 
@@ -18126,7 +18142,7 @@ function handleCancelCNE(params, session) {
       return {
         success: false,
         errorCode: 'INVALID_CNE_TYPE',
-        message: 'Cannot cancel CNE: Session record has an invalid or missing Type of CNE (must be CENTRAL, DEPARTMENTAL, EXTERNAL_OFFSITE, or EXTERNAL_ONSITE).'
+        message: 'Cannot cancel CNE: Session record has an invalid or missing Type of CNE (must be one of the seven supported CNE types).'
       };
     }
     var liveCancelAuthErr = checkCNEAuthorized(session, liveRecord.area, liveCancelType);
@@ -20178,7 +20194,7 @@ function handleGetCNEAnalytics(params, session) {
   var cTopic=getCol(['topic'],5), cArea=getCol(['area','wardnamearea'],1), cStatus=getCol(['status'],-1);
   var cMode=getCol(['modeofteaching','mode'],7), cRp=getCol(['resourcepersonempid'],6), cAllot=getCol(['totalallottedstaff'],-1), cCapacity=getCol(['maxparticipants'],-1);
   // This helper reads the date column first and fetches only matching full rows where efficient.
-  var rows=readDepartmentalOutcomeScheduleRows_(sheet,cDate,from,to);
+  var rows=readWardLevelOutcomeScheduleRows_(sheet,cDate,from,to);
   var selected={}, statuses={Scheduled:0,Completed:0,Canceled:0}, months={}, areas={}, topics={}, modes={}, testTopics={};
   var rpHours={}, attendees={}, employeeHours={}, seenCne={}, allSelected=[];
   var completed=0, deliveredSeconds=0, rpSeconds=0, participantSeconds=0;

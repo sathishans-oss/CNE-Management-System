@@ -22,7 +22,7 @@ const QuizPage = lazy(() => import('./components/QuizPage').then((m) => ({ defau
 const AdminRoles = lazy(() => import('./components/AdminRoles').then((m) => ({ default: m.AdminRoles })));
 const AdminReports = lazy(() => import('./components/AdminReports').then((m) => ({ default: m.AdminReports })));
 const AdminContent = lazy(() => import('./components/AdminContent').then((m) => ({ default: m.AdminContent })));
-const AdminDepartmentalCneOutcome = lazy(() => import('./components/AdminDepartmentalCneOutcome').then((m) => ({ default: m.AdminDepartmentalCneOutcome })));
+const AdminWardLevelCneOutcome = lazy(() => import('./components/AdminWardLevelCneOutcome').then((m) => ({ default: m.AdminWardLevelCneOutcome })));
 
 const PageLoadingFallback: React.FC = () => (
   <div className="min-h-[220px] flex items-center justify-center text-sm font-medium text-slate-500">
@@ -261,8 +261,8 @@ const AppContent: React.FC = () => {
             <AdminReports user={user} />
           )}
 
-          {activeView === 'admin-departmental-cne-outcome' && user?.role === 'ADMIN' && (
-            <AdminDepartmentalCneOutcome user={user} />
+          {activeView === 'admin-ward-level-cne-outcome' && user?.role === 'ADMIN' && (
+            <AdminWardLevelCneOutcome user={user} />
           )}
           </Suspense>
         </main>

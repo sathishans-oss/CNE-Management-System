@@ -59,7 +59,7 @@ const CNEQRModal = lazy(() => import('./cne/CNEQRModal').then((m) => ({ default:
 const CNEParticipantsModal = lazy(() => import('./cne/CNEParticipantsModal').then((m) => ({ default: m.CNEParticipantsModal })));
 const CNEFinalizeModal = lazy(() => import('./cne/CNEFinalizeModal').then((m) => ({ default: m.CNEFinalizeModal })));
 const CNEPostTestModal = lazy(() => import('./cne/CNEPostTestModal').then((m) => ({ default: m.CNEPostTestModal })));
-const DepartmentalScheduleModal = lazy(() => import('./cne/DepartmentalScheduleModal').then((m) => ({ default: m.DepartmentalScheduleModal })));
+const WardLevelScheduleModal = lazy(() => import('./cne/WardLevelScheduleModal').then((m) => ({ default: m.WardLevelScheduleModal })));
 const AddUnscheduledCneModal = lazy(() => import('./cne/AddUnscheduledCneModal').then((m) => ({ default: m.AddUnscheduledCneModal })));
 const DeleteCneModal = lazy(() => import('./cne/DeleteCneModal').then((m) => ({ default: m.DeleteCneModal })));
 
@@ -282,12 +282,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   }, [user]);
 
   // Operational permissions: Admin, assigned Resource Person for this CNE,
-  // or concerned Area Incharge for DEPARTMENTAL CNEs only. Central CNE
+  // or concerned Area Incharge for WARD_LEVEL CNEs only. Central CNE
   // grants no management authority from AREA_INCHARGE status alone.
   const canOperateCne = useCallback((cne: CNERecord) => {
     if (!user || !cne) return false;
     if (user.role === 'ADMIN') return true;
-    if (cne.cneType === 'DEPARTMENTAL' && isConcernedAreaIncharge(cne)) return true;
+    if (cne.cneType === 'WARD_LEVEL' && isConcernedAreaIncharge(cne) && !isCneClosed(cne)) return true;
+    if (cne.cneType !== 'CENTRAL' && cne.cneType !== 'WARD_LEVEL') return false;
     return isUserAssignedResourcePerson(user, [cne.resourcePersonEmpId, ...(cne.resourcePersonEmpIds || [])].filter(Boolean).join(','));
   }, [user, isConcernedAreaIncharge]);
 
@@ -303,12 +304,12 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
   // Edit / Cancel / Finalize lifecycle authority:
   // - Central CNE: Admin only.
-  // - Departmental CNE: Admin + concerned Area/Ward Incharge.
+  // - Ward-Level CNE: Admin + concerned Area/Ward Incharge.
   // - Assigned Resource Persons never receive lifecycle authority.
   const canManageLifecycle = useCallback((cne: CNERecord) => {
     if (!user) return false;
     if (user.role === 'ADMIN') return true;
-    if ((cne.cneType || 'CENTRAL').trim().toUpperCase() !== 'DEPARTMENTAL') return false;
+    if ((cne.cneType || 'CENTRAL').trim().toUpperCase() !== 'WARD_LEVEL') return false;
     return isConcernedAreaIncharge(cne);
   }, [user, isConcernedAreaIncharge]);
 
@@ -780,19 +781,18 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
   };
 
-  // The only exception to the normal closed-CNE edit guard is ADMIN + Completed.
-  // All operational actions (questions, attendance, QR, cancellation) remain locked.
+  // Admin can correct any active CNE record, including Completed and Canceled.
+  // Area Incharge edits only their Scheduled Ward-Level CNEs. Deleted records
+  // are archived and are NOT part of this Edit CNE workflow.
   const canEditCneRecord = (cls: CNERecord) =>
-    canManageLifecycle(cls) && !isCneCanceled(cls) && (!isCneCompleted(cls) || isAdmin);
+    canManageLifecycle(cls) && (isAdmin || !isCneClosed(cls));
 
   const handleOpenEditModal = (cls: CNERecord) => {
     if (!canEditCneRecord(cls)) { error('This CNE cannot be edited.'); return; }
     setEditingCne(cls);
     setEditTopic(cls.topic || '');
     setEditArea(cls.area || '');
-    setEditWards((cls.cneType === 'DEPARTMENTAL' || cls.cneType === 'CENTRAL')
-      ? (cls.participatingWards?.length ? [...cls.participatingWards] : [cls.area].filter(Boolean))
-      : []);
+    setEditWards(cls.participatingWards?.length ? [...cls.participatingWards] : [cls.area].filter(Boolean));
     setEditWardChanged(false);
     setEditCneType((cls.cneType || 'CENTRAL') as CNEType);
     setEditDate(toDateTimeLocalString(cls.date));
@@ -847,7 +847,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     if (!editingCne || editSubmittingRef.current || isEditSubmitting) return;
     if (!canEditCneRecord(editingCne)) { error('This CNE cannot be edited.'); return; }
 
-    if (!isCneCompleted(editingCne) && (editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && (!editWards.length || !editArea.trim())) {
+    if (!editWards.length || !editArea.trim() || !editWards.some(w => w.trim().toUpperCase() === editArea.trim().toUpperCase())) {
       error('Select at least one participating ward and an authorized Primary Ward.');
       return;
     }
@@ -857,7 +857,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     }
     const storedEditArea = String(editingCne.area || '').trim();
     const isEditAreaChanged = editArea.trim().toUpperCase() !== storedEditArea.toUpperCase();
-    if (isEditAreaChanged && !activeAreaNames.has(editArea.trim().toUpperCase())) {
+    if (isEditAreaChanged && editArea.trim().toUpperCase() !== 'CNE CELL' && !activeAreaNames.has(editArea.trim().toUpperCase())) {
       error('This ward/area is currently inactive. Please select an active ward/area.');
       return;
     }
@@ -910,8 +910,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       const targetCneId = editingCne.cneId || editingCne.classId || '';
       const res = await ApiService.updateCNE(targetCneId, {
         topic: editTopic.trim(),
-        ...(!isCneCompleted(editingCne) ? { area: editArea } : {}),
-        ...(!isCneCompleted(editingCne) && (editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && editWardChanged ? { participatingWards: editWards } : {}),
+        area: editArea,
+        ...(editWardChanged ? { participatingWards: editWards } : {}),
         cneType: editCneType,
         date: editDate,
         toDate: editToDate,
@@ -922,22 +922,19 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         externalResourcePersons: editExternalRpList,
         modeOfTeaching: editMode,
         description: editDescription.trim(),
-        ...(!isCneCompleted(editingCne) ? { maxParticipants: editMaxParticipants } : {}),
+        ...(isAdmin ? { maxParticipants: editMaxParticipants } : {}),
         adminRemarks: editAdminRemarks.trim()
       } as any);
 
       if (res.success) {
-        success(isCneCompleted(editingCne) ? 'Completed CNE details corrected successfully.' : 'Upcoming CNE workshop updated successfully.', 'CNE Updated');
+        success('CNE details corrected successfully. Its ID, status and linked records are preserved.', 'CNE Updated');
         const updatedRecord: CNERecord = {
           ...editingCne,
           cneId: targetCneId,
           topic: editTopic.trim(),
           area: editArea,
-          ...((editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') && editWardChanged ? {
-            coverageAreasSnapshot: editWards.join(', '),
-            participatingWards: [...editWards],
-            totalAllottedStaff: typeof res.data?.totalAllottedStaff === 'number' ? res.data.totalAllottedStaff : editWards.reduce((sum, ward) => sum + (wardStaffCounts[ward.toUpperCase()] || 0), 0)
-          } : {}),
+          ...(editWardChanged ? { participatingWards: [...editWards] } : {}),
+          ...(typeof res.data?.totalAllottedStaff === 'number' ? { totalAllottedStaff: res.data.totalAllottedStaff, coverageAreasSnapshot: res.data.coverageAreasSnapshot } : {}),
           cneType: editCneType,
           date: editDate,
           toDate: editToDate,
@@ -1473,6 +1470,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         loadError={wardMasterError}
                         onRetry={() => { void loadWardMasters(true); }}
                         onChange={(wards, primary) => { setNewWards(wards); setNewArea(primary); }}
+                        allowSelectAll={isAdmin}
                         disabled={isSubmitting}
                       />
                     </div>
@@ -1798,9 +1796,9 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                     </span>
                   </div>
                   <p className="text-xs text-slate-500">
-                    {isCneCompleted(editingCne)
-                      ? 'Admin correction of a Completed CNE. Status, wards, attendance, questions and results remain locked.'
-                      : 'Update workshop curriculum and resource persons. The CNE ID is permanently immutable.'}
+                    {isAdmin
+                      ? 'Admin may correct all seven types and wards, including Completed/Canceled records. CNE ID, lifecycle status, participants, materials and saved results are preserved.'
+                      : 'Edit your Scheduled Ward-Level CNE. CNE ID and category cannot be changed.'}
                   </p>
                 </div>
               </div>
@@ -1823,24 +1821,33 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                       <span>1. Topic & Department</span>
                     </h4>
 
-                    {/* CNE Category / Type (Read-only during edit) */}
+                    {/* Unified seven-type Edit CNE: Admin is the only role authorized to reclassify. */}
                     <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                        CNE Category / Type
+                      <label htmlFor="edit-cne-type" className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
+                        CNE Category / Type {isAdmin && <span className="text-teal-700">· Admin editable</span>}
                       </label>
-                      <div className="p-2.5 rounded-xl border border-slate-200 bg-slate-100 flex items-center justify-between">
-                        <div>
-                          <div className="text-xs font-bold text-slate-800">
-                            {getCneTypeLabel(editCneType)}
-                          </div>
-                          <div className="text-[10px] text-slate-500">
-                            {editCneType === 'CENTRAL' ? 'Hospital-wide clinical seminar' : editCneType === 'DEPARTMENTAL' ? 'Ward / ICU / Unit-specific' : 'External CNE Program'}
-                          </div>
+                      {isAdmin ? (
+                        <select id="edit-cne-type" value={editCneType} onChange={e => setEditCneType(e.target.value as CNEType)}
+                          disabled={isEditSubmitting} className="w-full p-2.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold focus:ring-2 focus:ring-teal-500">
+                          <option value="CENTRAL">Central CNE</option>
+                          <option value="WARD_LEVEL">Ward-Level CNE</option>
+                          <option value="UNSCHEDULED_CENTRAL">Unscheduled Central CNE</option>
+                          <option value="UNSCHEDULED_WARD_LEVEL">Unscheduled Ward-Level CNE</option>
+                          <option value="EXTERNAL_OFFSITE">External CNE — Outside AIIMS</option>
+                          <option value="EXTERNAL_ONSITE">External CNE — Hosted at AIIMS</option>
+                          <option value="DEPARTMENTAL">Departmental CNE</option>
+                        </select>
+                      ) : (
+                        <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-100 text-xs font-bold text-slate-800">
+                          {getCneTypeLabel(editCneType)} (Read-only)
                         </div>
-                        <span className="text-[10px] font-bold text-slate-500 bg-slate-200 px-2 py-0.5 rounded border border-slate-300">
-                          Read-only
-                        </span>
-                      </div>
+                      )}
+                      {isAdmin && editCneType !== editingCne.cneType && (
+                        <p className="mt-1 text-[11px] text-amber-800">Only the Type field will change. Existing CNE ID, status, attendees, materials and calculated outcomes will remain unchanged.</p>
+                      )}
+                      {isAdmin && !['CENTRAL', 'WARD_LEVEL'].includes(editCneType) && getCneStatus(editingCne) === 'scheduled' && (
+                        <p className="mt-1 text-[11px] text-amber-800">This type is normally retrospective, but the existing Scheduled status will be preserved.</p>
+                      )}
                     </div>
 
                     <div>
@@ -1855,52 +1862,31 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
                           Target Area / Department *
                         </label>
-                        {editingCne?.area && !activeAreaNames.has(editingCne.area.trim().toUpperCase()) && (
+                        {editingCne?.area && editingCne.area.trim().toUpperCase() !== 'CNE CELL' && !activeAreaNames.has(editingCne.area.trim().toUpperCase()) && (
                           <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
                             Current Area: {editingCne.area.trim()} (Inactive)
                           </span>
                         )}
                       </div>
-                      {(editCneType === 'DEPARTMENTAL' || editCneType === 'CENTRAL') ? (
-                        <WardMultiSelect
-                          availableWards={areasList}
-                          eligiblePrimaryWards={isAdmin ? areasList : selectableAssignedAreas}
-                          selected={editWards}
-                          primaryWard={editArea}
-                          staffCounts={wardStaffCounts}
-                          staffCountError={wardMasterError || wardCountError}
+                      <WardMultiSelect
+                        availableWards={areasList}
+                        eligiblePrimaryWards={isAdmin ? [...areasList, 'CNE Cell'] : selectableAssignedAreas}
+                        selected={editWards}
+                        primaryWard={editArea}
+                        staffCounts={wardStaffCounts}
+                        staffCountError={wardMasterError || wardCountError}
                         isLoading={isWardMasterLoading}
                         loadError={wardMasterError}
                         onRetry={() => { void loadWardMasters(true); }}
-                          onChange={(wards, primary) => {
-                            setEditWards(wards);
-                            setEditArea(primary);
-                            setEditWardChanged(true);
-                          }}
-                          disabled={isEditSubmitting || (editingCne ? isCneCompleted(editingCne) : false)}
-                        />
-                      ) : (
-                        <select
-                        required
-                        disabled={Boolean(editingCne && isCneCompleted(editingCne))}
-                        value={editArea}
-                        onChange={(e) => setEditArea(e.target.value)}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
-                      >
-                        <option value="">Select Area / Unit</option>
-                        {editingCne?.area &&
-                          !activeAreaNames.has(editingCne.area.trim().toUpperCase()) && (
-                            <option value={editingCne.area}>
-                              {editingCne.area.trim()} (Inactive) — current
-                            </option>
-                          )}
-                        {(isAdmin ? areasList : selectableAssignedAreas).map((a, idx) => (
-                          <option key={`edit-area-opt-${a}-${idx}`} value={a}>
-                            {a}
-                          </option>
-                        ))}
-                        </select>
-                      )}
+                        onChange={(wards, primary) => {
+                          setEditWards(wards);
+                          setEditArea(primary);
+                          setEditWardChanged(true);
+                        }}
+                        allowSelectAll={isAdmin}
+                        disabled={isEditSubmitting}
+                        showCounts={!isAdmin && editCneType === 'WARD_LEVEL'}
+                      />
                     </div>
 
                     <div>
@@ -1989,7 +1975,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                             min={1}
                             max={500}
                             value={editMaxParticipants}
-                            disabled={Boolean(editingCne && isCneCompleted(editingCne))}
+                            disabled={isEditSubmitting}
                             onChange={(e) => setEditMaxParticipants(Number(e.target.value))}
                             className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
                           />
@@ -2318,7 +2304,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
       )}
 
       {isDeptScheduleOpen && (
-        <DepartmentalScheduleModal
+        <WardLevelScheduleModal
           isOpen={isDeptScheduleOpen}
           onClose={() => setIsDeptScheduleOpen(false)}
           user={user}
@@ -2376,10 +2362,10 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
             </div>
 
             <div className="mt-4 space-y-3">
-              {/* Departmental CNE Option */}
+              {/* Ward-Level CNE Option */}
               <button
                 type="button"
-                id="btn-choice-departmental-cne"
+                id="btn-choice-ward-level-cne"
                 onClick={() => {
                   setIsScheduleChoiceOpen(false);
                   setIsDeptScheduleOpen(true);
@@ -2391,7 +2377,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                 </div>
                 <div className="flex-1">
                   <div className="font-bold text-xs text-slate-900 group-hover:text-teal-900 flex items-center justify-between">
-                    <span>Departmental CNE</span>
+                    <span>Ward-Level CNE</span>
                     <span className="text-[10px] font-semibold text-teal-700 bg-teal-100/80 px-2 py-0.5 rounded-full">Unit / Ward</span>
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">

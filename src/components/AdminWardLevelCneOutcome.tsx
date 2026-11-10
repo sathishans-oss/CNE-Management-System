@@ -8,7 +8,7 @@ import {
   CheckCircle2,
   XCircle
 } from 'lucide-react';
-import { SessionUser, DepartmentalCneOutcomeRow } from '../types';
+import { SessionUser, WardLevelCneOutcomeRow } from '../types';
 import { ApiService } from '../services/api';
 import { useToast } from './Toast';
 import { SearchInput } from './SearchInput';
@@ -17,7 +17,7 @@ import { formatCneDateDisplay, getIndiaTodayIsoDate, parseToIsoDateString } from
 import { FilterBarShell } from './common/FilterBarShell';
 import { ResponsiveFilterToggle } from './common/ResponsiveFilterToggle';
 
-interface AdminDepartmentalCneOutcomeProps {
+interface AdminWardLevelCneOutcomeProps {
   user: SessionUser;
 }
 
@@ -32,10 +32,10 @@ function getIndiaCurrentMonth(): OutcomePeriod {
   return { fromDate: first, toDate: `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`, allDates: false };
 }
 
-export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomeProps> = ({ user }) => {
+export const AdminWardLevelCneOutcome: React.FC<AdminWardLevelCneOutcomeProps> = ({ user }) => {
   const [period, setPeriod] = useState<OutcomePeriod>(getIndiaCurrentMonth);
   const [loading, setLoading] = useState(true);
-  const [reportRows, setReportRows] = useState<DepartmentalCneOutcomeRow[]>([]);
+  const [reportRows, setReportRows] = useState<WardLevelCneOutcomeRow[]>([]);
   const [reportError, setReportError] = useState('');
   const [retryCount, setRetryCount] = useState(0);
   const [search, setSearch] = useState('');
@@ -43,7 +43,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
   const [hasLoaded, setHasLoaded] = useState(false);
   const invalidPeriod = !period.allDates && Boolean(period.fromDate && period.toDate && period.fromDate > period.toDate);
 
-  // Fetch all historical Departmental CNE Outcome rows once per page entry.
+  // Fetch all historical Ward-Level CNE Outcome rows once per page entry.
   // Month, date and search changes only select from these in-memory rows.
   useEffect(() => {
     if (user?.role !== 'ADMIN') return;
@@ -52,14 +52,14 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
     setReportError('');
     setHasLoaded(false);
     setReportRows([]);
-    ApiService.getDepartmentalCneOutcomeReport({ allDates: true })
+    ApiService.getWardLevelCneOutcomeReport({ allDates: true })
       .then(res => {
         if (cancelled) return;
         if (res.success && Array.isArray(res.data)) {
           setReportRows(res.data);
           setHasLoaded(true);
         } else {
-          setReportError(res.message || 'Unable to load Departmental CNE Outcome report.');
+          setReportError(res.message || 'Unable to load Ward-Level CNE Outcome report.');
         }
       })
       .catch((err: unknown) => {
@@ -79,7 +79,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
     // Active wards must remain visible even when none of their CNEs
     // occur in the locally selected month. The backend marks these explicitly.
     const activeAreas = new Map<string, string>();
-    const byArea = new Map<string, DepartmentalCneOutcomeRow[]>();
+    const byArea = new Map<string, WardLevelCneOutcomeRow[]>();
     const keyOf = (s: string) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
     for (const row of reportRows) {
       const key = keyOf(row.area);
@@ -92,7 +92,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
       if (!byArea.has(key)) byArea.set(key, []);
       byArea.get(key)!.push(row);
     }
-    const rows: DepartmentalCneOutcomeRow[] = [];
+    const rows: WardLevelCneOutcomeRow[] = [];
     for (const [key, area] of activeAreas) {
       const matching = byArea.get(key) || [];
       if (matching.length) rows.push(...matching);
@@ -120,13 +120,13 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
       <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center text-rose-800">
         <AlertCircle className="w-8 h-8 mx-auto mb-2 text-rose-600" />
         <h2 className="text-lg font-bold">Access Denied</h2>
-        <p className="text-sm mt-1">Permission denied. Only Administrators can access Departmental CNE Outcome.</p>
+        <p className="text-sm mt-1">Permission denied. Only Administrators can access Ward-Level CNE Outcome.</p>
       </div>
     </div>;
   }
 
   // Formatting attendance column
-  const formatAttendance = (row: DepartmentalCneOutcomeRow) => {
+  const formatAttendance = (row: WardLevelCneOutcomeRow) => {
     if (row.status !== 'Completed') return '—';
     if (row.internalAttendanceCount !== null && row.internalAttendanceCount !== undefined) {
       if (row.attendancePercentage !== null && row.attendancePercentage !== undefined) {
@@ -138,7 +138,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
   };
 
   // Formatting outcome column
-  const formatOutcome = (row: DepartmentalCneOutcomeRow) => {
+  const formatOutcome = (row: WardLevelCneOutcomeRow) => {
     if (row.status !== 'Completed') return '—';
     if (row.postTestOutcomePercentage !== null && row.postTestOutcomePercentage !== undefined) {
       return `${row.postTestOutcomePercentage.toFixed(1)}%`;
@@ -147,7 +147,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
   };
 
   // Formatting remarks: ONLY Cancelled sessions show cancellation reason
-  const formatRemarks = (row: DepartmentalCneOutcomeRow) => {
+  const formatRemarks = (row: WardLevelCneOutcomeRow) => {
     if (row.status === 'Canceled' || row.status === 'Cancelled') {
       return row.remarks || '—';
     }
@@ -162,7 +162,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
           ALL INDIA INSTITUTE OF MEDICAL SCIENCES, RISHIKESH
         </h1>
         <h2 className="text-base font-semibold text-slate-800 mt-1">
-          Departmental CNE Coverage & Outcome Report
+          Ward-Level CNE Coverage & Outcome Report
         </h2>
         <p className="text-xs text-slate-600 mt-1 font-medium">
           Period: {printPeriodText}
@@ -171,23 +171,23 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
 
       {/* Unified CNE Schedule-style filter bar; month/date/search are entirely local. */}
       <div className="print:hidden mb-4">
-        <FilterBarShell title="Departmental CNE Outcome" subtitle="Filter the loaded report instantly" icon={<CheckCircle2 className="h-3.5 w-3.5" />}>
+        <FilterBarShell title="Ward-Level CNE Outcome" subtitle="Filter the loaded report instantly" icon={<CheckCircle2 className="h-3.5 w-3.5" />}>
           <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2.5">
             <div className="w-full sm:w-[220px] xl:w-[260px]">
-              <SearchInput id="departmental-outcome-search" placeholder="Search outcome..." value={search} onChange={setSearch} />
+              <SearchInput id="ward-level-outcome-search" placeholder="Search outcome..." value={search} onChange={setSearch} />
             </div>
             <ResponsiveFilterToggle expanded={showAdvancedFilters}
               onToggle={() => setShowAdvancedFilters(v => !v)}
               activeCount={Number(Boolean(period.fromDate)) + Number(Boolean(period.toDate))}
-              controlsId="departmental-outcome-dates" />
-            <div id="departmental-outcome-dates" className={`${showAdvancedFilters ? 'flex' : 'hidden'} w-full flex-col gap-2.5 md:contents`}>
+              controlsId="ward-level-outcome-dates" />
+            <div id="ward-level-outcome-dates" className={`${showAdvancedFilters ? 'flex' : 'hidden'} w-full flex-col gap-2.5 md:contents`}>
               <div className="w-full sm:w-[150px]">
-                <ConfirmDatePicker id="departmental-outcome-from-date"
+                <ConfirmDatePicker id="ward-level-outcome-from-date"
                   value={period.fromDate} onChange={fromDate => setPeriod(p => ({...p, fromDate, allDates: false}))}
                   placeholder="From Date..." inlineLabel="From:" compact />
               </div>
               <div className="w-full sm:w-[150px]">
-                <ConfirmDatePicker id="departmental-outcome-to-date"
+                <ConfirmDatePicker id="ward-level-outcome-to-date"
                   value={period.toDate} onChange={toDate => setPeriod(p => ({...p, toDate, allDates: false}))}
                   minDate={period.fromDate} placeholder="To Date..." inlineLabel="To:" compact />
               </div>
@@ -203,16 +203,16 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
           </div>
         </FilterBarShell>
         <p className="mt-2 text-xs text-slate-600" role="status" aria-live="polite">
-          {loading ? 'Loading all available Departmental CNE outcomes…' : `Report period: ${printPeriodText} · ${filteredRows.length} rows`}
+          {loading ? 'Loading all available Ward-Level CNE outcomes…' : `Report period: ${printPeriodText} · ${filteredRows.length} rows`}
         </p>
         {invalidPeriod && <p role="alert" className="mt-1 text-xs text-rose-700 font-semibold">From Date cannot be later than To Date.</p>}
       </div>
 
       {/* Report Table */}
       <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden xl:overflow-visible print:border-none print:shadow-none print:overflow-visible">
-        <div className="cne-outcome-table-scroll max-h-[70dvh] overflow-auto overscroll-contain xl:max-h-none xl:overflow-visible print:max-h-none print:overflow-visible" role="region" aria-label="Departmental CNE outcome results" tabIndex={0}>
+        <div className="cne-outcome-table-scroll max-h-[70dvh] overflow-auto overscroll-contain xl:max-h-none xl:overflow-visible print:max-h-none print:overflow-visible" role="region" aria-label="Ward-Level CNE outcome results" tabIndex={0}>
           <table className="w-full min-w-[1080px] text-left border-collapse text-xs print:min-w-0">
-            <caption className="sr-only">Departmental CNE outcome results</caption>
+            <caption className="sr-only">Ward-Level CNE outcome results</caption>
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider print:bg-slate-100">
                 <th scope="col" className="sticky top-0 xl:top-[7.25rem] z-10 bg-slate-50 print:bg-slate-100 print:static py-3 px-3 w-12 text-center">S.No</th>
@@ -231,7 +231,7 @@ export const AdminDepartmentalCneOutcome: React.FC<AdminDepartmentalCneOutcomePr
                 <tr>
                   <td colSpan={9} className="py-12 text-center text-slate-400">
                     <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-purple-600" />
-                    <p className="text-xs">Loading complete Departmental CNE Outcome report...</p>
+                    <p className="text-xs">Loading complete Ward-Level CNE Outcome report...</p>
                   </td>
                 </tr>
               ) : reportError ? (

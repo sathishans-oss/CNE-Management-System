@@ -3,7 +3,7 @@ import type { ViewMode } from '../types';
 
 export const ADMIN_VIEWS: readonly ViewMode[] = [
   'admin-content', 'admin-roles', 'admin-reports', 'admin-areas',
-  'admin-teaching-modes', 'admin-departmental-cne-outcome'
+  'admin-teaching-modes', 'admin-ward-level-cne-outcome'
 ];
 const ROUTES: readonly ViewMode[] = [
   'dashboard', 'calendar', 'cne-schedule', 'my-cne-records',
