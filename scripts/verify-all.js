@@ -2451,8 +2451,8 @@ console.log('========================================================\\n');
     name: "CNE Workflows & Schemas",
     originalFilename: "verify-cne-workflows.js",
     mode: "module",
-    expectedChecks: 75,
-    sha256: "9b13ef3664d41ccf4329b8359f7c8932182b7e7c0eee9a81a470e4285629e257",
+    expectedChecks: 76,
+    sha256: "aac7649d9be10ec4ed01cb1c311081d61ae978d6f71955dc188c0c4e0b5cd66a",
     source: `/**
  * CNE Business Workflows & Schema Verification Suite
  *
@@ -2468,6 +2468,7 @@ console.log('========================================================\\n');
 
 import assert from 'assert';
 import fs from 'fs';
+import vm from 'node:vm';
 
 console.log('========================================================');
 console.log('CNE Workflows & Schema Verification');
@@ -2775,6 +2776,54 @@ runTest('Participant roster, staff counts, and post-test participants are record
         codeGs.includes("status: passed ? 'PASSED' : 'NEEDS_IMPROVEMENT'")),
     'Post-Test scoring must enforce percentage >= 60 as PASSED threshold, directly or through the scoring helper'
   );
+});
+
+runTest('Retrospective participant roster merges Schedule IDs and external names with confirmed response records', () => {
+  const start = codeGs.indexOf('function handleGetCNEParticipants(params, session)');
+  const end = codeGs.indexOf('function handleFinalizeCNE(params, session)', start);
+  assert.ok(start >= 0 && end > start, 'Participants handler must be present');
+  const source = codeGs.slice(start, end);
+  const headers = {
+    staffempid: 0, externalstaffparticipants: 1
+  };
+  const schedule = {
+    getLastColumn: () => 2,
+    getRange: () => ({ getDisplayValues: () => [['001, 002; 001', 'Guest A, Guest B']] })
+  };
+  const confirmedRows = [
+    ['r1','CNE-X','002','Officer Two','Nursing Officer','Ward','4','5','80','POST_TEST','2026-11-01','{}','PASSED',''],
+    ['r2','CNE-X','EXT-ABCDEFABCDEFABCDEFABCDEF','Guest A','External Participant','Ward', '', '', '', 'MANUAL','2026-11-01','','ATTENDED','']
+  ];
+  const record = {rowIndex: 2,cneId:'CNE-X',topic:'Clinical Update',area:'Ward',date:'2026-11-01',status:'Completed',cneType:'UNSCHEDULED_CENTRAL'};
+  const context = {
+    sanitizeCellInput: x => String(x || '').trim(),
+    getCNEScheduleRecord: () => record,
+    checkCNEActionAuthorized: () => null,
+    getResponsesSheet: () => ({}),
+    readMatchedCneRows_: () => confirmedRows,
+    isConfirmedCNEAttendanceResponse_: source => source === 'POST_TEST' || source === 'MANUAL',
+    isExternalParticipantId: x => /^EXT-[A-F0-9]{24}$/.test(x),
+    getSpreadsheet: () => ({getSheetByName: () => schedule}),
+    getHeaderMap: () => headers,
+    normalizeEmpId: x => String(x || '').trim().toUpperCase(),
+    getOfficerNameMap: () => ({'001': 'Officer One'}),
+    CNE_TYPE_CONFIG: {UNSCHEDULED_CENTRAL: {workflow:'RETROSPECTIVE'}, CENTRAL: {workflow:'SCHEDULED'}},
+    logPerf: () => {},
+    Date
+  };
+  vm.runInNewContext(source, context);
+  const result = context.handleGetCNEParticipants({cneId:'CNE-X'}, {role:'ADMIN'});
+  assert.equal(result.success,true);
+  assert.equal(result.data.totalParticipants,4,'Two internal and two external people counted once');
+  assert.equal(result.data.postTestCount,1,'Only the scored response is POST_TEST');
+  assert.equal(result.data.manualCount,3,'Roster-only and manual attendees have no post-test');
+  assert.equal(result.data.participants.find(p => p.employeeId === '001').name,'Officer One');
+  assert.equal(result.data.participants.filter(p => p.name === 'Guest A').length,1,'Existing external response must not be duplicated');
+  assert.equal(result.data.participants.find(p => p.employeeId === '002').percentage,80,'Post-test score must be preserved');
+  record.cneType = 'CENTRAL';
+  record.status = 'Scheduled';
+  const scheduled = context.handleGetCNEParticipants({cneId:'CNE-X'}, {role:'ADMIN'});
+  assert.equal(scheduled.data.totalParticipants,2,'Scheduled roster cells must not be treated as confirmed attendance');
 });
 
 // -----------------------------------------------------------------------------

@@ -332,7 +332,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
             </p>
           </div>
           <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <span className="text-[11px] text-slate-500 font-medium">Manual Attendance</span>
+            <span className="text-[11px] text-slate-500 font-medium">Attendance without Post-Test</span>
             <p className="text-lg font-bold text-teal-700 mt-0.5">
               {summary?.manualCount || 0}
             </p>
@@ -629,7 +629,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                           ) : (
                             <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-200">
                               <UserCheck className="w-2.5 h-2.5" />
-                              In-Person Manual
+                              {p.source === 'RETROSPECTIVE' ? 'Recorded (Unscheduled)' : p.source === 'QR' ? 'QR Attendance' : 'In-Person Manual'}
                             </span>
                           )}
                         </td>

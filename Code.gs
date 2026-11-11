@@ -17743,6 +17743,87 @@ function handleGetCNEParticipants(params, session) {
     }
   }
 
+  // Retrospective/Unscheduled CNEs are recorded after the activity. The
+  // Staff_Emp_ID and External_Staff_Participants cells are their attendance
+  // roster, unlike scheduled CNE enrollment (which is NOT attendance).
+  var retrospective = record.status === 'Completed' && record.cneType &&
+    CNE_TYPE_CONFIG[record.cneType] &&
+    CNE_TYPE_CONFIG[record.cneType].workflow === 'RETROSPECTIVE';
+  if (retrospective) {
+    var scheduleSheet = getSpreadsheet('CNE').getSheetByName('CNE_Schedule');
+    if (!scheduleSheet) throw new Error('CNE_Schedule sheet not found. Run Verify Sheets.');
+    var scheduleMap = getHeaderMap(scheduleSheet);
+    if (scheduleMap['staffempid'] === undefined || scheduleMap['externalstaffparticipants'] === undefined) {
+      throw new Error('CNE_Schedule is missing participant roster headers. Run Verify Sheets.');
+    }
+    var scheduleRow = scheduleSheet.getRange(record.rowIndex, 1, 1, scheduleSheet.getLastColumn()).getDisplayValues()[0];
+    var staffText = String(scheduleRow[scheduleMap['staffempid']] || '');
+    var externalText = String(scheduleRow[scheduleMap['externalstaffparticipants']] || '');
+    var staffTokens = staffText.split(/[,;\n\r]+/);
+    var seenStaff = {};
+    var absentIds = [];
+    for (var j = 0; j < staffTokens.length; j++) {
+      var rosterId = normalizeEmpId(staffTokens[j]);
+      if (!rosterId || seenStaff[rosterId]) continue;
+      seenStaff[rosterId] = true;
+      if (!byParticipant['ID:' + rosterId]) absentIds.push(rosterId);
+    }
+    // One cached directory lookup for the entire roster; no per-ID Sheets calls.
+    var officerNames = absentIds.length ? getOfficerNameMap() : {};
+    for (var si = 0; si < absentIds.length; si++) {
+      var staffId = absentIds[si];
+      byParticipant['ID:' + staffId] = {
+        id: 'ROSTER:' + cneId + ':' + staffId,
+        cneId: cneId,
+        employeeId: staffId,
+        externalParticipantId: '',
+        name: String(officerNames[staffId] || staffId),
+        designation: 'Nursing Officer',
+        department: record.area,
+        participantType: 'MANUAL',
+        score: null, totalQuestions: null, percentage: null,
+        source: 'RETROSPECTIVE',
+        submittedAt: String(record.date || ''),
+        answersJson: '', status: 'ATTENDED', remarks: 'Recorded at unscheduled CNE creation'
+      };
+    }
+
+    var externalNames = externalText.split(/[,;\n\r]+/);
+    var seenExternal = {};
+    for (var ei = 0; ei < externalNames.length; ei++) {
+      var externalName = String(externalNames[ei] || '').trim();
+      var nameKey = externalName.toLowerCase();
+      if (!nameKey || seenExternal[nameKey]) continue;
+      seenExternal[nameKey] = true;
+      // The response sheet can identify external participants by a generated
+      // EXT-... ID, so match their names before adding a roster-only entry.
+      var alreadyPresent = false;
+      var keys = Object.keys(byParticipant);
+      for (var ex = 0; ex < keys.length; ex++) {
+        var entry = byParticipant[keys[ex]];
+        if ((entry.externalParticipantId || !entry.employeeId) &&
+            String(entry.name || '').trim().toLowerCase() === nameKey) {
+          alreadyPresent = true;
+          break;
+        }
+      }
+      if (alreadyPresent) continue;
+      byParticipant['NAME:' + nameKey] = {
+        id: 'ROSTER_EXT:' + cneId + ':' + ei,
+        cneId: cneId,
+        employeeId: '', externalParticipantId: '',
+        name: externalName,
+        designation: 'External Participant',
+        department: record.area,
+        participantType: 'MANUAL',
+        score: null, totalQuestions: null, percentage: null,
+        source: 'RETROSPECTIVE',
+        submittedAt: String(record.date || ''),
+        answersJson: '', status: 'ATTENDED', remarks: 'Recorded at unscheduled CNE creation'
+      };
+    }
+  }
+
   var participants = Object.keys(byParticipant).map(function(key) { return byParticipant[key]; });
   var postTestCount = 0;
   var manualCount = 0;
