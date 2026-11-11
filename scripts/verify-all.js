@@ -631,8 +631,22 @@ check('WardLevel backend enforces resource person on each submitted session', ()
   const section = gas.slice(start, gas.indexOf('validatedList.push({', start));
   assert.match(section,/for \(var i = 0; i < rawClasses\.length; i\+\+\)/);
   assert.match(section,/if \(rpClean\.length === 0 && extRpClean\.length === 0\)/);
-  assert.match(section,/Row .*At least one Resource Person/);
-  assert.match(dept,/Row #\$\{rowNum\}: Please assign at least one Resource Person/);
+  assert.match(section,/Session #.*At least one Resource Person/);
+  assert.match(dept,/Session #\$\{sessionNum\}: Please assign at least one Resource Person/);
+});
+check('CNE edit preserves and displays saved internal Resource Persons', () => {
+  assert.match(central, /\.\.\.\(cls\.resourcePersonEmpIds \|\| \[\]\)/);
+  assert.match(central, /setEditSelectedRpEmpIds\(parsedRpIds\)/);
+  assert.match(central, /Previously selected internal resource persons/);
+  assert.match(central, /officerByEmployeeId\.get\(id\.trim\(\)\.toUpperCase\(\)\)/);
+});
+check('CNE progress has six independent cards including Finalize CNE', () => {
+  const progress = get('src/components/cne/ProgressPanel.tsx');
+  assert.match(progress, /\{readyCount\} of 6 Ready/);
+  assert.match(progress, /readyCount \/ 6/);
+  assert.match(progress, /Stage 2: Post Test, Attendance and independent Finalization/);
+  assert.match(progress, /6\. Finalize CNE: independent lifecycle stage/);
+  assert.match(progress, /disabled=\{!canLifecycle \|\| isClosed \|\| !isParticipantsReady\}/);
 });
 check('Initial AI material failure retries only material check, not Gemini generation', () => {
   assert.match(ai,/retryAction: 'material-check'/);
@@ -5927,7 +5941,7 @@ process.exit(0);
     originalFilename: "verify-delete-cne-behavior.js",
     mode: "module",
     expectedChecks: 38,
-    sha256: "9d9c78445f1974c2aaf62fecaa6a3a0cc11ff7a9414b96cd4655f84333bdc31c",
+    sha256: "9440bc56a9c20b39a24acd7eec1da23055408446b981205f4a22e507f8686ade",
     source: `/**
  * ============================================================================
  * EXECUTABLE BEHAVIORAL TEST SUITE: Delete CNE Data Integrity & Concurrency
@@ -6288,9 +6302,9 @@ function createFreshTestEnvironment() {
 
   // Canonical Schedule fixtures: exact 31-column schema used by the real application.
   cneSpreadsheet.addSheet('CNE_Schedule', [
-    ["CNE_ID", "Topic", "Area", "From_Date", "To_Date", "Duration", "Internal_Resource_Person_IDs", "Mode_of_Teaching", "Description", "Status", "CNE_Type", "External_Resource_Persons", "Internal_Participants", "External_Participants", "Admin_Remarks", "Remarks", "Created_At", "Created_By", "Coverage_Areas_Snapshot", "Total_Allotted_Staff", "Internal_Attendance_Count", "Attendance_Percentage", "Post_Test_Outcome_Percentage", "Coverage_Finalized_At", "Participating_Wards", "Departmental_Submission_ID", "Departmental_Submission_Digest", "Departmental_Submission_Count", "Ward_Level_Submission_ID", "Ward_Level_Submission_Digest", "Ward_Level_Submission_Count"],
-    ["CLS-2026-001", "Emergency Triage Protocols", "Emergency Ward", "2026-10-20T10:00", "2026-10-20T11:00", "01:00:00", "ADMIN001", "Simulation", "Clinical Simulation", "Scheduled", "CENTRAL", "", "", "", "", "", "2026-10-10T10:00:00Z", "ADMIN001", "", "", "", "", "", "", "", "", "", "", "", "", ""],
-    ["CLS-2026-002", "Ventilator Care Bundle", "ICU", "2026-10-22T14:00", "2026-10-22T16:00", "02:00:00", "STAFF001", "Workshop", "Hands-on workshop", "Scheduled", "WARD_LEVEL", "", "STAFF001", "", "", "", "2026-10-10T11:00:00Z", "ADMIN001", "", "", 1, "", "", "", "", "", "", "", "", "", ""],
+    ["CNE_ID", "Topic", "Area", "From_Date", "To_Date", "Duration", "Internal_Resource_Person_IDs", "Mode_of_Teaching", "Description", "Status", "CNE_Type", "External_Resource_Persons", "Internal_Participants", "External_Participants", "Admin_Remarks", "Remarks", "Created_At", "Created_By", "Coverage_Areas_Snapshot", "Total_Allotted_Staff", "Internal_Attendance_Count", "Attendance_Percentage", "Post_Test_Outcome_Percentage", "Coverage_Finalized_At", "Participating_Wards", "Ward_Level_Submission_ID", "Ward_Level_Submission_Digest", "Ward_Level_Submission_Count"],
+    ["CLS-2026-001", "Emergency Triage Protocols", "Emergency Ward", "2026-10-20T10:00", "2026-10-20T11:00", "01:00:00", "ADMIN001", "Simulation", "Clinical Simulation", "Scheduled", "CENTRAL", "", "", "", "", "", "2026-10-10T10:00:00Z", "ADMIN001", "", "", "", "", "", "", "", "", "", ""],
+    ["CLS-2026-002", "Ventilator Care Bundle", "ICU", "2026-10-22T14:00", "2026-10-22T16:00", "02:00:00", "STAFF001", "Workshop", "Hands-on workshop", "Scheduled", "WARD_LEVEL", "", "STAFF001", "", "", "", "2026-10-10T11:00:00Z", "ADMIN001", "", "", 1, "", "", "", "", "", "", ""],
   ]);
 
   // Setup Standard Attendance Response Sheet

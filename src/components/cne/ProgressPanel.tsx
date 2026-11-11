@@ -65,7 +65,7 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
   // Cancellation and finalization are intentionally separate states. A cancelled CNE must never render as Finalized.
   const isFinalized = !isCancelled && (isCompleted || isFinalizationReady);
   const isClosed = isCancelled || isFinalized;
-  const isAttendanceCompletionReady = isParticipantsReady && isFinalized;
+  const isAttendanceReady = isParticipantsReady;
 
   const canManageMaterial = canOperate && !isClosed;
   const canManageQuestions = canOperate && !isClosed;
@@ -78,14 +78,15 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
       (isQuestionsReady ? 1 : 0) +
       (isQrReady ? 1 : 0) +
       (isPostTestReady ? 1 : 0) +
-      (isAttendanceCompletionReady ? 1 : 0)
+      (isAttendanceReady ? 1 : 0) +
+      (isFinalized ? 1 : 0)
     : 0;
 
-  const readyPercentage = Math.round((readyCount / 5) * 100);
+  const readyPercentage = Math.round((readyCount / 6) * 100);
 
   return (
     <div className="bg-slate-50/70 p-4 rounded-xl border border-slate-200 h-full flex flex-col justify-between">
-      {/* Header with Title and Dynamic "X of 5 Ready" */}
+      {/* Header with Title and Dynamic "X of 6 Ready" */}
       <div className="border-b border-slate-200 pb-2.5 mb-3 flex items-center justify-between gap-2">
         <div>
           <div className="flex items-center gap-1.5">
@@ -100,7 +101,7 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
         {activityProgress && !isActivityLoading && (
           <div
             className={`px-2.5 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 shadow-2xs ${
-              readyCount === 5
+              readyCount === 6
                 ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
                 : readyCount >= 4
                 ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -109,21 +110,21 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                 : 'bg-rose-50 text-rose-700 border-rose-200'
             }`}
           >
-            {readyCount === 5 ? (
+            {readyCount === 6 ? (
               <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
             ) : readyCount === 0 ? (
               <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
             ) : (
               <span className="w-2 h-2 rounded-full bg-amber-500" />
             )}
-            <span className="whitespace-nowrap">{readyCount} of 5 Ready</span>
+            <span className="whitespace-nowrap">{readyCount} of 6 Ready</span>
           </div>
         )}
       </div>
 
       {isActivityLoading ? (
-        <div className="grid grid-cols-3 gap-2" role="status" aria-label="Loading five CNE progress cards">
-          {['Material', 'Questions', 'QR Code', 'Post-Test', 'Attendance'].map((name) => (
+        <div className="grid grid-cols-3 gap-2" role="status" aria-label="Loading six CNE progress cards">
+          {['Material', 'Questions', 'QR Code', 'Post-Test', 'Attendance', 'Finalize CNE'].map((name) => (
             <div key={name} className="min-h-24 p-3 rounded-xl border border-slate-200 bg-white flex flex-col items-center justify-center gap-2">
               <span className="text-[11px] font-semibold text-slate-700 text-center">{name}</span>
               <Loader2 className="w-4 h-4 animate-spin text-teal-600" aria-hidden="true" />
@@ -301,8 +302,8 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
               </div>
             </div>
 
-            {/* Stage 2: Completion (Post Test + Attendance & Completion) */}
-            <div className="grid grid-cols-2 gap-2">
+            {/* Stage 2: Post Test, Attendance and independent Finalization */}
+            <div className="grid grid-cols-3 gap-2">
               {/* 4. Post Test */}
               <button
                 type="button"
@@ -357,12 +358,12 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                 </div>
               </button>
 
-              {/* 5. Attendance & Completion (Deduplicated Roster + Finalization) */}
+              {/* 5. Attendance (deduplicated participant roster) */}
               <div
                 className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
                   isCancelled
                     ? 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
-                    : isAttendanceCompletionReady
+                    : isAttendanceReady
                     ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
                     : 'bg-slate-50 border-slate-200 text-slate-700 shadow-2xs'
                 }`}
@@ -374,22 +375,22 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                     isCancelled
                       ? `${activityProgress.participantsCount || 0} attendee(s) • CNE canceled • View attendance record`
                       : isFinalized
-                      ? `Attendance & Completion finalized • ${activityProgress.participantsCount || 0} attendee(s)`
+                      ? `Attendance recorded • ${activityProgress.participantsCount || 0} attendee(s)`
                       : canManageAttendance
-                      ? `Manage attendance and completion • ${activityProgress.participantsCount || 0} attendee(s)`
-                      : `Attendance and completion • ${activityProgress.participantsCount || 0} attendee(s) • View only`
+                      ? `Manage attendance • ${activityProgress.participantsCount || 0} attendee(s)`
+                      : `Attendance • ${activityProgress.participantsCount || 0} attendee(s) • View only`
                   }
                   aria-label={
                     canManageAttendance
-                      ? `Manage attendance and completion, ${activityProgress.participantsCount || 0} attendees`
-                      : `Attendance and completion, ${activityProgress.participantsCount || 0} attendees, view only`
+                      ? `Manage attendance, ${activityProgress.participantsCount || 0} attendees`
+                      : `Attendance, ${activityProgress.participantsCount || 0} attendees, view only`
                   }
                   className="w-full text-left cursor-pointer"
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                       <Users className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                      <span>Attendance &amp; Completion</span>
+                      <span>Attendance</span>
                     </span>
                     {!canManageAttendance && (
                       <span className="inline-flex items-center text-slate-400" title="View only" aria-label="View only">
@@ -404,7 +405,7 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                     <div>
                       {isCancelled ? (
                         <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" aria-label="Canceled" />
-                      ) : isAttendanceCompletionReady ? (
+                      ) : isAttendanceReady ? (
                         <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Completed" />
                       ) : (
                         <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" aria-label="Attention required" />
@@ -413,26 +414,47 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                   </div>
                 </button>
 
-                {canLifecycle && !isClosed && (
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onOpenFinalize(cne);
-                    }}
-                    disabled={!isParticipantsReady}
-                    title={
-                      !isParticipantsReady
-                        ? 'Record at least one participant before finalization'
-                        : 'Finalize and complete this CNE'
-                    }
-                    className="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <CheckCircle className="w-3.5 h-3.5" />
-                    <span>Finalize CNE</span>
-                  </button>
-                )}
+
               </div>
+
+              {/* 6. Finalize CNE: independent lifecycle stage */}
+              <button
+                type="button"
+                onClick={() => onOpenFinalize(cne)}
+                disabled={!canLifecycle || isClosed || !isParticipantsReady}
+                title={isCancelled
+                  ? 'Canceled CNE cannot be finalized'
+                  : isFinalized
+                  ? 'CNE already finalized'
+                  : !canLifecycle
+                  ? 'Finalization is restricted to authorized users'
+                  : !isParticipantsReady
+                  ? 'Record at least one participant before finalization'
+                  : 'Finalize and complete this CNE'}
+                aria-label="Finalize CNE"
+                className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
+                  isFinalized
+                    ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950'
+                    : isCancelled
+                    ? 'bg-rose-50/80 border-rose-200 text-rose-950'
+                    : canLifecycle && isParticipantsReady
+                    ? 'bg-amber-50/80 border-amber-200 text-amber-950 cursor-pointer hover:shadow-md active:scale-[0.98]'
+                    : 'bg-slate-50 border-slate-200 text-slate-500 cursor-not-allowed'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>Finalize CNE</span>
+                  </span>
+                  {!canLifecycle && <Lock className="w-3 h-3 shrink-0" aria-label="Restricted" />}
+                </div>
+                <div className="mt-auto flex items-center justify-between gap-1">
+                  <span className="text-[10px] font-semibold">{isCancelled ? 'Canceled' : isFinalized ? 'Finalized' : isParticipantsReady ? 'Ready to finalize' : 'Requires attendance'}</span>
+                  {isFinalized ? <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" /> :
+                    <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" />}
+                </div>
+              </button>
             </div>
           </div>
 

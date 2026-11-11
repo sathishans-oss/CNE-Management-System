@@ -796,10 +796,13 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setEditToDate(toDateTimeLocalString(cls.toDate || cls.date));
     setEditDuration(cls.duration || '01:30:00');
 
-    const parsedRpIds = (cls.resourcePersonEmpId || '')
-      .split(/[,;\n]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    // Preserve all saved internal faculty selections, regardless of whether the
+    // current Officers roster has finished loading or the selected IDs are below
+    // the first 40 search results.
+    const parsedRpIds = Array.from(new Set([
+      ...(cls.resourcePersonEmpIds || []),
+      ...String(cls.resourcePersonEmpId || '').split(/[,;\n]+/)
+    ].map((id) => String(id).trim()).filter(Boolean)));
     setEditSelectedRpEmpIds(parsedRpIds);
     setEditRpSearchQuery('');
     setEditExternalRpList(cls.externalResourcePersons ? [...cls.externalResourcePersons] : []);
@@ -824,18 +827,25 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
 
   const toggleEditRpSelection = (empId: string) => {
     setEditSelectedRpEmpIds((prev) =>
-      prev.includes(empId) ? prev.filter((id) => id !== empId) : [...prev, empId]
+      prev.some(id => id.toUpperCase() === empId.toUpperCase())
+        ? prev.filter(id => id.toUpperCase() !== empId.toUpperCase())
+        : [...prev, empId]
     );
   };
 
   const filteredEditRpOfficers = officersList.filter((o) => {
     if (!editRpSearchQuery.trim()) return true;
-    const q = editRpSearchQuery.toLowerCase();
+    const q = editRpSearchQuery.trim().toLowerCase();
     return (
-      o.name.toLowerCase().includes(q) ||
-      o.employeeId.toLowerCase().includes(q) ||
-      (o.designation || '').toLowerCase().includes(q)
+      String(o.name || '').toLowerCase().includes(q) ||
+      String(o.employeeId || '').toLowerCase().includes(q) ||
+      String(o.designation || '').toLowerCase().includes(q)
     );
+  }).sort((a, b) => {
+    // Show previously selected faculty first, even in a long Officers list.
+    const aSelected = editSelectedRpEmpIds.some(id => id.toUpperCase() === String(a.employeeId || '').trim().toUpperCase());
+    const bSelected = editSelectedRpEmpIds.some(id => id.toUpperCase() === String(b.employeeId || '').trim().toUpperCase());
+    return Number(bSelected) - Number(aSelected);
   });
 
   const handleUpdateClassSubmit = async (e: React.FormEvent) => {
@@ -1970,6 +1980,22 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         />
 
                       </div>
+                      {editSelectedRpEmpIds.length > 0 && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-2.5 py-2" aria-label="Previously selected internal resource persons">
+                          <span className="block text-[10px] font-bold text-amber-900 mb-1.5">Selected internal faculty</span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {editSelectedRpEmpIds.map((id) => {
+                              const officer = officerByEmployeeId.get(id.trim().toUpperCase());
+                              return (
+                                <span key={`existing-edit-rp-${id}`} className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-white px-2 py-1 text-[11px] text-amber-950">
+                                  {officer ? `${officer.name} (${id})` : id}
+                                  <button type="button" onClick={() => toggleEditRpSelection(id)} aria-label={`Remove selected resource person ${id}`} className="rounded p-0.5 hover:bg-amber-100"><X className="w-3 h-3" /></button>
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                       <div className="max-h-28 overflow-y-auto space-y-1 bg-white border border-slate-200 rounded-lg p-2 flex-1">
                         {isResourcePersonsLoading ? (
                           <div className="p-3 text-center text-xs text-slate-500 flex items-center justify-center gap-1.5">
@@ -1982,7 +2008,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                           <div className="p-2 text-center text-xs text-slate-400">No officers found</div>
                         ) : (
                           filteredEditRpOfficers.slice(0, 40).map((o, idx) => {
-                            const isSelected = editSelectedRpEmpIds.includes(o.employeeId);
+                            const isSelected = editSelectedRpEmpIds.some(id => id.toUpperCase() === String(o.employeeId || '').trim().toUpperCase());
                             return (
                               <label
                                 key={`edit-rp-off-${o.employeeId || idx}-${idx}`}

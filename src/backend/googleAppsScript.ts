@@ -6089,53 +6089,53 @@ function handleAddWardLevelSchedule(params, session) {
     var toDate = (c.toDate || date).trim();
 
     if (!topic || !area || !date) {
-      return { success: false, message: 'Row ' + (i + 1) + ': Topic, Area, and From Date & Time are required.' };
+      return { success: false, message: 'Session #' + (i + 1) + ': Topic, Area, and From Date & Time are required.' };
     }
     if (!toDate) {
-      return { success: false, message: 'Row ' + (i + 1) + ': To Date & Time is required and cannot be blank.' };
+      return { success: false, message: 'Session #' + (i + 1) + ': To Date & Time is required and cannot be blank.' };
     }
 
     var dFrom = parseCneStartTimestamp_(date);
     var dTo = parseCneStartTimestamp_(toDate);
     if (!isFinite(dFrom)) {
-      return { success: false, message: 'Row ' + (i + 1) + ': Invalid From Date & Time format.' };
+      return { success: false, message: 'Session #' + (i + 1) + ': Invalid From Date & Time format.' };
     }
     if (!isFinite(dTo)) {
-      return { success: false, message: 'Row ' + (i + 1) + ': Invalid To Date & Time format.' };
+      return { success: false, message: 'Session #' + (i + 1) + ': Invalid To Date & Time format.' };
     }
     if (dTo < dFrom) {
-      return { success: false, message: 'Row ' + (i + 1) + ': To Date & Time must be equal to or later than From Date & Time.' };
+      return { success: false, message: 'Session #' + (i + 1) + ': To Date & Time must be equal to or later than From Date & Time.' };
     }
 
     var rowDay = getCNECanonicalDay(date);
     if (!rowDay || rowDay < todayStr) {
-      return { success: false, message: 'Row ' + (i + 1) + ': Scheduled date cannot be in the past.' };
+      return { success: false, message: 'Session #' + (i + 1) + ': Scheduled date cannot be in the past.' };
     }
 
     var duration = (c.duration || '').trim();
     if (!duration) {
-      return { success: false, message: 'Row ' + (i + 1) + ': Duration is required.' };
+      return { success: false, message: 'Session #' + (i + 1) + ': Duration is required.' };
     }
     var durVal = validateCneDuration(duration, date, toDate);
     if (!durVal.isValid) {
-      return { success: false, message: 'Row ' + (i + 1) + ': ' + durVal.message };
+      return { success: false, message: 'Session #' + (i + 1) + ': ' + durVal.message };
     }
 
     var teachingMode = sanitizeCellInput(c.modeOfTeaching || '');
     var rowTeachingModeErr = requireActiveTeachingMode_(teachingMode, false);
     if (rowTeachingModeErr) {
-      return { success: false, errorCode: 'TEACHING_MODE_INACTIVE', message: 'Row ' + (i + 1) + ': ' + rowTeachingModeErr.message };
+      return { success: false, errorCode: 'TEACHING_MODE_INACTIVE', message: 'Session #' + (i + 1) + ': ' + rowTeachingModeErr.message };
     }
 
     // Check authorization for this department
     var authErr = checkCNEAuthorized(session, area, 'WARD_LEVEL');
     if (authErr) {
-      return { success: false, errorCode: 'FORBIDDEN', message: 'Row ' + (i + 1) + ' (' + area + '): ' + authErr.message };
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Session #' + (i + 1) + ' (' + area + '): ' + authErr.message };
     }
 
     var rowActiveAreaErr = requireActiveArea_(area, false);
     if (rowActiveAreaErr) {
-      return { success: false, errorCode: 'AREA_INACTIVE', message: 'Row ' + (i + 1) + ' (' + area + '): ' + rowActiveAreaErr.message };
+      return { success: false, errorCode: 'AREA_INACTIVE', message: 'Session #' + (i + 1) + ' (' + area + '): ' + rowActiveAreaErr.message };
     }
 
     // Internal RP validation
@@ -6163,7 +6163,7 @@ function handleAddWardLevelSchedule(params, session) {
     }
 
     if (invalidRpIds.length > 0) {
-      return { success: false, message: 'Row ' + (i + 1) + ': Invalid Resource Person Employee ID(s): ' + invalidRpIds.join(', ') };
+      return { success: false, message: 'Session #' + (i + 1) + ': Invalid Resource Person Employee ID(s): ' + invalidRpIds.join(', ') };
     }
 
     // External RP
@@ -6173,7 +6173,7 @@ function handleAddWardLevelSchedule(params, session) {
     var extRpClean = extRp.map(function(s) { return sanitizeCellInput(String(s).trim()); }).filter(Boolean);
 
     if (rpClean.length === 0 && extRpClean.length === 0) {
-      return { success: false, message: 'Row ' + (i + 1) + ': At least one Resource Person (Internal or External) is required.' };
+      return { success: false, message: 'Session #' + (i + 1) + ': At least one Resource Person (Internal or External) is required.' };
     }
 
     validatedList.push({
@@ -6218,7 +6218,7 @@ function handleAddWardLevelSchedule(params, session) {
     for (var liveIdx = 0; liveIdx < validatedList.length; liveIdx++) {
       var liveItem = validatedList[liveIdx];
       var liveDeptAuth = checkCNEAuthorized(session, liveItem.area, 'WARD_LEVEL');
-      if (liveDeptAuth) return { success: false, errorCode: 'FORBIDDEN', message: 'Row ' + (liveIdx + 1) + ' (' + liveItem.area + '): ' + liveDeptAuth.message };
+      if (liveDeptAuth) return { success: false, errorCode: 'FORBIDDEN', message: 'Session #' + (liveIdx + 1) + ' (' + liveItem.area + '): ' + liveDeptAuth.message };
       var normLiveArea = String(liveItem.area || '').trim().toUpperCase();
       if (liveAreaStatusMap[normLiveArea] !== 'ACTIVE') {
         return {
@@ -6237,7 +6237,7 @@ function handleAddWardLevelSchedule(params, session) {
       }
       for (var liveRpIdx = 0; liveRpIdx < liveItem.rpClean.length; liveRpIdx++) {
         if (!findOfficerById(liveItem.rpClean[liveRpIdx])) {
-          return { success: false, errorCode: 'OFFICER_DATA_CHANGED', message: 'Row ' + (liveIdx + 1) + ': Resource Person Employee ID is no longer present in Officers data: ' + liveItem.rpClean[liveRpIdx] };
+          return { success: false, errorCode: 'OFFICER_DATA_CHANGED', message: 'Session #' + (liveIdx + 1) + ': Resource Person Employee ID is no longer present in Officers data: ' + liveItem.rpClean[liveRpIdx] };
         }
       }
     }
@@ -8279,7 +8279,7 @@ var CNE_SHEET_HEADERS = {
   'Post_Test_Questions': ['CNE_ID', 'Question_ID', 'Question_Text', 'Option_A', 'Option_B', 'Option_C', 'Option_D', 'Correct_Option', 'Explanation', 'Is_Finalized', 'Is_Locked', 'Created_At', 'Created_By', 'Authoritative_Source', 'Status', 'Question_Type', 'Image_Drive_File_ID'],
   'Post_Test_Responses': ['Response_ID', 'CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Department', 'Score', 'Total_Questions', 'Percentage', 'Source', 'Submitted_At', 'Answers_JSON', 'Status', 'Remarks'],
   'Quiz_Attempts': ['Attempt_ID', 'Employee_ID', 'Employee_Name', 'Units_JSON', 'Question_IDs_JSON', 'Question_Count', 'Status', 'Started_At', 'Updated_At', 'Completed_At', 'Correct_Count', 'Wrong_Count', 'Percentage', 'Result_JSON', 'Answers_Encoded', 'Committed_Count'],
-  'CNE_Schedule': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Internal_Participants', 'External_Participants', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Participating_Wards', 'Departmental_Submission_ID', 'Departmental_Submission_Digest', 'Departmental_Submission_Count', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
+  'CNE_Schedule': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Internal_Participants', 'External_Participants', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
   'AI_Quota': ['CNE_ID', 'Topic', 'Attempts_Used', 'Max_Quota', 'Last_Attempt_At', 'Last_Generated_By', 'Reservation_Token', 'Reserved_Until', 'Last_Committed_Token'],
   'Material_Index': ['Index_ID', 'CNE_ID', 'Drive_File_ID', 'Resource_Title', 'Topic', 'Section_Heading', 'Chunk_Index', 'Chunk_Text', 'Clinical_Keywords', 'Extraction_Status', 'Updated_At'],
   'QR_Tokens': ['QR_Token', 'CNE_ID', 'Created_At', 'Created_By', 'Status'],

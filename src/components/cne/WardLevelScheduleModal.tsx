@@ -338,16 +338,16 @@ export const WardLevelScheduleModal: React.FC<WardLevelScheduleModalProps> = ({
     // Validation. Use the India-local calendar date rather than UTC so the rule is stable before 05:30 IST.
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
-      const rowNum = i + 1;
+      const sessionNum = i + 1;
       if (!r.topic.trim()) {
-        error(`Row #${rowNum}: Topic is required.`);
+        error(`Session #${sessionNum}: Topic is required.`);
         return;
       }
       if (!r.area.trim()) {
         if (isAreaIncharge && selectableAssignedAreas.length === 0 && assignedAreas.length > 0) {
           error('This ward/area is currently inactive. Please select an active ward/area.');
         } else {
-          error(`Row #${rowNum}: Area/Department is required.`);
+          error(`Session #${sessionNum}: Area/Department is required.`);
         }
         return;
       }
@@ -356,49 +356,49 @@ export const WardLevelScheduleModal: React.FC<WardLevelScheduleModalProps> = ({
         return;
       }
       if (!r.modeOfTeaching.trim() || !teachingModes.some((mode) => mode.toLowerCase() === r.modeOfTeaching.trim().toLowerCase())) {
-        error(`Row #${rowNum}: Please select an active Teaching Mode.`);
+        error(`Session #${sessionNum}: Please select an active Teaching Mode.`);
         return;
       }
       if (isAreaIncharge && !selectableAssignedAreas.some((a) => String(a || '').trim().toLowerCase() === r.area.trim().toLowerCase())) {
-        error(`Row #${rowNum}: You are not authorized to schedule for "${r.area}". Authorized areas: ${selectableAssignedAreas.join(', ') || 'None'}`);
+        error(`Session #${sessionNum}: You are not authorized to schedule for "${r.area}". Authorized areas: ${selectableAssignedAreas.join(', ') || 'None'}`);
         return;
       }
       if (!r.date) {
-        error(`Row #${rowNum}: From Date & Time is required.`);
+        error(`Session #${sessionNum}: From Date & Time is required.`);
         return;
       }
       if (!r.toDate) {
-        error(`Row #${rowNum}: To Date & Time is required.`);
+        error(`Session #${sessionNum}: To Date & Time is required.`);
         return;
       }
 
       const dFrom = parseCneStartTimestamp(r.date);
       const dTo = parseCneStartTimestamp(r.toDate);
       if (!Number.isFinite(dFrom) || !Number.isFinite(dTo)) {
-        error(`Row #${rowNum}: Please enter valid From Date & Time and To Date & Time.`);
+        error(`Session #${sessionNum}: Please enter valid From Date & Time and To Date & Time.`);
         return;
       }
       if (dTo < dFrom) {
-        error(`Row #${rowNum}: To Date & Time cannot be earlier than From Date & Time.`);
+        error(`Session #${sessionNum}: To Date & Time cannot be earlier than From Date & Time.`);
         return;
       }
 
       const fromDatePart = parseDateTimeParts(r.date).date;
       if (fromDatePart && fromDatePart < todayStr) {
-        error(`Row #${rowNum}: Scheduled From Date cannot be in the past.`);
+        error(`Session #${sessionNum}: Scheduled From Date cannot be in the past.`);
         return;
       }
 
       const durVal = validateCneDuration(r.duration, r.date, r.toDate);
       if (!durVal.isValid) {
-        error(`Row #${rowNum}: ${durVal.message}`);
+        error(`Session #${sessionNum}: ${durVal.message}`);
         return;
       }
 
       const hasInternalRp = (r.resourcePersonEmpIds && r.resourcePersonEmpIds.length > 0) || !!String(r.resourcePersonEmpId || '').trim();
       const hasExtRp = (r.externalResourcePersons && r.externalResourcePersons.length > 0);
       if (!hasInternalRp && !hasExtRp) {
-        error(`Row #${rowNum}: Please assign at least one Resource Person (Internal or External).`);
+        error(`Session #${sessionNum}: Please assign at least one Resource Person (Internal or External).`);
         return;
       }
     }
