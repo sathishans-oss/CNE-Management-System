@@ -5927,21 +5927,47 @@ function validateCneDuration(durationStr, fromDtStr, toDtStr) {
  * mutation handler occur under ScriptLock.
  */
 function ensureWardLevelSubmissionHeaders_(sheet) {
-  var wanted = [
-    { key: 'wardlevelsubmissionid', name: 'Ward-Level Submission ID' },
-    { key: 'wardlevelsubmissiondigest', name: 'Ward-Level Submission Digest' },
-    { key: 'wardlevelsubmissioncount', name: 'Ward-Level Submission Count' }
+  if (!sheet) throw new Error('CNE Schedule is unavailable.');
+  var fields = [
+    { key: 'wardlevelsubmissionid', name: 'Ward_Level_Submission_ID', legacy: 'Ward-Level Submission ID' },
+    { key: 'wardlevelsubmissiondigest', name: 'Ward_Level_Submission_Digest', legacy: 'Ward-Level Submission Digest' },
+    { key: 'wardlevelsubmissioncount', name: 'Ward_Level_Submission_Count', legacy: 'Ward-Level Submission Count' }
   ];
-  var headers = getHeaderMap(sheet);
-  var missing = wanted.filter(function(c) { return headers[c.key] === undefined; });
-  if (!missing.length) return;
-  var nextCol = sheet.getLastColumn() + 1;
-  var finalCol = nextCol + missing.length - 1;
-  if (sheet.getMaxColumns() < finalCol) {
-    sheet.insertColumnsAfter(sheet.getMaxColumns(), finalCol - sheet.getMaxColumns());
+  var width = sheet.getLastColumn();
+  var raw = width ? sheet.getRange(1, 1, 1, width).getValues()[0] : [];
+  var existing = {};
+  for (var i = 0; i < raw.length; i++) {
+    var name = String(raw[i] || '').trim();
+    if (!name) continue;
+    if (existing[name] !== undefined) {
+      throw new Error('Duplicate CNE Schedule header "' + name + '". Fix the duplicate before continuing.');
+    }
+    existing[name] = i + 1;
   }
-  sheet.getRange(1, nextCol, 1, missing.length).setValues([missing.map(function(c) { return c.name; })]);
-  sheet.getRange(1, nextCol, 1, missing.length).setFontWeight('bold');
+  var missing = [];
+  for (var j = 0; j < fields.length; j++) {
+    var f = fields[j];
+    var hasCanonical = existing[f.name] !== undefined;
+    var hasLegacy = existing[f.legacy] !== undefined;
+    // Never create a second receipt column or silently disregard saved receipts.
+    if (hasCanonical && hasLegacy) {
+      throw new Error('Conflicting CNE Schedule submission headers: "' + f.legacy + '" and "' + f.name + '". Merge data manually before verifying.');
+    }
+    if (hasLegacy) {
+      sheet.getRange(1, existing[f.legacy]).setValue(f.name);
+    } else if (!hasCanonical) {
+      missing.push(f.name);
+    }
+  }
+  if (missing.length) {
+    var startCol = sheet.getLastColumn() + 1;
+    var finalCol = startCol + missing.length - 1;
+    if (sheet.getMaxColumns() < finalCol) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), finalCol - sheet.getMaxColumns());
+    }
+    sheet.getRange(1, startCol, 1, missing.length).setValues([missing]);
+    sheet.getRange(1, startCol, 1, missing.length).setFontWeight('bold');
+  }
 }
 
 function isValidWardLevelSubmissionId_(raw) {
@@ -8251,12 +8277,12 @@ var CNE_SHEET_HEADERS = {
   'Audit_Log': ['Timestamp', 'Action', 'Employee_ID', 'Details', 'Status'],
   'Auth_Credentials': ['Employee_ID', 'Password_Hash', 'Password_Salt', 'Password_Version', 'Password_Created_At', 'Password_Changed_At', 'Last_Login_At', 'Account_Status', 'Failed_Login_Count', 'Locked_Until', 'Created_At', 'Updated_At'],
   'Clinical_Insights': ['Insight_ID', 'Image_Drive_File_ID', 'Display_Order', 'Status', 'Override_Date', 'Created_At', 'Created_By', 'Updated_At'],
-  'Deleted_Archive': ['CNE_ID', 'Topic', 'Ward_Name_Area', 'From_Date', 'To_Date', 'Duration', 'Resource_Person_Emp_ID', 'Mode_of_Teaching', 'Description', 'Max_Participants', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Staff_Emp_ID', 'Staff_Count', 'External_Staff_Participants', 'Proposed_By', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Deleted_At', 'Deleted_By', 'Delete_Reason', 'Participating_Wards'],
+  'Deleted_Archive': ['CNE_ID', 'Topic', 'Ward_Name_Area', 'From_Date', 'To_Date', 'Duration', 'Resource_Person_Emp_ID', 'Mode_of_Teaching', 'Description', 'Max_Participants', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Staff_Emp_ID', 'Staff_Count', 'External_Staff_Participants', 'Proposed_By', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Deleted_At', 'Deleted_By', 'Delete_Reason', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
   'Interest_Registrations': ['CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Department_Area', 'Interest_Status', 'Interested_At', 'Updated_At'],
   'Post_Test_Questions': ['CNE_ID', 'Question_ID', 'Question_Text', 'Option_A', 'Option_B', 'Option_C', 'Option_D', 'Correct_Option', 'Explanation', 'Is_Finalized', 'Is_Locked', 'Created_At', 'Created_By', 'Authoritative_Source', 'Status', 'Question_Type', 'Image_Drive_File_ID'],
   'Post_Test_Responses': ['Response_ID', 'CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Department', 'Score', 'Total_Questions', 'Percentage', 'Source', 'Submitted_At', 'Answers_JSON', 'Status', 'Remarks'],
   'Quiz_Attempts': ['Attempt_ID', 'Employee_ID', 'Employee_Name', 'Units_JSON', 'Question_IDs_JSON', 'Question_Count', 'Status', 'Started_At', 'Updated_At', 'Completed_At', 'Correct_Count', 'Wrong_Count', 'Percentage', 'Result_JSON', 'Answers_Encoded', 'Committed_Count'],
-  'CNE_Schedule': ['CNE_ID', 'Topic', 'Ward_Name_Area', 'From_Date', 'To_Date', 'Duration', 'Resource_Person_Emp_ID', 'Mode_of_Teaching', 'Description', 'Max_Participants', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Staff_Emp_ID', 'Staff_Count', 'External_Staff_Participants', 'Proposed_By', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Participating_Wards', 'Departmental_Submission_ID', 'Departmental_Submission_Digest', 'Departmental_Submission_Count'],
+  'CNE_Schedule': ['CNE_ID', 'Topic', 'Ward_Name_Area', 'From_Date', 'To_Date', 'Duration', 'Resource_Person_Emp_ID', 'Mode_of_Teaching', 'Description', 'Max_Participants', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Staff_Emp_ID', 'Staff_Count', 'External_Staff_Participants', 'Proposed_By', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Participating_Wards', 'Departmental_Submission_ID', 'Departmental_Submission_Digest', 'Departmental_Submission_Count', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
   'AI_Quota': ['CNE_ID', 'Topic', 'Attempts_Used', 'Max_Quota', 'Last_Attempt_At', 'Last_Generated_By', 'Reservation_Token', 'Reserved_Until', 'Last_Committed_Token'],
   'Material_Index': ['Index_ID', 'CNE_ID', 'Drive_File_ID', 'Resource_Title', 'Topic', 'Section_Heading', 'Chunk_Index', 'Chunk_Text', 'Clinical_Keywords', 'Extraction_Status', 'Updated_At'],
   'QR_Tokens': ['QR_Token', 'CNE_ID', 'Created_At', 'Created_By', 'Status'],
@@ -8428,6 +8454,16 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
       var tabName = required[i];
       var expected = CNE_SHEET_HEADERS[tabName] || [];
       var sheet = ss.getSheetByName(tabName);
+      // Adopt existing Ward-Level submission receipts in place before comparing
+      // schema headers; the values in existing data rows are preserved.
+      if (tabName === 'CNE_Schedule' && sheet && sheet.getLastRow() > 0) {
+        try { ensureWardLevelSubmissionHeaders_(sheet); }
+        catch (schemaError) {
+          unsafe.push(tabName);
+          report.push({tab:tabName,status:'Needs manual review: Ward-Level submission headers',error:String(schemaError.message || schemaError),rowCount:sheet.getLastRow()});
+          continue;
+        }
+      }
       if (!sheet) {
         sheet = getOrCreateSheet(tabName, expected);
         createdTabs++;

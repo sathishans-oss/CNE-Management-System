@@ -13627,7 +13627,7 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
       for(const field of ['id','digest','count']) {
         const key='wardlevelsubmission'+field;
         assert(gs.includes("key: '"+key+"'"), 'Missing header mapping '+key);
-        assert(gs.includes("name: 'Ward-Level Submission "+(field==='id'?'ID':field[0].toUpperCase()+field.slice(1))+"'"));
+        assert(gs.includes("name: 'Ward_Level_Submission_"+(field==='id'?'ID':field[0].toUpperCase()+field.slice(1))+"'"));
         assert(gs.includes("setCell('"+key+"'"));
       }
     }]
