@@ -350,8 +350,7 @@ export const AddUnscheduledCneModal: React.FC<AddUnscheduledCneModalProps> = ({
         modeOfTeaching,
         description: description.trim(),
         adminRemarks: adminRemarks.trim(),
-        proposedByEmpId: user?.employeeId,
-        proposedByName: user?.name,
+
         staffEmpIds: selectedStaffIds,
         staffEmpId: selectedStaffIds.join(', '),
         externalStaffParticipants: externalStaffList,

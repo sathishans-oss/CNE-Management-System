@@ -119,7 +119,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [newExternalRpInput, setNewExternalRpInput] = useState('');
   const [newMode, setNewMode] = useState('');
   const [newDescription, setNewDescription] = useState('');
-  const [newMaxParticipants, setNewMaxParticipants] = useState(40);
   const [areasList, setAreasList] = useState<string[]>([]);
   const [isWardMasterLoading, setIsWardMasterLoading] = useState(false);
   const [wardMasterError, setWardMasterError] = useState('');
@@ -188,7 +187,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
   const [editExternalRpInput, setEditExternalRpInput] = useState('');
   const [editMode, setEditMode] = useState('');
   const [editDescription, setEditDescription] = useState('');
-  const [editMaxParticipants, setEditMaxParticipants] = useState(40);
   const [editAdminRemarks, setEditAdminRemarks] = useState('');
   const [isEditSubmitting, setIsEditSubmitting] = useState(false);
   const editSubmittingRef = useRef(false);
@@ -717,9 +715,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         externalResourcePersons: newExternalRpList,
         modeOfTeaching: newMode,
         description: newDescription.trim(),
-        maxParticipants: newMaxParticipants,
-        proposedByEmpId: user?.employeeId,
-        proposedByName: user?.name,
+
         status: 'Scheduled'
       } as any);
 
@@ -810,7 +806,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     setEditExternalRpInput('');
     setEditMode(cls.modeOfTeaching || '');
     setEditDescription(cls.description || '');
-    setEditMaxParticipants(cls.maxParticipants || 40);
     setEditAdminRemarks(cls.adminRemarks || '');
   };
 
@@ -923,7 +918,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         externalResourcePersons: editExternalRpList,
         modeOfTeaching: editMode,
         description: editDescription.trim(),
-        ...(isAdmin ? { maxParticipants: editMaxParticipants } : {}),
         adminRemarks: editAdminRemarks.trim()
       } as any);
 
@@ -945,7 +939,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           externalResourcePersons: editExternalRpList,
           modeOfTeaching: editMode,
           description: editDescription.trim(),
-          maxParticipants: editMaxParticipants,
           adminRemarks: editAdminRemarks.trim()
         };
         // The parent list was discarded when the Edit dialog opened.
@@ -1555,20 +1548,6 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         Calculated within 08:00 AM–05:00 PM each day (up to 9 hours/day); overnight time excluded. Format: HH:MM:SS
                       </p>
                     </div>
-
-                    <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                        Max Participant Seats
-                      </label>
-                      <input
-                        type="number"
-                        min={5}
-                        max={200}
-                        value={newMaxParticipants}
-                        onChange={(e) => setNewMaxParticipants(parseInt(e.target.value, 10))}
-                        className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                      />
-                    </div>
                   </div>
 
                   {/* Column 3: Resource Persons Multi-Select */}
@@ -1959,51 +1938,11 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
                         ))}
                       </select>
                     </div>
-
-                    {/* Max Capacity: ONLY for Central CNE */}
-                    {editCneType === 'CENTRAL' ? (
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                            Max Capacity
-                          </label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={500}
-                            value={editMaxParticipants}
-                            disabled={isEditSubmitting}
-                            onChange={(e) => setEditMaxParticipants(Number(e.target.value))}
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                            Admin Remarks
-                          </label>
-                          <input
-                            type="text"
-                            value={editAdminRemarks}
-                            onChange={(e) => setEditAdminRemarks(e.target.value)}
-                            placeholder="Internal notes..."
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
-                          />
-                        </div>
-                      </div>
-                    ) : (
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                          Admin Remarks
-                        </label>
-                        <input
-                          type="text"
-                          value={editAdminRemarks}
-                          onChange={(e) => setEditAdminRemarks(e.target.value)}
-                          placeholder="Internal notes..."
-                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs"
-                        />
-                      </div>
-                    )}
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">Admin Remarks</label>
+                      <input type="text" value={editAdminRemarks} onChange={(e) => setEditAdminRemarks(e.target.value)}
+                        placeholder="Internal notes..." className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-xs" />
+                    </div>
                   </div>
 
                   {/* Column 3: Resource Persons Selection */}

@@ -4383,24 +4383,25 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
 
   var idCol = colMap['cneid'];
   if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
-  var areaCol = colMap['area'] !== undefined ? colMap['area'] : (colMap['wardnamearea'] !== undefined ? colMap['wardnamearea'] : 1);
+  var areaCol = colMap['area'];
   var fromDateCol = colMap['fromdate'] !== undefined ? colMap['fromdate'] : (colMap['date'] !== undefined ? colMap['date'] : 2);
   var toDateCol = colMap['todate'] !== undefined ? colMap['todate'] : 3;
   var durCol = colMap['duration'] !== undefined ? colMap['duration'] : 4;
   var topicCol = colMap['topic'] !== undefined ? colMap['topic'] : 5;
-  var rpCol = colMap['resourcepersonempid'] !== undefined ? colMap['resourcepersonempid'] : 6;
+  var rpCol = colMap['internalresourcepersonids'];
   var modeCol = colMap['modeofteaching'] !== undefined ? colMap['modeofteaching'] : (colMap['mode'] !== undefined ? colMap['mode'] : 7);
   var descCol = colMap['description'] !== undefined ? colMap['description'] : -1;
-  var maxPartCol = colMap['maxparticipants'] !== undefined ? colMap['maxparticipants'] : -1;
-  var staffCol = colMap['staffempid'] !== undefined ? colMap['staffempid'] : 8;
-  var countCol = colMap['staffcount'] !== undefined ? colMap['staffcount'] : 9;
+  var staffCol = colMap['internalparticipants'];
   var adminRemarksCol = colMap['adminremarks'] !== undefined ? colMap['adminremarks'] : -1;
   var remarksCol = colMap['remarks'] !== undefined ? colMap['remarks'] : -1;
   var typeCol = colMap['cnetype'] !== undefined ? colMap['cnetype'] : -1;
   var extRpCol = colMap['externalresourcepersons'] !== undefined ? colMap['externalresourcepersons'] : 13;
-  var extStaffCol = colMap['externalstaffparticipants'] !== undefined ? colMap['externalstaffparticipants'] : 14;
-  var proposedByCol = colMap['proposedby'] !== undefined ? colMap['proposedby'] : -1;
+  var extStaffCol = colMap['externalparticipants'];
+  var proposedByCol = colMap['createdby'];
   var statusCol = colMap['status'] !== undefined ? colMap['status'] : -1;
+  if ([areaCol, rpCol, staffCol, extStaffCol, proposedByCol].some(function(v) { return v === undefined; })) {
+    throw new Error('CNE_Schedule is missing a required canonical header. Run Verify Sheets.');
+  }
 
   var myPostTestScores = {};
   if (isMyRecordsOnly && loggedInId && params && params.boundedPersonalScores) {
@@ -4450,23 +4451,20 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
     var resourcePersonEmpId = String(row[rpCol] || '').trim();
     var mode = String(row[modeCol] || 'Lecture Cum Discussion').trim();
     var description = descCol !== -1 ? String(row[descCol] || '').trim() : '';
-    var maxParticipants = maxPartCol !== -1 ? (parseInt(row[maxPartCol], 10) || 50) : 50;
     var staffIdsRaw = String(row[staffCol] || '').trim();
-    var staffCount = parseInt(row[countCol], 10) || 0;
+    var staffCount = 0;
     var adminRemarks = adminRemarksCol !== -1 ? String(row[adminRemarksCol] || '').trim() : '';
     var remarks = remarksCol !== -1 ? String(row[remarksCol] || '').trim() : '';
     var rawType = row[typeCol];
     var cneType = normalizeCNEType(rawType);
     var status = statusCol !== -1 ? normalizeCNEStatus(row[statusCol]) : 'Scheduled';
-    var proposedBy = proposedByCol !== -1 ? normalizeEmpId(row[proposedByCol]) : '';
+    var proposedBy = proposedByCol !== undefined ? normalizeEmpId(row[proposedByCol]) : '';
 
     var staffArray = staffIdsRaw.split(',').map(function(s) {
       return normalizeEmpId(s);
     }).filter(Boolean);
 
-    if (staffCount === 0 && staffArray.length > 0) {
-      staffCount = staffArray.length;
-    }
+    staffCount = Array.from(new Set(staffArray)).length + (extStaffCol !== undefined ? Array.from(new Set(String(row[extStaffCol] || '').split(/[,;\n]+/).map(function(v){return v.trim().toLowerCase();}).filter(Boolean))).length : 0);
 
     var rpArray = resourcePersonEmpId.split(/[,;\n]+/).map(function(s) {
       return normalizeEmpId(s);
@@ -4557,7 +4555,6 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
       externalStaffParticipants: extStaff,
       modeOfTeaching: mode,
       description: description,
-      maxParticipants: maxParticipants,
       staffEmpIds: staffEmpIdsForResponse,
       staffNames: staffNameList,
       staffCount: staffCount,
@@ -4609,7 +4606,7 @@ function handleGetMyCNERecordsPage(params, session) {
   var cols = buildHeaderMapFromRow_(headers);
   var pick = function(keys, fallback) {for(var c=0;c<keys.length;c++)if(cols[keys[c]]!==undefined)return cols[keys[c]];return fallback;};
   var statusCol=pick(['status'],-1),fromCol=pick(['fromdate','date'],2),
-    staffCol=pick(['staffempids','staffempid'],15),rpCol=pick(['resourcepersonempid'],6),
+    staffCol=pick(['internalparticipants'],-1),rpCol=pick(['internalresourcepersonids'],-1),
     durationCol=pick(['duration'],5),idCol=cols['cneid'];
     if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   // No matching identities or status field means no defensible personal history.
@@ -4633,7 +4630,7 @@ function handleGetMyCNERecordsPage(params, session) {
     candidate.push({row:i+2,day:day,isParticipant:isParticipant,isRP:isRP,duration:durations[i],id:String(ids[i]||'')});
   }
   if(search && candidate.length){
-    var topicCol=pick(['topic'],1),areaCol=pick(['wardnamearea','area'],2),
+    var topicCol=pick(['topic'],1),areaCol=pick(['area','area'],2),
       modeCol=pick(['modeofteaching'],7),extRpCol=pick(['externalresourcepersons'],-1);
     var names=getOfficerNameMap();
     var topics=column(topicCol),areas=column(areaCol),modes=column(modeCol);
@@ -5248,7 +5245,8 @@ function handleCreateCNE(params, session) {
     for (var col = 0; col < maxCol; col++) rowData.push('');
 
     var setCell = function(key, fallbackCol, val) {
-      var idx = colMap[key] !== undefined ? colMap[key] : fallbackCol;
+      var idx = colMap[key];
+      if (idx === undefined) return;
       while (rowData.length <= idx) rowData.push('');
       rowData[idx] = val;
     };
@@ -5271,19 +5269,16 @@ function handleCreateCNE(params, session) {
     if (colMap['date'] !== undefined) rowData[colMap['date']] = fromDate;
     setCell('todate', 4, toDate);
     setCell('duration', 5, sanitizeCellInput(duration));
-    setCell('resourcepersonempid', 7, rpClean.join(', '));
+    setCell('internalresourcepersonids', 7, rpClean.join(', '));
     setCell('modeofteaching', 8, modeOfTeaching);
     if (colMap['mode'] !== undefined) rowData[colMap['mode']] = modeOfTeaching;
     setCell('description', 9, sanitizeCellInput(params.description || ''));
-    setCell('maxparticipants', 10, parseInt(params.maxParticipants, 10) || 50);
     setCell('status', 11, status);
     setCell('cnetype', 12, cneType);
     setCell('externalresourcepersons', 13, extRpClean.join(', '));
-    setCell('proposedby', 14, session.employeeId || '');
     setCell('adminremarks', 15, sanitizeCellInput(params.adminRemarks || params.remarks || ''));
-    setCell('staffempid', 16, staffString);
-    setCell('staffcount', 17, totalStaffCount);
-    setCell('externalstaffparticipants', 18, extStaffClean.join(', '));
+    setCell('internalparticipants', 16, staffString);
+    setCell('externalparticipants', 18, extStaffClean.join(', '));
     setCell('createdat', 19, new Date().toISOString());
     setCell('createdby', 20, session.employeeId || '');
     if (isUnscheduled) {
@@ -5559,7 +5554,7 @@ function handleUpdateCNE(params, session) {
         var updatedRow = data[r].slice();
         var rowDirty = false;
         var setColVal = function(key, fallbackCol, val) {
-          var c = colMap[key] !== undefined ? colMap[key] : fallbackCol;
+          var c = colMap[key];
           if (c !== undefined && c >= 0) {
             while (updatedRow.length <= c) updatedRow.push('');
             updatedRow[c] = val;
@@ -5624,8 +5619,8 @@ function handleUpdateCNE(params, session) {
         if (params.duration !== undefined) setColVal('duration', 5, effDuration);
 
         // Resource person update
-        var existingRp = data[r][colMap['resourcepersonempid'] !== undefined ? colMap['resourcepersonempid'] : 7]
-          ? String(data[r][colMap['resourcepersonempid'] !== undefined ? colMap['resourcepersonempid'] : 7]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+        var existingRp = data[r][colMap['internalresourcepersonids']]
+          ? String(data[r][colMap['internalresourcepersonids']]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
         var existingExtRp = data[r][colMap['externalresourcepersons'] !== undefined ? colMap['externalresourcepersons'] : 13]
           ? String(data[r][colMap['externalresourcepersons'] !== undefined ? colMap['externalresourcepersons'] : 13]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
         var rpClean = existingRp;
@@ -5680,7 +5675,7 @@ function handleUpdateCNE(params, session) {
           if (rpClean.length === 0 && extRpClean.length === 0) {
             return { success: false, message: 'At least one Resource Person (Internal or External) is required.' };
           }
-          setColVal('resourcepersonempid', 7, rpClean.join(', '));
+          setColVal('internalresourcepersonids', 7, rpClean.join(', '));
           setColVal('externalresourcepersons', 13, extRpClean.join(', '));
         }
 
@@ -5735,18 +5730,14 @@ function handleUpdateCNE(params, session) {
             extStaffClean = extStaff.map(function(s) { return sanitizeCellInput(String(s).trim()); }).filter(Boolean);
           }
 
-          setColVal('staffempid', 16, staffClean.join(', '));
-          setColVal('staffcount', 17, staffClean.length + extStaffClean.length);
+          setColVal('internalparticipants', 16, staffClean.join(', '));
           if (params.externalStaffParticipants !== undefined) {
-            setColVal('externalstaffparticipants', 18, extStaffClean.join(', '));
+            setColVal('externalparticipants', 18, extStaffClean.join(', '));
           }
         }
 
-        // Central CNE only maxParticipants
+
         var currentCneType = normalizeCNEType(liveUpdateRecord.cneType);
-        if (params.maxParticipants !== undefined && session.role === 'ADMIN') {
-          setColVal('maxparticipants', 10, parseInt(params.maxParticipants, 10) || 50);
-        }
 
         // Status transitions cannot be performed through handleUpdateCNE; identical status is safely ignored
         if (params.status !== undefined) {
@@ -5982,7 +5973,7 @@ function wardLevelSubmissionDigest_(validatedList) {
 /** Read all matching rows, fail closed on partial/ambiguous receipts. */
 function readWardLevelSubmissionReceipt_(sheet, submissionId, employeeId, expectedDigest) {
   var cols = getHeaderMap(sheet);
-  var needed = ['wardlevelsubmissionid', 'wardlevelsubmissiondigest', 'wardlevelsubmissioncount', 'cneid', 'proposedby'];
+  var needed = ['wardlevelsubmissionid', 'wardlevelsubmissiondigest', 'wardlevelsubmissioncount', 'cneid', 'createdby'];
   if (needed.some(function(k) { return cols[k] === undefined; })) {
     return { success: false, errorCode: 'SUBMISSION_RECEIPT_UNAVAILABLE', message: 'Cannot verify ward-level submission columns.' };
   }
@@ -5993,7 +5984,7 @@ function readWardLevelSubmissionReceipt_(sheet, submissionId, employeeId, expect
   var actualDigest = '';
   for (var h = 0; h < hits.length; h++) {
     var values = sheet.getRange(hits[h], 1, 1, sheet.getLastColumn()).getValues()[0];
-    var owner = normalizeEmpId(values[cols.proposedby]);
+    var owner = normalizeEmpId(values[cols.createdby]);
     // Never allow one staff member to query or reuse another's submission ID.
     if (owner !== normalizeEmpId(employeeId)) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'This scheduling submission belongs to another account.' };
@@ -6191,7 +6182,6 @@ function handleAddWardLevelSchedule(params, session) {
       extRpClean: extRpClean,
       mode: teachingMode,
       description: sanitizeCellInput(c.description || ''),
-      maxParticipants: parseInt(c.maxParticipants, 10) || 30,
       adminRemarks: sanitizeCellInput(c.adminRemarks || '')
     });
   }
@@ -6285,7 +6275,8 @@ function handleAddWardLevelSchedule(params, session) {
       for (var col = 0; col < targetCols; col++) rowData.push('');
 
       var setCell = function(key, fallbackCol, val) {
-        var idx = colMap[key] !== undefined ? colMap[key] : fallbackCol;
+        var idx = colMap[key];
+        if (idx === undefined) return;
         while (rowData.length <= idx) rowData.push('');
         rowData[idx] = val;
       };
@@ -6305,19 +6296,19 @@ function handleAddWardLevelSchedule(params, session) {
       if (colMap['date'] !== undefined) rowData[colMap['date']] = item.date;
       setCell('todate', 4, item.toDate);
       setCell('duration', 5, item.duration);
-      setCell('resourcepersonempid', 7, item.rpClean.join(', '));
+      setCell('internalresourcepersonids', 7, item.rpClean.join(', '));
       setCell('modeofteaching', 8, item.mode);
       if (colMap['mode'] !== undefined) rowData[colMap['mode']] = item.mode;
       setCell('description', 9, item.description);
-      setCell('maxparticipants', 10, item.maxParticipants);
       setCell('status', 11, 'Scheduled');
       setCell('cnetype', 12, 'WARD_LEVEL');
       setCell('externalresourcepersons', 13, item.extRpClean.join(', '));
-      setCell('proposedby', 14, session.employeeId || '');
       setCell('adminremarks', 15, item.adminRemarks);
       setCell('coverageareassnapshot', 23, rowCoverageSnapshot);
       setCell('totalallottedstaff', 24, rowAllottedStaff !== null ? rowAllottedStaff : 0);
       setCell('participatingwards', 29, JSON.stringify(batchWards.wards));
+      setCell('createdby', -1, session.employeeId || '');
+      setCell('createdat', -1, new Date().toISOString());
       setCell('wardlevelsubmissionid', -1, submissionId);
       setCell('wardlevelsubmissiondigest', -1, requestDigest);
       setCell('wardlevelsubmissioncount', -1, validatedList.length);
@@ -6676,13 +6667,13 @@ function handleGetWardLevelCneOutcomeReport(params, session) {
   var idCol = cneColMap['cneid'];
   if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var topicCol = cneColMap['topic'] !== undefined ? cneColMap['topic'] : 1;
-  var areaCol = cneColMap['area'] !== undefined ? cneColMap['area'] : (cneColMap['wardnamearea'] !== undefined ? cneColMap['wardnamearea'] : 2);
+  var areaCol = cneColMap['area'];
   var fromDateCol = cneColMap['fromdate'] !== undefined ? cneColMap['fromdate'] : (cneColMap['date'] !== undefined ? cneColMap['date'] : 3);
   var cneData = readWardLevelOutcomeScheduleRows_(cneSheet, fromDateCol, fromDateFilter, toDateFilter);
   var statusCol = cneColMap['status'] !== undefined ? cneColMap['status'] : 10;
   var typeCol = cneColMap['cnetype'] !== undefined ? cneColMap['cnetype'] : -1;
   var adminRemarksCol = cneColMap['adminremarks'] !== undefined ? cneColMap['adminremarks'] : (cneColMap['remarks'] !== undefined ? cneColMap['remarks'] : 17);
-  var proposedByCol = cneColMap['proposedby'] !== undefined ? cneColMap['proposedby'] : (cneColMap['createdby'] !== undefined ? cneColMap['createdby'] : 16);
+  var proposedByCol = cneColMap['createdby'];
   var createdByCol = cneColMap['createdby'] !== undefined ? cneColMap['createdby'] : -1;
 
   var allottedCol = cneColMap['totalallottedstaff'];
@@ -6725,7 +6716,7 @@ function handleGetWardLevelCneOutcomeReport(params, session) {
     }
 
     // Created By: Name only (never expose Employee ID)
-    var creatorEmpId = normalizeEmpId(row[proposedByCol] || (createdByCol !== -1 ? row[createdByCol] : ''));
+    var creatorEmpId = normalizeEmpId(proposedByCol !== undefined ? row[proposedByCol] : '');
     if (creatorEmpId && officerMap === null) officerMap = getOfficerNameMap();
     var createdByName = creatorEmpId ? (officerMap[creatorEmpId] || '') : '';
 
@@ -8050,10 +8041,13 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
   var idCol = colMap['cneid'];
   if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var durCol = colMap['duration'] !== undefined ? colMap['duration'] : (colMap['dur'] !== undefined ? colMap['dur'] : 4);
-  var rpCol = colMap['resourcepersonempid'] !== undefined ? colMap['resourcepersonempid'] : 6;
-  var staffCol = colMap['staffempid'] !== undefined ? colMap['staffempid'] : 8;
-  var countCol = colMap['staffcount'] !== undefined ? colMap['staffcount'] : 9;
+  var rpCol = colMap['internalresourcepersonids'];
+  var staffCol = colMap['internalparticipants'];
+  var extStaffCol = colMap['externalparticipants'];
   var statusCol = colMap['status'] !== undefined ? colMap['status'] : -1;
+  if ([rpCol, staffCol, extStaffCol].some(function(v) { return v === undefined; })) {
+    throw new Error('CNE_Schedule is missing a required participant header. Run Verify Sheets.');
+  }
 
   var displayValues = snapshot.displayValues || [];
   var completedClasses = 0;
@@ -8079,15 +8073,13 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
     var durSec = parseDurationToSeconds(duration) || 0;
     var rpEmpId = normalizeEmpId(row[rpCol]);
     var staffIdsRaw = String(row[staffCol] || '').trim();
-    var staffCount = parseInt(row[countCol], 10) || 0;
+    var staffCount = 0;
     
     var staffArray = staffIdsRaw.split(',').map(function(s) {
       return normalizeEmpId(s);
     }).filter(Boolean);
     
-    if (staffCount === 0 && staffArray.length > 0) {
-      staffCount = staffArray.length;
-    }
+    staffCount = Array.from(new Set(staffArray)).length + (extStaffCol !== undefined ? Array.from(new Set(String(row[extStaffCol] || '').split(/[,;\n]+/).map(function(v){return v.trim().toLowerCase();}).filter(Boolean))).length : 0);
     
     if (!isUserLoggedIn) {
       // INSTITUTIONAL: All valid completed classes in CNE Schedule
@@ -8277,12 +8269,12 @@ var CNE_SHEET_HEADERS = {
   'Audit_Log': ['Timestamp', 'Action', 'Employee_ID', 'Details', 'Status'],
   'Auth_Credentials': ['Employee_ID', 'Password_Hash', 'Password_Salt', 'Password_Version', 'Password_Created_At', 'Password_Changed_At', 'Last_Login_At', 'Account_Status', 'Failed_Login_Count', 'Locked_Until', 'Created_At', 'Updated_At'],
   'Clinical_Insights': ['Insight_ID', 'Image_Drive_File_ID', 'Display_Order', 'Status', 'Override_Date', 'Created_At', 'Created_By', 'Updated_At'],
-  'Deleted_Archive': ['CNE_ID', 'Topic', 'Ward_Name_Area', 'From_Date', 'To_Date', 'Duration', 'Resource_Person_Emp_ID', 'Mode_of_Teaching', 'Description', 'Max_Participants', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Staff_Emp_ID', 'Staff_Count', 'External_Staff_Participants', 'Proposed_By', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Deleted_At', 'Deleted_By', 'Delete_Reason', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
+  'Deleted_Archive': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Internal_Participants', 'External_Participants', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Deleted_At', 'Deleted_By', 'Delete_Reason', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
   'Interest_Registrations': ['CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Department_Area', 'Interest_Status', 'Interested_At', 'Updated_At'],
   'Post_Test_Questions': ['CNE_ID', 'Question_ID', 'Question_Text', 'Option_A', 'Option_B', 'Option_C', 'Option_D', 'Correct_Option', 'Explanation', 'Is_Finalized', 'Is_Locked', 'Created_At', 'Created_By', 'Authoritative_Source', 'Status', 'Question_Type', 'Image_Drive_File_ID'],
   'Post_Test_Responses': ['Response_ID', 'CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Department', 'Score', 'Total_Questions', 'Percentage', 'Source', 'Submitted_At', 'Answers_JSON', 'Status', 'Remarks'],
   'Quiz_Attempts': ['Attempt_ID', 'Employee_ID', 'Employee_Name', 'Units_JSON', 'Question_IDs_JSON', 'Question_Count', 'Status', 'Started_At', 'Updated_At', 'Completed_At', 'Correct_Count', 'Wrong_Count', 'Percentage', 'Result_JSON', 'Answers_Encoded', 'Committed_Count'],
-  'CNE_Schedule': ['CNE_ID', 'Topic', 'Ward_Name_Area', 'From_Date', 'To_Date', 'Duration', 'Resource_Person_Emp_ID', 'Mode_of_Teaching', 'Description', 'Max_Participants', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Staff_Emp_ID', 'Staff_Count', 'External_Staff_Participants', 'Proposed_By', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Participating_Wards', 'Departmental_Submission_ID', 'Departmental_Submission_Digest', 'Departmental_Submission_Count', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
+  'CNE_Schedule': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Internal_Participants', 'External_Participants', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Participating_Wards', 'Departmental_Submission_ID', 'Departmental_Submission_Digest', 'Departmental_Submission_Count', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
   'AI_Quota': ['CNE_ID', 'Topic', 'Attempts_Used', 'Max_Quota', 'Last_Attempt_At', 'Last_Generated_By', 'Reservation_Token', 'Reserved_Until', 'Last_Committed_Token'],
   'Material_Index': ['Index_ID', 'CNE_ID', 'Drive_File_ID', 'Resource_Title', 'Topic', 'Section_Heading', 'Chunk_Index', 'Chunk_Text', 'Clinical_Keywords', 'Extraction_Status', 'Updated_At'],
   'QR_Tokens': ['QR_Token', 'CNE_ID', 'Created_At', 'Created_By', 'Status'],
@@ -8424,6 +8416,45 @@ function getOrCreateSheet(sheetName, defaultHeaders) {
 }
 
 /**
+ * One-time, non-destructive header adoption for the approved reduced CNE schema.
+ * Only changes row-1 header cells; NEVER moves participant values or deletes a column.
+ * Rejects old+new duplicates before making any change.
+ */
+function adoptCneReducedSchemaHeaders_(sheet) {
+  if (!sheet || sheet.getLastRow() < 1 || sheet.getLastColumn() < 1) return [];
+  var renames = [
+    ['Ward_Name_Area', 'Area'],
+    ['Resource_Person_Emp_ID', 'Internal_Resource_Person_IDs'],
+    ['Staff_Emp_ID', 'Internal_Participants'],
+    ['External_Staff_Participants', 'External_Participants']
+  ];
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var positions = {};
+  for (var i = 0; i < headers.length; i++) {
+    var key = String(headers[i] || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!key) continue;
+    if (positions[key] !== undefined) throw new Error('Duplicate header in ' + sheet.getName() + ': ' + headers[i]);
+    positions[key] = i + 1;
+  }
+  var toRename = [];
+  for (var j = 0; j < renames.length; j++) {
+    var pair = renames[j];
+    var oldKey = pair[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+    var newKey = pair[1].toLowerCase().replace(/[^a-z0-9]/g, '');
+    var oldCol = positions[oldKey];
+    var newCol = positions[newKey];
+    if (oldCol !== undefined && newCol !== undefined) {
+      throw new Error('Conflicting old/new headers in ' + sheet.getName() + ': ' + pair[0] + ' and ' + pair[1] + '. Resolve before verifying.');
+    }
+    if (oldCol !== undefined) toRename.push({column:oldCol,oldName:pair[0],newName:pair[1]});
+  }
+  for (var k = 0; k < toRename.length; k++) {
+    sheet.getRange(1, toRename[k].column).setValue(toRename[k].newName);
+  }
+  return toRename;
+}
+
+/**
  * Single Authoritative Sheet Initializer & Header Verifier (Idempotent & Non-Destructive)
  * Verifies all required CNE tabs and their headers.
  * Never deletes or clears existing sheets or rows. Appends missing headers if needed.
@@ -8454,6 +8485,14 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
       var tabName = required[i];
       var expected = CNE_SHEET_HEADERS[tabName] || [];
       var sheet = ss.getSheetByName(tabName);
+      if ((tabName === 'CNE_Schedule' || tabName === 'Deleted_Archive') && sheet && sheet.getLastRow() > 0) {
+        try { adoptCneReducedSchemaHeaders_(sheet); }
+        catch (schemaError) {
+          unsafe.push(tabName);
+          report.push({tab:tabName,status:'Needs manual review: renamed CNE headers',error:String(schemaError.message || schemaError),rowCount:sheet.getLastRow()});
+          continue;
+        }
+      }
       // Adopt existing Ward-Level submission receipts in place before comparing
       // schema headers; the values in existing data rows are preserved.
       if (tabName === 'CNE_Schedule' && sheet && sheet.getLastRow() > 0) {
@@ -8596,30 +8635,28 @@ function getCNEScheduleRecord(cneId) {
 
   var row = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).getValues()[0];
   var rawType = colMap['cnetype'] !== undefined ? row[colMap['cnetype']] : '';
-  var rawStatus = colMap['status'] !== undefined ? row[colMap['status']] : row[11];
-  var durVal = colMap['duration'] !== undefined ? row[colMap['duration']] : row[6];
-  var maxP = colMap['maxparticipants'] !== undefined ? row[colMap['maxparticipants']] : row[10];
+  var rawStatus = colMap['status'] !== undefined ? row[colMap['status']] : '';
+  var durVal = colMap['duration'] !== undefined ? row[colMap['duration']] : '';
 
   return {
     rowIndex: rowIndex,
     cneId: String(row[idCol] || '').trim(),
     topic: String((colMap['topic'] !== undefined ? row[colMap['topic']] : row[1]) || '').trim(),
-    area: String((colMap['area'] !== undefined ? row[colMap['area']] : row[2]) || '').trim(),
+    area: String((colMap['area'] !== undefined ? row[colMap['area']] : '') || '').trim(),
     date: formatDateValue(colMap['fromdate'] !== undefined ? row[colMap['fromdate']] : (colMap['date'] !== undefined ? row[colMap['date']] : row[3])),
     toDate: formatDateValue(colMap['todate'] !== undefined ? row[colMap['todate']] : (row[4] || row[3])),
     duration: durVal ? Number(durVal) : 60,
-    instructor: String((colMap['resourcepersonempid'] !== undefined ? row[colMap['resourcepersonempid']] : row[7]) || '').trim(),
+    instructor: String((colMap['internalresourcepersonids'] !== undefined ? row[colMap['internalresourcepersonids']] : '') || '').trim(),
     mode: String((colMap['modeofteaching'] !== undefined ? row[colMap['modeofteaching']] : (colMap['mode'] !== undefined ? row[colMap['mode']] : row[8])) || 'Offline').trim(),
     description: String((colMap['description'] !== undefined ? row[colMap['description']] : row[9]) || '').trim(),
-    maxParticipants: maxP ? Number(maxP) : 50,
-    staffCount: Number((colMap['staffcount'] !== undefined ? row[colMap['staffcount']] : 0) || 0),
+    staffCount: Array.from(new Set(String((colMap['internalparticipants'] !== undefined ? row[colMap['internalparticipants']] : '') || '').split(/[,;\n]+/).map(normalizeEmpId).filter(Boolean))).length + Array.from(new Set(String((colMap['externalparticipants'] !== undefined ? row[colMap['externalparticipants']] : '') || '').split(/[,;\n]+/).map(function(v){return v.trim().toLowerCase();}).filter(Boolean))).length,
     status: normalizeCNEStatus(rawStatus),
     externalResourcePersons: String((colMap['externalresourcepersons'] !== undefined ? row[colMap['externalresourcepersons']] : row[13]) || '').trim(),
-    proposedBy: String((colMap['proposedby'] !== undefined ? row[colMap['proposedby']] : row[14]) || '').trim(),
+    proposedBy: String((colMap['createdby'] !== undefined ? row[colMap['createdby']] : '') || '').trim(),
     adminRemarks: String((colMap['adminremarks'] !== undefined ? row[colMap['adminremarks']] : row[15]) || '').trim(),
     cneType: normalizeCNEType(rawType),
     coverageAreasSnapshot: String((colMap['coverageareassnapshot'] !== undefined ? row[colMap['coverageareassnapshot']] : '') || '').trim(),
-    participatingWards: parseParticipatingWards_(colMap['participatingwards'] !== undefined ? row[colMap['participatingwards']] : '', String((colMap['area'] !== undefined ? row[colMap['area']] : row[2]) || '').trim()),
+    participatingWards: parseParticipatingWards_(colMap['participatingwards'] !== undefined ? row[colMap['participatingwards']] : '', String((colMap['area'] !== undefined ? row[colMap['area']] : '') || '').trim()),
     totalAllottedStaff: (colMap['totalallottedstaff'] !== undefined && row[colMap['totalallottedstaff']] !== '' && row[colMap['totalallottedstaff']] !== null && !isNaN(Number(row[colMap['totalallottedstaff']]))) ? Number(row[colMap['totalallottedstaff']]) : null,
     internalAttendanceCount: (colMap['internalattendancecount'] !== undefined && row[colMap['internalattendancecount']] !== '' && row[colMap['internalattendancecount']] !== null && !isNaN(Number(row[colMap['internalattendancecount']]))) ? Number(row[colMap['internalattendancecount']]) : null,
     attendancePercentage: (colMap['attendancepercentage'] !== undefined && row[colMap['attendancepercentage']] !== '' && row[colMap['attendancepercentage']] !== null && !isNaN(Number(row[colMap['attendancepercentage']]))) ? Number(row[colMap['attendancepercentage']]) : null,
@@ -9754,25 +9791,23 @@ function handleListLearningResources(params, session) {
         if (!cneKey) continue;
 
         var rawType = classColMap['cnetype'] !== undefined ? cRow[classColMap['cnetype']] : '';
-        var rawStatus = classColMap['status'] !== undefined ? cRow[classColMap['status']] : cRow[11];
-        var durVal = classColMap['duration'] !== undefined ? cRow[classColMap['duration']] : cRow[6];
-        var maxP = classColMap['maxparticipants'] !== undefined ? cRow[classColMap['maxparticipants']] : cRow[10];
+        var rawStatus = classColMap['status'] !== undefined ? cRow[classColMap['status']] : '';
+        var durVal = classColMap['duration'] !== undefined ? cRow[classColMap['duration']] : '';
 
         cneMap[cneKey] = {
           rowIndex: c + 1,
           cneId: String(cRow[classIdCol] || '').trim(),
           topic: String((classColMap['topic'] !== undefined ? cRow[classColMap['topic']] : cRow[1]) || '').trim(),
-          area: String((classColMap['area'] !== undefined ? cRow[classColMap['area']] : cRow[2]) || '').trim(),
+          area: String((classColMap['area'] !== undefined ? cRow[classColMap['area']] : '') || '').trim(),
           date: formatDateValue(classColMap['fromdate'] !== undefined ? cRow[classColMap['fromdate']] : (classColMap['date'] !== undefined ? cRow[classColMap['date']] : cRow[3])),
           toDate: formatDateValue(classColMap['todate'] !== undefined ? cRow[classColMap['todate']] : (cRow[4] || cRow[3])),
           duration: durVal ? Number(durVal) : 60,
-          instructor: String((classColMap['resourcepersonempid'] !== undefined ? cRow[classColMap['resourcepersonempid']] : cRow[7]) || '').trim(),
+          instructor: String((classColMap['internalresourcepersonids'] !== undefined ? cRow[classColMap['internalresourcepersonids']] : '') || '').trim(),
           mode: String((classColMap['modeofteaching'] !== undefined ? cRow[classColMap['modeofteaching']] : (classColMap['mode'] !== undefined ? cRow[classColMap['mode']] : cRow[8])) || 'Offline').trim(),
           description: String((classColMap['description'] !== undefined ? cRow[classColMap['description']] : cRow[9]) || '').trim(),
-          maxParticipants: maxP ? Number(maxP) : 50,
           status: normalizeCNEStatus(rawStatus),
           externalResourcePersons: String((classColMap['externalresourcepersons'] !== undefined ? cRow[classColMap['externalresourcepersons']] : cRow[13]) || '').trim(),
-          proposedBy: String((classColMap['proposedby'] !== undefined ? cRow[classColMap['proposedby']] : cRow[14]) || '').trim(),
+          proposedBy: String((classColMap['createdby'] !== undefined ? cRow[classColMap['createdby']] : '') || '').trim(),
           adminRemarks: String((classColMap['adminremarks'] !== undefined ? cRow[classColMap['adminremarks']] : cRow[15]) || '').trim(),
           cneType: normalizeCNEType(rawType)
         };
@@ -17744,7 +17779,7 @@ function handleGetCNEParticipants(params, session) {
   }
 
   // Retrospective/Unscheduled CNEs are recorded after the activity. The
-  // Staff_Emp_ID and External_Staff_Participants cells are their attendance
+  // Internal_Participants and External_Participants cells are their attendance
   // roster, unlike scheduled CNE enrollment (which is NOT attendance).
   var retrospective = record.status === 'Completed' && record.cneType &&
     CNE_TYPE_CONFIG[record.cneType] &&
@@ -17753,12 +17788,12 @@ function handleGetCNEParticipants(params, session) {
     var scheduleSheet = getSpreadsheet('CNE').getSheetByName('CNE_Schedule');
     if (!scheduleSheet) throw new Error('CNE_Schedule sheet not found. Run Verify Sheets.');
     var scheduleMap = getHeaderMap(scheduleSheet);
-    if (scheduleMap['staffempid'] === undefined || scheduleMap['externalstaffparticipants'] === undefined) {
+    if (scheduleMap['internalparticipants'] === undefined || scheduleMap['externalparticipants'] === undefined) {
       throw new Error('CNE_Schedule is missing participant roster headers. Run Verify Sheets.');
     }
     var scheduleRow = scheduleSheet.getRange(record.rowIndex, 1, 1, scheduleSheet.getLastColumn()).getDisplayValues()[0];
-    var staffText = String(scheduleRow[scheduleMap['staffempid']] || '');
-    var externalText = String(scheduleRow[scheduleMap['externalstaffparticipants']] || '');
+    var staffText = String(scheduleRow[scheduleMap['internalparticipants']] || '');
+    var externalText = String(scheduleRow[scheduleMap['externalparticipants']] || '');
     var staffTokens = staffText.split(/[,;\n\r]+/);
     var seenStaff = {};
     var absentIds = [];
@@ -18022,14 +18057,11 @@ function handleFinalizeCNE(params, session) {
     cneSheet.getRange(liveRecord.rowIndex, remarksCol).setValue(remarksSummary);
     deactivateQRTokensForCNE(cneId);
     
-    if (colMap['staffempid'] !== undefined) {
-      cneSheet.getRange(liveRecord.rowIndex, colMap['staffempid'] + 1).setValue(internalEmpIds.join(', '));
+    if (colMap['internalparticipants'] !== undefined) {
+      cneSheet.getRange(liveRecord.rowIndex, colMap['internalparticipants'] + 1).setValue(internalEmpIds.join(', '));
     }
-    if (colMap['staffcount'] !== undefined) {
-      cneSheet.getRange(liveRecord.rowIndex, colMap['staffcount'] + 1).setValue(totalParticipantsCount);
-    }
-    if (colMap['externalstaffparticipants'] !== undefined) {
-      cneSheet.getRange(liveRecord.rowIndex, colMap['externalstaffparticipants'] + 1).setValue(externalParticipants.join(', '));
+    if (colMap['externalparticipants'] !== undefined) {
+      cneSheet.getRange(liveRecord.rowIndex, colMap['externalparticipants'] + 1).setValue(externalParticipants.join(', '));
     }
 
     // For eligible normally scheduled Ward-Level CNEs: calculate and store authoritative final coverage metrics
@@ -18526,14 +18558,12 @@ function handleDeleteCNE(params, session) {
 
     // 4a. Check CNE Schedule row columns for actual recorded attendance
     // (Note: planned participants is a scheduling target, not actual attendance)
-    var staffCountIdx = cneColMap['staffcount'];
-    var staffEmpIdIdx = cneColMap['staffempid'];
-    var extStaffIdx = cneColMap['externalstaffparticipants'];
+        var staffEmpIdIdx = cneColMap['internalparticipants'];
+    var extStaffIdx = cneColMap['externalparticipants'];
     var internalCountIdx = cneColMap['internalattendancecount'];
     var externalCountIdx = cneColMap['externalattendancecount'];
 
     var hasScheduleAttendance = false;
-    if (staffCountIdx !== undefined && Number(targetRowVals[staffCountIdx] || 0) > 0) hasScheduleAttendance = true;
     if (staffEmpIdIdx !== undefined && String(targetRowVals[staffEmpIdIdx] || '').trim().length > 0) hasScheduleAttendance = true;
     if (extStaffIdx !== undefined && String(targetRowVals[extStaffIdx] || '').trim().length > 0) hasScheduleAttendance = true;
     if (internalCountIdx !== undefined && Number(targetRowVals[internalCountIdx] || 0) > 0) hasScheduleAttendance = true;
@@ -20182,8 +20212,8 @@ function handleGetCNEAnalytics(params, session) {
   var map = getHeaderMap(sheet);
   var getCol = function(keys,fallback){for(var i=0;i<keys.length;i++) if(map[keys[i]]!==undefined)return map[keys[i]];return fallback;};
   var cId=getCol(['cneid'],-1), cDate=getCol(['fromdate','date'],2), cDuration=getCol(['duration'],4);
-  var cTopic=getCol(['topic'],5), cArea=getCol(['area','wardnamearea'],1), cStatus=getCol(['status'],-1);
-  var cMode=getCol(['modeofteaching','mode'],7), cRp=getCol(['resourcepersonempid'],6), cAllot=getCol(['totalallottedstaff'],-1), cCapacity=getCol(['maxparticipants'],-1);
+  var cTopic=getCol(['topic'],-1), cArea=getCol(['area'],-1), cStatus=getCol(['status'],-1);
+  var cMode=getCol(['modeofteaching','mode'],7), cRp=getCol(['internalresourcepersonids'],-1), cAllot=getCol(['totalallottedstaff'],-1);
   if (cId < 0) throw new Error('CNE Schedule is missing the required CNE ID header. Run Verify Sheets.');
   // This helper reads the date column first and fetches only matching full rows where efficient.
   var rows=readWardLevelOutcomeScheduleRows_(sheet,cDate,from,to);
@@ -20210,7 +20240,7 @@ function handleGetCNEAnalytics(params, session) {
     if(status==='Scheduled'&&day<currentDay)overdue++;
     var mo=day.slice(0,7), mm=getGroup(months,mo,function(){return {Scheduled:0,Completed:0,Canceled:0,postTestCount:0};});mm[status]=(mm[status]||0)+1;
     var ag=getGroup(areas,area,function(){return {completed:0,attendance:0,uniqueParticipants:0,staffAllotted:null,postTestCount:0,scoreSum:0};});
-    var tg=getGroup(topics,topic,function(){return {completed:0,attendance:0,capacity:0,postTestCount:0,scoreSum:0};});
+    var tg=getGroup(topics,topic,function(){return {completed:0,attendance:0,postTestCount:0,scoreSum:0};});
     var mg=getGroup(modes,mode,function(){return {completed:0,attendance:0,scoreSum:0,postTestCount:0};});
     // Allotted staff is a snapshot of department staffing, not CNE invitations. Never sum it by session.
     if(cAllot>=0 && r[cAllot]!=='' && r[cAllot]!==null && isFinite(Number(r[cAllot])))ag.staffAllotted=Math.max(0,Number(r[cAllot]));
@@ -20222,7 +20252,6 @@ function handleGetCNEAnalytics(params, session) {
     if(status!=='Completed')continue;
     completed++;deliveredSeconds+=seconds;
     ag.completed++;tg.completed++;mg.completed++;
-    if(cCapacity>=0 && r[cCapacity]!=='' && isFinite(Number(r[cCapacity])) && Number(r[cCapacity])>=0)tg.capacity+=Number(r[cCapacity]);
     var ids=rpString.split(/[,;\n]+/).map(function(v){return normalizeEmpId(v);}).filter(Boolean);
     var perSession={};
     for(var a=0;a<ids.length;a++){
@@ -20275,7 +20304,7 @@ function handleGetCNEAnalytics(params, session) {
       if(empId && employeeHours[empId]){employeeHours[empId].postTests++;employeeHours[empId].scoreSum+=percentage;}
     }
   }
-  var topicRows=Object.keys(topics).map(function(k){var v=topics[k];return {name:v.name,completed:v.completed,attendance:v.attendance,capacity:v.capacity,postTestCount:v.postTestCount,avgPostTestPercent:v.postTestCount?round1(v.scoreSum/v.postTestCount):null};});
+  var topicRows=Object.keys(topics).map(function(k){var v=topics[k];return {name:v.name,completed:v.completed,attendance:v.attendance,postTestCount:v.postTestCount,avgPostTestPercent:v.postTestCount?round1(v.scoreSum/v.postTestCount):null};});
   var areaRows=Object.keys(areas).map(function(k){var v=areas[k];return {name:v.name,completed:v.completed,attendance:v.attendance,staffAllotted:v.staffAllotted,postTestCount:v.postTestCount,avgPostTestPercent:v.postTestCount?round1(v.scoreSum/v.postTestCount):null};});
   var modeRows=Object.keys(modes).map(function(k){var v=modes[k];return {name:v.name,completed:v.completed,attendance:v.attendance,postTestCount:v.postTestCount,avgPostTestPercent:v.postTestCount?round1(v.scoreSum/v.postTestCount):null};});
   var testRows=Object.keys(testTopics).map(function(k){var v=testTopics[k];return {name:v.name,postTestCount:v.count,avgPostTestPercent:round1(v.scoreSum/v.count)};});

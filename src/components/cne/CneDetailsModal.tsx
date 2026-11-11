@@ -507,18 +507,8 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                    {/* Max Capacity: ONLY for Central CNE */}
-                    {(cne.cneType || 'CENTRAL').toUpperCase() === 'CENTRAL' && (
-                      <div className="bg-white p-2.5 rounded-lg border border-slate-200">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Max Capacity</span>
-                        <div className="font-semibold text-slate-800 flex items-center gap-1 mt-0.5">
-                          <Users className="w-3.5 h-3.5 text-slate-500" />
-                          <span>{cne.maxParticipants || 40} Seats</span>
-                        </div>
-                      </div>
-                    )}
 
-                    <div className={`bg-white p-2.5 rounded-lg border border-slate-200 ${(cne.cneType || 'CENTRAL').toUpperCase() !== 'CENTRAL' ? 'sm:col-span-2' : ''}`}>
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-200 sm:col-span-2">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Description</span>
                       <div className="text-slate-800 text-xs mt-0.5 leading-relaxed break-words" title={cne.description || 'No description provided'}>
                         {cne.description || 'No description provided'}

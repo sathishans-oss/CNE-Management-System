@@ -435,8 +435,7 @@ export const WardLevelScheduleModal: React.FC<WardLevelScheduleModalProps> = ({
           externalResourcePersons: r.externalResourcePersons || [],
           modeOfTeaching: r.modeOfTeaching || '',
           description: r.description?.trim() || '',
-          proposedByEmpId: user?.employeeId,
-          proposedByName: user?.name,
+
           adminRemarks: r.adminRemarks?.trim() || ''
         };
       });

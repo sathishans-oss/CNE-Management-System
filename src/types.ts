@@ -123,7 +123,6 @@ export interface CNERecord {
   externalResourcePersons?: string[]; // Outside resource persons without employee ID
   modeOfTeaching: string;
   description?: string;
-  maxParticipants?: number;
   status: CNEStatus;
   cneType?: CNEType;
   proposedByEmpId?: string;
@@ -194,7 +193,6 @@ export interface WardLevelScheduleRow {
   externalResourcePersons?: string[];
   modeOfTeaching: string;
   description?: string;
-  maxParticipants?: number;
   adminRemarks?: string;
 }
 
