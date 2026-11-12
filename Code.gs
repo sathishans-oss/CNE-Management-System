@@ -4391,15 +4391,14 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
   var rpCol = colMap['internalresourcepersonids'];
   var modeCol = colMap['modeofteaching'] !== undefined ? colMap['modeofteaching'] : (colMap['mode'] !== undefined ? colMap['mode'] : 7);
   var descCol = colMap['description'] !== undefined ? colMap['description'] : -1;
-  var staffCol = colMap['internalparticipants'];
+  // Participant identities are maintained exclusively in CNE_Participants.
   var adminRemarksCol = colMap['adminremarks'] !== undefined ? colMap['adminremarks'] : -1;
   var remarksCol = colMap['remarks'] !== undefined ? colMap['remarks'] : -1;
   var typeCol = colMap['cnetype'] !== undefined ? colMap['cnetype'] : -1;
   var extRpCol = colMap['externalresourcepersons'] !== undefined ? colMap['externalresourcepersons'] : 13;
-  var extStaffCol = colMap['externalparticipants'];
   var proposedByCol = colMap['createdby'];
   var statusCol = colMap['status'] !== undefined ? colMap['status'] : -1;
-  if ([areaCol, rpCol, staffCol, extStaffCol, proposedByCol].some(function(v) { return v === undefined; })) {
+  if ([areaCol, rpCol, proposedByCol].some(function(v) { return v === undefined; })) {
     throw new Error('CNE_Schedule is missing a required canonical header. Run Verify Sheets.');
   }
 
@@ -4436,6 +4435,20 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
     }
   }
 
+  // Single register read for the entire schedule page, never one read per CNE.
+  var participantIndex = {};
+  var pSheet=cneParticipantSheet_();
+  if(pSheet.getLastRow()>1) {
+    var allParticipants=pSheet.getRange(2,1,pSheet.getLastRow()-1,11).getValues();
+    allParticipants.forEach(function(pr){
+      var id=String(pr[1]||'').trim().toUpperCase();if(!id)return;
+      if(!participantIndex[id])participantIndex[id]={staff:[],external:[],seen:{}};
+      var pi=participantIndex[id],emp=normalizeEmpId(pr[2]),name=String(pr[3]||'').trim();
+      var identity=String(pr[4]||'')==='EXTERNAL'?('E:'+(emp||name.toLowerCase())):('I:'+emp);
+      if(!identity||pi.seen[identity])return;pi.seen[identity]=true;
+      if(String(pr[4]||'')==='EXTERNAL')pi.external.push(name); else pi.staff.push(emp);
+    });
+  }
   var records = [];
   for (var r = 1; r < data.length; r++) {
     var row = data[r];
@@ -4451,7 +4464,7 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
     var resourcePersonEmpId = String(row[rpCol] || '').trim();
     var mode = String(row[modeCol] || 'Lecture Cum Discussion').trim();
     var description = descCol !== -1 ? String(row[descCol] || '').trim() : '';
-    var staffIdsRaw = String(row[staffCol] || '').trim();
+    var pRoster=participantIndex[dataId.toUpperCase()] || {staff:[],external:[]};
     var staffCount = 0;
     var adminRemarks = adminRemarksCol !== -1 ? String(row[adminRemarksCol] || '').trim() : '';
     var remarks = remarksCol !== -1 ? String(row[remarksCol] || '').trim() : '';
@@ -4460,11 +4473,8 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
     var status = statusCol !== -1 ? normalizeCNEStatus(row[statusCol]) : 'Scheduled';
     var proposedBy = proposedByCol !== undefined ? normalizeEmpId(row[proposedByCol]) : '';
 
-    var staffArray = staffIdsRaw.split(',').map(function(s) {
-      return normalizeEmpId(s);
-    }).filter(Boolean);
-
-    staffCount = Array.from(new Set(staffArray)).length + (extStaffCol !== undefined ? Array.from(new Set(String(row[extStaffCol] || '').split(/[,;\n]+/).map(function(v){return v.trim().toLowerCase();}).filter(Boolean))).length : 0);
+    var staffArray=pRoster.staff;
+    staffCount=pRoster.staff.length+pRoster.external.length;
 
     var rpArray = resourcePersonEmpId.split(/[,;\n]+/).map(function(s) {
       return normalizeEmpId(s);
@@ -4499,7 +4509,7 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
     }
 
     var extRp = extRpCol !== -1 && row[extRpCol] ? String(row[extRpCol]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
-    var extStaff = extStaffCol !== -1 && row[extStaffCol] ? String(row[extStaffCol]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+    var extStaff = pRoster.external;
 
     // Names are safe display fields and may be shown to everyone.
     // Raw Employee IDs remain restricted to authorized management/dropdown workflows.
@@ -4606,24 +4616,34 @@ function handleGetMyCNERecordsPage(params, session) {
   var cols = buildHeaderMapFromRow_(headers);
   var pick = function(keys, fallback) {for(var c=0;c<keys.length;c++)if(cols[keys[c]]!==undefined)return cols[keys[c]];return fallback;};
   var statusCol=pick(['status'],-1),fromCol=pick(['fromdate','date'],2),
-    staffCol=pick(['internalparticipants'],-1),rpCol=pick(['internalresourcepersonids'],-1),
+    rpCol=pick(['internalresourcepersonids'],-1),
     durationCol=pick(['duration'],5),idCol=cols['cneid'];
     if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   // No matching identities or status field means no defensible personal history.
-  if(statusCol<0 || staffCol<0 || rpCol<0) return {success:true,data:empty};
+  if(statusCol<0 || rpCol<0) return {success:true,data:empty};
   var n=sheet.getLastRow()-1;
   // Narrow column scans: avoid full getDataRange/getDisplayValues for personal history.
   var columnCache={};
   var column=function(col){if(!columnCache[col])columnCache[col]=getCneScheduleColumnValues_(sheet,col,sheet.getLastRow());return columnCache[col];};
-  var statuses=column(statusCol), staff=column(staffCol), rp=column(rpCol), dates=column(fromCol);
+  var statuses=column(statusCol), rp=column(rpCol), dates=column(fromCol);
   var ids=column(idCol), durations=column(durationCol);
+  // One bounded registry read for personal attendance; PENDING is not attendance.
+  var personalAttendedCneIds={};
+  var ps=cneParticipantSheet_();
+  if(ps.getLastRow()>1) {
+    var personRows=ps.getRange(2,2,ps.getLastRow()-1,6).getValues();
+    personRows.forEach(function(row) {
+      if(normalizeEmpId(row[1])===employeeId && String(row[5]||'').toUpperCase()==='ATTENDED')
+        personalAttendedCneIds[String(row[0]||'').trim().toUpperCase()]=true;
+    });
+  }
   var candidate=[];
   var containsId=function(raw, delimiter) {
     return String(raw || '').split(delimiter).map(normalizeEmpId).indexOf(employeeId)!==-1;
   };
   for(var i=0;i<n;i++){
     if(normalizeCNEStatus(statuses[i])!=='Completed')continue;
-    var isParticipant=containsId(staff[i], /,/),isRP=containsId(rp[i], /[,;\n]+/);
+    var isParticipant=Boolean(personalAttendedCneIds[String(ids[i]||'').trim().toUpperCase()]),isRP=containsId(rp[i], /[,;\n]+/);
     if(!isParticipant&&!isRP)continue;
     var day=getCNECanonicalDay(dates[i]);
     if((from&&(!day||day<from))||(to&&(!day||day>to)))continue;
@@ -5234,6 +5254,7 @@ function handleCreateCNE(params, session) {
       }
     }
 
+    var participantSheetForCreate=cneParticipantSheet_();
     var sheet = getOrCreateSheet('CNE_Schedule');
     ensureCneScheduleCoverageHeaders_(sheet);
     ensureParticipatingWardsHeader_(sheet);
@@ -5277,8 +5298,6 @@ function handleCreateCNE(params, session) {
     setCell('cnetype', 12, cneType);
     setCell('externalresourcepersons', 13, extRpClean.join(', '));
     setCell('adminremarks', 15, sanitizeCellInput(params.adminRemarks || params.remarks || ''));
-    setCell('internalparticipants', 16, staffString);
-    setCell('externalparticipants', 18, extStaffClean.join(', '));
     setCell('createdat', 19, new Date().toISOString());
     setCell('createdby', 20, session.employeeId || '');
     if (isUnscheduled) {
@@ -5298,7 +5317,17 @@ function handleCreateCNE(params, session) {
       setCell('coveragefinalizedat', 28, '');
     }
 
+    // Participant register is authoritative for both scheduled and retrospective CNEs.
+    var newRoster = cneScheduleRosterParticipants_(staffString, extStaffClean.join(', '), isUnscheduled, getOfficerNameMap());
     sheet.appendRow(rowData);
+    try {
+      cneParticipantUpsertBatch_(cneId, newRoster, session.employeeId, participantSheetForCreate);
+    } catch (participantWriteError) {
+      // Cross-sheet writes are not transactional. Never silently claim success;
+      // preserve the CNE_ID and surface a precise reconciliation error.
+      return {success:false,errorCode:'PARTICIPANT_COMMIT_UNCERTAIN',
+        cneId:cneId,message:'CNE created, but participant registration could not be confirmed. Review CNE_Participants before retrying.'};
+    }
 
     logAuditAction('CREATE_CNE', session.employeeId, 'Created ' + (isUnscheduled ? 'Unscheduled ' : '') + cneType + ' CNE: ' + cneId + ' (' + topic + ') Status: ' + status, 'SUCCESS');
     return {
@@ -5527,16 +5556,13 @@ function handleUpdateCNE(params, session) {
         var previousWards = liveUpdateRecord.participatingWards || [liveUpdateRecord.area];
         var wardsChanged = editedCoverage.wards.join('\u0001').toUpperCase() !== previousWards.join('\u0001').toUpperCase() || targetPrimary.toUpperCase() !== String(liveUpdateRecord.area || '').trim().toUpperCase();
         if (wardsChanged) {
-          var hasAttendance = Number(liveUpdateRecord.internalAttendanceCount || 0) > 0 || Number(liveUpdateRecord.staffCount || 0) > 0;
+          var hasAttendance = cneParticipantRows_(cneId).some(function(pr){return String(pr[6]||'').toUpperCase()==='ATTENDED';});
           var responses = getSpreadsheet('CNE').getSheetByName('Post_Test_Responses');
           if (!responses) return { success:false,errorCode:'WARD_EDIT_LOCKED',message:'Cannot verify attendance history.' };
           try {
             var responseMap = getHeaderMap(responses);
             if (responseMap['cneid'] === undefined) throw new Error('Missing CNE ID header');
-            var responseRows = responses.getDataRange().getValues();
-            for (var ri=1;ri<responseRows.length;ri++) {
-              if (String(responseRows[ri][responseMap['cneid']]||'').trim().toUpperCase() === cneId.toUpperCase()) {hasAttendance=true;break;}
-            }
+            if (findExactRowsInColumn_(responses, responseMap['cneid'], cneId, 2).length) hasAttendance=true;
           } catch(e) {return {success:false,errorCode:'WARD_EDIT_LOCKED',message:'Unable to verify attendance history.'};}
           if (hasAttendance) return {success:false,errorCode:'WARD_EDIT_LOCKED',message:'Cannot change participating wards after attendance activity.'};
         }
@@ -5730,10 +5756,16 @@ function handleUpdateCNE(params, session) {
             extStaffClean = extStaff.map(function(s) { return sanitizeCellInput(String(s).trim()); }).filter(Boolean);
           }
 
-          setColVal('internalparticipants', 16, staffClean.join(', '));
-          if (params.externalStaffParticipants !== undefined) {
-            setColVal('externalparticipants', 18, extStaffClean.join(', '));
+          // Editing Scheduled CNE roster changes only PENDING participants.
+          // Confirmed attendance is immutable through the Edit CNE form.
+          if (liveUpdateStatus !== 'Scheduled') {
+            return {success:false,errorCode:'ATTENDANCE_EDIT_FORBIDDEN',message:'Participants of completed or canceled CNEs cannot be changed through Edit CNE.'};
           }
+          var updateInternal=params.staffEmpIds !== undefined || params.staffEmpId !== undefined;
+          var updateExternal=params.externalStaffParticipants !== undefined;
+          var pendingNew=cneScheduleRosterParticipants_(staffClean.join(', '),extStaffClean.join(', '),false,getOfficerNameMap());
+          cneParticipantReplacePendingRoster_(cneId,pendingNew,updateInternal,updateExternal,session.employeeId);
+
         }
 
 
@@ -8042,10 +8074,8 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
   if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var durCol = colMap['duration'] !== undefined ? colMap['duration'] : (colMap['dur'] !== undefined ? colMap['dur'] : 4);
   var rpCol = colMap['internalresourcepersonids'];
-  var staffCol = colMap['internalparticipants'];
-  var extStaffCol = colMap['externalparticipants'];
   var statusCol = colMap['status'] !== undefined ? colMap['status'] : -1;
-  if ([rpCol, staffCol, extStaffCol].some(function(v) { return v === undefined; })) {
+  if ([rpCol].some(function(v) { return v === undefined; })) {
     throw new Error('CNE_Schedule is missing a required participant header. Run Verify Sheets.');
   }
 
@@ -8056,6 +8086,22 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
   var userTrainedOthersMap = {};
   var anonymousStaffCount = 0;
   var anonymousStaffTrainedByRp = 0;
+  // One register read per report, not one Google Sheets call per CNE.
+  var impactPeople = {};
+  var impactSheet = cneParticipantSheet_();
+  if (impactSheet.getLastRow() > 1) {
+    impactSheet.getRange(2, 1, impactSheet.getLastRow()-1, 11).getValues().forEach(function(pr) {
+      if (String(pr[6]||'').toUpperCase() !== 'ATTENDED') return;
+      var cne = String(pr[1]||'').trim().toUpperCase();if(!cne)return;
+      if(!impactPeople[cne])impactPeople[cne]={staff:[],external:[],seen:{}};
+      var item=impactPeople[cne],emp=normalizeEmpId(pr[2]);
+      var key=String(pr[4]||'')==='EXTERNAL'?('E:'+(emp||String(pr[3]||'').toLowerCase())):('I:'+emp);
+      if(item.seen[key])return;item.seen[key]=true;
+      if(String(pr[4]||'')==='EXTERNAL')item.external.push(String(pr[3]||''));
+      else if(emp)item.staff.push(emp);
+    });
+  }
+
   
   for (var r = 1; r < data.length; r++) {
     var row = data[r];
@@ -8072,15 +8118,10 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
     var duration = formatDurationValue(row[durCol], displayDur);
     var durSec = parseDurationToSeconds(duration) || 0;
     var rpEmpId = normalizeEmpId(row[rpCol]);
-    var staffIdsRaw = String(row[staffCol] || '').trim();
-    var staffCount = 0;
-    
-    var staffArray = staffIdsRaw.split(',').map(function(s) {
-      return normalizeEmpId(s);
-    }).filter(Boolean);
-    
-    staffCount = Array.from(new Set(staffArray)).length + (extStaffCol !== undefined ? Array.from(new Set(String(row[extStaffCol] || '').split(/[,;\n]+/).map(function(v){return v.trim().toLowerCase();}).filter(Boolean))).length : 0);
-    
+    var roster=impactPeople[dataId.toUpperCase()]||{staff:[],external:[]};
+    var staffArray=roster.staff;
+    var staffCount=roster.staff.length+roster.external.length;
+
     if (!isUserLoggedIn) {
       // INSTITUTIONAL: All valid completed classes in CNE Schedule
       completedClasses++;
@@ -8269,12 +8310,13 @@ var CNE_SHEET_HEADERS = {
   'Audit_Log': ['Timestamp', 'Action', 'Employee_ID', 'Details', 'Status'],
   'Auth_Credentials': ['Employee_ID', 'Password_Hash', 'Password_Salt', 'Password_Version', 'Password_Created_At', 'Password_Changed_At', 'Last_Login_At', 'Account_Status', 'Failed_Login_Count', 'Locked_Until', 'Created_At', 'Updated_At'],
   'Clinical_Insights': ['Insight_ID', 'Image_Drive_File_ID', 'Display_Order', 'Status', 'Override_Date', 'Created_At', 'Created_By', 'Updated_At'],
-  'Deleted_Archive': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Internal_Participants', 'External_Participants', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Deleted_At', 'Deleted_By', 'Delete_Reason', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
+  'Deleted_Archive': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Deleted_At', 'Deleted_By', 'Delete_Reason', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
   'Interest_Registrations': ['CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Department_Area', 'Interest_Status', 'Interested_At', 'Updated_At'],
   'Post_Test_Questions': ['CNE_ID', 'Question_ID', 'Question_Text', 'Option_A', 'Option_B', 'Option_C', 'Option_D', 'Correct_Option', 'Explanation', 'Is_Finalized', 'Is_Locked', 'Created_At', 'Created_By', 'Authoritative_Source', 'Status', 'Question_Type', 'Image_Drive_File_ID'],
+  'CNE_Participants': ['Participant_ID', 'CNE_ID', 'Employee_ID', 'Participant_Name', 'Participant_Type', 'Designation', 'Attendance_Status', 'Attendance_Source', 'Attendance_At', 'Created_At', 'Created_By'],
   'Post_Test_Responses': ['Response_ID', 'CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Department', 'Score', 'Total_Questions', 'Percentage', 'Source', 'Submitted_At', 'Answers_JSON', 'Status', 'Remarks'],
   'Quiz_Attempts': ['Attempt_ID', 'Employee_ID', 'Employee_Name', 'Units_JSON', 'Question_IDs_JSON', 'Question_Count', 'Status', 'Started_At', 'Updated_At', 'Completed_At', 'Correct_Count', 'Wrong_Count', 'Percentage', 'Result_JSON', 'Answers_Encoded', 'Committed_Count'],
-  'CNE_Schedule': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Internal_Participants', 'External_Participants', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
+  'CNE_Schedule': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
   'AI_Quota': ['CNE_ID', 'Topic', 'Attempts_Used', 'Max_Quota', 'Last_Attempt_At', 'Last_Generated_By', 'Reservation_Token', 'Reserved_Until', 'Last_Committed_Token'],
   'Material_Index': ['Index_ID', 'CNE_ID', 'Drive_File_ID', 'Resource_Title', 'Topic', 'Section_Heading', 'Chunk_Index', 'Chunk_Text', 'Clinical_Keywords', 'Extraction_Status', 'Updated_At'],
   'QR_Tokens': ['QR_Token', 'CNE_ID', 'Created_At', 'Created_By', 'Status'],
@@ -8649,7 +8691,7 @@ function getCNEScheduleRecord(cneId) {
     instructor: String((colMap['internalresourcepersonids'] !== undefined ? row[colMap['internalresourcepersonids']] : '') || '').trim(),
     mode: String((colMap['modeofteaching'] !== undefined ? row[colMap['modeofteaching']] : (colMap['mode'] !== undefined ? row[colMap['mode']] : row[8])) || 'Offline').trim(),
     description: String((colMap['description'] !== undefined ? row[colMap['description']] : row[9]) || '').trim(),
-    staffCount: Array.from(new Set(String((colMap['internalparticipants'] !== undefined ? row[colMap['internalparticipants']] : '') || '').split(/[,;\n]+/).map(normalizeEmpId).filter(Boolean))).length + Array.from(new Set(String((colMap['externalparticipants'] !== undefined ? row[colMap['externalparticipants']] : '') || '').split(/[,;\n]+/).map(function(v){return v.trim().toLowerCase();}).filter(Boolean))).length,
+    staffCount: null, // Calculated in CNE record listings from the authoritative register
     status: normalizeCNEStatus(rawStatus),
     externalResourcePersons: String((colMap['externalresourcepersons'] !== undefined ? row[colMap['externalresourcepersons']] : row[13]) || '').trim(),
     proposedBy: String((colMap['createdby'] !== undefined ? row[colMap['createdby']] : '') || '').trim(),
@@ -12776,24 +12818,16 @@ function handleGetCNEActivityProgress(params, session) {
     qrStatus = 'Not Generated';
   }
 
-  // 4. Participants: find only rows belonging to this CNE and read one bounded block.
+  // 4. One authoritative participant register, irrespective of CNE workflow.
   var participantsCount = 0;
   try {
-    var respSheet = getResponsesSheet();
-    // B:J includes Source without downloading the large Answers JSON column L.
-    var respBlock = readMatchedCneRows_(respSheet, 1, cleanId, 2, 9);
-    var participantKeys = {};
-    for (var pi = 0; pi < respBlock.length; pi++) {
-      var pRow = respBlock[pi];
-      if (!isConfirmedCNEAttendanceResponse_(pRow[8], '')) continue;
-      var progressEmpId = String(pRow[1] || '').trim().toUpperCase();
-      var progressName = String(pRow[2] || '').trim().toLowerCase();
-      var progressKey = progressEmpId ? ('ID:' + progressEmpId) : (progressName ? ('NAME:' + progressName) : '');
-      if (progressKey) participantKeys[progressKey] = true;
-    }
-    participantsCount = Object.keys(participantKeys).length;
+    var registeredRows=cneParticipantRows_(cleanId);
+    participantsCount=registeredRows.filter(function(row) {
+      return String(row[6]||'').trim().toUpperCase()==='ATTENDED';
+    }).length;
   } catch (e) {
-    participantsCount = 0;
+    // Do not confuse missing schema with zero attendance.
+    return {success:false,errorCode:'PARTICIPANT_REGISTER_ERROR',message:String(e.message||e)};
   }
 
   var normalizedProgressStatus = normalizeCNEStatus(record.status);
@@ -15880,8 +15914,148 @@ function countActiveCNEQuestions(cneId) {
 
 /**
  * Helper: Resolve Responses Sheet
- * Prefers 'Post_Test_Responses' tab; falls back to 'CNE_Participants' if already present.
+ * Assessment responses only. Attendance membership is stored in CNE_Participants.
  */
+/** Unified participant register. Caller must hold ScriptLock for mutations.
+ * Existing registered identities keep their immutable Participant_ID / Created_At.
+ * A single contiguous setValues write appends every new participant in a batch;
+ * existing updates are grouped by neighboring row to reduce Spreadsheet calls.
+ * Post-test answers and scores remain in Post_Test_Responses.
+ */
+function cneParticipantSheet_() {
+  var sh = getSpreadsheet('CNE').getSheetByName('CNE_Participants');
+  if (!sh) throw new Error('CNE_Participants is missing. Run Admin Verify Sheets first.');
+  var expected = CNE_SHEET_HEADERS['CNE_Participants'];
+  var header = sh.getRange(1, 1, 1, expected.length).getValues()[0];
+  for (var i=0; i<expected.length; i++) {
+    if (String(header[i] || '').trim() !== expected[i]) {
+      throw new Error('CNE_Participants column ' + (i+1) + ' must be ' + expected[i] + '. Run Verify Sheets.');
+    }
+  }
+  return sh;
+}
+function cneParticipantIdentity_(type, id, name) {
+  var t=String(type || '').toUpperCase();
+  var eid=normalizeEmpId(id);
+  if (t === 'INTERNAL') return eid ? ('I:' + eid) : '';
+  // External names are not sufficient to merge unrelated individuals generally.
+  // Use the same verified external ID when one exists; otherwise the CNE-scoped
+  // normalized name is used for retrospective or manual name-only attendance.
+  return eid ? ('E:' + eid) : ('N:' + String(name || '').trim().toLowerCase());
+}
+function cneParticipantRows_(cneId, sheet) {
+  var sh=sheet || cneParticipantSheet_();
+  var hits=readMatchedCneRows_(sh, 1, cneId, 1, 11);
+  return hits;
+}
+function cneParticipantUpsertBatch_(cneId, people, actor, sheet) {
+  if (!people || !people.length) return {inserted:0, updated:0};
+  var sh=sheet || cneParticipantSheet_();
+  var matches=findExactRowsInColumn_(sh,1,cneId,2);
+  var lookup={};
+  // Read only matching CNE rows, grouping adjacent physical rows.
+  matches.sort(function(a,b){return a-b;});
+  for(var mi=0;mi<matches.length;) {
+    var st=matches[mi], last=st;mi++;
+    while(mi<matches.length && matches[mi]===last+1){last=matches[mi];mi++;}
+    var existing=sh.getRange(st,1,last-st+1,11).getValues();
+    for(var j=0;j<existing.length;j++) {
+      var key=cneParticipantIdentity_(existing[j][4],existing[j][2],existing[j][3]);
+      if(key&&!lookup[key])lookup[key]={row:st+j,values:existing[j]};
+    }
+  }
+  var updates=[], inserts=[], now=new Date().toISOString(), seen={};
+  people.forEach(function(person){
+    var t=person.type==='EXTERNAL'?'EXTERNAL':'INTERNAL';
+    var eid=t==='INTERNAL'?normalizeEmpId(person.employeeId):String(person.employeeId||'').trim();
+    var name=sanitizeCellInput(String(person.name||''));
+    var key=cneParticipantIdentity_(t,eid,name);
+    if (!key || seen[key]) return;
+    seen[key]=true;
+    var attended=String(person.status||'').toUpperCase()==='ATTENDED';
+    var source=attended?String(person.source||'MANUAL').toUpperCase():'';
+    var old=lookup[key];
+    if (!old && t==='EXTERNAL' && eid && name) old=lookup['N:'+name.toLowerCase()];
+    if (old) {
+      var row=old.values.slice();
+      if (t==='EXTERNAL' && eid && !row[2]) row[2]=eid;
+      if (!row[3] && name) row[3]=name;
+      if (!row[5] && person.designation) row[5]=sanitizeCellInput(String(person.designation));
+      if (attended && String(row[6]||'').toUpperCase()!=='ATTENDED') {
+        row[6]='ATTENDED'; row[7]=source; row[8]=String(person.attendanceAt||now);
+      }
+      if (JSON.stringify(row)!==JSON.stringify(old.values)) updates.push({row:old.row,values:row});
+    } else {
+      var values=['PART-'+Utilities.getUuid(),cneId,eid,name,t,
+        sanitizeCellInput(String(person.designation||'')),attended?'ATTENDED':'PENDING',
+        source,attended?String(person.attendanceAt||now):'',now,String(actor||'SYSTEM')];
+      inserts.push(values);
+      lookup[key]={row:-1,values:values};
+    }
+  });
+  // Apply updated rows without overwriting nonparticipating sheets or records.
+  updates.sort(function(a,b){return a.row-b.row;});
+  for(var x=0;x<updates.length;) {
+    var start=updates[x].row, block=[updates[x].values]; x++;
+    while(x<updates.length && updates[x].row===start+block.length) {block.push(updates[x].values);x++;}
+    sh.getRange(start,1,block.length,11).setValues(block);
+  }
+  if (inserts.length) {
+    var startRow=sh.getLastRow()+1;
+    if (startRow+inserts.length-1>sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(),startRow+inserts.length-1-sh.getMaxRows());
+    sh.getRange(startRow,1,inserts.length,11).setValues(inserts);
+  }
+  return {inserted:inserts.length,updated:updates.length};
+}
+/** Replace only the pending portion of a scheduled CNE roster.
+ * ATTENDED history is immutable through ordinary Edit CNE; confirmation requires
+ * the attendance endpoints. Delete pending rows in reverse contiguous blocks.
+ * Caller must hold the global ScriptLock.
+ */
+function cneParticipantReplacePendingRoster_(cneId, people, includeInternal, includeExternal, actor) {
+  var sh=cneParticipantSheet_();
+  var wanted={};
+  people.forEach(function(person) {
+    var t=person.type==='EXTERNAL'?'EXTERNAL':'INTERNAL';
+    var key=cneParticipantIdentity_(t,person.employeeId,person.name);
+    if(key)wanted[key]=true;
+  });
+  var matches=findExactRowsInColumn_(sh,1,cneId,2),remove=[];
+  matches.sort(function(a,b){return a-b;});
+  for(var i=0;i<matches.length;) {
+    var start=matches[i],last=start;i++;
+    while(i<matches.length && matches[i]===last+1){last=matches[i];i++;}
+    var oldRows=sh.getRange(start,1,last-start+1,11).getValues();
+    for(var x=0;x<oldRows.length;x++) {
+      var vals=oldRows[x],t=String(vals[4]||'').toUpperCase();
+      if ((t==='INTERNAL'&&!includeInternal)||(t==='EXTERNAL'&&!includeExternal))continue;
+      if(String(vals[6]||'').toUpperCase()!=='PENDING')continue;
+      var key=cneParticipantIdentity_(t,vals[2],vals[3]);
+      if(!wanted[key])remove.push(start+x);
+    }
+  }
+  remove.sort(function(a,b){return b-a;});
+  for(var k=0;k<remove.length;) {
+    var high=remove[k],low=high;k++;
+    while(k<remove.length&&remove[k]===low-1){low=remove[k];k++;}
+    sh.deleteRows(low,high-low+1);
+  }
+  return cneParticipantUpsertBatch_(cneId,people,actor,sh);
+}
+function cneScheduleRosterParticipants_(staff,external,attended,officers) {
+  var people=[], ids={}, names={};
+  String(staff||'').split(/[,;\n\r]+/).forEach(function(v){
+    var id=normalizeEmpId(v);if(!id||ids[id])return;ids[id]=true;
+    var info=officers&&officers[id];
+    people.push({employeeId:id,name:typeof info==='string'?info:(info&&info.name)||id,type:'INTERNAL',designation:(info&&info.designation)||'',status:attended?'ATTENDED':'PENDING',source:attended?'RETROSPECTIVE':''});
+  });
+  String(external||'').split(/[,;\n\r]+/).forEach(function(v){
+    var name=String(v||'').trim(),key=name.toLowerCase();if(!key||names[key])return;names[key]=true;
+    people.push({name:name,type:'EXTERNAL',designation:'External Participant',status:attended?'ATTENDED':'PENDING',source:attended?'RETROSPECTIVE':''});
+  });
+  return people;
+}
+
 function getResponsesSheet() {
   var ss = getSpreadsheet('CNE');
   var sheet = ss.getSheetByName('Post_Test_Responses');
@@ -17362,6 +17536,8 @@ function handleSubmitPostTest(params, session) {
       scored = scorePostTestAnswers_(snapshot.answerKeys, answers);
     }
 
+    // Validate participant register schema before committing post-test results.
+    cneParticipantSheet_();
     var now = new Date().toISOString();
     var responseId = 'RESP-' + Date.now() + '-' + Utilities.getUuid().substring(0, 8);
     var partSheet = getResponsesSheet();
@@ -17381,6 +17557,10 @@ function handleSubmitPostTest(params, session) {
       scored.status,
       responseRemarks
     ]);
+    cneParticipantUpsertBatch_(cneId,[{employeeId:participantId,name:participantName,
+      type:participantType==='EXTERNAL'?'EXTERNAL':'INTERNAL', designation:designation,
+      status:'ATTENDED',source:'POST_TEST',attendanceAt:now}],
+      session && session.employeeId ? session.employeeId : 'POST_TEST');
 
     // Only the first-submission path needs to persist question-row lock markers.
     // Logical locking is also guaranteed by the POST_TEST response row itself.
@@ -17571,24 +17751,24 @@ function handleAddManualParticipants(params, session) {
     var existingEmpIds = {};
     var existingNames = {};
     var registrationByName = {};
-    for (var p = 0; p < pData.length; p++) {
-      var existingEmp = normalizeEmpId(pData[p][1]);
-      var existingNm = String(pData[p][2] || '').trim().toLowerCase();
-      var existingSrc = String(pData[p][8] || '').trim().toUpperCase();
-
-      // Email verification is not attendance. It also must not prevent an
-      // authorized officer from marking the registered visitor as attended.
-      if (existingSrc === 'EXTERNAL_REGISTRATION') {
-        if (existingNm && isExternalParticipantId(existingEmp)) {
-          if (!registrationByName[existingNm]) registrationByName[existingNm] = {};
-          registrationByName[existingNm][existingEmp] = true;
-        }
-        continue;
+    // External OTP registration is only an identity check, not attendance.
+    for (var p=0;p<pData.length;p++) {
+      var regId=normalizeEmpId(pData[p][1]);
+      var regName=String(pData[p][2]||'').trim().toLowerCase();
+      if (String(pData[p][8]||'').trim().toUpperCase()==='EXTERNAL_REGISTRATION' &&
+          regName && isExternalParticipantId(regId)) {
+        if(!registrationByName[regName])registrationByName[regName]={};
+        registrationByName[regName][regId]=true;
       }
-      if (!isConfirmedCNEAttendanceResponse_(existingSrc, '')) continue;
-      if (existingEmp) existingEmpIds[existingEmp] = true;
-      if (existingNm) existingNames[existingNm] = true;
     }
+    // One CNE-scoped register read; PENDING can be upgraded to ATTENDED.
+    cneParticipantRows_(cneId).forEach(function(pr) {
+      if(String(pr[6]||'').toUpperCase()!=='ATTENDED')return;
+      var id=normalizeEmpId(pr[2]);
+      var nm=String(pr[3]||'').trim().toLowerCase();
+      if(id)existingEmpIds[id]=true;
+      if(nm)existingNames[nm]=true;
+    });
 
     for (var v = 0; v < validatedList.length; v++) {
       var vItem = validatedList[v];
@@ -17622,64 +17802,19 @@ function handleAddManualParticipants(params, session) {
       }
     }
 
-    var baseTime = Date.now();
-    var now = new Date().toISOString();
-    var allRows = [];
-    var auditEntries = [];
-
-    for (var k = 0; k < validatedList.length; k++) {
-      var item = validatedList[k];
-      var participantId = validatedList.length === 1
-        ? ('MAN-' + baseTime)
-        : ('MAN-' + baseTime + '-' + (k + 1));
-
-      allRows.push([
-        participantId,
-        cneId,
-        item.empId,
-        item.manualName,
-        item.designation,
-        item.department,
-        '',
-        '',
-        '',
-        'MANUAL',
-        now,
-        '',
-        'ATTENDED',
-        item.remarks
-      ]);
-
-      auditEntries.push({
-        action: 'ADD_MANUAL_PARTICIPANT',
-        employeeId: session.employeeId,
-        details: 'Added participant ' + (item.empId || item.manualName) + ' to CNE: ' + cneId,
-        status: 'SUCCESS'
-      });
-    }
-
-    if (allRows.length > 0) {
-      var startRow = partSheet.getLastRow() + 1;
-      var numRows = allRows.length;
-      var numColumns = 14;
-
-      if (startRow === 1) {
-        var defaultHeaders = ['Response_ID', 'CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Department', 'Score', 'Total_Questions', 'Percentage', 'Source', 'Submitted_At', 'Answers_JSON', 'Status', 'Remarks'];
-        partSheet.getRange(1, 1, 1, defaultHeaders.length).setValues([defaultHeaders]);
-        startRow = 2;
-      }
-
-      var maxRows = partSheet.getMaxRows();
-      if (startRow + numRows - 1 > maxRows) {
-        partSheet.insertRowsAfter(maxRows, (startRow + numRows - 1) - maxRows);
-      }
-      var maxCols = partSheet.getMaxColumns();
-      if (numColumns > maxCols) {
-        partSheet.insertColumnsAfter(maxCols, numColumns - maxCols);
-      }
-
-      partSheet.getRange(startRow, 1, numRows, numColumns).setValues(allRows);
-    }
+    // One append block for all new attendees; update existing pending rows in
+    // contiguous batches. No duplicate MANUAL rows in Post_Test_Responses.
+    var incoming=validatedList.map(function(item){
+      return {employeeId:item.empId,name:item.manualName,
+        type:item.empId && !isExternalParticipantId(item.empId)?'INTERNAL':'EXTERNAL',
+        designation:item.designation,status:'ATTENDED',source:'MANUAL'};
+    });
+    var saved=cneParticipantUpsertBatch_(cneId,incoming,session.employeeId);
+    var auditEntries=validatedList.map(function(item){return {
+      action:'ADD_MANUAL_PARTICIPANT',employeeId:session.employeeId,
+      details:'Recorded attendee '+(item.empId||item.manualName)+' for CNE: '+cneId,status:'SUCCESS'
+    };});
+    var allRows=validatedList;
 
     logAuditActionsBatch(auditEntries);
 
@@ -17778,94 +17913,43 @@ function handleGetCNEParticipants(params, session) {
     }
   }
 
-  // Retrospective/Unscheduled CNEs are recorded after the activity. The
-  // Internal_Participants and External_Participants cells are their attendance
-  // roster, unlike scheduled CNE enrollment (which is NOT attendance).
-  var retrospective = record.status === 'Completed' && record.cneType &&
-    CNE_TYPE_CONFIG[record.cneType] &&
-    CNE_TYPE_CONFIG[record.cneType].workflow === 'RETROSPECTIVE';
-  if (retrospective) {
-    var scheduleSheet = getSpreadsheet('CNE').getSheetByName('CNE_Schedule');
-    if (!scheduleSheet) throw new Error('CNE_Schedule sheet not found. Run Verify Sheets.');
-    var scheduleMap = getHeaderMap(scheduleSheet);
-    if (scheduleMap['internalparticipants'] === undefined || scheduleMap['externalparticipants'] === undefined) {
-      throw new Error('CNE_Schedule is missing participant roster headers. Run Verify Sheets.');
-    }
-    var scheduleRow = scheduleSheet.getRange(record.rowIndex, 1, 1, scheduleSheet.getLastColumn()).getDisplayValues()[0];
-    var staffText = String(scheduleRow[scheduleMap['internalparticipants']] || '');
-    var externalText = String(scheduleRow[scheduleMap['externalparticipants']] || '');
-    var staffTokens = staffText.split(/[,;\n\r]+/);
-    var seenStaff = {};
-    var absentIds = [];
-    for (var j = 0; j < staffTokens.length; j++) {
-      var rosterId = normalizeEmpId(staffTokens[j]);
-      if (!rosterId || seenStaff[rosterId]) continue;
-      seenStaff[rosterId] = true;
-      if (!byParticipant['ID:' + rosterId]) absentIds.push(rosterId);
-    }
-    // One cached directory lookup for the entire roster; no per-ID Sheets calls.
-    var officerNames = absentIds.length ? getOfficerNameMap() : {};
-    for (var si = 0; si < absentIds.length; si++) {
-      var staffId = absentIds[si];
-      byParticipant['ID:' + staffId] = {
-        id: 'ROSTER:' + cneId + ':' + staffId,
-        cneId: cneId,
-        employeeId: staffId,
-        externalParticipantId: '',
-        name: String(officerNames[staffId] || staffId),
-        designation: 'Nursing Officer',
-        department: record.area,
-        participantType: 'MANUAL',
-        score: null, totalQuestions: null, percentage: null,
-        source: 'RETROSPECTIVE',
-        submittedAt: String(record.date || ''),
-        answersJson: '', status: 'ATTENDED', remarks: 'Recorded at unscheduled CNE creation'
-      };
-    }
-
-    var externalNames = externalText.split(/[,;\n\r]+/);
-    var seenExternal = {};
-    for (var ei = 0; ei < externalNames.length; ei++) {
-      var externalName = String(externalNames[ei] || '').trim();
-      var nameKey = externalName.toLowerCase();
-      if (!nameKey || seenExternal[nameKey]) continue;
-      seenExternal[nameKey] = true;
-      // The response sheet can identify external participants by a generated
-      // EXT-... ID, so match their names before adding a roster-only entry.
-      var alreadyPresent = false;
-      var keys = Object.keys(byParticipant);
-      for (var ex = 0; ex < keys.length; ex++) {
-        var entry = byParticipant[keys[ex]];
-        if ((entry.externalParticipantId || !entry.employeeId) &&
-            String(entry.name || '').trim().toLowerCase() === nameKey) {
-          alreadyPresent = true;
-          break;
-        }
-      }
-      if (alreadyPresent) continue;
-      byParticipant['NAME:' + nameKey] = {
-        id: 'ROSTER_EXT:' + cneId + ':' + ei,
-        cneId: cneId,
-        employeeId: '', externalParticipantId: '',
-        name: externalName,
-        designation: 'External Participant',
-        department: record.area,
-        participantType: 'MANUAL',
-        score: null, totalQuestions: null, percentage: null,
-        source: 'RETROSPECTIVE',
-        submittedAt: String(record.date || ''),
-        answersJson: '', status: 'ATTENDED', remarks: 'Recorded at unscheduled CNE creation'
-      };
-    }
+  // Merge the authoritative register. Post-test response data above provides
+  // scores/answers only; the register determines attendance and identity.
+  var rosterEntries=cneParticipantRows_(cneId);
+  var registerKeys={};
+  for (var ri=0;ri<rosterEntries.length;ri++) {
+    var rr=rosterEntries[ri], pid=String(rr[2]||'').trim(), pname=String(rr[3]||'').trim();
+    var external=String(rr[4]||'')==='EXTERNAL';
+    var key=pid?('ID:'+pid.toUpperCase()):('NAME:'+pname.toLowerCase());
+    if (!pid&&!pname)continue;
+    registerKeys[key]=true;
+    var base=byParticipant[key];
+    var attended=String(rr[6]||'').toUpperCase()==='ATTENDED';
+    byParticipant[key]={
+      id:String(rr[0]||''),cneId:cneId,employeeId:external?'':pid,
+      externalParticipantId:external?pid:'',name:pname,
+      designation:String(rr[5]||''),department:'',
+      participantType:base&&base.participantType==='POST_TEST'?'POST_TEST':(external?'EXTERNAL':'MANUAL'),
+      score:base?base.score:null,totalQuestions:base?base.totalQuestions:null,
+      percentage:base?base.percentage:null,
+      source:String(rr[7]||''),submittedAt:String(rr[8]||''),
+      answersJson:base?base.answersJson:'',status:attended?'ATTENDED':'PENDING',remarks:base?base.remarks:''
+    };
   }
+  // No additional participation record is created from a response alone.
+  Object.keys(byParticipant).forEach(function(key){if(!registerKeys[key])delete byParticipant[key];});
 
   var participants = Object.keys(byParticipant).map(function(key) { return byParticipant[key]; });
   var postTestCount = 0;
   var manualCount = 0;
+  var pendingCount = 0;
+  var attendedCount = 0;
   var totalScorePercent = 0;
   var scoredPostTests = 0;
   for (var i = 0; i < participants.length; i++) {
     var item = participants[i];
+    if (item.status === 'PENDING') {pendingCount++;continue;}
+    attendedCount++;
     if (item.participantType === 'POST_TEST') {
       postTestCount++;
       if (item.percentage !== null && item.percentage !== undefined && !isNaN(Number(item.percentage))) {
@@ -17886,6 +17970,8 @@ function handleGetCNEParticipants(params, session) {
       area: record.area,
       status: record.status,
       totalParticipants: participants.length,
+      attendedCount: attendedCount,
+      pendingCount: pendingCount,
       postTestCount: postTestCount,
       manualCount: manualCount,
       averageScore: avgScore,
@@ -17988,33 +18074,27 @@ function handleFinalizeCNE(params, session) {
       };
     }
     
-    // 7. Read participant records and deduplicate by participant identity.
-    var partSheet = getResponsesSheet();
-    var participantMap = {};
-    var postTestScores = [];
-
-    if (partSheet && partSheet.getLastRow() > 1) {
-      // Read only this CNE's response rows; do not scan all CNE history while
-      // holding ScriptLock. The authoritative schema is A:N (14 columns).
-      var pData = readMatchedCneRows_(partSheet, 1, cneId, 1, 14);
-      for (var p = 0; p < pData.length; p++) {
-        var pSrc = String(pData[p][9] || '').trim().toUpperCase();
-        if (!isConfirmedCNEAttendanceResponse_(pSrc, pData[p][12])) continue;
-        var rawEmp = String(pData[p][2] || '').trim().toUpperCase();
-        var pName = String(pData[p][3] || '').trim();
-        var key = rawEmp ? ('ID:' + rawEmp) : ('NAME:' + pName.toLowerCase());
-        if (!key || key === 'NAME:') continue;
-
-        // One person is counted once even when MANUAL and POST_TEST both exist.
-        // Prefer an actual Post-Test to manual/QR records for score reporting.
-        var current = participantMap[key];
-        if (!current || pSrc === 'POST_TEST' || (current.source !== 'POST_TEST' && pSrc !== 'EXTERNAL_REGISTRATION')) {
-          var pctRaw = pData[p][8];
-          var pct = pSrc === 'POST_TEST' && pctRaw !== '' && pctRaw !== null && pctRaw !== undefined &&
-            isFinite(Number(pctRaw)) && Number(pctRaw) >= 0 && Number(pctRaw) <= 100
-              ? Number(pctRaw) : null;
-          participantMap[key] = { empId: rawEmp, name: pName, source: pSrc, percentage: pct };
-        }
+    // 7. Confirm attendance from the unified register; scores remain in responses.
+    var participantMap = {}, postTestScores=[];
+    var registered=cneParticipantRows_(cneId);
+    for(var pi=0;pi<registered.length;pi++) {
+      var pr=registered[pi];
+      if(String(pr[6]||'').toUpperCase()!=='ATTENDED')continue;
+      var emp=String(pr[2]||'').trim(),nm=String(pr[3]||'').trim();
+      var key=emp?('ID:'+emp.toUpperCase()):('NAME:'+nm.toLowerCase());
+      if(key==='NAME:')continue;
+      participantMap[key]={empId:emp,name:nm,source:String(pr[7]||''),percentage:null};
+    }
+    var pData=readMatchedCneRows_(getResponsesSheet(),1,cneId,1,14);
+    for(var p=0;p<pData.length;p++) {
+      if(String(pData[p][9]||'').toUpperCase()!=='POST_TEST')continue;
+      var rawEmp=String(pData[p][2]||'').trim().toUpperCase();
+      var pName=String(pData[p][3]||'').trim();
+      var k=rawEmp?('ID:'+rawEmp):('NAME:'+pName.toLowerCase());
+      if(!participantMap[k])continue;
+      var pct=Number(pData[p][8]);
+      if(pData[p][8]!=='' && isFinite(pct) && pct>=0 && pct<=100) {
+        participantMap[k].percentage=pct;participantMap[k].source='POST_TEST';
       }
     }
     // Average is based on one eligible Post-Test score per unique attendee.
@@ -18048,54 +18128,36 @@ function handleFinalizeCNE(params, session) {
     var avg = postTestScores.length > 0 ? Math.round((postTestScores.reduce(function(a, b) { return a + b; }, 0) / postTestScores.length) * 10) / 10 : null;
     var remarksSummary = 'Finalized CNE Session [' + cneId + ']. Total Attendees: ' + totalParticipantsCount + (avg !== null ? ' (Avg Post-Test Score: ' + avg + '%)' : '') + (params.remarks ? '. ' + sanitizeCellInput(params.remarks) : '');
     
-    // 8. Update authoritative CNE Schedule record directly
+    // 8. One bounded row read + one setValues() call for all finalization
+    // fields. Avoid multiple per-column round trips inside ScriptLock.
+    var isWardFinalize = liveFinalizeType === 'WARD_LEVEL';
+    if (isWardFinalize) ensureCneScheduleCoverageHeaders_(cneSheet);
     var colMap = getHeaderMap(cneSheet);
-    var statusCol = colMap['status'] !== undefined ? (colMap['status'] + 1) : 12;
-    var remarksCol = colMap['adminremarks'] !== undefined ? (colMap['adminremarks'] + 1) : (colMap['remarks'] !== undefined ? (colMap['remarks'] + 1) : 16);
-    
-    cneSheet.getRange(liveRecord.rowIndex, statusCol).setValue('Completed');
-    cneSheet.getRange(liveRecord.rowIndex, remarksCol).setValue(remarksSummary);
+    var rowWidth=cneSheet.getLastColumn();
+    var finalRow=cneSheet.getRange(liveRecord.rowIndex,1,1,rowWidth).getValues()[0];
+    function setFinalField_(headerKey,value) {
+      var ix=colMap[headerKey];
+      if(ix===undefined) throw new Error('Missing CNE_Schedule header: '+headerKey+'. Run Verify Sheets.');
+      finalRow[ix]=value;
+    }
+    setFinalField_('status','Completed');
+    setFinalField_('adminremarks',remarksSummary);
+    if(isWardFinalize) {
+      var rawAllotted=finalRow[colMap['totalallottedstaff']];
+      var allotted=(rawAllotted!=='' && rawAllotted!==null && rawAllotted!==undefined &&
+        isFinite(Number(rawAllotted))) ? Number(rawAllotted):null;
+      var attendedInternal=internalEmpIds.length;
+      var attendancePercentage=allotted!==null&&allotted>0?
+        Math.round((attendedInternal/allotted)*1000)/10:'';
+      var averageOutcome=postTestScores.length?
+        Math.round((postTestScores.reduce(function(a,b){return a+b;},0)/postTestScores.length)*10)/10:'';
+      setFinalField_('internalattendancecount',attendedInternal);
+      setFinalField_('attendancepercentage',attendancePercentage);
+      setFinalField_('posttestoutcomepercentage',averageOutcome);
+      setFinalField_('coveragefinalizedat',new Date().toISOString());
+    }
+    cneSheet.getRange(liveRecord.rowIndex,1,1,rowWidth).setValues([finalRow]);
     deactivateQRTokensForCNE(cneId);
-    
-    if (colMap['internalparticipants'] !== undefined) {
-      cneSheet.getRange(liveRecord.rowIndex, colMap['internalparticipants'] + 1).setValue(internalEmpIds.join(', '));
-    }
-    if (colMap['externalparticipants'] !== undefined) {
-      cneSheet.getRange(liveRecord.rowIndex, colMap['externalparticipants'] + 1).setValue(externalParticipants.join(', '));
-    }
-
-    // For eligible normally scheduled Ward-Level CNEs: calculate and store authoritative final coverage metrics
-    var isDeptFinalize = (liveFinalizeType === 'WARD_LEVEL');
-    if (isDeptFinalize) {
-      ensureCneScheduleCoverageHeaders_(cneSheet);
-      colMap = getHeaderMap(cneSheet);
-
-      var liveRowVals = cneSheet.getRange(liveRecord.rowIndex, 1, 1, cneSheet.getLastColumn()).getValues()[0];
-      var rawAllotted = colMap['totalallottedstaff'] !== undefined ? liveRowVals[colMap['totalallottedstaff']] : null;
-      var savedAllottedStaff = (rawAllotted !== '' && rawAllotted !== null && rawAllotted !== undefined && !isNaN(Number(rawAllotted))) ? Number(rawAllotted) : null;
-
-      var internalAttendanceCount = internalEmpIds.length;
-      var attPercentage = null;
-      if (savedAllottedStaff !== null && savedAllottedStaff > 0) {
-        attPercentage = Math.round((internalAttendanceCount / savedAllottedStaff) * 1000) / 10;
-      }
-
-      var postTestOutcome = postTestScores.length > 0 ? (Math.round((postTestScores.reduce(function(a, b) { return a + b; }, 0) / postTestScores.length) * 10) / 10) : null;
-      var coverageFinalizedAt = new Date().toISOString();
-
-      if (colMap['internalattendancecount'] !== undefined) {
-        cneSheet.getRange(liveRecord.rowIndex, colMap['internalattendancecount'] + 1).setValue(internalAttendanceCount);
-      }
-      if (colMap['attendancepercentage'] !== undefined) {
-        cneSheet.getRange(liveRecord.rowIndex, colMap['attendancepercentage'] + 1).setValue(attPercentage !== null ? attPercentage : '');
-      }
-      if (colMap['posttestoutcomepercentage'] !== undefined) {
-        cneSheet.getRange(liveRecord.rowIndex, colMap['posttestoutcomepercentage'] + 1).setValue(postTestOutcome !== null ? postTestOutcome : '');
-      }
-      if (colMap['coveragefinalizedat'] !== undefined) {
-        cneSheet.getRange(liveRecord.rowIndex, colMap['coveragefinalizedat'] + 1).setValue(coverageFinalizedAt);
-      }
-    }
 
     // 9. Write audit log
     logAuditAction('FINALIZE_CNE', session.employeeId, 'Finalized CNE: ' + cneId + ' (status updated to Completed in CNE Schedule)', 'SUCCESS');
@@ -18556,25 +18618,17 @@ function handleDeleteCNE(params, session) {
     }
     var targetRowVals = cneSheet.getRange(liveRecord.rowIndex, 1, 1, cneSheet.getLastColumn()).getValues()[0];
 
-    // 4a. Check CNE Schedule row columns for actual recorded attendance
-    // (Note: planned participants is a scheduling target, not actual attendance)
-        var staffEmpIdIdx = cneColMap['internalparticipants'];
-    var extStaffIdx = cneColMap['externalparticipants'];
-    var internalCountIdx = cneColMap['internalattendancecount'];
-    var externalCountIdx = cneColMap['externalattendancecount'];
+    // Schedule no longer duplicates the participant roster. Validate register below.
 
-    var hasScheduleAttendance = false;
-    if (staffEmpIdIdx !== undefined && String(targetRowVals[staffEmpIdIdx] || '').trim().length > 0) hasScheduleAttendance = true;
-    if (extStaffIdx !== undefined && String(targetRowVals[extStaffIdx] || '').trim().length > 0) hasScheduleAttendance = true;
-    if (internalCountIdx !== undefined && Number(targetRowVals[internalCountIdx] || 0) > 0) hasScheduleAttendance = true;
-    if (externalCountIdx !== undefined && Number(targetRowVals[externalCountIdx] || 0) > 0) hasScheduleAttendance = true;
-
-    if (hasScheduleAttendance) {
-      return {
-        success: false,
-        errorCode: 'ATTENDANCE_EXISTS',
-        message: 'This CNE cannot be deleted because participant attendance or Post-Test records already exist.'
-      };
+    // Protect CNE_Participants records from orphaning during deletion.
+    // A pending-only participant roster can also contain assigned people, so
+    // deletion must not silently discard it.
+    try {
+      if (cneParticipantRows_(cneId).length) {
+        return {success:false,errorCode:'PARTICIPANTS_EXIST',message:'Remove participant records through the authorized participant workflow before deleting this CNE.'};
+      }
+    } catch (registerErr) {
+      return {success:false,errorCode:'PARTICIPANT_REGISTER_ERROR',message:String(registerErr.message||registerErr)};
     }
 
     // 4b. Check authoritative attendance & Post-Test response sheets

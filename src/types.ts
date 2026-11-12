@@ -378,11 +378,12 @@ export interface CNEParticipant {
   name: string;
   designation: string;
   department: string;
-  participantType: 'POST_TEST' | 'MANUAL';
+  participantType: 'POST_TEST' | 'MANUAL' | 'EXTERNAL';
   score: number | null;
   totalQuestions: number | null;
   percentage: number | null;
-  status: string;
+  status: 'PENDING' | 'ATTENDED';
+  source?: 'MANUAL' | 'POST_TEST' | 'QR' | 'RETROSPECTIVE' | '';
   submittedAt: string;
   remarks?: string;
 }
@@ -393,6 +394,8 @@ export interface CNEParticipantsSummary {
   area: string;
   status: string;
   totalParticipants: number;
+  attendedCount: number;
+  pendingCount: number;
   postTestCount: number;
   manualCount: number;
   averageScore: number | null;

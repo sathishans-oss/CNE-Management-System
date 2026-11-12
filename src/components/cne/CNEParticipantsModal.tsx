@@ -33,7 +33,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
 }) => {
   const cneId = cne.cneId || '';
   const normalizedStatus = String(cne.status || 'Scheduled').trim().toLowerCase();
-  const isSessionClosed = normalizedStatus === 'completed' || normalizedStatus === 'canceled' || normalizedStatus === 'cancelled';
+  const isSessionClosed = normalizedStatus === 'completed' || normalizedStatus === 'canceled';
   const canModifyAttendance = isAuthorized && !isSessionClosed;
 
   const [summary, setSummary] = useState<CNEParticipantsSummary | null>(null);
@@ -322,8 +322,9 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
           <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
             <span className="text-[11px] text-slate-500 font-medium">Total Attendees</span>
             <p className="text-lg font-bold text-slate-900 mt-0.5">
-              {summary?.totalParticipants || 0}
+              {summary?.attendedCount ?? 0}
             </p>
+            <p className="text-[10px] text-slate-500 mt-0.5">{summary?.pendingCount ?? 0} pending</p>
           </div>
           <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
             <span className="text-[11px] text-slate-500 font-medium">Post-Test Evaluated</span>
@@ -599,7 +600,6 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                   <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
                     <th className="p-3">Sr.</th>
                     <th className="p-3">Staff Details</th>
-                    <th className="p-3">Department</th>
                     <th className="p-3">Type</th>
                     <th className="p-3">Evaluation Score</th>
                     <th className="p-3">Status</th>
@@ -608,7 +608,8 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredParticipants.map((p, idx) => {
-                    const isPostTest = p.participantType === 'POST_TEST';
+                    const isPending = p.status === 'PENDING';
+                    const isPostTest = !isPending && p.participantType === 'POST_TEST';
                     return (
                       <tr key={p.id || idx} className="hover:bg-slate-50/70 transition-colors">
                         <td className="p-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
@@ -619,9 +620,12 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                             {p.designation ? ` • ${p.designation}` : ''}
                           </div>
                         </td>
-                        <td className="p-3 text-slate-600">{p.department || '—'}</td>
                         <td className="p-3">
-                          {isPostTest ? (
+                          {isPending ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+                              Added (Pending)
+                            </span>
+                          ) : isPostTest ? (
                             <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
                               <Award className="w-2.5 h-2.5" />
                               Online Post-Test
@@ -634,7 +638,9 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                           )}
                         </td>
                         <td className="p-3 font-medium">
-                          {isPostTest && typeof p.score === 'number' ? (
+                          {isPending ? (
+                            <span className="text-amber-700 text-[11px]">Attendance not confirmed</span>
+                          ) : isPostTest && typeof p.score === 'number' ? (
                             <div className="flex items-center gap-1.5">
                               <span className="font-bold text-slate-900 font-mono">
                                 {p.score}/{p.totalQuestions}
@@ -650,10 +656,10 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                         <td className="p-3">
                           <span
                             className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                              p.status === 'PASSED'
+                              p.status === 'ATTENDED'
                                 ? 'bg-emerald-100 text-emerald-800'
-                                : p.status === 'FAILED'
-                                ? 'bg-rose-100 text-rose-800'
+                                : p.status === 'PENDING'
+                                ? 'bg-amber-100 text-amber-800'
                                 : 'bg-slate-100 text-slate-700'
                             }`}
                           >
