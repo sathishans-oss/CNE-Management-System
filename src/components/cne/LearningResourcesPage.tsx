@@ -22,6 +22,7 @@ import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { AddResourceModal } from './AddResourceModal';
 import { FilterBarShell } from '../common/FilterBarShell';
+import { formatCneDateDisplay } from '../../utils';
 
 interface LearningResourcesPageProps {
   user: SessionUser | null;
@@ -592,7 +593,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                       <td className="py-4 px-4 text-slate-500">
                         <div className="flex items-center gap-1 text-[11px]">
                           <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span>{item.uploadedAt ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(item.uploadedAt)) : '—'}</span>
+                          <span>{formatCneDateDisplay(item.uploadedAt)}</span>
                         </div>
                         {item.updatedBy && (
                           <div className="text-[10px] text-slate-400 mt-0.5">
