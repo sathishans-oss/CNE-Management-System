@@ -1,7 +1,7 @@
 import React from 'react';
 import { Bell, Sparkles } from 'lucide-react';
 import { NewsEventItem } from '../../types';
-import { newestNewsFirst } from '../../utils';
+import { newestNewsFirst, formatCneDateDisplay } from '../../utils';
 
 interface NewsCircularsWidgetProps {
   newsEvents: NewsEventItem[];
@@ -42,7 +42,7 @@ export const NewsCircularsWidget: React.FC<NewsCircularsWidgetProps> = ({
             className={`group block w-full cursor-pointer rounded-lg py-3 text-left transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-600 focus-visible:ring-offset-2 ${news.blinkAttention ? 'cne-news-new-row my-1 border-l-[3px] border-rose-600 bg-rose-50/60 pl-3 pr-2' : 'px-2'}`}
           >
             <span className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">{news.date}</span>
+              <span className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">{formatCneDateDisplay(news.date)}</span>
               {news.blinkAttention && (
                 <span className="cne-news-new-badge inline-flex shrink-0 items-center gap-1.5 rounded-full border border-rose-700 bg-rose-600 px-2.5 py-1 text-[10px] font-black tracking-wider text-white" aria-label="New highlighted circular">
                   <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />

@@ -21,7 +21,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { CNERecord, SessionUser, Employee, CNEActivityProgress, CneInterestStatus } from '../../types';
-import { formatCneDateTimeDisplay, formatResourcePersonsDisplay, getCneTypeLabel, parseCneStartTimestamp } from '../../utils';
+import { formatCneDateTimeDisplay, formatResourcePersonsDisplay, getCneTypeLabel, getCneParticipatingWards, parseCneStartTimestamp } from '../../utils';
 import { ProgressPanel } from './ProgressPanel';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
@@ -86,6 +86,7 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
   onOpenFinalize
 }) => {
   const { showToast } = useToast();
+  const participatingWards = getCneParticipatingWards(cne);
   const statusStr = String(cne.status || 'Scheduled').trim().toLowerCase();
   const isCompleted = statusStr === 'completed';
   const isCanceled = statusStr === 'canceled' || statusStr === 'cancelled';
@@ -397,6 +398,22 @@ export const CneDetailsModal: React.FC<CneDetailsModalProps> = ({
                       <span>{cne.modeOfTeaching || 'Lecture Cum Discussion'}</span>
                     </span>
                   </div>
+
+                  {/* Full detail view: show every ward, unlike the compact calendar preview. */}
+                  {participatingWards.length > 1 && (
+                    <section aria-label={`All ${participatingWards.length} participating wards`} className="border-t border-slate-200 pt-3">
+                      <h4 className="mb-2 text-xs font-bold text-slate-700">Participating Wards ({participatingWards.length})</h4>
+                      <div className="max-h-44 overflow-y-auto rounded-lg border border-slate-200 bg-white p-2" role="list">
+                        <div className="flex flex-wrap gap-1.5">
+                          {participatingWards.map((ward, index) => (
+                            <span role="listitem" key={`${ward}-${index}`} className={`rounded-md px-2 py-1 text-[11px] font-medium ${index === 0 ? 'bg-teal-100 text-teal-900' : 'bg-slate-100 text-slate-700'}`}>
+                              {ward}{index === 0 ? ' (Primary)' : ''}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </section>
+                  )}
                 </div>
 
                 {/* Expression of Interest Widget */}

@@ -16,6 +16,7 @@ import {
 import { CNERecord, CNELearningResourceMetadata } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
+import { formatCneDateTimeDisplay } from '../../utils';
 
 interface CNEReferenceModalProps {
   cne: CNERecord;
@@ -459,7 +460,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                             {existingResource.updatedAt && (
                               <>
                                 <span>&bull;</span>
-                                <span>Updated: <strong>{new Date(existingResource.updatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</strong></span>
+                                <span>Updated: <strong>{formatCneDateTimeDisplay(existingResource.updatedAt)}</strong></span>
                               </>
                             )}
                           </div>
@@ -648,7 +649,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
 
                 {updatedAt && (
                   <div className="px-3 py-1.5 bg-slate-50 rounded-lg text-[11px] text-slate-500">
-                    Last updated: <strong className="text-slate-700">{new Date(updatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</strong>
+                    Last updated: <strong className="text-slate-700">{formatCneDateTimeDisplay(updatedAt)}</strong>
                   </div>
                 )}
               </div>

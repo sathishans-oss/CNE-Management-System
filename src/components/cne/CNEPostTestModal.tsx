@@ -19,6 +19,7 @@ import {
 } from '../../services/api';
 import { useToast } from '../Toast';
 import { CNEQuestionImage } from './CNEQuestionImage';
+import { formatCneDateTimeDisplay } from '../../utils';
 
 interface CNEPostTestModalProps {
   cneId?: string;
@@ -38,26 +39,7 @@ const normalizeEmployeeId = (value: string) => value.trim().toUpperCase();
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
 function formatPostTestTimestamp(ts?: string | null): string {
-  if (!ts) return '—';
-  try {
-    const d = new Date(ts);
-    if (!isNaN(d.getTime())) {
-      const datePart = new Intl.DateTimeFormat('en-GB', {
-        timeZone: 'Asia/Kolkata',
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric'
-      }).format(d);
-      const timePart = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Kolkata',
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true
-      }).format(d);
-      return `${datePart} • ${timePart}`;
-    }
-  } catch (e) {}
-  return String(ts);
+  return formatCneDateTimeDisplay(ts);
 }
 
 export const CNEPostTestModal: React.FC<CNEPostTestModalProps> = ({

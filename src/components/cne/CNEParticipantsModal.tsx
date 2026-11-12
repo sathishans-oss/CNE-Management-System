@@ -15,6 +15,7 @@ import { CNERecord, CNEParticipantsSummary, Employee } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { getCachedOfficers, loadOfficersSingleFlight } from '../../services/officerLoader';
+import { formatCneDateTimeDisplay } from '../../utils';
 
 interface CNEParticipantsModalProps {
   cne: CNERecord;
@@ -667,7 +668,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                           </span>
                         </td>
                         <td className="p-3 text-slate-500 text-[11px] whitespace-nowrap">
-                          {p.submittedAt || '—'}
+                          {formatCneDateTimeDisplay(p.submittedAt)}
                         </td>
                       </tr>
                     );

@@ -4984,7 +4984,7 @@ function handleCreateCNE(params, session) {
     return {
       success: false,
       errorCode: 'FORBIDDEN',
-      message: 'Permission denied. Only Administrators can record retrospective CNE programs, including Departmental CNE.'
+      message: 'Permission denied. Only Administrators can record retrospective CNE programs, including Unscheduled Departmental CNE.'
     };
   }
 
@@ -5181,7 +5181,7 @@ function handleCreateCNE(params, session) {
       return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators or designated Area Incharges can create Ward-Level CNE programs.' };
     }
     if (retrospectiveType && !isAdmin) {
-      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can record retrospective CNE programs, including Departmental CNE.' };
+      return { success: false, errorCode: 'FORBIDDEN', message: 'Permission denied. Only Administrators can record retrospective CNE programs, including Unscheduled Departmental CNE.' };
     }
     var liveAreaAuthErr = checkCNEAuthorized(session, area, cneType);
     if (liveAreaAuthErr) return liveAreaAuthErr;

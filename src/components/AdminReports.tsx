@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, BarChart3, Download, Loader2, Printer, RefreshCw, Search } from 'lucide-react';
 import type { CNEAnalytics, SessionUser } from '../types';
 import { ApiService } from '../services/api';
-import { getIndiaTodayIsoDate } from '../utils';
+import { getIndiaTodayIsoDate, formatCneDateDisplay } from '../utils';
 import { FilterBarShell } from './common/FilterBarShell';
 import { ConfirmDatePicker } from './cne/ConfirmDatePicker';
 
@@ -166,7 +166,7 @@ export const AdminReports:React.FC<{user:SessionUser}> = ({user}) => {
       </FilterBarShell>
     </div>
     <h1 className="sr-only print:not-sr-only print:font-bold print:text-xl">CNE Reports &amp; Statistics</h1>
-    <p className="hidden print:block text-xs text-slate-600">From {applied.fromDate} to {applied.toDate}{applied.search ? ` · Search: ${applied.search}` : ''}</p>
+    <p className="hidden print:block text-xs text-slate-600">From {formatCneDateDisplay(applied.fromDate)} to {formatCneDateDisplay(applied.toDate)}{applied.search ? ` · Search: ${applied.search}` : ''}</p>
     {error && !busy && <div role="alert" className="flex flex-col items-center justify-center gap-2 py-6 text-center print:hidden">
       <AlertCircle className="h-6 w-6 text-rose-600" aria-hidden="true" />
       <p className="max-w-lg text-sm font-medium text-slate-700">{error}</p>

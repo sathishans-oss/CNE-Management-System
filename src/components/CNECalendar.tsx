@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { CNERecord, SessionUser } from '../types';
 import { ApiService } from '../services/api';
-import { formatCneDateTimeDisplay, parseToIsoDateString, getCneTypeLabel } from '../utils';
+import { formatCneDateTimeDisplay, parseToIsoDateString, getCneTypeLabel, getCneParticipatingWards } from '../utils';
 import { LoadingProgress } from './common/LoadingProgress';
 import { useAccessibleDialog } from './common/useAccessibleDialog';
 
@@ -74,6 +74,8 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
+  const [showAllPreviewWards, setShowAllPreviewWards] = useState(false);
+  const calendarPreviewWards = selectedEvent ? getCneParticipatingWards(selectedEvent.raw || { area: selectedEvent.area }) : [];
   const [fullDetailsCne, setFullDetailsCne] = useState<CNERecord | null>(null);
   const requestGeneration = useRef(0);
   const eventDialogRef = useAccessibleDialog({ isOpen: Boolean(selectedEvent),
@@ -133,6 +135,8 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
       raw: r
     }));
   }, [cneRecords]);
+
+  useEffect(() => { setShowAllPreviewWards(false); }, [selectedEvent?.id]);
 
   const handleViewFullDetails = () => {
     if (!selectedEvent?.raw?.cneId) return;
@@ -467,9 +471,27 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
                   <span className="font-bold text-slate-900">{getCneTypeLabel(selectedEvent.cneType)}</span>
                 </div>
 
-                <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between shadow-xs">
-                  <span className="text-slate-500 font-semibold">Clinical Area / Ward</span>
-                  <span className="font-bold text-slate-900">{selectedEvent.area}</span>
+                <div className="p-3.5 bg-white rounded-xl border border-slate-200 shadow-xs md:col-span-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-slate-500 font-semibold">Primary Area / Ward</span>
+                    <span className="font-bold text-slate-900">{selectedEvent.area || '—'}</span>
+                  </div>
+                  {calendarPreviewWards.length > 1 && (
+                    <div className="mt-2 space-y-2 border-t border-slate-100 pt-2">
+                      <div className={`flex flex-wrap gap-1.5 ${showAllPreviewWards ? 'max-h-32 overflow-y-auto' : ''}`}>
+                        {(showAllPreviewWards ? calendarPreviewWards : calendarPreviewWards.slice(0, 4)).map((ward: string, index: number) => (
+                          <span key={`${ward}-${index}`} className="rounded-md bg-teal-50 px-2 py-1 text-[11px] font-medium text-teal-800">{ward}</span>
+                        ))}
+                      </div>
+                      {calendarPreviewWards.length > 4 && (
+                        <button type="button" aria-expanded={showAllPreviewWards}
+                          onClick={() => setShowAllPreviewWards(value => !value)}
+                          className="text-xs font-semibold text-teal-700 underline underline-offset-2 hover:text-teal-900">
+                          {showAllPreviewWards ? 'Show fewer wards' : `View all ${calendarPreviewWards.length} wards (+${calendarPreviewWards.length - 4} more)`}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between shadow-xs">

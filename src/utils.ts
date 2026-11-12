@@ -1,4 +1,4 @@
-import { CNEType, Employee, NewsEventItem, SessionUser } from './types';
+import { CNERecord, CNEType, Employee, NewsEventItem, SessionUser } from './types';
 
 const MONTH_NAMES = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -76,10 +76,8 @@ export function formatCneDateDisplay(dateVal?: string | Date | null): string {
   // 4. Fallback: Parse via new Date()
   const d = new Date(str);
   if (!isNaN(d.getTime())) {
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = MONTH_NAMES[d.getMonth()];
-    const year = d.getFullYear();
-    return `${day}-${month}-${year}`;
+    const india = indiaDateParts(d.getTime());
+    return `${String(india.day).padStart(2, '0')}-${MONTH_NAMES[india.month - 1]}-${india.year}`;
   }
 
   return str;
@@ -474,6 +472,30 @@ export function parseToIsoDateString(val?: string | Date | null): string | null 
   }
 
   return null;
+}
+
+/** Present all selected wards without changing the authoritative primary ward or saved data. */
+export function getCneParticipatingWards(record: Pick<CNERecord, 'area' | 'participatingWards' | 'coverageAreasSnapshot'>): string[] {
+  const primary = String(record.area || '').trim();
+  let names = Array.isArray(record.participatingWards) ? record.participatingWards : [];
+  if (!names.length && record.coverageAreasSnapshot) {
+    const snapshot = String(record.coverageAreasSnapshot).trim();
+    try {
+      const parsed: unknown = JSON.parse(snapshot);
+      if (Array.isArray(parsed)) names = parsed.filter((v): v is string => typeof v === 'string');
+    } catch {
+      names = snapshot.split(/[,;\n]+/);
+    }
+  }
+  const unique: string[] = [];
+  const used = new Set<string>();
+  for (const val of [primary, ...names]) {
+    const ward = String(val || '').trim();
+    if (!ward || used.has(ward.toLocaleUpperCase('en-IN'))) continue;
+    used.add(ward.toLocaleUpperCase('en-IN'));
+    unique.push(ward);
+  }
+  return unique;
 }
 
 /**
@@ -909,7 +931,7 @@ export const CNE_TYPE_CONFIG = {
   UNSCHEDULED_WARD_LEVEL: { label: 'Unscheduled Ward-Level CNE', prefix: 'UW', workflow: 'RETROSPECTIVE', badge: 'bg-slate-100 text-slate-700 border border-slate-200' },
   EXTERNAL_OFFSITE: { label: 'External CNE – Outside AIIMS', prefix: 'UO', workflow: 'RETROSPECTIVE', badge: 'bg-amber-50 text-amber-800 border border-amber-200' },
   EXTERNAL_ONSITE: { label: 'External CNE – Hosted at AIIMS', prefix: 'UI', workflow: 'RETROSPECTIVE', badge: 'bg-purple-50 text-purple-700 border border-purple-200' },
-  DEPARTMENTAL: { label: 'Departmental CNE', prefix: 'UD', workflow: 'RETROSPECTIVE', badge: 'bg-indigo-50 text-indigo-700 border border-indigo-200' }
+  DEPARTMENTAL: { label: 'Unscheduled Departmental CNE', prefix: 'UD', workflow: 'RETROSPECTIVE', badge: 'bg-indigo-50 text-indigo-700 border border-indigo-200' }
 } as const;
 
 export const RETROSPECTIVE_CNE_TYPES = (Object.keys(CNE_TYPE_CONFIG) as Array<keyof typeof CNE_TYPE_CONFIG>)

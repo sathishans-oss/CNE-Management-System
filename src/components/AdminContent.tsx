@@ -1,4 +1,4 @@
-import { getIndiaTodayIsoDate, newestNewsFirst } from '../utils';
+import { getIndiaTodayIsoDate, newestNewsFirst, formatCneDateDisplay } from '../utils';
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import {
   Bell,
@@ -705,7 +705,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                     {filteredNews.map((item) => (
                       <tr key={item.id} className="hover:bg-slate-50">
                         <td className="py-3 px-4 font-mono text-slate-500 whitespace-nowrap">
-                          {item.date}
+                          {formatCneDateDisplay(item.date)}
                         </td>
                         <td className="py-3 px-4">
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-100 text-slate-800">
@@ -999,7 +999,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
                         className="w-full h-full object-cover"
                       />
                       <div className="absolute top-2 right-2 bg-slate-900/80 text-white text-[10px] font-semibold px-2 py-0.5 rounded">
-                        {photo.date}
+                        {formatCneDateDisplay(photo.date)}
                       </div>
                     </div>
 

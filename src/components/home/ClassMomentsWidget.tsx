@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, Images, Maximize2, X } from 'lucide-react';
 import { GalleryItem } from '../../types';
-import { parseToIsoDateString } from '../../utils';
+import { parseToIsoDateString, formatCneDateDisplay } from '../../utils';
 
 interface ClassMomentsWidgetProps {
   items: GalleryItem[];
@@ -101,7 +101,7 @@ export const ClassMomentsWidget: React.FC<ClassMomentsWidgetProps> = ({
               </div>
               <div className="px-3 py-2.5">
                 <span className="block truncate text-xs font-bold text-slate-900">{item.title}</span>
-                <span className="mt-0.5 block text-[11px] text-slate-500">{item.date}</span>
+                <span className="mt-0.5 block text-[11px] text-slate-500">{formatCneDateDisplay(item.date)}</span>
               </div>
             </button>
           ))}
@@ -134,7 +134,7 @@ export const ClassMomentsWidget: React.FC<ClassMomentsWidgetProps> = ({
             </div>
             <div className="px-4 py-3">
               <p className="text-sm font-bold">{selected.title}</p>
-              <p className="mt-1 text-xs text-slate-300">{selected.date}{selected.description ? ` · ${selected.description}` : ''}</p>
+              <p className="mt-1 text-xs text-slate-300">{formatCneDateDisplay(selected.date)}{selected.description ? ` · ${selected.description}` : ''}</p>
             </div>
           </div>
         </div>

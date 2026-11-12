@@ -20,7 +20,7 @@ import {
   INITIAL_QUICK_LINKS,
   INITIAL_PROGRAM_IMPACT
 } from '../services/initialData';
-import { formatCneDateTimeDisplay, parseToIsoDateString, getIndiaTodayIsoDate, getSafeExternalUrl } from '../utils';
+import { formatCneDateTimeDisplay, formatCneDateDisplay, getCneParticipatingWards, parseToIsoDateString, getIndiaTodayIsoDate, getSafeExternalUrl } from '../utils';
 import { useToast } from './Toast';
 
 // Critical Above-the-fold Widgets (Immediately Available)
@@ -43,6 +43,22 @@ interface CneHomePageProps {
   user: SessionUser | null;
   onNavigate: (view: ViewMode) => void;
 }
+
+/** Small ward preview in the home popup; the full CNE details view lists every ward. */
+const CompactHomeWards: React.FC<{ cne: CNERecord }> = ({ cne }) => {
+  const [expanded, setExpanded] = useState(false);
+  const wards = getCneParticipatingWards(cne);
+  if (wards.length <= 1) return null;
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-2.5 text-xs">
+      <span className="font-semibold text-slate-600">Participating wards ({wards.length})</span>
+      <div className={`mt-1.5 flex flex-wrap gap-1 ${expanded ? 'max-h-28 overflow-y-auto' : ''}`}>
+        {(expanded ? wards : wards.slice(0, 4)).map((ward, idx) => <span key={`${ward}-${idx}`} className="rounded bg-teal-50 px-2 py-1 text-teal-800">{ward}</span>)}
+      </div>
+      {wards.length > 4 && <button type="button" aria-expanded={expanded} onClick={() => setExpanded(v => !v)} className="mt-1.5 font-semibold text-teal-700 underline">{expanded ? 'Show fewer wards' : `View all ${wards.length} wards`}</button>}
+    </div>
+  );
+};
 
 export const CneHomePage: React.FC<CneHomePageProps> = ({
   user,
@@ -263,7 +279,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
                 <span className="text-[10px] font-bold text-slate-800 uppercase bg-slate-100 px-2 py-0.5 rounded">
                   {selectedNews.category || 'Official Circular'}
                 </span>
-                <span className="text-xs text-slate-400 ml-2">{selectedNews.date}</span>
+                <span className="text-xs text-slate-400 ml-2">{formatCneDateDisplay(selectedNews.date)}</span>
                 <h3 className="text-base font-bold text-slate-900 mt-1.5">{selectedNews.title}</h3>
               </div>
               <button
@@ -381,6 +397,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
                 <span className="text-slate-500">Venue / Location:</span>
                 <span className="font-bold text-slate-900">{selectedClass.area || 'Clinical Skills Lab'}</span>
               </div>
+              <CompactHomeWards cne={selectedClass} />
               {(selectedClass.resourcePersonName || 'Resource Person') && (
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500">Resource Person:</span>

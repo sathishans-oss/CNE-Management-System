@@ -2466,7 +2466,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-workflows.js",
     mode: "module",
     expectedChecks: 76,
-    sha256: "92f430ce2c687b40466756c5b4b0aeade1766cf8373edb6c122e649c6a9e329a",
+    sha256: "701918c675aeebf58034a218c55b84b58c77510e52c8c14a599c04e9227b6a98",
     source: `/**
  * CNE Business Workflows & Schema Verification Suite
  *
@@ -3796,9 +3796,31 @@ runTest('Frontend getCneTypeLabel displays labels for all seven CNE types', () =
   assert.ok(utilsTs.includes('function getCneTypeLabel'), 'src/utils.ts must export getCneTypeLabel');
   assert.ok(utilsTs.includes("'Central CNE'"), 'Must return Central CNE');
   assert.ok(utilsTs.includes("'Ward-Level CNE'"), 'Must return Ward-Level CNE');
-  assert.ok(utilsTs.includes("'Departmental CNE'"), 'Must return new Departmental CNE');
+  assert.ok(utilsTs.includes("'Unscheduled Departmental CNE'"), 'Must return Unscheduled Departmental CNE');
   assert.ok(utilsTs.includes("'External CNE – Outside AIIMS'"), 'Must return External CNE – Outside AIIMS');
   assert.ok(utilsTs.includes("'External CNE – Hosted at AIIMS'"), 'Must return External CNE – Hosted at AIIMS');
+});
+
+runTest('Schedule shows only the primary ward and retains the retrospective Departmental label', () => {
+  const row = fs.readFileSync('src/components/cne/ScheduleRow.tsx', 'utf8');
+  const mobile = fs.readFileSync('src/components/cne/ScheduleMobileCard.tsx', 'utf8');
+  const utils = fs.readFileSync('src/utils.ts', 'utf8');
+  assert.ok(row.includes("{cls.area || '—'}"), 'Desktop table should display the primary ward');
+  assert.ok(mobile.includes("{item.area || '—'}"), 'Mobile card should display the primary ward');
+  assert.ok(!row.includes('cls.participatingWards.join('), 'Desktop should not concatenate participating wards');
+  assert.ok(!mobile.includes('item.participatingWards.join('), 'Mobile should not concatenate participating wards');
+  assert.ok(utils.includes("DEPARTMENTAL: { label: 'Unscheduled Departmental CNE'"), 'Departmental display label should be explicit');
+  assert.ok(utils.includes('getCneParticipatingWards'), 'Shared participating-ward helper must exist');
+  const calendar = fs.readFileSync('src/components/CNECalendar.tsx', 'utf8');
+  const details = fs.readFileSync('src/components/cne/CneDetailsModal.tsx', 'utf8');
+  assert.ok(calendar.includes("View all \${calendarPreviewWards.length} wards"), 'Calendar preview must allow expanding all wards');
+  assert.ok(calendar.includes('calendarPreviewWards.slice(0, 4)'), 'Calendar preview must default to four wards');
+  assert.ok(details.includes('Participating Wards ('), 'Full details must show all participating wards');
+  const participants = fs.readFileSync('src/components/cne/CNEParticipantsModal.tsx', 'utf8');
+  assert.ok(participants.includes('formatCneDateTimeDisplay(p.submittedAt)'), 'Participant timestamp should display in India format');
+
+  assert.ok(codeGs.includes('including Unscheduled Departmental CNE.'), 'Backend permission error should use updated label');
+  assert.ok(codeGs.includes("DEPARTMENTAL: { prefix: 'UD'"), 'Canonical type and prefix must remain unchanged');
 });
 
 runTest('Lifecycle finalize and cancel recognize all seven CNE types in Code.gs', () => {
@@ -11437,7 +11459,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   });
   check('Reports: summary period hidden on screen but present for printing', () => {
     if (!reports.includes('className="hidden print:block') ||
-        !reports.includes('From {applied.fromDate} to {applied.toDate}') ||
+        !reports.includes('From {formatCneDateDisplay(applied.fromDate)} to {formatCneDateDisplay(applied.toDate)}') ||
         reports.includes('Dates use India calendar day.'))
       throw Error('Print-only reporting period not correctly configured');
   });
@@ -11708,8 +11730,10 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     if(JSON.stringify(Array.from(ctx.result))!==JSON.stringify(['NICU']))throw Error('legacy fallback must be primary only');
     if(!gs.includes("key: 'participatingwards'") && !gs.includes("getHeaderMap(sheet)['participatingwards']"))throw Error('dedicated selected ward column missing');
   });
-  check('Schedule desktop and mobile display explicit selected wards only', () => {
-    if(!desktop.includes('cls.participatingWards.join') || !mobile.includes('item.participatingWards.join') || !desktop.includes('cls.area'))throw Error('schedule display incorrect');
+  check('Schedule desktop and mobile display only the primary ward', () => {
+    if (!desktop.includes("{cls.area || '—'}") || !mobile.includes("{item.area || '—'}") ||
+        desktop.includes('cls.participatingWards.join') || mobile.includes('item.participatingWards.join'))
+      throw Error('Schedule view must show primary ward only');
   });
   check('Ward count API is authenticated and mock fails closed', () => {
     if(!gs.includes("case 'getWardStaffCounts'") || !gs.includes("errorCode: 'FORBIDDEN', message: 'Only CNE schedulers") || !api.includes("case 'getWardStaffCounts'") || !api.includes("getWardStaffCounts(): Promise")) throw Error('backend/frontend API scoping incorrect');
@@ -11843,11 +11867,12 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
         !creation.includes("if (!isUnscheduled) {\n      setCell('coverageareassnapshot'"))
       throw Error('Backend CNE-type count policy changed');
   });
-  check('Desktop and mobile schedule display all explicitly selected wards for all CNE types', () => {
-    if (!row.includes('cls.participatingWards?.length') || !card.includes('item.participatingWards?.length') ||
-        row.includes("cls.cneType === 'WARD_LEVEL' && cls.participatingWards") ||
-        card.includes("item.cneType === 'WARD_LEVEL' && item.participatingWards"))
-      throw Error('Scheduled ward display still restricted to WardLevel');
+  check('Schedule desktop/mobile show only primary ward for every CNE type', () => {
+    if (!row.includes("{cls.area || '—'}") || !card.includes("{item.area || '—'}") ||
+        row.includes('cls.participatingWards.join') || card.includes('item.participatingWards.join'))
+      throw Error('Schedule view must not expand to all participating wards');
+    if (!gs.includes("setCell('participatingwards', -1, JSON.stringify(createWards.wards))"))
+      throw Error('Participating ward selection must remain preserved in backend');
   });
   console.log('\n>>> Central/Unscheduled shared ward selection and selector UX regression checks');
   for (const item of checks) {
@@ -13684,7 +13709,7 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
       assert(popup.includes('RETROSPECTIVE_CNE_TYPES.map('));
       assert(popup.includes('RETROSPECTIVE_CNE_TYPES.includes(cneType)'));
       assert(schedule.includes('(Object.keys(CNE_TYPE_CONFIG) as CNEType[]).map(type => ('));
-      assert(utils.includes("DEPARTMENTAL: { label: 'Departmental CNE'"));
+      assert(utils.includes("DEPARTMENTAL: { label: 'Unscheduled Departmental CNE'"));
       assert(!readFileSync(join(ROOT_DIR,'src/components/cne/WardLevelScheduleModal.tsx'),'utf8').includes('value="DEPARTMENTAL"'));
       assert(create.includes('CNE_TYPE_CONFIG[cneType].workflow'));
       assert(create.includes('isUnscheduled !== retrospectiveType'));
