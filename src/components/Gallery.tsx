@@ -1,4 +1,4 @@
-import { getIndiaTodayIsoDate } from '../utils';
+import { getIndiaTodayIsoDate, formatCneDateDisplay } from '../utils';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Images,
@@ -184,7 +184,7 @@ export const Gallery: React.FC<GalleryProps> = ({ user }) => {
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                 />
                 <div className="absolute top-2.5 right-2.5 bg-slate-900/80 backdrop-blur-xs text-white text-[10px] font-semibold px-2 py-0.5 rounded-md">
-                  {item.date}
+                  {formatCneDateDisplay(item.date)}
                 </div>
                 <div className="absolute inset-0 bg-slate-900/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
                   <div className="p-2 bg-slate-900/80 rounded-full">
@@ -257,7 +257,7 @@ export const Gallery: React.FC<GalleryProps> = ({ user }) => {
             <div className="p-6 space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-bold text-white">{activeLightbox.title}</h3>
-                <span className="text-xs text-emerald-400 font-semibold">{activeLightbox.date}</span>
+                <span className="text-xs text-emerald-400 font-semibold">{formatCneDateDisplay(activeLightbox.date)}</span>
               </div>
               {activeLightbox.description && (
                 <p className="text-sm text-slate-300 leading-relaxed">
