@@ -507,7 +507,6 @@ export interface CneInterestRegistration {
   employeeId: string;
   employeeName: string;
   designation: string;
-  department: string;
   status: CneInterestStatus;
   interestedAt: string;
   updatedAt: string;
@@ -524,7 +523,6 @@ export interface CneInterestedParticipantsResponse {
   cneId: string;
   topic: string;
   date: string;
-  area?: string;
   totalInterested: number;
   participants: CneInterestRegistration[];
 }

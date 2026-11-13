@@ -8206,7 +8206,7 @@ var CNE_SHEET_HEADERS = {
   'Auth_Credentials': ['Employee_ID', 'Password_Hash', 'Password_Salt', 'Password_Version', 'Password_Created_At', 'Password_Changed_At', 'Last_Login_At', 'Account_Status', 'Failed_Login_Count', 'Locked_Until', 'Created_At', 'Updated_At'],
   'Clinical_Insights': ['Insight_ID', 'Image_Drive_File_ID', 'Display_Order', 'Status', 'Override_Date', 'Created_At', 'Created_By', 'Updated_At'],
   'Deleted_Archive': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Deleted_At', 'Deleted_By', 'Delete_Reason', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
-  'Interest_Registrations': ['CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Department_Area', 'Interest_Status', 'Interested_At', 'Updated_At'],
+  'Interest_Registrations': ['CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Interest_Status', 'Interested_At', 'Updated_At'],
   'Post_Test_Questions': ['CNE_ID', 'Question_ID', 'Question_Text', 'Option_A', 'Option_B', 'Option_C', 'Option_D', 'Correct_Option', 'Explanation', 'Is_Finalized', 'Is_Locked', 'Created_At', 'Created_By', 'Authoritative_Source', 'Status', 'Question_Type', 'Image_Drive_File_ID'],
   'CNE_Participants': ['Participant_ID', 'CNE_ID', 'Employee_ID', 'Participant_Name', 'Participant_Type', 'Designation', 'Attendance_Status', 'Attendance_Source', 'Attendance_At', 'Post_Test_Status', 'Post_Test_Response_ID', 'Post_Test_Answers_JSON', 'Post_Test_Score', 'Post_Test_Total', 'Post_Test_Percentage', 'Post_Test_Submitted_At', 'Post_Test_Questions_JSON', 'Post_Test_Result', 'Created_At', 'Created_By'],
   'Quiz_Attempts': ['Attempt_ID', 'Employee_ID', 'Employee_Name', 'Units_JSON', 'Question_IDs_JSON', 'Question_Count', 'Status', 'Started_At', 'Updated_At', 'Completed_At', 'Correct_Count', 'Wrong_Count', 'Percentage', 'Result_JSON', 'Answers_Encoded', 'Committed_Count'],
@@ -19134,7 +19134,6 @@ function getInterestRegistrationsSheet() {
     'Employee_ID',
     'Employee_Name',
     'Designation',
-    'Department_Area',
     'Interest_Status',
     'Interested_At',
     'Updated_At'
@@ -19207,7 +19206,6 @@ function validateInterestSheetSchema_(sheet) {
     { key: 'employeeid', name: 'Employee_ID' },
     { key: 'employeename', name: 'Employee_Name' },
     { key: 'designation', name: 'Designation' },
-    { key: 'departmentarea', name: 'Department_Area' },
     { key: 'intereststatus', name: 'Interest_Status' },
     { key: 'interestedat', name: 'Interested_At' },
     { key: 'updatedat', name: 'Updated_At' }
@@ -19653,20 +19651,10 @@ function handleRegisterCneInterest(params, session) {
     var empName = (officer && officer.name) ? officer.name : (activeSession.name || '');
     var designation = (officer && officer.designation) ? officer.designation : (activeSession.designation || 'Nursing Officer');
 
-    // Section 5: Authoritative department / area assignment. NEVER fall back to officer.employmentType!
-    var department = '';
-    if (activeSession.assignedArea) {
-      department = activeSession.assignedArea;
-    } else if (activeSession.assignedAreas && activeSession.assignedAreas.length > 0) {
-      department = activeSession.assignedAreas.join(', ');
-    } else {
-      try {
-        var roleInfo = getUserRoleInfo(empId, true);
-        department = roleInfo.assignedArea || (roleInfo.assignedAreas && roleInfo.assignedAreas.join(', ')) || '';
-      } catch (re) {}
-    }
+    // Interest records intentionally do not contain Department/Area.
+    // Only the authenticated employee's identity and designation are saved.
 
-    // 6. Access and strictly validate interest sheet headers
+    // Access and strictly validate the seven required interest sheet headers.
     var sheet = getInterestRegistrationsSheet();
     var schema = validateInterestSheetSchema_(sheet);
     if (!schema.isValid) {
@@ -19682,7 +19670,6 @@ function handleRegisterCneInterest(params, session) {
     var empCol = colMap['employeeid'];
     var nameCol = colMap['employeename'];
     var desigCol = colMap['designation'];
-    var deptCol = colMap['departmentarea'];
     var statusCol = colMap['intereststatus'];
     var intAtCol = colMap['interestedat'];
     var updAtCol = colMap['updatedat'];
@@ -19696,7 +19683,7 @@ function handleRegisterCneInterest(params, session) {
 
     var lastRow = sheet.getLastRow();
     if (lastRow > 1) {
-      var width = Math.max(schema.totalCols, 8);
+      var width = Math.max(schema.totalCols, 7);
       var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
       for (var r = 0; r < data.length; r++) {
         var rowCneId = String(data[r][cneCol] || '').trim().toUpperCase();
@@ -19727,18 +19714,16 @@ function handleRegisterCneInterest(params, session) {
       sheet.getRange(existingRowIndex, updAtCol + 1).setValue(nowTimestamp);
       if (empName) sheet.getRange(existingRowIndex, nameCol + 1).setValue(empName);
       if (designation) sheet.getRange(existingRowIndex, desigCol + 1).setValue(designation);
-      sheet.getRange(existingRowIndex, deptCol + 1).setValue(department);
       SpreadsheetApp.flush();
     } else {
       // New registration: respect dynamic column mapping (support rearranged columns)
-      var maxCols = Math.max(schema.totalCols, 8);
+      var maxCols = Math.max(schema.totalCols, 7);
       var newRow = [];
       for (var c = 0; c < maxCols; c++) newRow.push('');
       newRow[cneCol] = cneId;
       newRow[empCol] = empId;
       newRow[nameCol] = empName;
       newRow[desigCol] = designation;
-      newRow[deptCol] = department;
       newRow[statusCol] = 'INTERESTED';
       newRow[intAtCol] = nowTimestamp;
       newRow[updAtCol] = nowTimestamp;
@@ -19842,7 +19827,7 @@ function handleWithdrawCneInterest(params, session) {
       ? Utilities.formatDate(new Date(), 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ssXXX")
       : new Date().toISOString();
 
-    var width = Math.max(schema.totalCols, 8);
+    var width = Math.max(schema.totalCols, 7);
     var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
     for (var r = 0; r < data.length; r++) {
       var rowCneId = String(data[r][cneCol] || '').trim().toUpperCase();
@@ -19903,7 +19888,7 @@ function handleGetMyCneInterestStatus(params, session) {
   var updAtCol = colMap['updatedat'];
 
   var lastRow = sheet.getLastRow();
-  var width = Math.max(schema.totalCols, 8);
+  var width = Math.max(schema.totalCols, 7);
   var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
 
   for (var r = 0; r < data.length; r++) {
@@ -19962,7 +19947,6 @@ function handleGetCneInterestedParticipants(params, session) {
         cneId: cneId,
         topic: record.topic,
         date: record.date,
-        area: record.area,
         totalInterested: 0,
         participants: []
       }
@@ -19979,13 +19963,12 @@ function handleGetCneInterestedParticipants(params, session) {
   var empCol = colMap['employeeid'];
   var nameCol = colMap['employeename'];
   var desigCol = colMap['designation'];
-  var deptCol = colMap['departmentarea'];
   var statusCol = colMap['intereststatus'];
   var intAtCol = colMap['interestedat'];
   var updAtCol = colMap['updatedat'];
 
   var lastRow = sheet.getLastRow();
-  var width = Math.max(schema.totalCols, 8);
+  var width = Math.max(schema.totalCols, 7);
   var data = sheet.getRange(2, 1, lastRow - 1, width).getValues();
   var participants = [];
   var totalInterested = 0;
@@ -20004,7 +19987,6 @@ function handleGetCneInterestedParticipants(params, session) {
       employeeId: String(data[r][empCol] || '').trim(),
       employeeName: String(data[r][nameCol] || '').trim(),
       designation: String(data[r][desigCol] || 'Nursing Officer').trim(),
-      department: String(data[r][deptCol] || '').trim(),
       status: st,
       interestedAt: formatDateValue(data[r][intAtCol]),
       updatedAt: formatDateValue(data[r][updAtCol])
@@ -20017,7 +19999,6 @@ function handleGetCneInterestedParticipants(params, session) {
       cneId: cneId,
       topic: record.topic,
       date: record.date,
-      area: record.area,
       totalInterested: totalInterested,
       participants: participants
     }

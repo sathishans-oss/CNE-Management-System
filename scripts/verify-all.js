@@ -7397,8 +7397,8 @@ console.log('========================================================\\n');
     name: "CNE Expression of Interest",
     originalFilename: "verify-cne-interest.js",
     mode: "module",
-    expectedChecks: 46,
-    sha256: "4881c1e750e4552abe85b7f257aab60fb397a004e2680f9683cf3f495a35fd40",
+    expectedChecks: 47,
+    sha256: "43f326587b52b5510652ac0c4c027b10d751d59ef080ff808795229da6ff410a",
     source: `/**
  * ============================================================================
  * EXECUTABLE BEHAVIORAL TEST SUITE: CNE Expression of Interest (Phase 1)
@@ -7945,12 +7945,12 @@ runBehavioralTest('1. Registering interest saves record in CNE Interest Registra
   assert.ok(sheet, 'CNE Interest Registrations tab must be created');
   assert.strictEqual(sheet.getLastRow(), 2, 'Must have 1 header row + 1 data row');
 
-  const row = sheet.getRange(2, 1, 1, 8).getValues()[0];
+  const row = sheet.getRange(2, 1, 1, 7).getValues()[0];
   assert.strictEqual(row[0], 'CNE-2026-FUT1', 'CNE ID matches');
   assert.strictEqual(row[1], 'EMP-NURSE-01', 'Employee ID matches');
   assert.strictEqual(row[2], 'Staff Nurse Alpha', 'Employee name resolved from directory');
-  assert.strictEqual(row[5], 'INTERESTED', 'Interest status is INTERESTED');
-  assert.ok(row[6], 'Interested At timestamp recorded');
+  assert.strictEqual(row[4], 'INTERESTED', 'Interest status is INTERESTED');
+  assert.ok(row[5], 'Interested At timestamp recorded');
 });
 
 runBehavioralTest('2. Withdrawal updates interest status to WITHDRAWN', () => {
@@ -7964,8 +7964,8 @@ runBehavioralTest('2. Withdrawal updates interest status to WITHDRAWN', () => {
   assert.strictEqual(withdrawRes.data.status, 'WITHDRAWN');
 
   const sheet = cneSpreadsheet.getSheetByName('Interest_Registrations');
-  const row = sheet.getRange(2, 1, 1, 8).getValues()[0];
-  assert.strictEqual(row[5], 'WITHDRAWN', 'Status in sheet updated to WITHDRAWN');
+  const row = sheet.getRange(2, 1, 1, 7).getValues()[0];
+  assert.strictEqual(row[4], 'WITHDRAWN', 'Status in sheet updated to WITHDRAWN');
 });
 
 runBehavioralTest('3. Re-registration updates existing row rather than creating duplicate row', () => {
@@ -7983,8 +7983,8 @@ runBehavioralTest('3. Re-registration updates existing row rather than creating 
   const sheet = cneSpreadsheet.getSheetByName('Interest_Registrations');
   assert.strictEqual(sheet.getLastRow(), 2, 'Must still have exactly 1 data row, no duplicate created');
 
-  const row = sheet.getRange(2, 1, 1, 8).getValues()[0];
-  assert.strictEqual(row[5], 'INTERESTED', 'Status updated back to INTERESTED');
+  const row = sheet.getRange(2, 1, 1, 7).getValues()[0];
+  assert.strictEqual(row[4], 'INTERESTED', 'Status updated back to INTERESTED');
 });
 
 runBehavioralTest('4. Duplicate registration calls are idempotent and prevent duplicate rows', () => {
@@ -8045,7 +8045,7 @@ runBehavioralTest('8. Employee identity is derived strictly from session and can
   assert.strictEqual(res.success, true);
 
   const sheet = cneSpreadsheet.getSheetByName('Interest_Registrations');
-  const row = sheet.getRange(2, 1, 1, 8).getValues()[0];
+  const row = sheet.getRange(2, 1, 1, 7).getValues()[0];
   assert.strictEqual(row[1], 'EMP-NURSE-01', 'Must store authenticated session employeeId, ignoring client input');
   assert.strictEqual(row[2], 'Staff Nurse Alpha', 'Must store authentic directory name');
 });
@@ -8273,7 +8273,7 @@ runBehavioralTest('22. Invalid interest sheet headers rejects registration with 
 
   // Pre-create corrupt sheet missing "Employee_ID" header
   cneSpreadsheet.addSheet('Interest_Registrations', [
-    ['CNE_ID', 'Corrupt Header', 'Employee_Name', 'Designation', 'Department_Area', 'Interest_Status', 'Interested_At', 'Updated_At']
+    ['CNE_ID', 'Corrupt Header', 'Employee_Name', 'Designation', 'Interest_Status', 'Interested_At', 'Updated_At']
   ]);
 
   const res = sandbox.handleRegisterCneInterest({ cneId: 'CNE-2026-FUT1' }, session);
@@ -8287,18 +8287,18 @@ runBehavioralTest('23. Rearranged interest sheet columns are correctly resolved 
 
   // Pre-create sheet with rearranged columns
   cneSpreadsheet.addSheet('Interest_Registrations', [
-    ['Employee_ID', 'Interest_Status', 'CNE_ID', 'Department_Area', 'Designation', 'Employee_Name', 'Updated_At', 'Interested_At']
+    ['Employee_ID', 'Interest_Status', 'CNE_ID', 'Designation', 'Employee_Name', 'Updated_At', 'Interested_At']
   ]);
 
   const res = sandbox.handleRegisterCneInterest({ cneId: 'CNE-2026-FUT1' }, session);
   assert.strictEqual(res.success, true);
 
   const sheet = cneSpreadsheet.getSheetByName('Interest_Registrations');
-  const row = sheet.getRange(2, 1, 1, 8).getValues()[0];
+  const row = sheet.getRange(2, 1, 1, 7).getValues()[0];
   assert.strictEqual(row[0], 'EMP-NURSE-01', 'Employee ID in column 0');
   assert.strictEqual(row[1], 'INTERESTED', 'Interest Status in column 1');
   assert.strictEqual(row[2], 'CNE-2026-FUT1', 'CNE ID in column 2');
-  assert.strictEqual(row[5], 'Staff Nurse Alpha', 'Employee Name in column 5');
+  assert.strictEqual(row[4], 'Staff Nurse Alpha', 'Employee Name in column 4');
 
   // Verify organizer query accurately parses rearranged columns
   const adminSession = { employeeId: 'EMP-ADM-001', role: 'ADMIN', passwordVersion: 1 };
@@ -8374,17 +8374,60 @@ runBehavioralTest('27. Resource Person access is strictly limited to their assig
   assert.strictEqual(unassignedRes.errorCode, 'FORBIDDEN');
 });
 
-runBehavioralTest('28. Department derivation does not treat officer employment type as department', () => {
+runBehavioralTest('28. Interest registration stores only seven fields and never records Department/Area', () => {
   const { sandbox, cneSpreadsheet } = createFreshTestEnvironment();
-  // Role table does not have assigned area for EMP-RP-100; employmentType in roster is "Regular"
-  const rpSession = { employeeId: 'EMP-RP-100', role: 'EMPLOYEE', passwordVersion: 1 };
-  sandbox.handleRegisterCneInterest({ cneId: 'CNE-2026-FUT1' }, rpSession);
-
+  const rpSession = { employeeId: 'EMP-RP-100', role: 'EMPLOYEE', assignedArea: 'ICU', passwordVersion: 1 };
+  const registration = sandbox.handleRegisterCneInterest({ cneId: 'CNE-2026-FUT1' }, rpSession);
+  assert.strictEqual(registration.success, true);
   const sheet = cneSpreadsheet.getSheetByName('Interest_Registrations');
-  const row = sheet.getRange(2, 1, 1, 8).getValues()[0];
-  // Column 4 is Department / Area
-  assert.notStrictEqual(row[4], 'Regular', 'Must NEVER treat Employment Type "Regular" as a department');
-  assert.strictEqual(row[4], '', 'Preserves blank when no authoritative department assigned');
+  const expected = ['CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Interest_Status', 'Interested_At', 'Updated_At'];
+  assert.deepStrictEqual(sheet.getRange(1, 1, 1, 7).getValues()[0], expected);
+  const row = sheet.getRange(2, 1, 1, 7).getValues()[0];
+  assert.strictEqual(row.length, 7);
+  assert.strictEqual(row[4], 'INTERESTED');
+  assert.ok(!row.includes('ICU'), 'No Department/Area field or value may be saved');
+  const result = sandbox.handleGetCneInterestedParticipants({ cneId: 'CNE-2026-FUT1' }, {employeeId:'EMP-ADM-001',role:'ADMIN',passwordVersion:1});
+  assert.strictEqual(result.success, true);
+  assert.ok(!Object.prototype.hasOwnProperty.call(result.data.participants[0], 'department'));
+  assert.ok(!Object.prototype.hasOwnProperty.call(result.data, 'area'), 'Interested-list API must not expose an Area field');
+});
+
+runBehavioralTest('28a. Manually deleted Department_Area stays absent with reordered interest columns', () => {
+  const { sandbox, cneSpreadsheet } = createFreshTestEnvironment();
+  // Represents the user's already-updated seven-column Interest_Registrations sheet.
+  const headers = [
+    'Employee_ID', 'Interest_Status', 'CNE_ID',
+    'Designation', 'Employee_Name', 'Updated_At', 'Interested_At'
+  ];
+  const existingRow = [
+    'EMP-NURSE-01', 'INTERESTED', 'CNE-2026-FUT1',
+    'Nursing Officer', 'Staff Nurse Alpha', '2026-11-10', '2026-11-09'
+  ];
+  const sheet = cneSpreadsheet.addSheet('Interest_Registrations', [headers, existingRow]);
+  const schema = sandbox.validateInterestSheetSchema_(sheet);
+  assert.strictEqual(schema.isValid, true, schema.message);
+  assert.strictEqual(sheet.getLastColumn(), 7, 'Only seven interest columns should remain');
+  assert.ok(!headers.includes('Department_Area'), 'Retired header must not be required');
+
+  // Old registration must be retrievable without a migration function.
+  const organizer = { employeeId: 'EMP-ADM-001', role: 'ADMIN', passwordVersion: 1 };
+  const statuses = sandbox.handleGetCneInterestedParticipants({ cneId: 'CNE-2026-FUT1' }, organizer);
+  assert.strictEqual(statuses.success, true);
+  assert.strictEqual(statuses.data.participants[0].employeeId, 'EMP-NURSE-01');
+  assert.strictEqual(statuses.data.participants[0].status, 'INTERESTED');
+
+  // New registration must use the seven *named* headers, not former physical positions.
+  const employee = { employeeId: 'EMP-NURSE-02', role: 'EMPLOYEE', name: 'Staff Nurse Beta', passwordVersion: 1 };
+  const result = sandbox.handleRegisterCneInterest({ cneId: 'CNE-2026-FUT1' }, employee);
+  assert.strictEqual(result.success, true, result.message);
+  assert.strictEqual(sheet.getLastRow(), 3);
+  assert.strictEqual(sheet.getLastColumn(), 7);
+  assert.deepStrictEqual(sheet.getRange(1, 1, 1, 7).getValues()[0], headers);
+  assert.deepStrictEqual(sheet.getRange(2, 1, 1, 7).getValues()[0], existingRow);
+  const row = sheet.getRange(3, 1, 1, 7).getValues()[0];
+  assert.strictEqual(row[headers.indexOf('Employee_ID')], 'EMP-NURSE-02');
+  assert.strictEqual(row[headers.indexOf('CNE_ID')], 'CNE-2026-FUT1');
+  assert.strictEqual(row[headers.indexOf('Interest_Status')], 'INTERESTED');
 });
 
 runBehavioralTest('29. Withdrawal after CNE start time is rejected with REGISTRATION_CLOSED', () => {
@@ -8422,7 +8465,7 @@ runBehavioralTest('30. Preserved historical interest after CNE deletion and reje
   // Historical record in CNE Interest Registrations is preserved
   const intSheet = cneSpreadsheet.getSheetByName('Interest_Registrations');
   assert.strictEqual(intSheet.getLastRow(), 2, 'Historical interest registration remains intact in sheet');
-  const row = intSheet.getRange(2, 1, 1, 8).getValues()[0];
+  const row = intSheet.getRange(2, 1, 1, 7).getValues()[0];
   assert.strictEqual(row[0], 'CNE-2026-FUT1');
   assert.strictEqual(row[1], 'EMP-NURSE-01');
 
