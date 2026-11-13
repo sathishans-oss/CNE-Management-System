@@ -85,7 +85,7 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
   const readyPercentage = Math.round((readyCount / 6) * 100);
 
   return (
-    <div className="bg-slate-50/70 p-4 rounded-xl border border-slate-200 h-full flex flex-col justify-between">
+    <div className="bg-slate-50/70 p-4 rounded-xl border border-slate-200 h-full flex flex-col">
       {/* Header with Title and Dynamic "X of 6 Ready" */}
       <div className="border-b border-slate-200 pb-2.5 mb-3 flex items-center justify-between gap-2">
         <div>
@@ -123,14 +123,39 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
       </div>
 
       {isActivityLoading ? (
-        <div className="grid grid-cols-3 gap-2" role="status" aria-label="Loading six CNE progress cards">
-          {['Material', 'Questions', 'QR Code', 'Post-Test', 'Attendance', 'Finalize CNE'].map((name) => (
-            <div key={name} className="min-h-24 p-3 rounded-xl border border-slate-200 bg-white flex flex-col items-center justify-center gap-2">
-              <span className="text-[11px] font-semibold text-slate-700 text-center">{name}</span>
-              <Loader2 className="w-4 h-4 animate-spin text-teal-600" aria-hidden="true" />
-              <span className="text-[10px] text-slate-500">Loading…</span>
-            </div>
-          ))}
+        <div className="flex-1 flex flex-col justify-between gap-3" role="status" aria-label="Loading six CNE progress cards">
+          <div className="space-y-2">
+            {[
+              ['Material', 'Questions', 'QR Code'],
+              ['Post-Test', 'Attendance', 'Finalize CNE']
+            ].map((stage, stageIndex) => (
+              <React.Fragment key={stageIndex}>
+                {stageIndex === 1 && (
+                  <div className="relative flex items-center justify-center py-1" aria-hidden="true">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-dashed border-slate-300" />
+                    </div>
+                    <div className="relative bg-white px-2.5 py-0.5 rounded-full text-[9px] font-bold text-slate-500 border border-slate-200">
+                      Proposal ➔ Completion
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-cols-3 gap-2">
+                  {stage.map((name) => (
+                    <div key={name} className="min-h-[74px] p-2.5 rounded-xl border border-slate-200 bg-white flex flex-col items-center justify-center gap-1">
+                      <span className="text-[11px] font-semibold text-slate-700 text-center">{name}</span>
+                      <Loader2 className="w-4 h-4 animate-spin text-teal-600" aria-hidden="true" />
+                      <span className="text-[10px] text-slate-500">Loading…</span>
+                    </div>
+                  ))}
+                </div>
+              </React.Fragment>
+            ))}
+          </div>
+          <div className="pt-3 border-t border-slate-200/90 mt-auto space-y-1.5" aria-hidden="true">
+            <div className="h-4" />
+            <div className="w-full bg-slate-200 h-2 rounded-full" />
+          </div>
         </div>
       ) : activityProgress ? (
         <div className="flex-1 flex flex-col justify-between space-y-3">
@@ -359,8 +384,24 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
               </button>
 
               {/* 5. Attendance (deduplicated participant roster) */}
-              <div
-                className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left ${
+              <button
+                type="button"
+                onClick={() => onOpenParticipants(cne)}
+                title={
+                  isCancelled
+                    ? `${activityProgress.participantsCount || 0} attendee(s) • CNE canceled • View attendance record`
+                    : isFinalized
+                    ? `Attendance recorded • ${activityProgress.participantsCount || 0} attendee(s)`
+                    : canManageAttendance
+                    ? `Manage attendance • ${activityProgress.participantsCount || 0} attendee(s)`
+                    : `Attendance • ${activityProgress.participantsCount || 0} attendee(s) • View only`
+                }
+                aria-label={
+                  canManageAttendance
+                    ? `Manage attendance, ${activityProgress.participantsCount || 0} attendees`
+                    : `Attendance, ${activityProgress.participantsCount || 0} attendees, view only`
+                }
+                className={`w-full p-2.5 rounded-xl border transition-all flex flex-col justify-between min-h-[74px] text-left cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.98] ${
                   isCancelled
                     ? 'bg-rose-50/80 border-rose-200 text-rose-950 shadow-2xs'
                     : isAttendanceReady
@@ -368,25 +409,6 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                     : 'bg-slate-50 border-slate-200 text-slate-700 shadow-2xs'
                 }`}
               >
-                <button
-                  type="button"
-                  onClick={() => onOpenParticipants(cne)}
-                  title={
-                    isCancelled
-                      ? `${activityProgress.participantsCount || 0} attendee(s) • CNE canceled • View attendance record`
-                      : isFinalized
-                      ? `Attendance recorded • ${activityProgress.participantsCount || 0} attendee(s)`
-                      : canManageAttendance
-                      ? `Manage attendance • ${activityProgress.participantsCount || 0} attendee(s)`
-                      : `Attendance • ${activityProgress.participantsCount || 0} attendee(s) • View only`
-                  }
-                  aria-label={
-                    canManageAttendance
-                      ? `Manage attendance, ${activityProgress.participantsCount || 0} attendees`
-                      : `Attendance, ${activityProgress.participantsCount || 0} attendees, view only`
-                  }
-                  className="w-full text-left cursor-pointer"
-                >
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                       <Users className="w-3.5 h-3.5 text-slate-500 shrink-0" />
@@ -412,10 +434,7 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({
                       )}
                     </div>
                   </div>
-                </button>
-
-
-              </div>
+              </button>
 
               {/* 6. Finalize CNE: independent lifecycle stage */}
               <button

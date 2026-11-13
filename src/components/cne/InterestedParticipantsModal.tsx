@@ -8,11 +8,9 @@ import {
   Users,
   CheckCircle2,
   Clock,
-  Filter,
   RefreshCw,
   AlertCircle,
   Calendar,
-  Building2,
   FileSpreadsheet
 } from 'lucide-react';
 import { CNERecord, CneInterestRegistration, CneInterestedParticipantsResponse } from '../../types';
@@ -45,7 +43,6 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<CneInterestedParticipantsResponse | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedDept, setSelectedDept] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState<'INTERESTED' | 'ALL' | 'WITHDRAWN'>('INTERESTED');
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 15;
@@ -73,16 +70,6 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
 
   const rawParticipants = data?.participants || [];
 
-  // Unique departments for filter dropdown
-  const departments = useMemo(() => {
-    const set = new Set<string>();
-    rawParticipants.forEach((p) => {
-      const d = (p.department || '').trim();
-      if (d) set.add(d);
-    });
-    return Array.from(set).sort();
-  }, [rawParticipants]);
-
   // Active interest count (Only INTERESTED records)
   const activeCount = useMemo(() => {
     return rawParticipants.filter((p) => p.status === 'INTERESTED').length;
@@ -100,23 +87,16 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
       if (statusFilter !== 'ALL' && p.status !== statusFilter) {
         return false;
       }
-      // Department filter
-      if (selectedDept !== 'ALL') {
-        if ((p.department || '').trim().toLowerCase() !== selectedDept.toLowerCase()) {
-          return false;
-        }
-      }
       // Search term
       if (q) {
         const matchesEmpId = (p.employeeId || '').toLowerCase().includes(q);
         const matchesName = (p.employeeName || '').toLowerCase().includes(q);
         const matchesDesig = (p.designation || '').toLowerCase().includes(q);
-        const matchesDept = (p.department || '').toLowerCase().includes(q);
-        return matchesEmpId || matchesName || matchesDesig || matchesDept;
+        return matchesEmpId || matchesName || matchesDesig;
       }
       return true;
     });
-  }, [rawParticipants, searchTerm, selectedDept, statusFilter]);
+  }, [rawParticipants, searchTerm, statusFilter]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredParticipants.length / pageSize));
@@ -128,7 +108,7 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, selectedDept, statusFilter]);
+  }, [searchTerm, statusFilter]);
 
   // CSV Export
   const handleExportCsv = useCallback(() => {
@@ -139,7 +119,6 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
       'Employee ID',
       'Employee Name',
       'Designation',
-      'Department / Area',
       'Interest Status',
       'Interested At',
       'Updated At'
@@ -150,7 +129,6 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
       sanitizeCsvCell(p.employeeId),
       sanitizeCsvCell(p.employeeName),
       sanitizeCsvCell(p.designation),
-      sanitizeCsvCell(p.department),
       sanitizeCsvCell(p.status),
       sanitizeCsvCell(p.interestedAt),
       sanitizeCsvCell(p.updatedAt)
@@ -210,15 +188,6 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
                 <Calendar className="w-3.5 h-3.5 text-slate-400" />
                 {formatCneDateTimeDisplay(cne.date)}
               </span>
-              {cne.area && (
-                <>
-                  <span>•</span>
-                  <span className="inline-flex items-center gap-1 text-slate-600">
-                    <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                    {cne.area}
-                  </span>
-                </>
-              )}
             </div>
           </div>
 
@@ -253,7 +222,7 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
           </span>
         </div>
 
-        {/* Controls Bar: Search, Department filter, Status filter & CSV Export */}
+        {/* Controls Bar: Search, Status filter & CSV Export */}
         <div className="p-4 bg-white border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 shrink-0">
           <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[280px]">
             {/* Search */}
@@ -276,25 +245,6 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
                 </button>
               )}
             </div>
-
-            {/* Department Filter */}
-            {departments.length > 0 && (
-              <div className="flex items-center gap-1.5">
-                <Filter className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                <select
-                  value={selectedDept}
-                  onChange={(e) => setSelectedDept(e.target.value)}
-                  className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                >
-                  <option value="ALL">All Departments ({departments.length})</option>
-                  {departments.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
 
             {/* Status Filter */}
             <select
@@ -369,7 +319,6 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
                       <th className="py-2.5 px-3">Emp ID</th>
                       <th className="py-2.5 px-3">Staff Name</th>
                       <th className="py-2.5 px-3">Designation</th>
-                      <th className="py-2.5 px-3">Department / Area</th>
                       <th className="py-2.5 px-3">Registration Time</th>
                       <th className="py-2.5 px-3 text-center">Interest Status</th>
                     </tr>
@@ -396,15 +345,6 @@ export const InterestedParticipantsModal: React.FC<InterestedParticipantsModalPr
                           </td>
                           <td className="py-2.5 px-3 text-slate-700">
                             {p.designation || 'Nursing Officer'}
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-700">
-                            {p.department ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-800 text-[11px]">
-                                {p.department}
-                              </span>
-                            ) : (
-                              '—'
-                            )}
                           </td>
                           <td className="py-2.5 px-3 text-slate-600 font-mono text-[11px]">
                             {p.interestedAt ? formatCneDateTimeDisplay(p.interestedAt) : '—'}

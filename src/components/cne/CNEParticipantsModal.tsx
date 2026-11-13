@@ -5,7 +5,6 @@ import {
   Plus,
   Minus,
   UserCheck,
-  Award,
   Loader2,
   Search,
   CheckCircle2,
@@ -293,12 +292,12 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
     <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-2 sm:p-5">
       <div className="bg-white rounded-2xl w-full sm:w-[92vw] max-w-[1440px] h-[calc(100dvh-1rem)] sm:h-[85dvh] max-h-[900px] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
         {/* Header - simplified without Ward/Area and Class ID/CNE ID */}
-        <div className="px-6 py-3.5 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/70">
-          <div className="flex items-center gap-3">
+        <div className="px-3 sm:px-5 py-2.5 border-b border-slate-200 flex items-center justify-between gap-3 shrink-0 bg-slate-50/70">
+          <div className="flex items-center gap-2 min-w-0">
             <div className="w-9 h-9 rounded-xl bg-teal-100 text-teal-800 flex items-center justify-center shrink-0">
               <Users className="w-5 h-5" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-200">
                   Attendance &amp; Completion
@@ -310,38 +309,49 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 cursor-pointer transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center justify-end gap-2 shrink-0">
+            {isSessionClosed && (
+              <span className="inline-flex items-center gap-1 text-[10px] text-slate-600 bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg max-w-[210px] sm:max-w-none leading-tight" role="status">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden sm:inline">Attendance is read-only because this CNE is {normalizedStatus === 'completed' ? 'finalized' : 'canceled'}.</span>
+                <span className="sm:hidden">Read-only: {normalizedStatus === 'completed' ? 'Finalized' : 'Canceled'}</span>
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close Attendance and Completion"
+              className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 cursor-pointer transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Stats Summary Bar */}
-        <div className={`${isAddingManual ? 'hidden sm:grid' : 'grid'} grid-cols-2 sm:grid-cols-4 gap-3.5 px-6 py-3 bg-slate-50 border-b border-slate-200 text-xs shrink-0`}>
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <span className="text-[11px] text-slate-500 font-medium">Total Attendees</span>
-            <p className="text-lg font-bold text-slate-900 mt-0.5">
+        <div className={`${isAddingManual ? 'hidden sm:grid' : 'grid'} grid-cols-2 sm:grid-cols-4 gap-2 px-3 sm:px-5 py-2 bg-slate-50 border-b border-slate-200 text-xs shrink-0`}>
+          <div className="bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-xs">
+            <span className="text-[10px] text-slate-500 font-medium">Total Attendees</span>
+            <p className="text-base font-bold text-slate-900 mt-0">
               {summary?.attendedCount ?? 0}
             </p>
-            <p className="text-[10px] text-slate-500 mt-0.5">{summary?.pendingCount ?? 0} pending</p>
+            <p className="text-[9px] text-slate-500 mt-0">{summary?.pendingCount ?? 0} pending</p>
           </div>
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <span className="text-[11px] text-slate-500 font-medium">Post-Test Evaluated</span>
-            <p className="text-lg font-bold text-indigo-700 mt-0.5">
+          <div className="bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-xs">
+            <span className="text-[10px] text-slate-500 font-medium">Post-Test Evaluated</span>
+            <p className="text-base font-bold text-indigo-700 mt-0">
               {summary?.postTestCount || 0}
             </p>
           </div>
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <span className="text-[11px] text-slate-500 font-medium">Attendance without Post-Test</span>
-            <p className="text-lg font-bold text-teal-700 mt-0.5">
+          <div className="bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-xs">
+            <span className="text-[10px] text-slate-500 font-medium">Attendance without Post-Test</span>
+            <p className="text-base font-bold text-teal-700 mt-0">
               {summary?.manualCount || 0}
             </p>
           </div>
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <span className="text-[11px] text-slate-500 font-medium">Average Score</span>
-            <p className="text-lg font-bold text-emerald-700 mt-0.5">
+          <div className="bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-xs">
+            <span className="text-[10px] text-slate-500 font-medium">Average Score</span>
+            <p className="text-base font-bold text-emerald-700 mt-0">
               {summary?.averageScore !== null && summary?.averageScore !== undefined ? `${summary.averageScore}%` : '—'}
             </p>
           </div>
@@ -381,13 +391,6 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
             </button>
           )}
         </div>
-
-        {isSessionClosed && (
-          <div className="px-6 py-2.5 border-b border-slate-200 bg-slate-50 text-[11px] text-slate-600 flex items-center gap-2 shrink-0">
-            <AlertCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            <span>Attendance is read-only because this CNE is {normalizedStatus === 'completed' ? 'finalized' : 'canceled'}.</span>
-          </div>
-        )}
 
         {/* Form: Add Participants (Multi-Select Staff & External) */}
         {isAddingManual && canModifyAttendance && (
@@ -580,7 +583,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
 
         {/* Attendance roster is available in view mode; the manual form gets the full
             scrollable area while editing so its footer actions remain visible. */}
-        {!(isAddingManual && canModifyAttendance) && <div className="p-4 sm:p-6 overflow-y-auto flex-1 min-h-0 bg-slate-50/40">
+        {!(isAddingManual && canModifyAttendance) && <div className="p-3 sm:p-4 overflow-y-auto flex-1 min-h-0 bg-slate-50/40">
           {loading ? (
             <div className="py-20 flex flex-col items-center justify-center gap-2 text-slate-500 text-xs">
               <Loader2 className="w-6 h-6 animate-spin text-teal-600" />
@@ -599,12 +602,10 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
-                    <th className="p-3">Sr.</th>
-                    <th className="p-3">Staff Details</th>
-                    <th className="p-3">Type</th>
-                    <th className="p-3">Evaluation Score</th>
-                    <th className="p-3">Status</th>
-                    <th className="p-3">Date / Time</th>
+                    <th className="px-3 py-2">Sr.</th>
+                    <th className="px-3 py-2">Staff Details</th>
+                    <th className="px-3 py-2">Evaluation Score</th>
+                    <th className="px-3 py-2">Date / Time</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -613,32 +614,15 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                     const isPostTest = !isPending && p.participantType === 'POST_TEST';
                     return (
                       <tr key={p.id || idx} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="p-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
-                        <td className="p-3">
+                        <td className="px-3 py-2 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
+                        <td className="px-3 py-2">
                           <div className="font-bold text-slate-900">{p.name || p.employeeId}</div>
                           <div className="text-[11px] text-slate-500">
                             {p.employeeId ? `ID: ${p.employeeId}` : 'External / Guest'}
                             {p.designation ? ` • ${p.designation}` : ''}
                           </div>
                         </td>
-                        <td className="p-3">
-                          {isPending ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
-                              Added (Pending)
-                            </span>
-                          ) : isPostTest ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
-                              <Award className="w-2.5 h-2.5" />
-                              Online Post-Test
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-200">
-                              <UserCheck className="w-2.5 h-2.5" />
-                              {p.source === 'RETROSPECTIVE' ? 'Recorded (Unscheduled)' : p.source === 'QR' ? 'QR Attendance' : 'In-Person Manual'}
-                            </span>
-                          )}
-                        </td>
-                        <td className="p-3 font-medium">
+                        <td className="px-3 py-2 font-medium">
                           {isPending ? (
                             <span className="text-amber-700 text-[11px]">Attendance not confirmed</span>
                           ) : isPostTest && typeof p.score === 'number' ? (
@@ -654,20 +638,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                             <span className="text-slate-400 text-[11px]">Attended (No Test)</span>
                           )}
                         </td>
-                        <td className="p-3">
-                          <span
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                              p.status === 'ATTENDED'
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : p.status === 'PENDING'
-                                ? 'bg-amber-100 text-amber-800'
-                                : 'bg-slate-100 text-slate-700'
-                            }`}
-                          >
-                            {p.status || 'ATTENDED'}
-                          </span>
-                        </td>
-                        <td className="p-3 text-slate-500 text-[11px] whitespace-nowrap">
+                        <td className="px-3 py-2 text-slate-500 text-[11px] whitespace-nowrap">
                           {formatCneDateTimeDisplay(p.submittedAt)}
                         </td>
                       </tr>
