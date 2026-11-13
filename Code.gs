@@ -396,13 +396,10 @@ function revalidateCneMutation_(session, cneId, authorizationMode, allowClosed) 
 function logAuditAction(action, employeeId, details, status) {
   try {
     var auditSheet = getOrCreateSheet('Audit_Log');
-    auditSheet.appendRow([
-      new Date().toISOString(),
-      action || '',
-      normalizeEmpId(employeeId),
-      sanitizeCellInput(details || ''),
-      status || 'SUCCESS'
-    ]);
+    cneAppendHeaderRows_(auditSheet,CNE_SHEET_HEADERS['Audit_Log'],[[
+      new Date().toISOString(),action||'',normalizeEmpId(employeeId),
+      sanitizeCellInput(details||''),status||'SUCCESS'
+    ]]);
   } catch (e) {
     console.warn('Audit log write error: ' + e.message);
   }
@@ -428,7 +425,7 @@ function logAuditActionsBatch(entries) {
       ]);
     }
     if (rows.length > 0) {
-      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, rows.length, 5).setValues(rows);
+      cneAppendHeaderRows_(auditSheet,CNE_SHEET_HEADERS['Audit_Log'],rows);
     }
   } catch (e) {
     console.warn('Batch audit log write error: ' + e.message);
@@ -587,9 +584,10 @@ function findActiveQrTokenForCne_(cneId) {
   if (!target) return null;
   var sheet = getQRTokensSheet();
   if (!sheet || sheet.getLastRow() <= 1) return null;
-  var rows = findExactRowsInColumn_(sheet, 1, target, 2);
+  var layout=cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['QR_Tokens']);
+  var rows = findExactRowsInColumn_(sheet, layout.positions[1], target, 2);
   for (var i = 0; i < rows.length; i++) {
-    var row = sheet.getRange(rows[i], 1, 1, 5).getValues()[0];
+    var row=cneReadHeaderRows_(sheet,layout.names,rows[i],1,layout)[0];
     var status = String(row[4] || 'ACTIVE').trim().toUpperCase();
     if (status === 'ACTIVE') {
       return { qrToken: String(row[0] || '').trim(), cneId: String(row[1] || '').trim() };
@@ -3134,7 +3132,7 @@ function getAreaStatusMap_(forceFresh) {
   }
   if (areas.length === 0) {
     var sheet = getOrCreateSheet('Area');
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Area']);
     for (var r = 1; r < data.length; r++) {
       var name = String(data[r][0] || '').trim();
       var status = String(data[r][1] || 'ACTIVE').trim().toUpperCase();
@@ -3475,7 +3473,7 @@ function handleAddArea(params, session) {
   
   try {
     var sheet = getOrCreateSheet('Area');
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Area']);
     
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0]).trim().toLowerCase() === areaName.toLowerCase()) {
@@ -3484,7 +3482,7 @@ function handleAddArea(params, session) {
     }
     
     var createdAt = new Date().toISOString();
-    sheet.appendRow([areaName, 'ACTIVE', createdAt]);
+    cneAppendHeaderRows_(sheet,CNE_SHEET_HEADERS['Area'],[[areaName,'ACTIVE',createdAt]]);
     var updatedAreas = [];
     for (var ar = 1; ar < data.length; ar++) {
       var exName = String(data[ar][0] || '').trim();
@@ -3536,7 +3534,7 @@ function handleUpdateArea(params, session) {
     var sheet = ss.getSheetByName('Area');
     if (!sheet) return { success: false, message: 'Area sheet not found.' };
     
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Area']);
     var isRename = Boolean(newName && newName.toLowerCase() !== oldName.toLowerCase());
     var oldNorm = oldName.toUpperCase();
 
@@ -3567,7 +3565,7 @@ function handleUpdateArea(params, session) {
 
     // If NOT renaming (status update only), perform simple atomic master update
     if (!isRename) {
-      sheet.getRange(targetAreaRow, 2).setValue(targetStatus);
+      cneUpdateHeaderFields_(sheet,targetAreaRow,{Status:targetStatus});
       data[targetAreaRow - 1][1] = targetStatus;
       var statusUpdatedAreas = [];
       for (var sr = 1; sr < data.length; sr++) {
@@ -3613,13 +3611,8 @@ function handleUpdateArea(params, session) {
       var rData = roleSheet.getDataRange().getValues();
       if (rData.length > 1) {
         var rHeaders = rData[0];
-        var rEmpCol = 0;
-        var rAreaCol = 4;
-        for (var rc = 0; rc < rHeaders.length; rc++) {
-          var rh = String(rHeaders[rc] || '').toLowerCase();
-          if (rh.indexOf('emp') !== -1 && rh.indexOf('id') !== -1) rEmpCol = rc;
-          if (rh.indexOf('area') !== -1 || rh.indexOf('dept') !== -1 || rh.indexOf('ward') !== -1) rAreaCol = rc;
-        }
+        var roleColumns=cneHeaderLayout_(roleSheet,['Employee_ID_No','Department_Area']);
+        var rEmpCol=roleColumns.positions[0],rAreaCol=roleColumns.positions[1];
 
         for (var ri = 1; ri < rData.length; ri++) {
           var rawEmpArea = String(rData[ri][rAreaCol] || '').trim();
@@ -3675,7 +3668,7 @@ function handleUpdateArea(params, session) {
       var cneData = cneSheet.getDataRange().getValues();
       if (cneData.length > 1) {
         var cneColMap = getHeaderMap(cneSheet);
-        var cneAreaCol = cneColMap['area'] !== undefined ? cneColMap['area'] : 2;
+        var cneAreaCol=cneHeaderLayout_(cneSheet,['Area']).positions[0];
         for (var ci = 1; ci < cneData.length; ci++) {
           var cneAreaVal = String(cneData[ci][cneAreaCol] || '').trim();
           if (cneAreaVal.toUpperCase() === oldNorm) {
@@ -3743,11 +3736,10 @@ function handleUpdateArea(params, session) {
       var oldAreaMasterName = String(data[targetAreaRow - 1][0] || '').trim();
       var oldAreaMasterStatus = String(data[targetAreaRow - 1][1] || 'ACTIVE').trim().toUpperCase();
 
-      executedRollbacks.push({ sheet: sheet, row: targetAreaRow, col: 1, oldVal: oldAreaMasterName });
-      executedRollbacks.push({ sheet: sheet, row: targetAreaRow, col: 2, oldVal: oldAreaMasterStatus });
-
-      // Write Name + Status in one Sheets operation.
-      sheet.getRange(targetAreaRow, 1, 1, 2).setValues([[newName, targetStatus]]);
+      executedRollbacks.push({sheet:sheet,row:targetAreaRow,col:cneHeaderColumn_(sheet,'Area'),oldVal:oldAreaMasterName});
+      executedRollbacks.push({sheet:sheet,row:targetAreaRow,col:cneHeaderColumn_(sheet,'Status'),oldVal:oldAreaMasterStatus});
+      // One header-directed mutation: column positions may be rearranged.
+      cneUpdateHeaderFields_(sheet,targetAreaRow,{Area:newName,Status:targetStatus});
     } catch (writeErr) {
       // Propagation failure encountered: Attempt rollback
       var rollbackSucceeded = true;
@@ -3857,7 +3849,7 @@ function ensureTeachingModeSheet_() {
     });
     if (rows.length > 0) {
       // Fixed-range idempotent seeding prevents duplicate defaults on concurrent first reads.
-      sheet.getRange(2, 1, rows.length, 3).setValues(rows);
+      cneWriteHeaderRows_(sheet,CNE_SHEET_HEADERS['Teaching_Mode'],rows,2);
     }
   }
   return sheet;
@@ -3865,7 +3857,7 @@ function ensureTeachingModeSheet_() {
 
 function readTeachingModesFromSheet_() {
   var sheet = ensureTeachingModeSheet_();
-  var data = sheet.getDataRange().getValues();
+  var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Teaching_Mode']);
   var modes = [];
   for (var r = 1; r < data.length; r++) {
     var name = String(data[r][0] || '').trim();
@@ -3976,7 +3968,7 @@ function handleAddTeachingMode(params, session) {
 
   try {
     var sheet = ensureTeachingModeSheet_();
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Teaching_Mode']);
     var normalized = modeName.toUpperCase();
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0] || '').trim().toUpperCase() === normalized) {
@@ -3985,7 +3977,7 @@ function handleAddTeachingMode(params, session) {
     }
 
     var addedAt = new Date().toISOString();
-    sheet.appendRow([modeName, 'ACTIVE', addedAt]);
+    cneAppendHeaderRows_(sheet,CNE_SHEET_HEADERS['Teaching_Mode'],[[modeName,'ACTIVE',addedAt]]);
     var addedModes = [];
     for (var mr = 1; mr < data.length; mr++) {
       var mName = String(data[mr][0] || '').trim();
@@ -4035,7 +4027,7 @@ function handleUpdateTeachingMode(params, session) {
   try {
     var ss = getSpreadsheet('CNE');
     var sheet = ensureTeachingModeSheet_();
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Teaching_Mode']);
     var oldNorm = oldName.toUpperCase();
     var newNorm = newName.toUpperCase();
     var targetRow = -1;
@@ -4061,7 +4053,7 @@ function handleUpdateTeachingMode(params, session) {
     var updatedAt = new Date().toISOString();
 
     if (!isRename) {
-      sheet.getRange(targetRow, 2, 1, 2).setValues([[targetStatus, updatedAt]]);
+      cneUpdateHeaderFields_(sheet,targetRow,{Status:targetStatus,Updated_At:updatedAt});
       data[targetRow - 1][1] = targetStatus;
       data[targetRow - 1][2] = updatedAt;
       var updatedModesList = [];
@@ -4095,7 +4087,7 @@ function handleUpdateTeachingMode(params, session) {
       var modeColumns = [];
       if (cneMap['modeofteaching'] !== undefined) modeColumns.push(cneMap['modeofteaching']);
       if (cneMap['mode'] !== undefined && modeColumns.indexOf(cneMap['mode']) === -1) modeColumns.push(cneMap['mode']);
-      if (modeColumns.length === 0) modeColumns.push(8);
+      if (modeColumns.length === 0) throw new Error('CNE Schedule missing Mode_of_Teaching header. Run Verify Sheets.');
 
       for (var ci = 1; ci < cneData.length; ci++) {
         for (var mc = 0; mc < modeColumns.length; mc++) {
@@ -4119,10 +4111,10 @@ function handleUpdateTeachingMode(params, session) {
       }
 
       // Register all master rollback metadata before the grouped master write.
-      executedRollbacks.push({ sheet: sheet, row: targetRow, col: 1, oldVal: data[targetRow - 1][0] });
-      executedRollbacks.push({ sheet: sheet, row: targetRow, col: 2, oldVal: currentStatus });
-      executedRollbacks.push({ sheet: sheet, row: targetRow, col: 3, oldVal: oldUpdatedAt });
-      sheet.getRange(targetRow, 1, 1, 3).setValues([[newName, targetStatus, updatedAt]]);
+      executedRollbacks.push({sheet:sheet,row:targetRow,col:cneHeaderColumn_(sheet,'Mode_Name'),oldVal:data[targetRow-1][0]});
+      executedRollbacks.push({sheet:sheet,row:targetRow,col:cneHeaderColumn_(sheet,'Status'),oldVal:currentStatus});
+      executedRollbacks.push({sheet:sheet,row:targetRow,col:cneHeaderColumn_(sheet,'Updated_At'),oldVal:oldUpdatedAt});
+      cneUpdateHeaderFields_(sheet,targetRow,{Mode_Name:newName,Status:targetStatus,Updated_At:updatedAt});
     } catch (writeErr) {
       var rollbackSucceeded = true;
       for (var rb = executedRollbacks.length - 1; rb >= 0; rb--) {
@@ -4334,11 +4326,11 @@ function cnePersonalPageScores_(employeeId, cneIds) {
   var scores={},wanted={};
   (cneIds||[]).forEach(function(id){wanted[String(id||'').trim().toUpperCase()]=true;});
   var sheet=cneParticipantSheet_();if(sheet.getLastRow()<2)return scores;
-  var values=sheet.getRange(2,2,sheet.getLastRow()-1,14).getValues();
+  var values=cneParticipantAllRows_(sheet,['CNE_ID','Employee_ID','Post_Test_Status','Post_Test_Percentage']);
   values.forEach(function(row){
-    var cne=String(row[0]||'').trim().toUpperCase(),id=normalizeEmpId(row[1]);
-    if(!wanted[cne]||id!==employeeId||String(row[8]||'')!=='COMPLETED')return;
-    var percentage=row[13];if(percentage!==''&&percentage!==null&&isFinite(Number(percentage)))scores[cne]=Number(percentage);
+    var cne=String(row[1]||'').trim().toUpperCase(),id=normalizeEmpId(row[2]);
+    if(!wanted[cne]||id!==employeeId||String(row[9]||'')!=='COMPLETED')return;
+    var percentage=row[14];if(percentage!==''&&percentage!==null&&isFinite(Number(percentage)))scores[cne]=Number(percentage);
   });
   return scores;
 }
@@ -4398,7 +4390,7 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
   var participantIndex = {};
   var pSheet=cneParticipantSheet_();
   if(pSheet.getLastRow()>1) {
-    var allParticipants=pSheet.getRange(2,1,pSheet.getLastRow()-1,11).getValues();
+    var allParticipants=cneParticipantAllRows_(pSheet,['CNE_ID','Employee_ID','Participant_Name','Participant_Type']);
     allParticipants.forEach(function(pr){
       var id=String(pr[1]||'').trim().toUpperCase();if(!id)return;
       if(!participantIndex[id])participantIndex[id]={staff:[],external:[],seen:{}};
@@ -4590,10 +4582,10 @@ function handleGetMyCNERecordsPage(params, session) {
   var personalAttendedCneIds={};
   var ps=cneParticipantSheet_();
   if(ps.getLastRow()>1) {
-    var personRows=ps.getRange(2,2,ps.getLastRow()-1,6).getValues();
+    var personRows=cneParticipantAllRows_(ps,['CNE_ID','Employee_ID','Attendance_Status']);
     personRows.forEach(function(row) {
-      if(normalizeEmpId(row[1])===employeeId && String(row[5]||'').toUpperCase()==='ATTENDED')
-        personalAttendedCneIds[String(row[0]||'').trim().toUpperCase()]=true;
+      if(normalizeEmpId(row[2])===employeeId && String(row[6]||'').toUpperCase()==='ATTENDED')
+        personalAttendedCneIds[String(row[1]||'').trim().toUpperCase()]=true;
     });
   }
   var candidate=[];
@@ -5220,7 +5212,7 @@ function handleCreateCNE(params, session) {
     var cneId = generateUniqueCneId_(cneType);
 
     var colMap = getHeaderMap(sheet);
-    var maxCol = Math.max(sheet.getLastColumn(), 28);
+    var maxCol = sheet.getLastColumn();
     var rowData = [];
     for (var col = 0; col < maxCol; col++) rowData.push('');
 
@@ -6237,7 +6229,7 @@ function handleAddWardLevelSchedule(params, session) {
     var colMap = getHeaderMap(sheet);
     var createdIds = [];
     var allRows = [];
-    var targetCols = Math.max(sheet.getLastColumn(), 28);
+    var targetCols = sheet.getLastColumn();
 
     // All rows in one scheduling popup must share an identical CNE-level selection.
     var batchWards = null;
@@ -6370,7 +6362,7 @@ function handleGetGallery(params, session) {
   var sheet = getOrCreateSheet('Gallery');
   
   var isAdmin = session && String(session.role || '').toUpperCase() === 'ADMIN';
-  var data = sheet.getDataRange().getValues();
+  var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Gallery']);
   var list = [];
   
   for (var r = 1; r < data.length; r++) {
@@ -6463,7 +6455,7 @@ function handleUploadImage(params, session) {
     
     var sheet = getOrCreateSheet('Gallery');
     
-    sheet.appendRow([
+    cneAppendHeaderRows_(sheet,CNE_SHEET_HEADERS['Gallery'],[[
       imageId,
       title,
       description,
@@ -6473,7 +6465,7 @@ function handleUploadImage(params, session) {
       session.employeeId || '',
       new Date().toISOString(),
       'ACTIVE'
-    ]);
+    ]]);
     
     logAuditAction('UPLOAD_IMAGE', session.employeeId, 'Uploaded Image: ' + imageId + ' (' + title + ')', 'SUCCESS');
     
@@ -6511,13 +6503,15 @@ function handleUpdateGalleryItem(params, session) {
     var sheet = ss.getSheetByName('Gallery');
     if (!sheet) return { success: false, message: 'Gallery sheet not found.' };
     
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Gallery']);
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0]).trim().toLowerCase() === id.toLowerCase()) {
-        if (params.title !== undefined) sheet.getRange(r + 1, 2).setValue(sanitizeCellInput(params.title));
-        if (params.description !== undefined) sheet.getRange(r + 1, 3).setValue(sanitizeCellInput(params.description));
-        if (params.date !== undefined) sheet.getRange(r + 1, 4).setValue(params.date);
-        if (params.isActive !== undefined) sheet.getRange(r + 1, 9).setValue(params.isActive ? 'ACTIVE' : 'INACTIVE');
+        var changes={};
+        if(params.title!==undefined)changes.Title=sanitizeCellInput(params.title);
+        if(params.description!==undefined)changes.Description=sanitizeCellInput(params.description);
+        if(params.date!==undefined)changes.Date=params.date;
+        if(params.isActive!==undefined)changes.Status=params.isActive?'ACTIVE':'INACTIVE';
+        cneUpdateHeaderFields_(sheet,r+1,changes);
         
         logAuditAction('UPDATE_GALLERY', session.employeeId, 'Updated Gallery ID: ' + id, 'SUCCESS');
         return { success: true, message: 'Gallery item updated.' };
@@ -6551,10 +6545,10 @@ function handleDeleteGalleryItem(params, session) {
     var sheet = ss.getSheetByName('Gallery');
     if (!sheet) return { success: false, message: 'Gallery sheet not found.' };
     
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Gallery']);
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0]).trim().toLowerCase() === id.toLowerCase()) {
-        sheet.getRange(r + 1, 9).setValue('INACTIVE');
+        cneUpdateHeaderFields_(sheet,r+1,{Status:'INACTIVE'});
         logAuditAction('DELETE_GALLERY', session.employeeId, 'Deactivated Gallery Photo ID: ' + id, 'SUCCESS');
         return { success: true, message: 'Photo deactivated from gallery successfully.' };
       }
@@ -6975,66 +6969,12 @@ function handleUpdateRole(params, session) {
     var targetRow = -1;
     var currentRole = 'EMPLOYEE';
 
-    // Resiliently locate Employee ID column
-    var empIdCol = -1;
-    var possibleEmpKeys = ['employeeidno', 'employeeid', 'empid', 'id', 'officerid'];
-    for (var k = 0; k < possibleEmpKeys.length; k++) {
-      if (colMap[possibleEmpKeys[k]] !== undefined) {
-        empIdCol = colMap[possibleEmpKeys[k]];
-        break;
-      }
-    }
-    if (empIdCol === -1) {
-      for (var c = 0; c < headers.length; c++) {
-        var h = String(headers[c] || '').toLowerCase();
-        if (h.indexOf('emp') !== -1 && h.indexOf('id') !== -1) {
-          empIdCol = c;
-          break;
-        }
-      }
-    }
-    if (empIdCol === -1) empIdCol = 0;
+    // Named, canonical Role columns; missing/duplicate headers fail closed.
+    var roleLayout=cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['Role']);
+    var empIdCol=roleLayout.positions[0];
+    var roleCol=roleLayout.positions[3];
+    var areaCol=roleLayout.positions[4];
 
-    // Resiliently locate Role column
-    var roleCol = -1;
-    if (colMap['role'] !== undefined) roleCol = colMap['role'];
-    else if (colMap['assignedrole'] !== undefined) roleCol = colMap['assignedrole'];
-    else if (colMap['userrole'] !== undefined) roleCol = colMap['userrole'];
-    if (roleCol === -1) {
-      for (var c = 0; c < headers.length; c++) {
-        var h = String(headers[c] || '').toLowerCase();
-        if (h.indexOf('role') !== -1) {
-          roleCol = c;
-          break;
-        }
-      }
-    }
-    if (roleCol === -1) roleCol = 3;
-
-    // Resiliently locate Area / Department / Ward column
-    var areaCol = -1;
-    var possibleAreaKeys = [
-      'departmentarea', 'area', 'department', 'ward', 'wardarea',
-      'assignedareas', 'assignedarea', 'assignedwards', 'assignedward',
-      'departmentward', 'wards', 'areas', 'clinicalarea', 'clinicalareas'
-    ];
-    for (var k = 0; k < possibleAreaKeys.length; k++) {
-      if (colMap[possibleAreaKeys[k]] !== undefined) {
-        areaCol = colMap[possibleAreaKeys[k]];
-        break;
-      }
-    }
-    if (areaCol === -1) {
-      for (var c = 0; c < headers.length; c++) {
-        var h = String(headers[c] || '').toLowerCase();
-        if (h.indexOf('area') !== -1 || h.indexOf('dept') !== -1 || h.indexOf('ward') !== -1) {
-          areaCol = c;
-          break;
-        }
-      }
-    }
-    if (areaCol === -1) areaCol = 4;
-    
     for (var r = 1; r < data.length; r++) {
       var rowEmpId = normalizeEmpId(data[r][empIdCol]);
       var rVal = String(data[r][roleCol] || 'EMPLOYEE').toUpperCase().trim();
@@ -7100,12 +7040,12 @@ function handleUpdateRole(params, session) {
       var officer = findOfficerById(employeeId);
       var name = officer ? officer.name : (params.name || '');
       var desig = officer ? officer.designation : (params.designation || '');
-      var maxCol = Math.max(5, areaColNumber, roleColNumber);
+      var maxCol = sheet.getLastColumn();
       var newRow = [];
       for (var i = 0; i < maxCol; i++) newRow.push('');
       newRow[empIdCol] = employeeId;
-      newRow[colMap['nameoftheofficers'] !== undefined ? colMap['nameoftheofficers'] : 1] = name;
-      newRow[colMap['designation'] !== undefined ? colMap['designation'] : 2] = desig;
+      newRow[roleLayout.positions[1]] = name;
+      newRow[roleLayout.positions[2]] = desig;
       newRow[roleCol] = targetRole;
       newRow[areaCol] = area;
       sheet.appendRow(newRow);
@@ -7185,26 +7125,29 @@ function handleGetNewsEvents(params) {
   if (Array.isArray(cachedNews)) return { success: true, data: cachedNews, _cached: true };
 
   var sheet = getOrCreateSheet('News_Events');
-  var data = sheet.getDataRange().getValues();
-  var map = getHeaderMap(sheet);
+  var data=sheet.getDataRange().getValues();
+  var flagMap=getHeaderMap(sheet);
+  var fields=CNE_SHEET_HEADERS['News_Events'].slice(0,9);
+  var basic=cneHeaderLayout_(sheet,fields);
+  var projected=[fields].concat(data.slice(1).map(function(row){return basic.positions.map(function(k){return row[k];});}));
   var list = [];
 
   // Newest published records first (rows append chronologically).
-  for (var r = data.length - 1; r >= 1; r--) {
-    var id = String(data[r][0] || '').trim();
-    var status = String(data[r][6] || 'ACTIVE').toUpperCase().trim();
+  for (var r = projected.length - 1; r >= 1; r--) {
+    var id = String(projected[r][0] || '').trim();
+    var status = String(projected[r][6] || 'ACTIVE').toUpperCase().trim();
     if (!id || status === 'INACTIVE') continue;
     
     list.push({
       id: id,
-      title: String(data[r][1] || ''),
-      category: String(data[r][2] || 'Circular'),
-      date: formatDateValue(data[r][3]),
-      summary: String(data[r][4] || ''),
-      content: String(data[r][5] || ''),
-      isImportant: map.isimportant !== undefined && newsFlagEnabled_(data[r][map.isimportant]),
-      blinkAttention: map.blinkattention !== undefined && newsFlagEnabled_(data[r][map.blinkattention]),
-      createdAt: formatDateValue(data[r][7])
+      title: String(projected[r][1] || ''),
+      category: String(projected[r][2] || 'Circular'),
+      date: formatDateValue(projected[r][3]),
+      summary: String(projected[r][4] || ''),
+      content: String(projected[r][5] || ''),
+      isImportant: flagMap.isimportant!==undefined && newsFlagEnabled_(data[r][flagMap.isimportant]),
+      blinkAttention: flagMap.blinkattention!==undefined && newsFlagEnabled_(data[r][flagMap.blinkattention]),
+      createdAt: formatDateValue(projected[r][7])
     });
   }
   
@@ -7258,19 +7201,10 @@ function handleAddNewsEvent(params, session) {
     var curYear = new Date().getFullYear();
     var eventId = 'NEWS-' + curYear + '-' + Date.now().toString().slice(-4) + ('000' + Math.floor(Math.random() * 1000)).slice(-3);
     
-    var newRow = new Array(sheet.getLastColumn()).fill('');
-    newRow[0] = eventId;
-    newRow[1] = title;
-    newRow[2] = category;
-    newRow[3] = date;
-    newRow[4] = summary;
-    newRow[5] = content;
-    newRow[6] = 'ACTIVE';
-    newRow[7] = new Date().toISOString();
-    newRow[8] = session.employeeId || '';
-    newRow[flagCols.isimportant] = newsFlagEnabled_(params.isImportant) ? 'TRUE' : 'FALSE';
-    newRow[flagCols.blinkattention] = newsFlagEnabled_(params.blinkAttention) ? 'TRUE' : 'FALSE';
-    sheet.appendRow(newRow);
+    cneAppendHeaderRows_(sheet,CNE_SHEET_HEADERS['News_Events'],[[
+      eventId,title,category,date,summary,content,'ACTIVE',new Date().toISOString(),session.employeeId||'',
+      newsFlagEnabled_(params.isImportant)?'TRUE':'FALSE',newsFlagEnabled_(params.blinkAttention)?'TRUE':'FALSE'
+    ]]);
     
     removeScriptCacheEntry_(HOME_CACHE_NEWS);
     logAuditAction('ADD_NEWS', session.employeeId, 'Published News: ' + eventId + ' (' + title + ')', 'SUCCESS');
@@ -7303,17 +7237,19 @@ function handleUpdateNewsEvent(params, session) {
     if (!sheet) return { success: false, message: 'News and Events sheet not found.' };
     var flagCols = ensureNewsAttentionColumns_(sheet);
 
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['News_Events']);
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0]).trim().toLowerCase() === id.toLowerCase()) {
-        if (params.title !== undefined) sheet.getRange(r + 1, 2).setValue(sanitizeCellInput(params.title));
-        if (params.category !== undefined) sheet.getRange(r + 1, 3).setValue(sanitizeCellInput(params.category));
-        if (params.date !== undefined) sheet.getRange(r + 1, 4).setValue(params.date);
-        if (params.summary !== undefined) sheet.getRange(r + 1, 5).setValue(sanitizeCellInput(params.summary));
-        if (params.content !== undefined) sheet.getRange(r + 1, 6).setValue(sanitizeCellInput(params.content));
-        if (params.status !== undefined) sheet.getRange(r + 1, 7).setValue(params.status);
-        if (params.isImportant !== undefined) sheet.getRange(r + 1, flagCols.isimportant + 1).setValue(newsFlagEnabled_(params.isImportant) ? 'TRUE' : 'FALSE');
-        if (params.blinkAttention !== undefined) sheet.getRange(r + 1, flagCols.blinkattention + 1).setValue(newsFlagEnabled_(params.blinkAttention) ? 'TRUE' : 'FALSE');
+        var changes={};
+        if(params.title!==undefined)changes.Title=sanitizeCellInput(params.title);
+        if(params.category!==undefined)changes.Category=sanitizeCellInput(params.category);
+        if(params.date!==undefined)changes.Date=params.date;
+        if(params.summary!==undefined)changes.Summary=sanitizeCellInput(params.summary);
+        if(params.content!==undefined)changes.Full_Content=sanitizeCellInput(params.content);
+        if(params.status!==undefined)changes.Status=params.status;
+        if(params.isImportant!==undefined)changes.Is_Important=newsFlagEnabled_(params.isImportant)?'TRUE':'FALSE';
+        if(params.blinkAttention!==undefined)changes.Blink_Attention=newsFlagEnabled_(params.blinkAttention)?'TRUE':'FALSE';
+        cneUpdateHeaderFields_(sheet,r+1,changes);
 
         removeScriptCacheEntry_(HOME_CACHE_NEWS);
         logAuditAction('UPDATE_NEWS', session.employeeId, 'Updated News ID: ' + id, 'SUCCESS');
@@ -7348,10 +7284,10 @@ function handleDeleteNewsEvent(params, session) {
     var sheet = ss.getSheetByName('News_Events');
     if (!sheet) return { success: false, message: 'News and Events sheet not found.' };
     
-    var data = sheet.getDataRange().getValues();
+    var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['News_Events'].slice(0,9));
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][0]).trim().toLowerCase() === id.toLowerCase()) {
-        sheet.getRange(r + 1, 7).setValue('INACTIVE');
+        cneUpdateHeaderFields_(sheet,r+1,{Status:'INACTIVE'});
         removeScriptCacheEntry_(HOME_CACHE_NEWS);
         logAuditAction('DELETE_NEWS', session.employeeId, 'Deactivated News ID: ' + id, 'SUCCESS');
         return { success: true, message: 'News event deactivated successfully.' };
@@ -7543,7 +7479,7 @@ function getDefaultQuickLinks_() {
 function writeQuickLinkRow_(sheet, link, sortOrder, updatedBy) {
   var modal = link && link.modalContent ? link.modalContent : null;
   var modalBody = modal && Array.isArray(modal.body) ? modal.body.join('\n') : '';
-  sheet.appendRow([
+  cneAppendHeaderRows_(sheet,CNE_SHEET_HEADERS['Quick_Links'],[[
     sanitizeCellInput(link.id || ('ql-' + Date.now())),
     sanitizeCellInput(link.title || ''),
     sanitizeCellInput(link.description || ''),
@@ -7558,7 +7494,7 @@ function writeQuickLinkRow_(sheet, link, sortOrder, updatedBy) {
     Number(sortOrder) || 0,
     new Date().toISOString(),
     sanitizeCellInput(updatedBy || 'SYSTEM')
-  ]);
+  ]]);
 }
 
 function ensureQuickLinksSheetSeeded_() {
@@ -7811,8 +7747,10 @@ function ensureCoordinatorContentSeeded_() {
   // Coordinator keys is safe and non-destructive.
   var email = 'training.nur@aiimsrishikesh.edu.in';
   var names = ['Ms. Ramya T', 'Ms. Suman Choudhary'];
-  sheet.appendRow(['COORDINATOR', 'NAMES', names.join('\n'), new Date().toISOString(), 'SYSTEM_DEFAULT']);
-  sheet.appendRow(['COORDINATOR', 'EMAIL', sanitizeCellInput(email), new Date().toISOString(), 'SYSTEM_DEFAULT']);
+  cneAppendHeaderRows_(sheet,CNE_SHEET_HEADERS['Portal_Content'],[
+    ['COORDINATOR','NAMES',names.join('\n'),new Date().toISOString(),'SYSTEM_DEFAULT'],
+    ['COORDINATOR','EMAIL',sanitizeCellInput(email),new Date().toISOString(),'SYSTEM_DEFAULT']
+  ]);
   return sheet;
 }
 
@@ -7838,13 +7776,11 @@ function upsertPortalContentValue_(sheet, section, key, value, updatedBy) {
   for (var r = 1; r < data.length; r++) {
     if (String(data[r][map['section']] || '').toUpperCase().trim() === section &&
         String(data[r][map['key']] || '').toUpperCase().trim() === key) {
-      sheet.getRange(r + 1, map['value'] + 1).setValue(value);
-      sheet.getRange(r + 1, map['updatedat'] + 1).setValue(new Date().toISOString());
-      sheet.getRange(r + 1, map['updatedby'] + 1).setValue(updatedBy || 'SYSTEM');
+      cneUpdateHeaderFields_(sheet,r+1,{Value:value,Updated_At:new Date().toISOString(),Updated_By:updatedBy||'SYSTEM'});
       return;
     }
   }
-  sheet.appendRow([section, key, value, new Date().toISOString(), updatedBy || 'SYSTEM']);
+  cneAppendHeaderRows_(sheet,CNE_SHEET_HEADERS['Portal_Content'],[[section,key,value,new Date().toISOString(),updatedBy||'SYSTEM']]);
 }
 
 function handleGetCoordinatorDesk(params) {
@@ -8044,7 +7980,7 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
   var impactPeople = {};
   var impactSheet = cneParticipantSheet_();
   if (impactSheet.getLastRow() > 1) {
-    impactSheet.getRange(2, 1, impactSheet.getLastRow()-1, 11).getValues().forEach(function(pr) {
+    cneParticipantAllRows_(impactSheet,['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status']).forEach(function(pr) {
       if (String(pr[6]||'').toUpperCase() !== 'ATTENDED') return;
       var cne = String(pr[1]||'').trim().toUpperCase();if(!cne)return;
       if(!impactPeople[cne])impactPeople[cne]={staff:[],external:[],seen:{}};
@@ -8342,6 +8278,90 @@ function cneWriteHeaderRows_(sheet,names,canonicalRows,startRow,layout){
     return physical;
   });
   sheet.getRange(startRow,1,rows.length,m.width).setValues(rows);
+}
+/** Reproject canonical rows onto physical headers, preserving extra columns and formulas.
+ * A contiguous setValues() call remains the single participant transaction write.
+ */
+function cneUpdateHeaderRows_(sheet,names,startRow,canonicalRows,layout){
+  if(!canonicalRows.length)return;
+  var m=layout||cneHeaderLayout_(sheet,names);
+  var range=sheet.getRange(startRow,1,canonicalRows.length,m.width);
+  var physical=range.getValues();
+  var formulas=typeof range.getFormulas==='function'?range.getFormulas():[];
+  for(var i=0;i<canonicalRows.length;i++){
+    if(canonicalRows[i].length!==names.length)throw new Error('HEADER_ROW_WIDTH: '+sheet.getName());
+    var formulaRow=formulas[i]||[];
+    for(var f=0;f<formulaRow.length;f++)if(formulaRow[f])physical[i][f]=formulaRow[f];
+    for(var c=0;c<m.positions.length;c++)physical[i][m.positions[c]]=canonicalRows[i][c];
+  }
+  range.setValues(physical);
+}
+/** Canonical 20-column participant row projection, regardless of physical order. */
+function cneParticipantLayout_(sheet){return cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['CNE_Participants']);}
+/** Read only named physical columns, merging adjacent columns into a Sheets batch.
+ * No fixed positions, and aggregate reports avoid loading answer JSON payloads.
+ */
+function cneReadNamedColumns_(sheet,names,startRow,count){
+  if(!count)return [];
+  var m=cneHeaderLayout_(sheet,names),pairs=m.positions.map(function(col,i){return {column:col,index:i};});
+  pairs.sort(function(a,b){return a.column-b.column;});
+  var result=Array.from({length:count},function(){return Array(names.length).fill('');});
+  for(var k=0;k<pairs.length;){
+    var start=k,first=pairs[k].column,last=first;k++;
+    while(k<pairs.length&&pairs[k].column===last+1){last=pairs[k].column;k++;}
+    var values=sheet.getRange(startRow,first+1,count,last-first+1).getValues();
+    for(var r=0;r<count;r++)for(var c=start;c<k;c++)result[r][pairs[c].index]=values[r][pairs[c].column-first];
+  }
+  return result;
+}
+/** Canonical participant arrays, optionally projecting only the requested fields. */
+function cneParticipantAllRows_(sheet,needed){
+  var sh=sheet||cneParticipantSheet_(),all=CNE_SHEET_HEADERS['CNE_Participants'];
+  var names=needed||all;
+  var count=sh.getLastRow()-1;
+  if(count<=0)return [];
+  var projected=cneReadNamedColumns_(sh,names,2,count);
+  if(!needed)return projected;
+  var indexes=names.map(function(name){return all.indexOf(name);});
+  return projected.map(function(row){var out=Array(all.length).fill('');indexes.forEach(function(idx,i){out[idx]=row[i];});return out;});
+}
+/** Attendance-only CNE progress lookup without loading scores or answer JSON. */
+function cneParticipantAttendanceRows_(cneId){
+  var sheet=cneParticipantSheet_(),all=CNE_SHEET_HEADERS['CNE_Participants'];
+  var names=['CNE_ID','Attendance_Status'];
+  var layout=cneHeaderLayout_(sheet,names);
+  var matches=findExactRowsInColumn_(sheet,layout.positions[0],cneId,2);
+  if(!matches.length)return [];
+  matches.sort(function(a,b){return a-b;});
+  var result=[],start=matches[0],last=start,selected={};selected[start]=true;
+  function flush_(){
+    var rows=cneReadNamedColumns_(sheet,names,start,last-start+1);
+    rows.forEach(function(row,i){if(!selected[start+i])return;
+      if(String(row[0]||'').trim().toUpperCase()!==String(cneId||'').trim().toUpperCase())return;
+      var out=Array(all.length).fill('');out[1]=row[0];out[6]=row[1];result.push(out);
+    });
+  }
+  for(var i=1;i<matches.length;i++){
+    var rowNum=matches[i];if(rowNum===last)continue;
+    if(rowNum-last>16||rowNum-start>=250){flush_();start=rowNum;last=rowNum;selected={};}
+    else last=rowNum;
+    selected[rowNum]=true;
+  }
+  flush_();return result;
+}
+function cneParticipantMatchedRows_(sheet,cneId,layout){
+  var sh=sheet||cneParticipantSheet_(),m=layout||cneParticipantLayout_(sh);
+  return readMatchedCneRows_(sh,m.positions[1],cneId,1,m.width).map(function(row){
+    return m.positions.map(function(index){return row[index];});
+  });
+}
+/** Append canonical rows without relying on sheet column order. */
+function cneAppendHeaderRows_(sheet,names,rows){
+  if(!rows.length)return;
+  var start=sheet.getLastRow()+1;
+  var allocated=typeof sheet.getMaxRows==='function'?sheet.getMaxRows():Math.max(sheet.getLastRow(),start+rows.length-1);
+  if(start+rows.length-1>allocated)sheet.insertRowsAfter(allocated,start+rows.length-1-allocated);
+  cneWriteHeaderRows_(sheet,names,rows,start);
 }
 /** Update only named fields while preserving extra columns and other data. */
 function cneUpdateHeaderFields_(sheet,rowNum,changes,layout){
@@ -12783,7 +12803,7 @@ function handleGetCNEActivityProgress(params, session) {
   // 4. One authoritative participant register, irrespective of CNE workflow.
   var participantsCount = 0;
   try {
-    var registeredRows=readMatchedCneRows_(cneParticipantSheet_(),1,cleanId,1,9);
+    var registeredRows=cneParticipantAttendanceRows_(cleanId);
     participantsCount=registeredRows.filter(function(row) {
       return String(row[6]||'').trim().toUpperCase()==='ATTENDED';
     }).length;
@@ -15446,9 +15466,13 @@ function cneHybridPersistPartial_(cneId,token,questions,session) {
     var count=Object.keys(confirmed).length;
     if(count!==Object.keys(owned).length)return {success:false,errorCode:'AI_PERSISTENCE_UNCERTAIN'};
     if(count===5 && !used){
-      quota.getRange(quotaRow,3,1,7).setValues([[1,1,new Date().toISOString(),session.employeeId,'','0',token]]);
+      cneUpdateHeaderFields_(quota,quotaRow,{
+        'Attempts_Used':1,'Max_Quota':1,'Last_Attempt_At':new Date().toISOString(),
+        'Last_Generated_By':session.employeeId,'Reservation_Token':'',
+        'Reserved_Until':'0','Last_Committed_Token':token
+      });
       SpreadsheetApp.flush();
-      if(Number(quota.getRange(quotaRow,3).getValue()||0)!==1)return {success:false,errorCode:'QUOTA_COMMIT_UNCERTAIN'};
+      if(Number(quota.getRange(quotaRow,cneHeaderColumn_(quota,'Attempts_Used')).getValue()||0)!==1)return {success:false,errorCode:'QUOTA_COMMIT_UNCERTAIN'};
     }
     invalidateCNEQuestionsCache(cneId);
     logAuditAction(count===5?'AI_PARTIAL_COMPLETED':'AI_PARTIAL_SAVED',session.employeeId,'Verified AI objective slots '+count+'/5 for '+cneId,'SUCCESS');
@@ -15792,31 +15816,18 @@ function getQuestionsSheet() {
  */
 function getQuestionColIndexes(sheet) {
   ensureQuestionsSheetHeaders(sheet);
-  var colMap = getHeaderMap(sheet);
-  return {
-    cneId: colMap['cneid'] !== undefined ? colMap['cneid'] : 0,
-    qId: colMap['questionid'] !== undefined ? colMap['questionid'] : (colMap['id'] !== undefined ? colMap['id'] : 1),
-    question: colMap['questiontext'] !== undefined ? colMap['questiontext'] : (colMap['question'] !== undefined ? colMap['question'] : 2),
-    optA: colMap['optiona'] !== undefined ? colMap['optiona'] : 3,
-    optB: colMap['optionb'] !== undefined ? colMap['optionb'] : 4,
-    optC: colMap['optionc'] !== undefined ? colMap['optionc'] : 5,
-    optD: colMap['optiond'] !== undefined ? colMap['optiond'] : 6,
-    correctOption: colMap['correctoption'] !== undefined ? colMap['correctoption'] : (colMap['correctanswer'] !== undefined ? colMap['correctanswer'] : 7),
-    explanation: colMap['explanation'] !== undefined ? colMap['explanation'] : (colMap['rationale'] !== undefined ? colMap['rationale'] : 8),
-    isFinalized: colMap['isfinalized'] !== undefined ? colMap['isfinalized'] : 9,
-    isLocked: colMap['islocked'] !== undefined ? colMap['islocked'] : 10,
-    createdAt: colMap['createdat'] !== undefined ? colMap['createdat'] : 11,
-    createdBy: colMap['createdby'] !== undefined ? colMap['createdby'] : 12,
-    authoritativeSource: colMap['authoritativesource'] !== undefined ? colMap['authoritativesource'] : (colMap['source'] !== undefined ? colMap['source'] : 13),
-    status: colMap['status'] !== undefined ? colMap['status'] : 14,
-    questionType: colMap['questiontype'],
-    imageFileId: colMap['imagedrivefileid']
-  };
+  var standard=CNE_SHEET_HEADERS['Post_Test_Questions'];
+  var layout=cneHeaderLayout_(sheet,standard.slice(0,15));
+  var p=layout.positions,map=getHeaderMap(sheet);
+  // The two last columns are optional in historical 15-column sheets. The
+  // Verify Sheets action adds them; missing required columns never fall back.
+  if(map.questiontype!==undefined)cneHeaderLayout_(sheet,['Question_Type']);
+  if(map.imagedrivefileid!==undefined)cneHeaderLayout_(sheet,['Image_Drive_File_ID']);
+  return {cneId:p[0],qId:p[1],question:p[2],optA:p[3],optB:p[4],optC:p[5],optD:p[6],
+    correctOption:p[7],explanation:p[8],isFinalized:p[9],isLocked:p[10],
+    createdAt:p[11],createdBy:p[12],authoritativeSource:p[13],status:p[14],
+    questionType:map.questiontype,imageFileId:map.imagedrivefileid};
 }
-
-/**
- * Builds a 0-indexed row array for writing to the question sheet according to the dynamic column mapping.
- */
 function buildQuestionRowArray(cols, item, totalCols, existingRow) {
   var row = existingRow ? existingRow.slice() : [];
   var targetLen = Math.max(totalCols || 0, 15);
@@ -15891,27 +15902,46 @@ function countActiveCNEQuestions(cneId) {
  */
 function adoptCneParticipantAssessmentHeaders_(sheet) {
   var expected=CNE_SHEET_HEADERS['CNE_Participants'];
-  var existing=sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0]
+  var header=sheet.getRange(1,1,1,Math.max(1,sheet.getLastColumn())).getValues()[0]
     .map(function(v){return String(v||'').trim();});
-  if(existing.length>=20 && expected.every(function(h,i){return existing[i]===h;}))return;
   var old=expected.slice(0,9).concat(['Created_At','Created_By']);
-  if(existing.length!==11 || !old.every(function(h,i){return existing[i]===h;})) {
-    throw new Error('Unexpected participant headers. Make a backup and review before migrating.');
+  var present={},duplicates={};
+  header.forEach(function(value){
+    var key=value.toLowerCase().replace(/[^a-z0-9]/g,'');
+    if(!key)return;
+    if(present[key])duplicates[key]=true;
+    present[key]=true;
+  });
+  old.forEach(function(name){
+    var key=name.toLowerCase().replace(/[^a-z0-9]/g,'');
+    if(duplicates[key]||!present[key])throw new Error('Invalid or missing participant header: '+name+'. Review before migration.');
+  });
+  if(expected.every(function(name){return present[name.toLowerCase().replace(/[^a-z0-9]/g,'')];})){
+    cneHeaderLayout_(sheet,expected); // Reject duplicate required headers, allow any order.
+    return;
   }
-  sheet.insertColumnsBefore(10,9);
-  sheet.getRange(1,10,1,9).setValues([expected.slice(9,18)]);
+  var missing=expected.filter(function(name){return !present[name.toLowerCase().replace(/[^a-z0-9]/g,'')];});
+  // A partially migrated register needs manual review rather than risk a second insert.
+  if(missing.length!==9 || !missing.every(function(name){return expected.slice(9,18).indexOf(name)>=0;}))
+    throw new Error('Partial participant assessment schema. Back up and review before changing headers.');
+  var originalOrder=header.length===11 && old.every(function(name,i){return header[i]===name;});
+  if(originalOrder){
+    // The historical layout's existing Created fields shift right safely.
+    sheet.insertColumnsBefore(10,9);
+    sheet.getRange(1,10,1,9).setValues([expected.slice(9,18)]);
+  }else{
+    // Nonstandard order: append missing fields without moving ANY existing cells.
+    var first=sheet.getLastColumn()+1;
+    if(sheet.getMaxColumns()<first+missing.length-1)
+      sheet.insertColumnsAfter(sheet.getMaxColumns(),first+missing.length-1-sheet.getMaxColumns());
+    sheet.getRange(1,first,1,missing.length).setValues([missing]);
+  }
+  cneHeaderLayout_(sheet,expected);
 }
-
 function cneParticipantSheet_() {
-  var sh = getSpreadsheet('CNE').getSheetByName('CNE_Participants');
-  if (!sh) throw new Error('CNE_Participants is missing. Run Admin Verify Sheets first.');
-  var expected = CNE_SHEET_HEADERS['CNE_Participants'];
-  var header = sh.getRange(1, 1, 1, expected.length).getValues()[0];
-  for (var i=0; i<expected.length; i++) {
-    if (String(header[i] || '').trim() !== expected[i]) {
-      throw new Error('CNE_Participants column ' + (i+1) + ' must be ' + expected[i] + '. Run Verify Sheets.');
-    }
-  }
+  var sh=getSpreadsheet('CNE').getSheetByName('CNE_Participants');
+  if(!sh)throw new Error('CNE_Participants is missing. Run Admin Verify Sheets first.');
+  cneParticipantLayout_(sh); // Fail closed if a named header is missing or duplicated.
   return sh;
 }
 function cneParticipantIdentity_(type, id, name) {
@@ -15925,20 +15955,21 @@ function cneParticipantIdentity_(type, id, name) {
 }
 function cneParticipantRows_(cneId, sheet) {
   var sh=sheet || cneParticipantSheet_();
-  var hits=readMatchedCneRows_(sh, 1, cneId, 1, 20);
+  var hits=cneParticipantMatchedRows_(sh,cneId);
   return hits;
 }
 function cneParticipantUpsertBatch_(cneId, people, actor, sheet) {
   if (!people || !people.length) return {inserted:0, updated:0};
   var sh=sheet || cneParticipantSheet_();
-  var matches=findExactRowsInColumn_(sh,1,cneId,2);
+  var layout=cneParticipantLayout_(sh);
+  var matches=findExactRowsInColumn_(sh,layout.positions[1],cneId,2);
   var lookup={};
   // Read only matching CNE rows, grouping adjacent physical rows.
   matches.sort(function(a,b){return a-b;});
   for(var mi=0;mi<matches.length;) {
     var st=matches[mi], last=st;mi++;
     while(mi<matches.length && matches[mi]===last+1){last=matches[mi];mi++;}
-    var existing=sh.getRange(st,1,last-st+1,20).getValues();
+    var existing=cneReadHeaderRows_(sh,layout.names,st,last-st+1,layout);
     for(var j=0;j<existing.length;j++) {
       var key=cneParticipantIdentity_(existing[j][4],existing[j][2],existing[j][3]);
       if(key&&!lookup[key])lookup[key]={row:st+j,values:existing[j]};
@@ -15980,12 +16011,12 @@ function cneParticipantUpsertBatch_(cneId, people, actor, sheet) {
   for(var x=0;x<updates.length;) {
     var start=updates[x].row, block=[updates[x].values]; x++;
     while(x<updates.length && updates[x].row===start+block.length) {block.push(updates[x].values);x++;}
-    sh.getRange(start,1,block.length,20).setValues(block);
+    cneUpdateHeaderRows_(sh,layout.names,start,block,layout);
   }
   if (inserts.length) {
     var startRow=sh.getLastRow()+1;
     if (startRow+inserts.length-1>sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(),startRow+inserts.length-1-sh.getMaxRows());
-    sh.getRange(startRow,1,inserts.length,20).setValues(inserts);
+    cneWriteHeaderRows_(sh,layout.names,inserts,startRow,layout);
   }
   return {inserted:inserts.length,updated:updates.length};
 }
@@ -16002,12 +16033,13 @@ function cneParticipantReplacePendingRoster_(cneId, people, includeInternal, inc
     var key=cneParticipantIdentity_(t,person.employeeId,person.name);
     if(key)wanted[key]=true;
   });
-  var matches=findExactRowsInColumn_(sh,1,cneId,2),remove=[];
+  var layout=cneParticipantLayout_(sh);
+  var matches=findExactRowsInColumn_(sh,layout.positions[1],cneId,2),remove=[];
   matches.sort(function(a,b){return a-b;});
   for(var i=0;i<matches.length;) {
     var start=matches[i],last=start;i++;
     while(i<matches.length && matches[i]===last+1){last=matches[i];i++;}
-    var oldRows=sh.getRange(start,1,last-start+1,20).getValues();
+    var oldRows=cneReadHeaderRows_(sh,layout.names,start,last-start+1,layout);
     for(var x=0;x<oldRows.length;x++) {
       var vals=oldRows[x],t=String(vals[4]||'').toUpperCase();
       if ((t==='INTERNAL'&&!includeInternal)||(t==='EXTERNAL'&&!includeExternal))continue;
@@ -16043,7 +16075,7 @@ function cneScheduleRosterParticipants_(staff,external,attended,officers) {
  */
 function cneParticipantFindByIdentity_(cneId, participantId, participantType) {
   var sh=cneParticipantSheet_();
-  var rows=readMatchedCneRows_(sh,1,cneId,1,20);
+  var rows=cneParticipantMatchedRows_(sh,cneId);
   var identity=cneParticipantIdentity_(participantType,participantId,'');
   for(var i=0;i<rows.length;i++) {
     if(cneParticipantIdentity_(rows[i][4],rows[i][2],rows[i][3])===identity) return {sheet:sh,values:rows[i]};
@@ -16055,10 +16087,11 @@ function cnePostTestCompleted_(row) {
 }
 function saveUnifiedPostTest_(cneId, participantId, participantType, name, designation, answers, snapshot, scored, actor, timestamp, responseId) {
   var sh=cneParticipantSheet_();
-  var matches=findExactRowsInColumn_(sh,1,cneId,2), targetRow=0,existing=null;
+  var layout=cneParticipantLayout_(sh);
+  var matches=findExactRowsInColumn_(sh,layout.positions[1],cneId,2), targetRow=0,existing=null;
   var identity=cneParticipantIdentity_(participantType,participantId,name);
   for(var i=0;i<matches.length;i++) {
-    var values=sh.getRange(matches[i],1,1,20).getValues()[0];
+    var values=cneReadHeaderRows_(sh,layout.names,matches[i],1,layout)[0];
     var key=cneParticipantIdentity_(values[4],values[2],values[3]);
     if(key===identity) {targetRow=matches[i];existing=values;break;}
   }
@@ -16082,7 +16115,8 @@ function saveUnifiedPostTest_(cneId, participantId, participantType, name, desig
   if(row[11].length>48000 || row[16].length>48000)throw new Error('Post-test JSON exceeds safe cell size.');
   var rowNumber=targetRow || sh.getLastRow()+1;
   if(rowNumber>sh.getMaxRows())sh.insertRowsAfter(sh.getMaxRows(),rowNumber-sh.getMaxRows());
-  sh.getRange(rowNumber,1,1,20).setValues([row]);
+  if(targetRow)cneUpdateHeaderRows_(sh,layout.names,rowNumber,[row],layout);
+  else cneWriteHeaderRows_(sh,layout.names,[row],rowNumber,layout);
   return {alreadySubmitted:false,row:row,responseId:responseId};
 }
 
@@ -16109,10 +16143,10 @@ function isCNEQuestionsLocked(cneId) {
   }
 
   var partSheet = cneParticipantSheet_();
-  var assessmentRows=partSheet.getLastRow()>1 ? partSheet.getRange(2,2,partSheet.getLastRow()-1,9).getValues() : [];
+  var assessmentRows=cneParticipantAllRows_(partSheet,['CNE_ID','Post_Test_Status']);
   for(var p=0;p<assessmentRows.length;p++) {
-    if(String(assessmentRows[p][0]||'').trim().toUpperCase()===target &&
-       String(assessmentRows[p][8]||'').trim().toUpperCase()==='COMPLETED') {
+    if(String(assessmentRows[p][1]||'').trim().toUpperCase()===target &&
+       String(assessmentRows[p][9]||'').trim().toUpperCase()==='COMPLETED') {
       markCNEQuestionsLockedCache_(cneId);return true;
     }
   }
@@ -16513,9 +16547,10 @@ function resolveActiveQrToken(qrToken) {
   if (!token) return null;
   var qrSheet = getQRTokensSheet();
   if (!qrSheet || qrSheet.getLastRow() <= 1) return null;
-  var rowIndex = findExactRowInColumn_(qrSheet, 0, token, 2);
+  var layout=cneHeaderLayout_(qrSheet,CNE_SHEET_HEADERS['QR_Tokens']);
+  var rowIndex = findExactRowInColumn_(qrSheet, layout.positions[0], token, 2);
   if (rowIndex < 2) return null;
-  var row = qrSheet.getRange(rowIndex, 1, 1, 5).getValues()[0];
+  var row=cneReadHeaderRows_(qrSheet,layout.names,rowIndex,1,layout)[0];
   var rowTok = String(row[0] || '').trim();
   var rowStatus = String(row[4] || 'ACTIVE').trim().toUpperCase();
   if (rowTok === token && rowStatus === 'ACTIVE') {
@@ -16529,17 +16564,19 @@ function deactivateQRTokensForCNE(cneId, qrColMap) {
   if (!target) return;
   var qrSheet = getQRTokensSheet();
   if (!qrSheet || qrSheet.getLastRow() <= 1) return;
-  var cneCol = 1;
-  var statusCol = 4;
+  var cneCol = -1;
+  var statusCol = -1;
   if (!qrColMap) {
     var colMap = getHeaderMap(qrSheet);
     if (colMap['cneid'] === undefined) throw new Error('QR Tokens sheet is missing the required CNE ID header.');
     cneCol = colMap['cneid'];
-    if (colMap['status'] !== undefined) statusCol = colMap['status'];
+    if (colMap['status'] === undefined) throw new Error('QR Tokens sheet is missing required Status header.');
+    statusCol=colMap['status'];
   } else {
     if (qrColMap['cneid'] === undefined) throw new Error('QR Tokens sheet is missing the required CNE ID header.');
     cneCol = qrColMap['cneid'];
-    if (qrColMap['status'] !== undefined) statusCol = qrColMap['status'];
+    if (qrColMap['status'] === undefined) throw new Error('QR Tokens sheet is missing required Status header.');
+    statusCol=qrColMap['status'];
   }
   var rows = findExactRowsInColumn_(qrSheet, cneCol, target, 2);
   var statusRanges = [];
@@ -17201,7 +17238,7 @@ function handleGetQRToken(params, session) {
     if (!qrToken) {
       qrToken = Utilities.getUuid().replace(/-/g, '');
       var qrSheet = getQRTokensSheet();
-      qrSheet.appendRow([qrToken, cneId, new Date().toISOString(), session.employeeId, 'ACTIVE']);
+      cneAppendHeaderRows_(qrSheet,CNE_SHEET_HEADERS['QR_Tokens'],[[qrToken,cneId,new Date().toISOString(),session.employeeId,'ACTIVE']]);
       logAuditAction('GENERATE_QR', session.employeeId, 'Generated secure QR token for CNE: ' + cneId, 'SUCCESS');
     }
 
@@ -18142,11 +18179,7 @@ function handleCancelCNE(params, session) {
     var ss = getSpreadsheet('CNE');
     var upcomingSheet = ss.getSheetByName('CNE_Schedule');
     if (upcomingSheet) {
-      var upColMap = getHeaderMap(upcomingSheet);
-      var statusCol = upColMap['status'] !== undefined ? (upColMap['status'] + 1) : 12;
-      var remarksCol = upColMap['adminremarks'] !== undefined ? (upColMap['adminremarks'] + 1) : 16;
-      upcomingSheet.getRange(liveRecord.rowIndex, statusCol).setValue('Canceled');
-      upcomingSheet.getRange(liveRecord.rowIndex, remarksCol).setValue(reason);
+      cneUpdateHeaderFields_(upcomingSheet,liveRecord.rowIndex,{Status:'Canceled',Admin_Remarks:reason});
       deactivateQRTokensForCNE(cneId);
     }
     
@@ -20091,18 +20124,18 @@ function handleGetCNEAnalytics(params, session) {
   var registerSheet=cneParticipantSheet_();
   if(registerSheet.getLastRow()>1) {
     // Do not fetch Answers_JSON or Questions_JSON for aggregate reporting.
-    var people=registerSheet.getRange(2,2,registerSheet.getLastRow()-1,9).getValues();
-    var scoreBlock=registerSheet.getRange(2,13,registerSheet.getLastRow()-1,3).getValues();
+    var people=cneParticipantAllRows_(registerSheet,['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status','Post_Test_Status','Post_Test_Score','Post_Test_Total','Post_Test_Percentage']);
+    // Canonical 20-column rows, no raw answer JSON needed by aggregations.
     for(var j=0;j<people.length;j++) {
-      var row=people[j],idKey=String(row[0]||'').trim().toUpperCase(),data=selected[idKey];
+      var row=people[j],idKey=String(row[1]||'').trim().toUpperCase(),data=selected[idKey];
       if(!data || data.status!=='Completed')continue;
-      var employeeId=String(row[1]||'').trim(),empId=normalizeEmpId(employeeId);
-      var name=String(row[2]||'').trim(),ptype=String(row[3]||'').toUpperCase();
+      var employeeId=String(row[2]||'').trim(),empId=normalizeEmpId(employeeId);
+      var name=String(row[3]||'').trim(),ptype=String(row[4]||'').toUpperCase();
       var identity=empId?('ID:'+empId):('NAME:'+name.toLowerCase());
       if(identity==='NAME:')continue;
       var pair=idKey+'|'+identity;
-      var status=String(row[5]||'').toUpperCase();
-      var complete=String(row[8]||'').toUpperCase()==='COMPLETED';
+      var status=String(row[6]||'').toUpperCase();
+      var complete=String(row[9]||'').toUpperCase()==='COMPLETED';
       if(status==='ATTENDED'&&!attendanceByCne[pair]) {
         attendanceByCne[pair]=true;
         data.ref.attendance++;data.areaRef.attendance++;data.modeRef.attendance++;
@@ -20115,7 +20148,7 @@ function handleGetCNEAnalytics(params, session) {
       }
       if(!complete||sourceSeen[pair])continue;
       sourceSeen[pair]=true;
-      var score=scoreBlock[j][0],total=scoreBlock[j][1],pct=scoreBlock[j][2];
+      var score=row[12],total=row[13],pct=row[14];
       if(pct===''||pct===null||pct===undefined||!isFinite(Number(pct)))continue;
       var percentage=Number(pct);if(percentage<0||percentage>100)continue;
       testScoreSum+=percentage;testPercentCount++;

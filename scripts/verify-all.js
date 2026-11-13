@@ -1102,7 +1102,7 @@ const suites = [
     originalFilename: "verify-security-and-access.js",
     mode: "module",
     expectedChecks: 30,
-    sha256: "5506d7bcf68fadf92d04b7866bce53a30668a4092fa7c7ca665b21be89819ecc",
+    sha256: "a8ed6da15759aa6634d24b62f227ad98e66d8975e2775d895b24875f6cb3daba",
     source: `/**
  * Security & Access Verification Suite
  *
@@ -1722,7 +1722,7 @@ runTest('Cancel uses dedicated cancellation workflow', () => {
     codeGs.length
   );
 
-  assert.ok(cancelSection.includes("setValue('Canceled')"), 'Cancel must set status to Canceled');
+  assert.ok(cancelSection.includes("cneUpdateHeaderFields_(upcomingSheet,liveRecord.rowIndex,{Status:'Canceled',Admin_Remarks:reason})"), 'Cancel must set status to Canceled');
   assert.ok(
     cancelSection.includes('Cannot cancel a CNE that has already been finalized/completed'),
     'Cancel must reject already finalized/completed CNE'
@@ -2466,7 +2466,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-workflows.js",
     mode: "module",
     expectedChecks: 76,
-    sha256: "701918c675aeebf58034a218c55b84b58c77510e52c8c14a599c04e9227b6a98",
+    sha256: "08c6342de6dfdd417839d410aa8d0b521ff6e9319c11c459753c7816ae7be734",
     source: `/**
  * CNE Business Workflows & Schema Verification Suite
  *
@@ -2719,7 +2719,7 @@ runTest('CNE Schedule is the sole authoritative lifecycle table (Scheduled -> Co
     'Cancel must operate on CNE Schedule sheet'
   );
   assert.ok(
-    cancelSection.includes(".setValue('Canceled')"),
+    cancelSection.includes("cneUpdateHeaderFields_(upcomingSheet,liveRecord.rowIndex,{Status:'Canceled',Admin_Remarks:reason})"),
     'Cancel must update status column of existing CNE Schedule row to Canceled'
   );
 });
@@ -3230,12 +3230,12 @@ runTest('handleUpdateArea rename updates Area master name and status together', 
   );
 
   assert.ok(
-    updateAreaFunc.includes('getRange(targetAreaRow, 1, 1, 2)'),
+    updateAreaFunc.includes("cneUpdateHeaderFields_(sheet,targetAreaRow,{Area:newName,Status:targetStatus})"),
     'handleUpdateArea must target Area master Name + Status together'
   );
 
   assert.ok(
-    updateAreaFunc.includes('setValues([[newName, targetStatus]])'),
+    updateAreaFunc.includes("cneUpdateHeaderFields_(sheet,targetAreaRow,{Area:newName,Status:targetStatus})"),
     'handleUpdateArea must write newName and targetStatus in one operation'
   );
 
@@ -3318,7 +3318,7 @@ runTest('rename preserves ACTIVE/INACTIVE status', () => {
   );
 
   assert.ok(
-    updateAreaFunc.includes('setValues([[newName, targetStatus]])'),
+    updateAreaFunc.includes("cneUpdateHeaderFields_(sheet,targetAreaRow,{Area:newName,Status:targetStatus})"),
     'Area master grouped write must preserve targetStatus'
   );
 });
@@ -3475,9 +3475,9 @@ runTest('Rollback and restoration are attempted on partial failure', () => {
     renameTryBlock.indexOf('executedRollbacks.push({ sheet: cneSheet') < renameTryBlock.indexOf('cneSheet.getRange(cItem.row, cItem.col).setValue'),
     'Rollback entry must be registered before CNE write'
   );
-  const masterGroupedWriteIndex = renameTryBlock.indexOf('getRange(targetAreaRow, 1, 1, 2)');
-  const nameRollbackIndex = renameTryBlock.indexOf('col: 1, oldVal: oldAreaMasterName');
-  const statusRollbackIndex = renameTryBlock.indexOf('col: 2, oldVal: oldAreaMasterStatus');
+  const masterGroupedWriteIndex = renameTryBlock.indexOf("cneUpdateHeaderFields_(sheet,targetAreaRow,{Area:newName,Status:targetStatus})");
+  const nameRollbackIndex = renameTryBlock.indexOf("col:cneHeaderColumn_(sheet,'Area'),oldVal:oldAreaMasterName");
+  const statusRollbackIndex = renameTryBlock.indexOf("col:cneHeaderColumn_(sheet,'Status'),oldVal:oldAreaMasterStatus");
 
   assert.ok(
     nameRollbackIndex !== -1 && nameRollbackIndex < masterGroupedWriteIndex,
@@ -3490,7 +3490,7 @@ runTest('Rollback and restoration are attempted on partial failure', () => {
   );
 
   assert.ok(
-    renameTryBlock.includes('setValues([[newName, targetStatus]])'),
+    renameTryBlock.includes("cneUpdateHeaderFields_(sheet,targetAreaRow,{Area:newName,Status:targetStatus})"),
     'Area master Name + Status must be written together'
   );
   assert.ok(
@@ -3545,7 +3545,7 @@ runTest('Active/Inactive status remains unchanged when renaming area', () => {
   );
 
   assert.ok(
-    updateAreaFunc.includes('setValues([[newName, targetStatus]])'),
+    updateAreaFunc.includes("cneUpdateHeaderFields_(sheet,targetAreaRow,{Area:newName,Status:targetStatus})"),
     'Grouped Area master write must preserve resolved targetStatus'
   );
 });
@@ -3652,8 +3652,8 @@ runTest('Teaching Mode rename registers rollback before dependent and master wri
   const fn = codeGs.substring(start, end);
   const depRollback = fn.indexOf('executedRollbacks.push({ sheet: cneSheet');
   const depWrite = fn.indexOf('cneSheet.getRange(cItem.row, cItem.col).setValue');
-  const masterRollback = fn.indexOf('col: 1, oldVal: data[targetRow - 1][0]');
-  const masterWrite = fn.indexOf('getRange(targetRow, 1, 1, 3).setValues');
+  const masterRollback = fn.indexOf("col:cneHeaderColumn_(sheet,'Mode_Name'),oldVal:data[targetRow-1][0]");
+  const masterWrite = fn.indexOf("cneUpdateHeaderFields_(sheet,targetRow,{Mode_Name:newName,Status:targetStatus,Updated_At:updatedAt})");
   assert.ok(depRollback !== -1 && depRollback < depWrite, 'CNE rollback must be registered before write');
   assert.ok(masterRollback !== -1 && masterRollback < masterWrite, 'master rollback must be registered before grouped write');
   assert.ok(fn.includes("errorCode: 'TEACHING_MODE_RENAME_FAILED'"), 'safe rollback failure code must exist');
@@ -4458,7 +4458,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 27,
-    sha256: "34b66e6bac8f4680fcee5007509bb8c002da15670b1c798537e349e8ab045333",
+    sha256: "76b01bc8fb97624ae3b280b5b47b84d667bdee9d78f10caf69c96105677358b5",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -4846,7 +4846,7 @@ runTest('CNE Schedule lifecycle architecture (in-place status update, no separat
     "handleCancelCNE function must exist in Code.gs"
   );
   assert.ok(
-    codeGs.includes("upcomingSheet.getRange(liveRecord.rowIndex, statusCol).setValue('Canceled')"),
+    codeGs.includes("cneUpdateHeaderFields_(upcomingSheet,liveRecord.rowIndex,{Status:'Canceled',Admin_Remarks:reason})"),
     "handleCancelCNE must update existing CNE Schedule record status to 'Canceled'"
   );
 
@@ -5673,7 +5673,7 @@ runTest('Coordinator Desk and Quick Links use Google Sheet storage, not Script P
   assert.ok(
     codeGs.includes('function getDefaultQuickLinks_()') &&
     codeGs.includes("writeQuickLinkRow_(sheet, seedLinks[i], i + 1, 'SYSTEM_DEFAULT')") &&
-    codeGs.includes("sheet.appendRow(['COORDINATOR', 'EMAIL', sanitizeCellInput(email), new Date().toISOString(), 'SYSTEM_DEFAULT'])"),
+    codeGs.includes("cneAppendHeaderRows_(sheet,CNE_SHEET_HEADERS[\'Portal_Content\']"),
     'Missing content must seed from built-in defaults, not legacy configuration'
   );
   assert.ok(
@@ -5702,6 +5702,15 @@ function createLegacyFreeContentSeedFixture() {
     return {
       grid,
       getLastRow() { return grid.length; },
+      getLastColumn() { return Math.max(...grid.map(row => row.length)); },
+      getMaxRows() { return Math.max(100,grid.length); },
+      getName() {return name;},
+      getRange(r,c,n=1,w=1) { return {
+        getValues() { return Array.from({length:n},(_,i)=>Array.from({length:w},(_,j)=>grid[r-1+i]?.[c-1+j]??'')); },
+        getFormulas() { return Array.from({length:n},()=>Array(w).fill('')); },
+        setValues(values) { values.forEach((row,i)=>row.forEach((v,j)=>{while(grid.length<r+i)grid.push([]);grid[r-1+i][c-1+j]=v;})); },
+        setValue(value) { while(grid.length<r)grid.push([]);grid[r-1][c-1]=value; }
+      }; },
       getDataRange() { return { getValues() { return grid.map(r => r.slice()); } }; },
       appendRow(row) { grid.push(row.slice()); }
     };
@@ -5958,7 +5967,7 @@ process.exit(0);
     originalFilename: "verify-delete-cne-behavior.js",
     mode: "module",
     expectedChecks: 38,
-    sha256: "7e8c80c1a1cbf957329d92bbe63e1f2a7a2b867397243730d16f7cc1ba011599",
+    sha256: "b6c89afecf0196d500651e3f9e35189eb97656af53b5821ff4ccfbfd72fb1529",
     source: `/**
  * ============================================================================
  * EXECUTABLE BEHAVIORAL TEST SUITE: Delete CNE Data Integrity & Concurrency
@@ -6336,8 +6345,8 @@ function createFreshTestEnvironment() {
 
   // Setup Standard QR Tokens Sheet
   cneSpreadsheet.addSheet('QR_Tokens', [
-    ['Token', 'CNE_ID', 'Created_At', 'Expires_At', 'Status'],
-    ['QR-TOK-001', 'CLS-2026-001', '2026-10-10T10:00:00Z', '2026-10-25T10:00:00Z', 'ACTIVE']
+    ['QR_Token', 'CNE_ID', 'Created_At', 'Created_By', 'Status'],
+    ['QR-TOK-001', 'CLS-2026-001', '2026-10-10T10:00:00Z', 'ADMIN001', 'ACTIVE']
   ]);
 
   // Setup Standard Audit Log Sheet
@@ -6403,7 +6412,7 @@ runBehavioralTest('2. Invalid CNE ID header fails closed without default column 
 
   assert.strictEqual(res.success, false);
   assert.strictEqual(res.errorCode, 'PARTICIPANT_REGISTER_ERROR');
-  assert.ok(res.message.includes('CNE_Participants column 2'), 'Message must identify incorrect CNE ID header');
+  assert.ok(res.message.includes('MISSING_HEADER: CNE_Participants: CNE_ID'), 'Message must identify incorrect CNE ID header');
   assert.strictEqual(env.cneSpreadsheet.sheets['CNE_Schedule'].grid.length, 3, 'CNE Schedule must not be deleted');
 });
 
@@ -8849,7 +8858,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-read-performance.cjs",
     mode: "commonjs",
     expectedChecks: 40,
-    sha256: "b179fce98810241e99e96f30280f2804781993bc0330572322f827393a9d02b9",
+    sha256: "cceed94723f4e042c3ddd760d12409730612c702a920a0727e1ecbc1fad7bcd6",
     source: `/**
  * CNE Read Performance & Bounded Query Regression Verification Suite
  *
@@ -9452,8 +9461,11 @@ runTest('handleGetCNEActivityProgress uses bounded, CNE-specific reads without f
 
   // Participant register must use bounded CNE-specific reads, not a full-sheet data scan.
   assert.strictEqual(env.participantsSheet.getDataRangeCount, 0);
-  const regReads = env.participantsSheet.readOps.filter(op => op.numCols === 9);
-  assert.ok(regReads.length > 0, 'Progress must read only nine identity/attendance columns');
+  const regReads = env.participantsSheet.readOps.filter(op => op.row >= 2);
+  const names = env.participantsSheet.grid[0];
+  const cneColumn = names.indexOf('CNE_ID')+1, statusColumn = names.indexOf('Attendance_Status')+1;
+  assert.ok(regReads.some(op => op.col===cneColumn && op.numCols===1),'Progress must read the named CNE_ID column');
+  assert.ok(regReads.some(op => op.col===statusColumn && op.numCols===1),'Progress must read the named Attendance_Status column');
 
   // Large answers JSON column (column 12 / L) must NOT be read during progress check
   const answersJsonReads = env.participantsSheet.readOps.filter(op => op.row >= 2 && op.col <= 12 && (op.col + op.numCols - 1) >= 12);
@@ -9837,25 +9849,33 @@ runTest('Admin analytics aggregates verified attendance once per CNE and skips r
   const code=codeGsSource.slice(codeGsSource.lastIndexOf('function handleGetCNEAnalytics('));
   const headers=['CNE_ID','Area','From_Date','To_Date','Duration','Topic','Internal_Resource_Person_IDs','Mode_of_Teaching','Status','Total_Allotted_Staff'];
   const sheetRows=[headers,['CNE-1','ICU','2026-10-01','2026-10-01','01:30:00','Sepsis','RP1','Lecture','Completed',40],['CNE-2','ICU','2026-10-10','2026-10-10','01:00:00','Vitals','RP1','Lecture','Scheduled',40]];
-  const participantRows=[
-    ['CNE-1','E1','Nurse A','INTERNAL','NO','ATTENDED','MANUAL','2026-10-01','COMPLETED'],
-    ['CNE-1','E2','Nurse B','INTERNAL','NO','ATTENDED','MANUAL','2026-10-01','NOT_TAKEN'],
-    ['CNE-1','EXT-1','External','EXTERNAL','External','PENDING','','','NOT_TAKEN']
+  const participantCanonicalHeaders=['Participant_ID','CNE_ID','Employee_ID','Participant_Name','Participant_Type','Designation','Attendance_Status','Attendance_Source','Attendance_At','Post_Test_Status','Post_Test_Response_ID','Post_Test_Answers_JSON','Post_Test_Score','Post_Test_Total','Post_Test_Percentage','Post_Test_Submitted_At','Post_Test_Questions_JSON','Post_Test_Result','Created_At','Created_By'];
+  const participantCanonicalRows=[
+    ['P1','CNE-1','E1','Nurse A','INTERNAL','','ATTENDED','MANUAL','2026-10-01','COMPLETED','R1','{"Q1":"B"}',8,10,80,'2026-10-01','["Q1"]','PASSED','',''],
+    ['P2','CNE-1','E2','Nurse B','INTERNAL','','ATTENDED','MANUAL','2026-10-01','NOT_TAKEN','','','','','','','','','',''],
+    ['P3','CNE-1','EXT-1','External','EXTERNAL','External','PENDING','','','NOT_TAKEN','','','','','','','','','','']
   ];
-  const scoreRows=[[8,10,80],['','',''],['','','']];
+  // Deliberately permute the physical participant columns. Answers JSON is adjacent to
+  // frequently-read columns, and must not be fetched by aggregate analytics.
+  const physicalHeaderOrder=['Post_Test_Answers_JSON','CNE_ID','Post_Test_Result','Employee_ID','Participant_Type','Attendance_Status','Participant_Name','Post_Test_Total','Post_Test_Status','Post_Test_Score','Post_Test_Percentage',...participantCanonicalHeaders.filter(h=>!['Post_Test_Answers_JSON','CNE_ID','Post_Test_Result','Employee_ID','Participant_Type','Attendance_Status','Participant_Name','Post_Test_Total','Post_Test_Status','Post_Test_Score','Post_Test_Percentage'].includes(h))];
+  const participantGrid=[physicalHeaderOrder,...participantCanonicalRows.map(row=>physicalHeaderOrder.map(name=>row[participantCanonicalHeaders.indexOf(name)]))];
   let readCount=0;
   const inMemoryAnalyticsCache = new Map();
   const scheduleSheet={getLastRow:()=>sheetRows.length,getLastColumn:()=>headers.length,getRange:(r,c,n)=>({getValues:()=>r===1?[headers]:sheetRows.slice(r-1,r+n-1)})};
-  const participantSheet={getLastRow:()=>participantRows.length+1,getRange:(r,c,n,w)=>{
-    if(r===2 && c===2 && w===9){readCount++;return {getValues:()=>participantRows};}
-    if(r===2 && c===13 && w===3){readCount++;return {getValues:()=>scoreRows};}
-    throw Error('Unexpected participant analytics range '+[r,c,n,w].join(','));
-  }};
+  const participantSheet={getLastRow:()=>participantGrid.length,getLastColumn:()=>physicalHeaderOrder.length,getName:()=> 'CNE_Participants',getRange:(r,c,n=1,w=1)=>({getValues:()=>{
+    if(r>1){readCount++;for(let col=c-1;col<c-1+w;col++)assert.ok(!['Post_Test_Answers_JSON','Post_Test_Questions_JSON'].includes(physicalHeaderOrder[col]),'Analytics must not load answer/question JSON');}
+    return Array.from({length:n},(_,ri)=>Array.from({length:w},(_,ci)=>participantGrid[r-1+ri]?.[c-1+ci]??''));
+  }})};
+  const readNames=['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status','Post_Test_Status','Post_Test_Score','Post_Test_Total','Post_Test_Percentage'];
+  const physicalReads = readNames.map(h=>physicalHeaderOrder.indexOf(h)).sort((a,b)=>a-b).reduce((state,c,i,all)=>state+(i===0||c!==all[i-1]+1?1:0),0);
+  const helperSource=codeGsSource.slice(codeGsSource.indexOf('function cneReadNamedColumns_('),codeGsSource.indexOf('function cneParticipantAttendanceRows_('));
   const ctx={
     requireAdmin:s=>s&&s.role==='ADMIN'?null:{success:false,errorCode:'FORBIDDEN'},
     getCNECanonicalDay:v=>v||'',
     getSpreadsheet:()=>({getSheetByName:n=>n==='CNE_Schedule'?scheduleSheet:null}),
     cneParticipantSheet_:()=>participantSheet,
+    CNE_SHEET_HEADERS:{CNE_Participants:participantCanonicalHeaders},
+    cneHeaderLayout_:(sh,names)=>({positions:names.map(h=>physicalHeaderOrder.indexOf(h)),width:physicalHeaderOrder.length}),
     getHeaderMap:()=>Object.fromEntries(headers.map((x,i)=>[x.toLowerCase().replace(/[^a-z0-9]/g,''),i])),
     readWardLevelOutcomeScheduleRows_:(_,__,from,to)=>sheetRows.slice(1).filter(r=>r[2]>=from&&r[2]<=to),
     getOfficerNameMap:()=>({RP1:'Teaching RP',E1:'Nurse A',E2:'Nurse B'}),
@@ -9867,7 +9887,7 @@ runTest('Admin analytics aggregates verified attendance once per CNE and skips r
     putToScriptCache:(key,data,ttl)=>{assert.strictEqual(ttl,45);inMemoryAnalyticsCache.set(key,JSON.parse(JSON.stringify(data)));},
     getFromScriptCache:key=>inMemoryAnalyticsCache.get(key)||null
   };
-  vm.runInNewContext(code,ctx);
+  vm.runInNewContext(helperSource+code,ctx);
   const result=ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31'},{role:'ADMIN'});
   assert.strictEqual(result.success,true);
   assert.strictEqual(result.data.kpis.completed,1);
@@ -9879,7 +9899,7 @@ runTest('Admin analytics aggregates verified attendance once per CNE and skips r
   assert.strictEqual(result.data.kpis.postTestCount,1);
   assert.strictEqual(result.data.kpis.averagePostTestPercent,80);
   assert.strictEqual(result.data.employeeRows.length,0,'Employee directory should not be returned on initial overview');
-  assert.strictEqual(readCount,2,'Analytics must read identity/status and score columns without reading answer JSON');
+  assert.strictEqual(readCount,physicalReads,'Analytics must read only projected named columns without answer JSON');
   const requestsAfterOverview=readCount;
   const details=ctx.handleGetCNEAnalytics({fromDate:'2026-10-01',toDate:'2026-10-31',includeEmployees:true},{role:'ADMIN'});
   assert.strictEqual(details.data.employeeRows.length,2,'Explicit request exposes only verified internal participant rows');
@@ -9888,7 +9908,7 @@ runTest('Admin analytics aggregates verified attendance once per CNE and skips r
   // A different reporting period must not read unrelated cached employee rows.
   const newPeriod=ctx.handleGetCNEAnalytics({fromDate:'2026-11-01',toDate:'2026-11-30',includeEmployees:true},{role:'ADMIN'});
   assert.strictEqual(newPeriod.data.employeeRows.length,0);
-  assert.strictEqual(readCount,requestsAfterOverview+2,'Changing dates must trigger a fresh authoritative participant read');
+  assert.strictEqual(readCount,requestsAfterOverview+physicalReads,'Changing dates must trigger a fresh authoritative participant read');
 });
 
 runTest('Stage 3 today-only homepage uses From Date and excludes historical records', () => {
@@ -15550,6 +15570,148 @@ if (selected.length === passed) {
     try {check(); focusedPassed++; console.log('✓ '+name);}
     catch(e){console.error('✗ '+name+': '+(e.stack||e.message));}
   }
+}
+
+// Executable column-permutation regression: the physical position of the named
+// fields must never change where an attendance, post-test, media or QR update lands.
+if (selected.length === passed) {
+  const code = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const c = {console, Date, Math};
+  vm.createContext(c);
+  vm.runInContext(code, c, {timeout: 18000});
+  const sheets = {};
+  function makeSheet(name, canonical, physical) {
+    const names = physical || [canonical[canonical.length - 1],canonical[0], 'Custom_Metadata',...canonical.slice(1,-1)];
+    const grid = [names.slice()];
+    const sheet = {
+      name,grid,
+      getName(){return name;},getLastRow(){return grid.length;},
+      getLastColumn(){return names.length;},getMaxRows(){return 1000;},
+      getRange(r, col, n=1, width=1){return {
+        getValues(){return Array.from({length:n},(_,i)=>Array.from({length:width},(_,j)=>grid[r-1+i]?.[col-1+j]??''));},
+        getDisplayValues(){return this.getValues();},
+        getFormulas(){return this.getValues().map(row=>row.map(v=>typeof v==='string'&&v.startsWith('=')?v:''));},
+        getValue(){return this.getValues()[0][0];},
+        setValues(rows){rows.forEach((row,i)=>row.forEach((value,j)=>{while(grid.length<r+i)grid.push([]);grid[r-1+i][col-1+j]=value;}));},
+        setValue(value){while(grid.length<r)grid.push([]);grid[r-1][col-1]=value;}
+      };},
+      getDataRange(){return {getValues:()=>grid.map(row=>row.slice())};},
+      appendRow(row){grid.push(row.slice());},
+      value(index,header){return grid[index]?.[names.indexOf(header)];},
+      add(values){grid.push(names.map(header=>Object.hasOwn(values,header)?values[header]:''));}
+    };
+    sheets[name]=sheet;
+    return sheet;
+  }
+  c.getSpreadsheet=()=>({getSheetByName:name=>sheets[name]||null});
+  c.getOrCreateSheet=name=>sheets[name];
+  c.getQRTokensSheet=()=>sheets.QR_Tokens;
+  c.requireAdmin=()=>null;
+  c.requireFreshAdminMutation=session=>({success:true,session});
+  c.LockService={getScriptLock:()=>({waitLock:()=>{},tryLock:()=>true,releaseLock:()=>{}})};
+  c.logAuditAction=()=>{};
+  c.removeScriptCacheEntry_=()=>{};
+  c.Utilities={getUuid:()=> 'TEST-UUID'};
+  const ses={employeeId:'ADMIN001',role:'ADMIN'};
+  const cases = [
+    ['Gallery update and soft-delete use renamed columns without damaging metadata',()=>{
+      const sh=makeSheet('Gallery',Array.from(c.CNE_SHEET_HEADERS.Gallery));
+      sh.add({Image_ID:'IMG-1',Title:'Before',Description:'Old',Date:'2026-10-01',Status:'ACTIVE',Custom_Metadata:'=10+20'});
+      const updated=c.handleUpdateGalleryItem({id:'IMG-1',title:'After',date:'2026-11-12',isActive:true},ses);
+      assert.strictEqual(updated.success,true);
+      assert.equal(sh.value(1,'Title'),'After');assert.equal(sh.value(1,'Date'),'2026-11-12');
+      assert.equal(sh.value(1,'Custom_Metadata'),'=10+20');
+      const deleted=c.handleDeleteGalleryItem({id:'IMG-1'},ses);
+      assert.strictEqual(deleted.success,true);assert.equal(sh.value(1,'Status'),'INACTIVE');
+      assert.equal(sh.value(1,'Title'),'After');
+    }],
+    ['News & Events edits use shuffled headers and retain unrelated custom cells',()=>{
+      const sh=makeSheet('News_Events',Array.from(c.CNE_SHEET_HEADERS.News_Events));
+      sh.add({Event_ID:'NEWS-1',Title:'Before',Category:'Circular',Date:'2026-11-01',Status:'ACTIVE',Custom_Metadata:'KEEP'});
+      const updated=c.handleUpdateNewsEvent({id:'NEWS-1',title:'After',isImportant:true},ses);
+      assert.equal(updated.success,true);assert.equal(sh.value(1,'Title'),'After');
+      assert.equal(sh.value(1,'Is_Important'),'TRUE');assert.equal(sh.value(1,'Custom_Metadata'),'KEEP');
+      const deleted=c.handleDeleteNewsEvent({id:'NEWS-1'},ses);
+      assert.equal(deleted.success,true);assert.equal(sh.value(1,'Status'),'INACTIVE');
+    }],
+    ['CNE participant upsert and single-row post-test retain QR proof in shuffled layout',()=>{
+      const sh=makeSheet('CNE_Participants',Array.from(c.CNE_SHEET_HEADERS.CNE_Participants));
+      const added=c.cneParticipantUpsertBatch_('CNE-42',[{employeeId:'E42',name:'Nurse Test',type:'INTERNAL',status:'ATTENDED',source:'QR'}],'ADMIN',sh);
+      assert.equal(added.inserted,1);assert.equal(sh.value(1,'Attendance_Status'),'ATTENDED');
+      assert.equal(sh.value(1,'Attendance_Source'),'QR');
+      // Extra user-maintained data must survive the full-row atomic assessment update.
+      sh.grid[1][sh.grid[0].indexOf('Custom_Metadata')]='KEEP';
+      const scored={score:4,total:5,percentage:80,status:'PASSED'};
+      const snapshot={answerKeys:[{id:'Q1',correctOption:'B'}]};
+      const saved=c.saveUnifiedPostTest_('CNE-42','E42','INTERNAL','Nurse Test','Nursing Officer',{Q1:'B'},snapshot,scored,'ADMIN','2026-11-12T09:00:00.000Z','RESP-42');
+      assert.equal(saved.alreadySubmitted,false);
+      assert.equal(sh.value(1,'Attendance_Source'),'QR');
+      assert.equal(sh.value(1,'Post_Test_Status'),'COMPLETED');
+      assert.equal(sh.value(1,'Post_Test_Score'),4);
+      assert.equal(sh.value(1,'Post_Test_Total'),5);
+      assert.equal(sh.value(1,'Post_Test_Percentage'),80);
+      assert.equal(sh.value(1,'Post_Test_Result'),'PASSED');
+      assert.equal(JSON.parse(sh.value(1,'Post_Test_Answers_JSON')).Q1,'B');
+      assert.equal(sh.value(1,'Custom_Metadata'),'KEEP');
+      const duplicate=c.saveUnifiedPostTest_('CNE-42','E42','INTERNAL','Nurse Test','Nursing Officer',{Q1:'D'},snapshot,scored,'ADMIN','','RESP-43');
+      assert.equal(duplicate.alreadySubmitted,true);assert.equal(sh.value(1,'Post_Test_Response_ID'),'RESP-42');
+    }],
+    ['QR token lookup and deactivation use shuffled token and status columns',()=>{
+      const sh=makeSheet('QR_Tokens',Array.from(c.CNE_SHEET_HEADERS.QR_Tokens));
+      sh.add({QR_Token:'TOKEN-42',CNE_ID:'CNE-42',Created_By:'ADMIN',Status:'ACTIVE',Custom_Metadata:'KEEP'});
+      const active=c.resolveActiveQrToken('TOKEN-42');assert.equal(active.cneId,'CNE-42');
+      c.deactivateQRTokensForCNE('CNE-42');
+      assert.equal(sh.value(1,'Status'),'INACTIVE');
+      assert.equal(sh.value(1,'Custom_Metadata'),'KEEP');
+      assert.equal(c.resolveActiveQrToken('TOKEN-42'),null);
+    }],
+    ['Area and Teaching Mode mutations preserve named fields and custom columns',()=>{
+      const area=makeSheet('Area',Array.from(c.CNE_SHEET_HEADERS.Area));
+      area.add({Area:'ICU',Status:'ACTIVE',Created_At:'2026-01-01',Custom_Metadata:'MANUAL_NOTE'});
+      assert.equal(c.cneCanonicalSheetData_(area,c.CNE_SHEET_HEADERS.Area)[1][0],'ICU');
+      c.cneUpdateHeaderFields_(area,2,{Area:'Critical Care ICU',Status:'INACTIVE'});
+      assert.equal(area.value(1,'Area'),'Critical Care ICU');
+      assert.equal(area.value(1,'Status'),'INACTIVE');
+      assert.equal(area.value(1,'Custom_Metadata'),'MANUAL_NOTE');
+      const mode=makeSheet('Teaching_Mode',Array.from(c.CNE_SHEET_HEADERS.Teaching_Mode));
+      mode.add({Mode_Name:'Lecture',Status:'ACTIVE',Custom_Metadata:'HISTORY'});
+      c.cneUpdateHeaderFields_(mode,2,{Mode_Name:'Interactive Lecture',Status:'INACTIVE',Updated_At:'2026-11-12'});
+      assert.equal(mode.value(1,'Mode_Name'),'Interactive Lecture');
+      assert.equal(mode.value(1,'Updated_At'),'2026-11-12');
+      assert.equal(mode.value(1,'Custom_Metadata'),'HISTORY');
+    }],
+    ['Quick Links and Portal Content inserts project canonical values onto moved headers',()=>{
+      const links=makeSheet('Quick_Links',Array.from(c.CNE_SHEET_HEADERS.Quick_Links));
+      c.writeQuickLinkRow_(links,{id:'L1',title:'CNE Details',target:'cne'},1,'ADMIN');
+      assert.equal(links.value(1,'ID'),'L1');
+      assert.equal(links.value(1,'Title'),'CNE Details');
+      assert.equal(links.value(1,'Updated_By'),'ADMIN');
+      const content=makeSheet('Portal_Content',Array.from(c.CNE_SHEET_HEADERS.Portal_Content));
+      c.cneAppendHeaderRows_(content,c.CNE_SHEET_HEADERS.Portal_Content,[['COORDINATOR','EMAIL','staff@example.org','2026-11-12','ADMIN']]);
+      assert.equal(content.value(1,'Section'),'COORDINATOR');
+      assert.equal(content.value(1,'Key'),'EMAIL');
+      assert.equal(content.value(1,'Value'),'staff@example.org');
+    }],
+    ['AI quota update selects true named columns rather than old physical indexes',()=>{
+      const quota=makeSheet('AI_Quota',Array.from(c.CNE_SHEET_HEADERS.AI_Quota));
+      quota.add({CNE_ID:'CNE-42',Attempts_Used:0,Reservation_Token:'T1',Custom_Metadata:'NOT_CHANGED'});
+      c.cneUpdateHeaderFields_(quota,2,{Attempts_Used:1,Reservation_Token:'',Last_Committed_Token:'T1'});
+      assert.equal(quota.value(1,'Attempts_Used'),1);
+      assert.equal(quota.value(1,'Reservation_Token'),'');
+      assert.equal(quota.value(1,'Last_Committed_Token'),'T1');
+      assert.equal(quota.value(1,'Custom_Metadata'),'NOT_CHANGED');
+    }],
+    ['Batch Audit Log append maps all five values by header name',()=>{
+      const sh=makeSheet('Audit_Log',Array.from(c.CNE_SHEET_HEADERS.Audit_Log));
+      c.logAuditActionsBatch([{action:'REORDER_TEST',employeeId:'E42',details:'Safe',status:'SUCCESS'}]);
+      assert.equal(sh.value(1,'Action'),'REORDER_TEST');
+      assert.equal(sh.value(1,'Employee_ID'),'E42');
+      assert.equal(sh.value(1,'Details'),'Safe');
+      assert.equal(sh.value(1,'Status'),'SUCCESS');
+    }]
+  ];
+  console.log('\n>>> Executable shuffled-column Google Sheets write checks');
+  for (const [name,fn] of cases){focusedChecks.push({name});try{fn();focusedPassed++;console.log('✓ '+name)}catch(e){console.error('✗ '+name+': '+(e.stack||e.message));}}
 }
 
 if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);
