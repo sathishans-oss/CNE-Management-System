@@ -422,7 +422,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     isUnscheduledOpen || isScheduleChoiceOpen
   );
 
-  const loadData = async (): Promise<CNERecord[] | undefined> => {
+  const loadData = async (forceFresh = false): Promise<CNERecord[] | undefined> => {
     const requestId = ++dataRequestRef.current;
     const requestSession = sessionKey;
     const isCurrent = () => requestId === dataRequestRef.current && requestSession === sessionKeyRef.current;
@@ -432,7 +432,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
     try {
       // One complete, server-authorized list per visit. Search, status, dates and
       // pagination below never call Google Apps Script.
-      const result = await ApiService.getCNEScheduleAll();
+      const result = await ApiService.getCNEScheduleAll(forceFresh);
       if (!isCurrent()) return;
       if (!result.success || !result.data || !Array.isArray(result.data.records)) {
         throw new Error(result.message || 'Unable to load CNE Schedule.');
@@ -1254,16 +1254,25 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         </div>
       </FilterBarShell>
 
+      {/* Shared Schedule is cached across Calendar and Home. Explicit refresh
+          bypasses its TTL and retains the previous rows while loading. */}
+      <div className="flex justify-end -mt-1">
+        <button type="button" onClick={() => void loadData(true)} disabled={loading}
+          title="Refresh CNE Schedule from Google Sheets" aria-label="Refresh CNE Schedule"
+          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
+        </button>
+      </div>
       {/* Main Content Area */}
       <div className="space-y-4">
-        {loading ? (
+        {loading && classes.length === 0 ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-500">
             <LoadingProgress label="Loading CNE Schedule" />
           </div>
         ) : loadError ? (
           <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center space-y-3">
             <p className="text-sm font-bold text-red-700">{loadError}</p>
-            <button type="button" onClick={() => void loadData()} disabled={loading} className="rounded-lg bg-red-700 px-4 py-2 text-white text-xs font-bold disabled:opacity-50 inline-flex items-center gap-2"><RefreshCw className="w-3.5 h-3.5" /> Retry</button>
+            <button type="button" onClick={() => void loadData(true)} disabled={loading} className="rounded-lg bg-red-700 px-4 py-2 text-white text-xs font-bold disabled:opacity-50 inline-flex items-center gap-2"><RefreshCw className="w-3.5 h-3.5" /> Retry</button>
           </div>
         ) : availableClasses.length === 0 ? (
           <div className="py-16 text-center bg-white rounded-2xl border border-slate-200 p-8 space-y-2">
@@ -1753,7 +1762,7 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
           }}
           onRetryProgress={() => {
             if (selectedDetailCne?.cneId) {
-              fetchActivityProgress(selectedDetailCne.cneId);
+              fetchActivityProgress(selectedDetailCne.cneId, true);
             }
           }}
           onOpenMaterial={(cne) => setActiveReferenceCne(cne)}

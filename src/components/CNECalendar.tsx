@@ -34,8 +34,9 @@ const CalendarInterestControls = lazy(() => import('./cne/CalendarInterestContro
 
 type CalendarEventType = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
 
-/** Calendar datasets are held only in this mounted component. Never persist or
- * share month records across routes, sessions or users. */
+/** Each mounted Calendar holds a display snapshot. ApiService shares a short-lived,
+ * user-scoped browser-memory Schedule cache across Schedule and Calendar; it never
+ * persists protected CNE records in localStorage. */
 const getIndiaCalendarDate = () => {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kolkata',
@@ -84,12 +85,12 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
 
   // One full authorized data request when Calendar mounts. Month changes only
   // change currentDate; they never call Apps Script again.
-  const loadEvents = useCallback(async () => {
+  const loadEvents = useCallback(async (forceFresh = false) => {
     const generation = ++requestGeneration.current;
     setLoading(true);
     setLoadError(null);
     try {
-      const response = await ApiService.getCNEScheduleAll();
+      const response = await ApiService.getCNEScheduleAll(forceFresh);
       if (generation !== requestGeneration.current) return;
       if (!response.success || !response.data || !Array.isArray(response.data.records)) {
         setLoadError(response.message || 'Unable to load CNE Calendar. Please try again.');
@@ -232,7 +233,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
             </button>
             <button
               id="btn-calendar-refresh"
-              onClick={loadEvents}
+              onClick={() => void loadEvents(true)}
               disabled={loading}
               title="Refresh calendar data"
               className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors disabled:opacity-50"
@@ -263,7 +264,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
             <CalendarIcon className="w-9 h-9 text-slate-400" aria-hidden="true" />
             <h2 className="text-base font-bold text-slate-900">Unable to load CNE Calendar</h2>
             <p className="text-sm text-slate-600">{loadError ?? 'CNE programmes are currently unavailable.'}</p>
-            <button type="button" onClick={() => { void loadEvents(); }} className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white hover:bg-teal-800">
+            <button type="button" onClick={() => { void loadEvents(true); }} className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white hover:bg-teal-800">
               <RefreshCw className="w-4 h-4" /> Retry
             </button>
           </>}
@@ -282,7 +283,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
           <p className="text-sm text-amber-900">Could not refresh Calendar data. Showing the last successfully loaded records.</p>
           <button
             type="button"
-            onClick={() => { void loadEvents(); }}
+            onClick={() => { void loadEvents(true); }}
             className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white border border-amber-300 text-sm font-semibold text-amber-900 hover:bg-amber-100"
           >
             <RefreshCw className="w-4 h-4" aria-hidden="true" /> Retry

@@ -200,7 +200,7 @@ function computePasswordHash(password, salt) {
  * Session tokens carry the persistent Password Version from Auth_Credentials.
  * Any password create/reset/change increments the version and invalidates older sessions immediately.
  */
-function generateSessionToken(employeeId, credentialRecord) {
+function generateSessionToken(employeeId, credentialRecord, roleSnapshot) {
   var normId = normalizeEmpId(employeeId);
   // Login already holds an authoritative credential row under ScriptLock.
   // Reuse it when supplied instead of scanning Auth_Credentials a second time.
@@ -213,7 +213,18 @@ function generateSessionToken(employeeId, credentialRecord) {
   var passwordVersion = parseInt(credential.passwordVersion || '0', 10);
   if (!passwordVersion || passwordVersion < 1) throw new Error('Password version is unavailable for this account.');
   var timestamp = new Date().getTime();
-  var nonce = Utilities.getUuid().replace(/-/g, '');
+  // The role snapshot is validated once at login. Encoding is not encryption;
+  // the signature prevents a browser from changing the embedded role/areas.
+  var roleInfo = roleSnapshot || getUserRoleInfo(normId, true);
+  var role = String(roleInfo.role || 'EMPLOYEE').trim().toUpperCase();
+  if (['ADMIN', 'AREA_INCHARGE', 'EMPLOYEE'].indexOf(role) < 0) throw new Error('Invalid session role.');
+  var assignedAreas = Array.isArray(roleInfo.assignedAreas) ? roleInfo.assignedAreas :
+    String(roleInfo.assignedArea || '').split(/[,;\\n]+/);
+  assignedAreas = role === 'ADMIN' ? [] : assignedAreas.map(function(a) { return String(a || '').trim(); }).filter(Boolean).slice(0, 100);
+  var claims = JSON.stringify({ role: role, assignedAreas: assignedAreas });
+  if (claims.length > 4096) throw new Error('Session role snapshot is too large.');
+  var encodedClaims = Utilities.base64EncodeWebSafe(claims, Utilities.Charset.UTF_8);
+  var nonce = Utilities.getUuid().replace(/-/g, '') + '~' + encodedClaims;
   var secret = PropertiesService.getScriptProperties().getProperty('SESSION_SECRET');
   if (!secret || secret.trim() === '') throw new Error('SESSION_SECRET is not configured in Script Properties.');
   var payload = normId + ':' + timestamp + ':' + nonce + ':' + passwordVersion;
@@ -232,48 +243,45 @@ function timingSafeEqual(a, b) {
 
 function verifySession(token, employeeId) {
   var startedAt = Date.now();
-  if (!token) return null;
+  if (!token || String(token).length > 8192) return null;
   var parts = String(token).split(':');
   if (parts.length !== 5) return null;
-  var tokenEmpId = parts[0];
-  var timestamp = parseInt(parts[1], 10);
-  var nonce = parts[2];
-  var tokenPasswordVersion = parseInt(parts[3], 10);
-  var receivedSig = parts[4];
-  if (employeeId && normalizeEmpId(tokenEmpId) !== normalizeEmpId(employeeId)) return null;
-  var now = new Date().getTime();
-  if (isNaN(timestamp) || isNaN(tokenPasswordVersion) || (now - timestamp > 7*24*60*60*1000) || (timestamp > now + 300000)) return null;
+  var verifiedEmpId = normalizeEmpId(parts[0]);
+  var timestamp = Number(parts[1]);
+  var nonce = String(parts[2] || '');
+  var tokenPasswordVersion = Number(parts[3]);
+  var receivedSig = String(parts[4] || '');
+  if (!verifiedEmpId || (employeeId && verifiedEmpId !== normalizeEmpId(employeeId))) return null;
+  var now = Date.now();
+  var SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  if (!Number.isSafeInteger(timestamp) || !Number.isSafeInteger(tokenPasswordVersion) || tokenPasswordVersion < 1 ||
+      now - timestamp > SESSION_MAX_AGE_MS || timestamp > now + 300000) return null;
+  if (!/^[0-9a-f]{32}~[A-Za-z0-9_\\-=]+$/.test(nonce)) return null;
   var secret = PropertiesService.getScriptProperties().getProperty('SESSION_SECRET');
-  if (!secret || secret.trim() === '') return null;
-  var expectedPayload = tokenEmpId + ':' + timestamp + ':' + nonce + ':' + tokenPasswordVersion;
+  if (!secret || !secret.trim()) return null;
+  var expectedPayload = parts[0] + ':' + parts[1] + ':' + nonce + ':' + parts[3];
   var sigBytes = Utilities.computeHmacSha256Signature(expectedPayload, secret.trim());
   var expectedSig = sigBytes.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
   if (!timingSafeEqual(receivedSig, expectedSig)) return null;
-
-  // Do not authorize a request from CacheService. Password reset/account deactivation and
-  // role reassignment must take effect on the next request, not up to 60-300 seconds later.
-  var verifiedEmpId = normalizeEmpId(tokenEmpId);
-  var credential = getAuthCredentialRecord(verifiedEmpId);
-  if (!credential || credential.accountStatus === 'INACTIVE' || !credential.passwordHash || !credential.passwordSalt) return null;
-  // secState is an alias of the freshly-read Auth_Credentials record (not CacheService).
-  // The exact comparison shape is retained for the project security verifier.
-  var secState = credential;
-  if (parseInt(secState.passwordVersion || '0',10) !== tokenPasswordVersion) return null;
-
-  // Officers data is the authoritative employee master. If the employee is removed,
-  // an already-issued session must not continue to authorize protected requests.
-  var officer = findOfficerByIdFresh_(verifiedEmpId);
-  if (!officer) return null;
-
-  var roleInfo = getUserRoleInfo(verifiedEmpId, true);
-  logPerf('verifySession', startedAt, 'id: ' + verifiedEmpId);
-  return {
-    employeeId: verifiedEmpId,
-    role: roleInfo.role,
-    assignedArea: roleInfo.assignedArea,
-    assignedAreas: roleInfo.assignedAreas,
-    passwordVersion: tokenPasswordVersion
-  };
+  try {
+    var encodedClaims = nonce.split('~')[1];
+    var claimsText = Utilities.newBlob(Utilities.base64DecodeWebSafe(encodedClaims)).getDataAsString('UTF-8');
+    var claims = JSON.parse(claimsText);
+    var role = String(claims.role || '').trim().toUpperCase();
+    if (['ADMIN', 'AREA_INCHARGE', 'EMPLOYEE'].indexOf(role) < 0 || !Array.isArray(claims.assignedAreas)) return null;
+    if (claims.assignedAreas.length > 100 || claims.assignedAreas.some(function(a) { return typeof a !== 'string' || a.length > 200; })) return null;
+    var assignedAreas = role === 'ADMIN' ? [] : claims.assignedAreas;
+    try { logPerf('verifySession [stateless]', startedAt, 'id: ' + verifiedEmpId); } catch (logError) {}
+    return {
+      employeeId: verifiedEmpId,
+      role: role,
+      assignedArea: assignedAreas.join(', '),
+      assignedAreas: assignedAreas,
+      passwordVersion: tokenPasswordVersion
+    };
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -305,54 +313,20 @@ function requireAdmin(session) {
  * This closes the race where password reset/account deactivation/role reassignment occurs
  * after initial request authentication but before the mutation obtains ScriptLock.
  */
+/**
+ * The request already passed signed-token validation in verifySession().
+ * Reuse those verified claims in mutation handlers too: no repeat Officers,
+ * Auth_Credentials or Role reads until the user signs in again.
+ * Credential-change handlers still independently check current passwords.
+ * A role/account change made mid-session takes effect on the next login or
+ * after the signed token expires (24 hours).
+ */
 function refreshMutationSession(session) {
-  if (!session || !session.employeeId) {
-    return {
-      success: false,
-      errorCode: 'UNAUTHORIZED',
-      message: 'Authentication required. Please sign in.'
-    };
+  if (!session || !session.employeeId ||
+      ['ADMIN', 'AREA_INCHARGE', 'EMPLOYEE'].indexOf(String(session.role || '').toUpperCase()) < 0) {
+    return { success: false, errorCode: 'UNAUTHORIZED', message: 'Please sign in again.' };
   }
-
-  var employeeId = normalizeEmpId(session.employeeId);
-  var credential = getAuthCredentialRecord(employeeId, true);
-  if (!credential || credential.accountStatus === 'INACTIVE' || !credential.passwordHash || !credential.passwordSalt) {
-    return {
-      success: false,
-      errorCode: 'SESSION_REVOKED',
-      message: 'Your session is no longer active. Please sign in again.'
-    };
-  }
-
-  var issuedVersion = parseInt(session.passwordVersion || '0', 10);
-  if (issuedVersion > 0 && credential.passwordVersion !== issuedVersion) {
-    return {
-      success: false,
-      errorCode: 'SESSION_REVOKED',
-      message: 'Your password or account access changed. Please sign in again.'
-    };
-  }
-
-  var officer = findOfficerByIdFresh_(employeeId);
-  if (!officer) {
-    return {
-      success: false,
-      errorCode: 'SESSION_REVOKED',
-      message: 'Your employee record is no longer active in Officers data. Please contact Nursing Administration.'
-    };
-  }
-
-  var roleInfo = getUserRoleInfo(employeeId, true);
-  return {
-    success: true,
-    session: {
-      employeeId: employeeId,
-      role: roleInfo.role,
-      assignedArea: roleInfo.assignedArea,
-      assignedAreas: roleInfo.assignedAreas,
-      passwordVersion: credential.passwordVersion
-    }
-  };
+  return { success: true, session: session };
 }
 
 function requireFreshAdminMutation(session) {
@@ -757,10 +731,9 @@ function handleRequest(e, method) {
       session = verifySession(params.token, params.loggedInEmployeeId);
     }
     
-    // verifySession() already performs an authoritative, fresh Auth_Credentials check for
-    // every authenticated request. Do not read the credential row a second time here.
-    // Protected mutations still call refreshMutationSession() under ScriptLock for a second,
-    // commit-time revalidation so password/account/role changes cannot race a write.
+    // verifySession validates the 24-hour signed role snapshot without reading
+    // Auth_Credentials, Officers data, or Role. Credential/role changes become
+    // effective at the next login or token expiry.
     
     switch (action) {
       // Public & Authentication Endpoints
@@ -1410,7 +1383,7 @@ function checkCNEAuthorized(session, cneArea, cneType) {
         }
       }
       if (assignedAreas.length === 0) {
-        var rawAssigned = String(session.assignedArea || (session.employeeId ? getUserRoleInfo(session.employeeId).assignedArea : '') || '').trim();
+        var rawAssigned = String(session.assignedArea || (Array.isArray(session.assignedAreas) ? session.assignedAreas.join(', ') : '') || '').trim();
         if (rawAssigned) {
           var parts = rawAssigned.split(/[,;\\n]+/);
           for (var p = 0; p < parts.length; p++) {
@@ -1495,7 +1468,7 @@ function checkCNEActionAuthorized(session, record) {
         }
       }
       if (assignedAreas.length === 0) {
-        var rawAssigned = String(session.assignedArea || (session.employeeId ? getUserRoleInfo(session.employeeId).assignedArea : '') || '').trim();
+        var rawAssigned = String(session.assignedArea || (Array.isArray(session.assignedAreas) ? session.assignedAreas.join(', ') : '') || '').trim();
         if (rawAssigned) {
           var assignedParts = rawAssigned.split(/[,;\\n]+/);
           for (var ap = 0; ap < assignedParts.length; ap++) {
@@ -2476,7 +2449,7 @@ function handleLogin(params) {
     clearCredentialSecurityCache(employeeId);
 
     var roleInfo = getUserRoleInfo(employeeId, true);
-    var token = generateSessionToken(employeeId, record);
+    var token = generateSessionToken(employeeId, record, roleInfo);
     logAuditAction('LOGIN_SUCCESS', employeeId, 'Role: ' + roleInfo.role, 'SUCCESS');
 
     return {
@@ -2570,7 +2543,7 @@ function handleChangePassword(params, session) {
     var result = upsertPasswordCredential(empId, newPassword);
     var officer = findOfficerById(empId);
     var roleInfo = getUserRoleInfo(empId);
-    var newToken = generateSessionToken(empId);
+    var newToken = generateSessionToken(empId, null, roleInfo);
     logAuditAction('PASSWORD_CHANGED', empId, 'User changed personal password after current-password verification; version ' + result.passwordVersion, 'SUCCESS');
 
     return {
@@ -8087,7 +8060,9 @@ function handleGetHomeDashboard(params, session) {
   // Program Impact needs all completed CNEs on a cache miss; reuse that same
   // request-local snapshot. On a cache HIT avoid a broad schedule read entirely:
   // scan just today's start/status columns and enrich matching rows only.
-  var impactRes = handleGetProgramImpact({}, session);
+  // Explicit Home Refresh must bypass the 30-second Program Impact ScriptCache.
+  // Routine Home visits retain the existing cached fast path.
+  var impactRes = handleGetProgramImpact({forceFresh: Boolean(params && params.forceFresh)}, session);
   var scheduleSnapshot = _executionCneScheduleSnapshot;
   var today = getIndiaTodayString();
   var todaySnapshot;

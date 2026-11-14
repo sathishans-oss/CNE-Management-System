@@ -1,3 +1,5 @@
+import { getIndiaTodayIsoDate } from '../utils';
+import { readMemoryCached, invalidateMemoryCache, clearMemoryCache, peekMemoryResponse, getMemoryCacheStats } from './memoryCache';
 import {
   ApiResponse,
   Area,
@@ -161,7 +163,7 @@ const PUBLIC_UNAUTHENTICATED_ACTIONS: ReadonlySet<string> = new Set([
   'getChairpersonPhoto'
 ]);
 
-const MASTER_MEMORY_TTL_MS = 30000;
+const MASTER_MEMORY_TTL_MS = 10 * 60 * 1000;
 let _cachedAreasMem: { data: Area[]; expiresAt: number } | null = null;
 let _inFlightAreasPromise: Promise<ApiResponse<Area[]>> | null = null;
 let _cachedTeachingModesMem: { data: TeachingMode[]; expiresAt: number } | null = null;
@@ -612,6 +614,25 @@ export class ApiService {
    * Connects to Google Apps Script Web App when configured, or fails closed for
    * authentication and mutations when unconfigured.
    */
+  /** Only whitelisted small read responses are cached, per signed session. */
+  private static cachedRead<T>(action: string, params: Record<string, any>, ttlMs: number, forceFresh = false, backendParams?: Record<string, any>): Promise<ApiResponse<T>> {
+    const session = this.getSessionUser();
+    const scope = session ? `${session.employeeId.toUpperCase()}:${session.token}` : 'PUBLIC';
+    if (forceFresh) this.invalidateCache(action);
+    return readMemoryCached<ApiResponse<T>>(action, scope, params, ttlMs, () => this.executeAction<T>(action, backendParams || params));
+  }
+
+  static getSharedSchedule(): CNERecord[] | null {
+    const session = this.getSessionUser();
+    if (!session) return null;
+    const response = peekMemoryResponse<ApiResponse<{ records: CNERecord[]; total: number }>>(
+      'getCNEScheduleAll', `${session.employeeId.toUpperCase()}:${session.token}`, {}
+    );
+    return response?.success && Array.isArray(response.data?.records) ? response.data.records : null;
+  }
+
+  static getMemoryUsage() { return getMemoryCacheStats(); }
+
   static async executeAction<T = any>(
     action: string,
     params: Record<string, any> = {}
@@ -679,6 +700,15 @@ export class ApiService {
           // Check for session expiry/invalid token
           if (result.errorCode === 'UNAUTHORIZED' && session) {
             this.logout();
+          }
+          // Any successful CNE mutation invalidates shared, personally scoped data.
+          // This is intentionally conservative: stale attendance / scores are worse
+          // than an extra read after an edit. A mutating getQRToken is included.
+          const cneMutation = /^(create|add|update|delete|cancel|finalize|submit|save|record|mark|upload|import|replace|revoke|generate|complete|reindex)/i.test(action) &&
+            /(CNE|LearningResource|ReferenceMaterial|PostTest|ManualParticipants|QRToken)/i.test(action);
+          if (result.success && (cneMutation || action === 'updateArea' || action === 'updateTeachingMode' ||
+              (action === 'getQRToken' && !params.checkOnly))) {
+            this.invalidateCache('getCNERecords');
           }
           if (result.success && result.data && isPublicCacheableAction(action)) {
             try {
@@ -900,6 +930,7 @@ export class ApiService {
   }
 
   static logout() {
+    clearMemoryCache();
     clearMasterMemoryCache();
     _cneInterestStatusCache.clear();
     try {
@@ -921,7 +952,16 @@ export class ApiService {
       if (stored) {
         const parsed = JSON.parse(stored);
         if (isValidAuthenticatedSessionUser(parsed)) {
-          return parsed;
+          const segments = String(parsed.token).split(':');
+          const issued = Number(segments[1]);
+          if (segments.length === 5 && /^[0-9a-f]{32}~[A-Za-z0-9_\-=]+$/.test(segments[2]) &&
+              Number.isSafeInteger(issued) && issued <= Date.now() + 300000 &&
+              Date.now() - issued < 24 * 60 * 60 * 1000) {
+            return parsed;
+          }
+          // Old seven-day tokens need a new login to obtain signed role claims.
+          this.logout();
+          return null;
         }
         localStorage.removeItem(STORAGE_KEYS.SESSION);
       }
@@ -940,7 +980,8 @@ export class ApiService {
     const previousSession = this.getSessionUser();
     const prevEmpId = previousSession?.employeeId ? previousSession.employeeId.trim().toUpperCase() : '';
     const nextEmpId = user.employeeId.trim().toUpperCase();
-    if (!prevEmpId || prevEmpId !== nextEmpId) {
+    if (!prevEmpId || prevEmpId !== nextEmpId || previousSession?.token !== user.token) {
+      clearMemoryCache();
       purgeNonPublicCaches();
       _cneInterestStatusCache.clear();
     }
@@ -951,6 +992,11 @@ export class ApiService {
    * Invalidate cached datasets stored in localStorage
    */
   static invalidateCache(actionOrKey?: string) {
+    if (!actionOrKey) clearMemoryCache();
+    else if (['getCNERecords', 'getProgramImpact', 'getWardLevelCneOutcomeReport'].includes(actionOrKey)) {
+      ['getCNEScheduleAll', 'getMyCNERecordsPage', 'getHomeDashboard', 'getCNEActivityProgress',
+       'getCNEParticipants', 'getCNEQuestions', 'getReferenceMaterial', 'getLearningResource'].forEach(invalidateMemoryCache);
+    } else invalidateMemoryCache(actionOrKey);
     clearMasterMemoryCache(actionOrKey);
     try {
       if (!actionOrKey) {
@@ -1037,6 +1083,10 @@ export class ApiService {
     const res = await this.executeAction('updateArea', { oldName, name, status });
     if (res.success) {
       this.invalidateCache('getAreas');
+      // Renaming an Area also updates CNE_Schedule and Role rows on the server.
+      // Drop shared Calendar/Schedule, personalized records, Home and Progress
+      // immediately instead of waiting for their browser-memory TTLs.
+      this.invalidateCache('getCNERecords');
       if (Array.isArray(res.data)) {
         _cachedAreasMem = {
           data: res.data.map((a: Area) => ({ ...a })),
@@ -1176,7 +1226,7 @@ export class ApiService {
   static async getMyCNERecordsPage(params: {page:number;pageSize?:number;search?:string;fromDate?:string;toDate?:string}): Promise<ApiResponse<{
     records:CNERecord[];total:number;page:number;pageSize:number;hasMore:boolean;participantSeconds:number;resourcePersonSeconds:number
   }>> {
-    return this.executeAction('getMyCNERecordsPage',params);
+    return this.cachedRead<{records:CNERecord[];total:number;page:number;pageSize:number;hasMore:boolean;participantSeconds:number;resourcePersonSeconds:number}>('getMyCNERecordsPage', params, 2 * 60 * 1000);
   }
 
 
@@ -1198,9 +1248,9 @@ export class ApiService {
     return this.executeAction('getCNESchedulePage', params);
   }
 
-  /** One complete authorized Schedule dataset per mounted main Schedule view. Never persisted. */
-  static async getCNEScheduleAll(): Promise<ApiResponse<{records: CNERecord[]; total: number}>> {
-    return this.executeAction('getCNEScheduleAll');
+  /** One short-lived authorized Schedule dataset shared in browser RAM across views; never persisted. */
+  static async getCNEScheduleAll(forceFresh = false): Promise<ApiResponse<{records: CNERecord[]; total: number}>> {
+    return this.cachedRead<{records:CNERecord[];total:number}>('getCNEScheduleAll', {}, 3 * 60 * 1000, forceFresh);
   }
 
   static async getCNECalendarMonth(year: number, month: number): Promise<ApiResponse<CNERecord[]>> {
@@ -1304,19 +1354,31 @@ export class ApiService {
 
   static async addNewsEvent(item: Partial<NewsEventItem>): Promise<ApiResponse<{ id: string }>> {
     const res = await this.executeAction<{ id: string }>('addNewsEvent', item);
-    if (res.success) this.invalidateCache('getNewsEvents');
+    if (res.success) {
+      this.invalidateCache('getNewsEvents');
+      // The Home bootstrap embeds this content as well as the standalone API.
+      this.invalidateCache('getHomeDashboard');
+    }
     return res;
   }
 
   static async updateNewsEvent(id: string, data: Partial<NewsEventItem>): Promise<ApiResponse> {
     const res = await this.executeAction('updateNewsEvent', { id, ...data });
-    if (res.success) this.invalidateCache('getNewsEvents');
+    if (res.success) {
+      this.invalidateCache('getNewsEvents');
+      // The Home bootstrap embeds this content as well as the standalone API.
+      this.invalidateCache('getHomeDashboard');
+    }
     return res;
   }
 
   static async deleteNewsEvent(id: string): Promise<ApiResponse> {
     const res = await this.executeAction('deleteNewsEvent', { id });
-    if (res.success) this.invalidateCache('getNewsEvents');
+    if (res.success) {
+      this.invalidateCache('getNewsEvents');
+      // The Home bootstrap embeds this content as well as the standalone API.
+      this.invalidateCache('getHomeDashboard');
+    }
     return res;
   }
 
@@ -1336,7 +1398,11 @@ export class ApiService {
 
   static async updateCoordinatorDesk(data: Partial<CoordinatorDeskInfo>): Promise<ApiResponse<CoordinatorDeskInfo>> {
     const res = await this.executeAction<CoordinatorDeskInfo>('updateCoordinatorDesk', data);
-    if (res.success) this.invalidateCache('getCoordinatorDesk');
+    if (res.success) {
+      this.invalidateCache('getCoordinatorDesk');
+      // The Home bootstrap embeds this content as well as the standalone API.
+      this.invalidateCache('getHomeDashboard');
+    }
     return res;
   }
 
@@ -1349,19 +1415,31 @@ export class ApiService {
 
   static async addQuickLink(item: Partial<QuickLinkItem>): Promise<ApiResponse<{ id: string }>> {
     const res = await this.executeAction<{ id: string }>('addQuickLink', item);
-    if (res.success) this.invalidateCache('getQuickLinks');
+    if (res.success) {
+      this.invalidateCache('getQuickLinks');
+      // The Home bootstrap embeds this content as well as the standalone API.
+      this.invalidateCache('getHomeDashboard');
+    }
     return res;
   }
 
   static async updateQuickLink(id: string, data: Partial<QuickLinkItem>): Promise<ApiResponse> {
     const res = await this.executeAction('updateQuickLink', { id, ...data });
-    if (res.success) this.invalidateCache('getQuickLinks');
+    if (res.success) {
+      this.invalidateCache('getQuickLinks');
+      // The Home bootstrap embeds this content as well as the standalone API.
+      this.invalidateCache('getHomeDashboard');
+    }
     return res;
   }
 
   static async deleteQuickLink(id: string): Promise<ApiResponse> {
     const res = await this.executeAction('deleteQuickLink', { id });
-    if (res.success) this.invalidateCache('getQuickLinks');
+    if (res.success) {
+      this.invalidateCache('getQuickLinks');
+      // The Home bootstrap embeds this content as well as the standalone API.
+      this.invalidateCache('getHomeDashboard');
+    }
     return res;
   }
 
@@ -1369,8 +1447,24 @@ export class ApiService {
    * Optimized home bootstrap: one Apps Script request returns all homepage datasets.
    * This avoids multiple network round-trips / Apps Script executions on first render.
    */
-  static async getHomeDashboard(): Promise<ApiResponse<HomeDashboardData>> {
-    const res = await this.executeAction<HomeDashboardData>('getHomeDashboard');
+  static async getHomeDashboard(forceFresh = false): Promise<ApiResponse<HomeDashboardData>> {
+    // A user-triggered refresh bypasses both browser memory and the backend's
+    // short-lived Program Impact cache. Normal navigation keeps both caches.
+    const res = await this.cachedRead<HomeDashboardData>(
+      'getHomeDashboard', {}, 2 * 60 * 1000, forceFresh,
+      forceFresh ? { forceFresh: true } : undefined
+    );
+    // Home already has a lightweight server bootstrap. Reuse the shared CNE
+    // records if Calendar/Schedule loaded them, without initiating an extra API.
+    const schedule = this.getSharedSchedule();
+    if (res.success && res.data && schedule) {
+      const today = getIndiaTodayIsoDate();
+      const relevant = schedule.filter((r) => String(r.status || '').toLowerCase() === 'scheduled' &&
+        String(r.fromDate || r.date || '').slice(0, 10) === today);
+      // The server supplies the same scope and today filter. Only replace the
+      // already-loaded schedule preview, not impact aggregates or other content.
+      res.data = { ...res.data, upcomingClasses: relevant };
+    }
     if (res.success && res.data) {
       try {
         localStorage.setItem('cne_cache_getNewsEvents', JSON.stringify(res.data.newsEvents || []));
@@ -1461,7 +1555,7 @@ export class ApiService {
   }
 
   static async getReferenceMaterial(cneId: string): Promise<ApiResponse<CNEReferenceMaterial>> {
-    return this.executeAction<CNEReferenceMaterial>('getReferenceMaterial', { cneId });
+    return this.cachedRead<CNEReferenceMaterial>('getReferenceMaterial', { cneId }, 3 * 60 * 1000);
   }
 
   /**
@@ -1484,7 +1578,7 @@ export class ApiService {
    * Retrieve metadata for uploaded CNE learning resource
    */
   static async getLearningResource(cneId: string): Promise<ApiResponse<CNELearningResourceMetadata>> {
-    return this.executeAction<CNELearningResourceMetadata>('getLearningResource', { cneId });
+    return this.cachedRead<CNELearningResourceMetadata>('getLearningResource', { cneId }, 3 * 60 * 1000);
   }
 
   /**
@@ -1596,7 +1690,7 @@ export class ApiService {
    * CNE Activity Progress (Real data check across Material, Questions, QR, Participants, Post-Test, Finalization)
    */
   static async getCNEActivityProgress(cneId: string, forceFresh = false): Promise<ApiResponse<CNEActivityProgress>> {
-    return this.executeAction<CNEActivityProgress>('getCNEActivityProgress', { cneId, forceFresh });
+    return this.cachedRead<CNEActivityProgress>('getCNEActivityProgress', { cneId }, 60 * 1000, forceFresh, { cneId, forceFresh });
   }
 
   /**
@@ -1610,7 +1704,7 @@ export class ApiService {
   }
 
   static async getCNEQuestions(cneId: string): Promise<ApiResponse<CNEQuestion[]>> {
-    return this.executeAction<CNEQuestion[]>('getCNEQuestions', { cneId });
+    return this.cachedRead<CNEQuestion[]>('getCNEQuestions', { cneId }, 3 * 60 * 1000);
   }
 
   /**
@@ -1707,7 +1801,7 @@ export class ApiService {
   }
 
   static async getCNEParticipants(cneId: string): Promise<ApiResponse<CNEParticipantsSummary>> {
-    return this.executeAction<CNEParticipantsSummary>('getCNEParticipants', { cneId });
+    return this.cachedRead<CNEParticipantsSummary>('getCNEParticipants', { cneId }, 2 * 60 * 1000);
   }
 
   /**

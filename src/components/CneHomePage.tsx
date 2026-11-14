@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import {
-  X
+  X, RefreshCw
 } from 'lucide-react';
 import {
   CNERecord,
@@ -64,7 +64,8 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   user,
   onNavigate
 }) => {
-  // Never show stale generic Schedule cache / demo classes in today's live preview.
+  // Home uses the lightweight dashboard bootstrap; when a fresh authorized Schedule
+  // response is already cached, its today's-CNE records can be reused.
   const [upcomingClasses, setUpcomingClasses] = useState<CNERecord[]>([]);
   const [newsEvents, setNewsEvents] = useState<NewsEventItem[]>(() => ApiService.getCachedData<NewsEventItem[]>('getNewsEvents') || INITIAL_NEWS_EVENTS);
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>(() => ApiService.getCachedData<GalleryItem[]>('getGallery') || []);
@@ -82,6 +83,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
   };
   
   const [classesLoading, setClassesLoading] = useState(true);
+  const [refreshGeneration, setRefreshGeneration] = useState(0);
   const homeRequestRef = useRef(0);
   const sessionKey = `${user?.employeeId || ''}:${user?.role || ''}:${user?.token || ''}`;
   const { error: showErrorToast } = useToast();
@@ -147,7 +149,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
     // One optimized bootstrap request supplies the lightweight homepage datasets.
     // The backend applies session-aware impact scoping and reuses one CNE Schedule
     // snapshot for both upcoming classes and Program Impact.
-    ApiService.getHomeDashboard()
+    ApiService.getHomeDashboard(refreshGeneration > 0)
       .then((res) => {
         if (!isCurrent()) return;
         if (res.success && res.data) {
@@ -176,7 +178,7 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
       active = false;
       homeRequestRef.current += 1;
     };
-  }, [sessionKey]);
+  }, [sessionKey, refreshGeneration]);
 
   const handleQuickLinkClick = (item: QuickLinkItem) => {
     if (!item) return;
@@ -212,6 +214,14 @@ export const CneHomePage: React.FC<CneHomePageProps> = ({
 
   return (
     <div className="space-y-8 pb-16">
+      <div className="flex justify-end">
+        <button type="button" title="Refresh Home Dashboard" aria-label="Refresh Home Dashboard"
+          onClick={() => { ApiService.invalidateCache('getHomeDashboard'); ApiService.invalidateCache('getCNEScheduleAll'); setRefreshGeneration(v => v + 1); }}
+          disabled={classesLoading}
+          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+          <RefreshCw className={`h-3.5 w-3.5 ${classesLoading ? 'animate-spin' : ''}`} /> Refresh
+        </button>
+      </div>
       {/* Responsive homepage: leadership/guidance in main; impact/today's schedule in sidebar. */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Main content (7 columns on desktop): Chairperson, Coordinator Desk, Certification. */}

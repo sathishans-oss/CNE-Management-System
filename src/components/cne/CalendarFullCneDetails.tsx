@@ -88,12 +88,12 @@ export const CalendarFullCneDetails: React.FC<Props> = ({ initialCne, user, onCl
     }
   }, [cneId]);
 
-  const reloadProgress = useCallback(async (): Promise<void> => {
+  const reloadProgress = useCallback(async (forceFresh = false): Promise<void> => {
     const request = ++progressGeneration.current;
     setProgressLoading(true);
     setProgressError(null);
     try {
-      const response = await ApiService.getCNEActivityProgress(cneId, true);
+      const response = await ApiService.getCNEActivityProgress(cneId, forceFresh);
       if (!mounted.current || request !== progressGeneration.current) return;
       if (response.success && response.data) setProgress(response.data);
       else {
@@ -140,7 +140,7 @@ export const CalendarFullCneDetails: React.FC<Props> = ({ initialCne, user, onCl
   const refreshCurrentCne = useCallback((statusChanged = false) => {
     // Refresh ONLY this CNE and its Progress after Material/Question/QR/
     // Attendance changes. Re-fetch the month only after lifecycle changes.
-    void reloadProgress();
+    void reloadProgress(true);
     void reloadDetails();
     if (statusChanged) onCneUpdated?.();
   }, [reloadDetails, reloadProgress, onCneUpdated]);
@@ -208,7 +208,7 @@ export const CalendarFullCneDetails: React.FC<Props> = ({ initialCne, user, onCl
       onClose={onClose}
       onDownloadSessionReport={onManageInSchedule}
       onEdit={onManageInSchedule} onCancel={onManageInSchedule} onDelete={onManageInSchedule}
-      onRetryProgress={() => { void reloadProgress(); }}
+      onRetryProgress={() => { void reloadProgress(true); }}
       onOpenMaterial={() => openActivity('material')}
       onOpenQuestions={() => openActivity('questions')}
       onOpenQR={() => openActivity('qr')}

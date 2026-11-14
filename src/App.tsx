@@ -60,6 +60,22 @@ const AppContent: React.FC = () => {
     return scheduleIdlePrefetch(Boolean(user && user.employeeId));
   }, [user?.employeeId]);
 
+  // Server expiry is authoritative. This lightweight browser check updates the
+  // visible login state after expiry even if the employee leaves the tab open.
+  useEffect(() => {
+    if (!user?.employeeId) return;
+    const checkExpiry = () => {
+      if (ApiService.getSessionUser()) return;
+      setUser(null);
+      setActiveView('dashboard');
+      writeViewToUrl('dashboard', true);
+      info('Your 24-hour session has ended. Please log in again.', 'Session Expired');
+    };
+    const interval = window.setInterval(checkExpiry, 60 * 1000);
+    window.addEventListener('focus', checkExpiry);
+    return () => { window.clearInterval(interval); window.removeEventListener('focus', checkExpiry); };
+  }, [user?.employeeId, user?.token, info]);
+
 
   // Restore public route names across refresh and browser Back/Forward. QR tokens
   // remain in the query string and are not touched by route navigation.

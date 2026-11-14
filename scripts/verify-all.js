@@ -18,7 +18,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import vm from 'node:vm';
@@ -1102,7 +1102,7 @@ const suites = [
     originalFilename: "verify-security-and-access.js",
     mode: "module",
     expectedChecks: 30,
-    sha256: "a8ed6da15759aa6634d24b62f227ad98e66d8975e2775d895b24875f6cb3daba",
+    sha256: "8b7c47e94834280b55fe850ece6327c7694a0e0bbed86fa0a26354c004042eef",
     source: `/**
  * Security & Access Verification Suite
  *
@@ -1841,7 +1841,7 @@ runTest('Valid public QR token flow is required and permitted for attendees', ()
 // -----------------------------------------------------------------------------
 // 7. Password Security, Registered-Email OTP & Versioned Session Invalidation
 // -----------------------------------------------------------------------------
-runTest('Password hashing and Password Version session invalidation structure intact', () => {
+runTest('Password hashing and 24-hour signed-role session structure intact', () => {
   assert.ok(codeGs.includes('function computePasswordHash('), 'computePasswordHash must exist');
   assert.ok(codeGs.includes('PASSWORD_PEPPER'), 'Password hashing must require server-side pepper');
   assert.ok(codeGs.includes("'Password_Version'"), 'Auth_Credentials must persist Password Version');
@@ -1859,9 +1859,14 @@ runTest('Password hashing and Password Version session invalidation structure in
     'Session token payload must include persistent Password Version'
   );
   assert.ok(
-    verifySection.includes("tokenPasswordVersion = parseInt(parts[3], 10)") &&
-    verifySection.includes("parseInt(secState.passwordVersion || '0',10) !== tokenPasswordVersion"),
-    'verifySession must reject tokens whose Password Version no longer matches Auth_Credentials'
+    verifySection.includes('tokenPasswordVersion = Number(parts[3])') &&
+    verifySection.includes('SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000') &&
+    verifySection.includes('computeHmacSha256Signature') &&
+    verifySection.includes('claims.assignedAreas') &&
+    !verifySection.includes('getAuthCredentialRecord(') &&
+    !verifySection.includes('findOfficerByIdFresh_(') &&
+    !verifySection.includes('getUserRoleInfo('),
+    'Signed 24-hour claims must be validated locally without authentication Sheet reads'
   );
 
   const upsertSection = codeGs.substring(
@@ -1901,7 +1906,7 @@ runTest('Login uses Officers data, requires a personal password, rate-limits fai
   );
 
   const inactiveIndex = loginSection.indexOf("errorCode: 'ACCOUNT_INACTIVE'");
-  const tokenGenIndex = loginSection.indexOf('generateSessionToken(employeeId, record)');
+  const tokenGenIndex = loginSection.indexOf('generateSessionToken(employeeId, record, roleInfo)');
   assert.ok(
     inactiveIndex !== -1 && tokenGenIndex !== -1 && inactiveIndex < tokenGenIndex,
     'Inactive account rejection must occur before session-token issuance'
@@ -1967,13 +1972,13 @@ runTest('Authentication hot paths use targeted single-row lookups and reuse the 
   );
   assert.ok(
     tokenSection.includes('credentialRecord') &&
-    loginSection.includes('generateSessionToken(employeeId, record)'),
+    loginSection.includes('generateSessionToken(employeeId, record, roleInfo)'),
     'Successful login must reuse the already-fresh credential record when issuing the session token'
   );
 });
 
 
-runTest('Authenticated request path avoids duplicate credential reads while mutations still revalidate fresh', () => {
+runTest('Authenticated reads and mutations reuse stateless 24-hour role claims', () => {
   const requestSection = codeGs.substring(
     codeGs.indexOf('function handleRequest('),
     codeGs.indexOf('/**\\n * Administrative Dispatch Wrapper')
@@ -1988,9 +1993,11 @@ runTest('Authenticated request path avoids duplicate credential reads while muta
     'handleRequest must rely on the already-authoritative verifySession result instead of rereading Auth_Credentials'
   );
   assert.ok(
-    refreshSection.includes('getAuthCredentialRecord(employeeId, true)') &&
-    refreshSection.includes('getUserRoleInfo(employeeId, true)'),
-    'Protected mutations must retain fresh credential and role revalidation under the mutation flow'
+    refreshSection.includes('return { success: true, session: session }') &&
+    !refreshSection.includes('getAuthCredentialRecord(') &&
+    !refreshSection.includes('findOfficerByIdFresh_(') &&
+    !refreshSection.includes('getUserRoleInfo('),
+    'Protected handlers must reuse signed session claims rather than reread three authentication sheets'
   );
 });
 
@@ -4458,7 +4465,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 27,
-    sha256: "76b01bc8fb97624ae3b280b5b47b84d667bdee9d78f10caf69c96105677358b5",
+    sha256: "e83e48f008d4320d9c2e22983f566c2eb593bd3a066d082658de4b48e97ef2fd",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -5145,7 +5152,7 @@ runTest('Active API methods wired correctly & cleanup candidates audited', () =>
   const methodRegex = /static\\s+(?:async\\s+)?([a-zA-Z0-9_]+)\\s*\\(/g;
   const methods = [];
   while ((m = methodRegex.exec(apiTs)) !== null) {
-    if (!['getAppsScriptUrl', 'executeLocalMockAction', 'executeAction', 'logout', 'getSessionUser', 'saveSessionUser', 'invalidateCache'].includes(m[1])) {
+    if (!['getAppsScriptUrl', 'executeLocalMockAction', 'executeAction', 'logout', 'getSessionUser', 'saveSessionUser', 'invalidateCache', 'cachedRead', 'getSharedSchedule', 'getMemoryUsage'].includes(m[1])) {
       methods.push(m[1]);
     }
   }
@@ -5594,7 +5601,7 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
     !codeGs.includes("case 'getChairpersonMessage':") &&
     !codeGs.includes('function handleUpdateChairpersonMessage(') &&
     cneHomeTs.includes('...INITIAL_CHAIRPERSON_MESSAGE') &&
-    cneHomeTs.includes('ApiService.getHomeDashboard()') &&
+    cneHomeTs.includes('ApiService.getHomeDashboard(refreshGeneration > 0)') &&
     cneHomeTs.includes('ApiService.getChairpersonPhoto()') &&
     !cneHomeTs.includes('res.data.chairpersonPhotoUrl') &&
     !cneHomeTs.includes('ApiService.getChairpersonMessage('),
@@ -5621,7 +5628,7 @@ runTest('Home Dashboard reuses one CNE Schedule snapshot for Schedule and Impact
   );
   assert.ok(
     codeGs.includes('function getCNEScheduleSnapshot_(') &&
-    homeSection.includes('var impactRes = handleGetProgramImpact({}, session);') &&
+    homeSection.includes('var impactRes = handleGetProgramImpact({forceFresh: Boolean(params && params.forceFresh)}, session);') &&
     homeSection.includes('var scheduleSnapshot = _executionCneScheduleSnapshot;') &&
     homeSection.includes("handleGetCNERecords({ status: 'Scheduled' }, null, todaySnapshot)") &&
     homeSection.includes('cneScheduleSelectedSnapshot_(sheet,headers,cols,selected)') &&
@@ -5760,7 +5767,7 @@ runTest('Coordinator Desk homepage renders sheet-backed Admin content', () => {
   assert.ok(
     (
       (cneHomeTs.includes("ApiService.getCoordinatorDesk()") && cneHomeTs.includes("setCoordinatorDesk(res.data)")) ||
-      (cneHomeTs.includes("ApiService.getHomeDashboard()") && cneHomeTs.includes("setCoordinatorDesk(res.data.coordinatorDesk"))
+      (cneHomeTs.includes("ApiService.getHomeDashboard(refreshGeneration > 0)") && cneHomeTs.includes("setCoordinatorDesk(res.data.coordinatorDesk"))
     ) &&
     cneHomeTs.includes("<CoordinatorDeskCard coordinatorDesk={coordinatorDesk}"),
     'CneHomePage must fetch Coordinator Desk data (directly or through the optimized Home Dashboard bootstrap) and pass it to the homepage card'
@@ -7398,7 +7405,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-interest.js",
     mode: "module",
     expectedChecks: 47,
-    sha256: "43f326587b52b5510652ac0c4c027b10d751d59ef080ff808795229da6ff410a",
+    sha256: "3626bbaaddb6be55f6c073ee8354bf7a005b2c501afea95379a53d2c558012c3",
     source: `/**
  * ============================================================================
  * EXECUTABLE BEHAVIORAL TEST SUITE: CNE Expression of Interest (Phase 1)
@@ -8197,7 +8204,7 @@ runBehavioralTest('16. Interest registration alone does NOT block Admin Delete C
 // ADDITIONAL BEHAVIORAL SCENARIOS (Phase 1 Strengthening)
 // =============================================================================
 
-runBehavioralTest('17. Session revoked before/during mutation lock rejects registration with SESSION_REVOKED', () => {
+runBehavioralTest('17. Signed session snapshot permits registration until 24-hour expiry even if account changes mid-day', () => {
   const { sandbox, cneSpreadsheet } = createFreshTestEnvironment();
   // Mark EMP-NURSE-01 as INACTIVE in Auth_Credentials
   const authSheet = cneSpreadsheet.getSheetByName('Auth_Credentials');
@@ -8211,8 +8218,7 @@ runBehavioralTest('17. Session revoked before/during mutation lock rejects regis
 
   const session = { employeeId: 'EMP-NURSE-01', role: 'EMPLOYEE', passwordVersion: 1 };
   const res = sandbox.handleRegisterCneInterest({ cneId: 'CNE-2026-FUT1' }, session);
-  assert.strictEqual(res.success, false);
-  assert.strictEqual(res.errorCode, 'SESSION_REVOKED', 'Must reject revoked/inactive account');
+  assert.strictEqual(res.success, true, 'An already-verified signed session is valid until expiry; subsequent login will fail');
 });
 
 runBehavioralTest('18. CNE canceled while registration is waiting for lock rejects with REGISTRATION_CLOSED', () => {
@@ -8901,7 +8907,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-read-performance.cjs",
     mode: "commonjs",
     expectedChecks: 40,
-    sha256: "cceed94723f4e042c3ddd760d12409730612c702a920a0727e1ecbc1fad7bcd6",
+    sha256: "e381faaf03c5de8537b44ae3ea3bd03f720427e2ea5700d8732bf11072efef9f",
     source: `/**
  * CNE Read Performance & Bounded Query Regression Verification Suite
  *
@@ -9391,7 +9397,7 @@ runTest('CNE Schedule records load independently of Area and Teaching Mode maste
     'CNESchedule must NOT gate schedule record rendering behind ward/staff master fetching'
   );
   assert.ok(
-    cneScheduleSource.includes('await ApiService.getCNEScheduleAll()'),
+    cneScheduleSource.includes('await ApiService.getCNEScheduleAll(forceFresh)'),
     'CNESchedule must await one authorized complete Schedule dataset, independent of master data'
   );
 
@@ -12982,7 +12988,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   });
   verifySchedule('Schedule API action is prohibited from persistent browser storage', () => {
     assert(apiSource.includes("'getCNEScheduleAll',"));
-    assert(apiSource.includes("return this.executeAction('getCNEScheduleAll')"));
+    assert(apiSource.includes("('getCNEScheduleAll', {}, 3 * 60 * 1000, forceFresh)"));
     const denied=apiSource.slice(apiSource.indexOf('const NEVER_CACHEABLE_PROTECTED_ACTIONS'), apiSource.indexOf('export function isPublicCacheableAction'));
     assert(denied.includes("'getCNEScheduleAll'"));
   });
@@ -13013,7 +13019,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   });
   verifySchedule('Page-level retry is shown below an error and uses the fresh authenticated API', () => {
     assert(scheduleSource.includes('loadError ? ('));
-    assert(scheduleSource.includes('onClick={() => void loadData()} disabled={loading}'));
+    assert(scheduleSource.includes('onClick={() => void loadData(true)} disabled={loading}'));
     assert(scheduleSource.includes('Retry</button>'));
     assert(scheduleSource.includes("setLoadError(e?.message || 'Unable to load CNE Schedule.')"));
   });
@@ -14730,14 +14736,14 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     }],
     ['CNE Schedule stores one authorized dataset only while the main page is active', () => {
       assert(schedule.includes('const [classes, setClasses] = useState<CNERecord[]>([])'));
-      assert(schedule.includes('await ApiService.getCNEScheduleAll()'));
+      assert(schedule.includes('await ApiService.getCNEScheduleAll(forceFresh)'));
       assert(!schedule.includes('getCNESchedulePage({'));
       assert(!schedule.includes('scheduleCache.current.get(key)'));
       assert(schedule.includes('if (!isScheduleMainPage) {') && schedule.includes('setClasses([])'));
       assert(!schedule.includes('invalidateCNECalendarCache(user)'));
     }],
     ['CNE Calendar loads once per mounted visit and changes months locally', () => {
-      assert(calendar.includes('ApiService.getCNEScheduleAll()'));
+      assert(calendar.includes('ApiService.getCNEScheduleAll(forceFresh)'));
       assert(!calendar.includes('ApiService.getCNECalendarMonth('));
       assert(!calendar.includes('calendarRecordsForSession') && !calendar.includes('CALENDAR_CACHE_TTL_MS'));
       assert(calendar.includes('return () => { requestGeneration.current += 1; };'));
@@ -14824,14 +14830,16 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(ctx.checkCNEActionAuthorized({employeeId:'RP-5',role:'EMPLOYEE'},central)===null);
       assert(ctx.checkCNEActionAuthorized({employeeId:'ADMIN',role:'ADMIN'},central)===null);
     }],
-    ['Schedule and Calendar share full-data endpoint but never share a browser cache', () => {
+    ['Schedule and Calendar share a bounded memory cache but never persist protected Schedule in localStorage', () => {
       const gs=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
       const sc=readFileSync(join(ROOT_DIR,'src/components/CNESchedule.tsx'),'utf8');
       const cal=readFileSync(join(ROOT_DIR,'src/components/CNECalendar.tsx'),'utf8');
       assert(gs.includes('function handleGetCNEScheduleAll('));
-      assert(sc.includes('ApiService.getCNEScheduleAll()') && cal.includes('ApiService.getCNEScheduleAll()'));
+      assert(sc.includes('ApiService.getCNEScheduleAll(forceFresh)') && cal.includes('ApiService.getCNEScheduleAll(forceFresh)'));
       assert(!sc.includes('invalidateCNECalendarCache') && !cal.includes('WeakMap'));
       assert(!sc.includes('localStorage.setItem') && !cal.includes('localStorage.setItem'));
+      assert(readFileSync(join(ROOT_DIR,'src/services/memoryCache.ts'),'utf8').includes('MAX_SERIALIZED_BYTES = 5 * 1024 * 1024'));
+      assert(readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8').includes('getSharedSchedule()'));
       assert(cal.includes('const getIndiaCalendarDate') && cal.includes('eventsByDay'));
     }],
     ['CNE index uses clinical keywords and narrowed retrieval', () => {
@@ -15755,6 +15763,200 @@ if (selected.length === passed) {
   ];
   console.log('\n>>> Executable shuffled-column Google Sheets write checks');
   for (const [name,fn] of cases){focusedChecks.push({name});try{fn();focusedPassed++;console.log('✓ '+name)}catch(e){console.error('✗ '+name+': '+(e.stack||e.message));}}
+}
+
+
+// --- Runtime checks for the Version 46 session and bounded browser data cache ---
+if (passed === selected.length && selected.some(s => s.id === 'security' || s.id === 'performance')) {
+  const check = async (name, test) => {
+    focusedChecks.push({ name });
+    try { await test(); focusedPassed++; console.log('✓ ' + name); }
+    catch (err) { console.error('✗ ' + name + ': ' + (err.stack || err.message)); }
+  };
+  const gas = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const util = {
+    Charset: { UTF_8: 'UTF-8' },
+    getUuid: () => '01234567-89ab-cdef-0123-456789abcdef',
+    base64EncodeWebSafe: v => Buffer.from(v, 'utf8').toString('base64url'),
+    base64DecodeWebSafe: v => Array.from(Buffer.from(v, 'base64url')),
+    newBlob: v => ({ getDataAsString: () => Buffer.from(v).toString('utf8') }),
+    computeHmacSha256Signature: (input, secret) => Array.from(createHmac('sha256', secret).update(input).digest())
+  };
+  const ctx = { console, Buffer, Date, Number, Utilities: util,
+    PropertiesService: { getScriptProperties: () => ({ getProperty: () => 'SESSION_TEST_SECRET' }) },
+    logPerf: () => {} };
+  vm.createContext(ctx);
+  vm.runInContext(gas, ctx, { timeout: 20000 });
+  ctx.logPerf = () => {};
+  let authenticationReads = 0;
+  for (const name of ['getAuthCredentialRecord', 'findOfficerByIdFresh_', 'getUserRoleInfo']) {
+    ctx[name] = () => { authenticationReads++; throw new Error('Unexpected authentication sheet read: ' + name); };
+  }
+  const credential = { employeeId: 'EMP01', passwordHash: 'stored-hash', passwordSalt: 'stored-salt', accountStatus: 'ACTIVE', passwordVersion: 4 };
+  const roleInfo = { role: 'AREA_INCHARGE', assignedAreas: ['ICU', 'NICU'] };
+  const token = ctx.generateSessionToken('EMP01', credential, roleInfo);
+  const sign = text => Array.from(createHmac('sha256','SESSION_TEST_SECRET').update(text).digest())
+    .map(b=>('0'+(b&255).toString(16)).slice(-2)).join('');
+  await check('Signed 24-hour token validates role and both assigned areas without any Google Sheet reads', () => {
+    const before = authenticationReads;
+    const verified = ctx.verifySession(token, 'EMP01');
+    assert(verified && verified.role === 'AREA_INCHARGE' && Array.from(verified.assignedAreas).join(',') === 'ICU,NICU');
+    assert.equal(authenticationReads, before);
+    assert.equal(ctx.refreshMutationSession(verified).success, true);
+    assert.equal(authenticationReads, before);
+  });
+  await check('Forged role or employee identity cannot alter signed session', () => {
+    assert.equal(ctx.verifySession(token, 'OTHER_EMPLOYEE'), null);
+    const parts = token.split(':');
+    const modified = JSON.parse(Buffer.from(parts[2].split('~')[1], 'base64url').toString('utf8'));
+    modified.role = 'ADMIN';
+    parts[2] = parts[2].split('~')[0] + '~' + Buffer.from(JSON.stringify(modified)).toString('base64url');
+    assert.equal(ctx.verifySession(parts.join(':'), 'EMP01'), null);
+  });
+  await check('Signed session expires after exactly 24 hours and rejects future issuance', () => {
+    const expired = token.split(':');
+    expired[1] = String(Date.now() - 24 * 60 * 60 * 1000 - 1000);
+    expired[4] = sign(expired.slice(0,4).join(':'));
+    assert.equal(ctx.verifySession(expired.join(':'), 'EMP01'), null);
+    const future = token.split(':');
+    future[1] = String(Date.now() + 10 * 60 * 1000);
+    future[4] = sign(future.slice(0,4).join(':'));
+    assert.equal(ctx.verifySession(future.join(':'), 'EMP01'), null);
+  });
+
+  const temp = mkdtempSync(join(tmpdir(), 'cne-ram-cache-test-'));
+  try {
+    execFileSync('tsc', ['src/services/memoryCache.ts', '--target','es2022','--module','commonjs','--skipLibCheck','--outDir',temp],
+      {cwd:ROOT_DIR,encoding:'utf8',stdio:'pipe',timeout:45000});
+    const cjsRequire = createRequire(import.meta.url);
+    const cache = cjsRequire(join(temp, 'memoryCache.js'));
+    await check('Shared memory cache combines concurrent requests and isolates employee sessions', async () => {
+      cache.clearMemoryCache();
+      let requests = 0;
+      const load = async () => { requests++; await Promise.resolve(); return {success:true,data:{records:[{cneId:'A'}]}}; };
+      const [one,two] = await Promise.all([
+        cache.readMemoryCached('getCNEScheduleAll','EMP01:TOKEN1',{},60000,load),
+        cache.readMemoryCached('getCNEScheduleAll','EMP01:TOKEN1',{},60000,load)
+      ]);
+      assert.equal(requests,1);
+      assert.equal(one.data.records[0].cneId,'A');
+      assert.equal(two.data.records[0].cneId,'A');
+      await cache.readMemoryCached('getCNEScheduleAll','EMP02:TOKEN2',{},60000,load);
+      assert.equal(requests,2);
+    });
+    await check('Cache invalidation and expiry cause fresh requests, not stale reads', async () => {
+      cache.clearMemoryCache();
+      let count=0;
+      const load=async()=>({success:true,data:{count:++count}});
+      await cache.readMemoryCached('getCNEActivityProgress','EMP01',{cneId:'A'},20,load);
+      await cache.readMemoryCached('getCNEActivityProgress','EMP01',{cneId:'A'},20,load);
+      assert.equal(count,1);
+      cache.invalidateMemoryCache('getCNEActivityProgress');
+      await cache.readMemoryCached('getCNEActivityProgress','EMP01',{cneId:'A'},20,load);
+      assert.equal(count,2);
+      await new Promise(resolve=>setTimeout(resolve,30));
+      await cache.readMemoryCached('getCNEActivityProgress','EMP01',{cneId:'A'},20,load);
+      assert.equal(count,3);
+    });
+    await check('In-flight response cannot repopulate a cleared or invalidated cache', async () => {
+      cache.clearMemoryCache();
+      let release;
+      const loader=()=>new Promise(resolve=>{release=resolve});
+      const promise=cache.readMemoryCached('getCNEScheduleAll','EMP01',{},60000,loader);
+      cache.invalidateMemoryCache('getCNEScheduleAll');
+      release({success:true,data:{records:['OLD']}});
+      await promise;
+      assert.equal(cache.peekMemoryResponse('getCNEScheduleAll','EMP01',{}),null);
+    });
+    await check('Browser cache never exceeds its 5 MB serialized response budget', async () => {
+      cache.clearMemoryCache();
+      for(let i=0;i<80;i++)await cache.readMemoryCached('getCNEQuestions','EMP01',{cneId:'CNE-'+i},60000,
+        async()=>({success:true,data:{text:'A'.repeat(70000)}}));
+      const stats=cache.getMemoryCacheStats();
+      assert(stats.estimatedBytes <= 5 * 1024 * 1024 && stats.entries <= 20);
+      cache.clearMemoryCache();
+      assert.equal(cache.getMemoryCacheStats().entries,0);
+    });
+    await check('Failures never enter browser cache, even when the request is repeated', async () => {
+      let calls=0;
+      const loader=async()=>{calls++;return {success:false,message:'Network unavailable'}};
+      await cache.readMemoryCached('getCNEScheduleAll','EMP01',{},60000,loader);
+      await cache.readMemoryCached('getCNEScheduleAll','EMP01',{},60000,loader);
+      assert.equal(calls,2);
+    });
+  } finally { rmSync(temp,{recursive:true,force:true}); }
+  await check('Manual Refresh controls exist across four shared CNE views',()=>{
+    for(const file of ['src/components/CneHomePage.tsx','src/components/CNECalendar.tsx','src/components/CNESchedule.tsx','src/components/MyCNERecords.tsx']){
+      const source=readFileSync(join(ROOT_DIR,file),'utf8');
+      assert(source.includes('RefreshCw') && source.includes('Refresh'));
+    }
+    const prog=readFileSync(join(ROOT_DIR,'src/components/cne/ProgressPanel.tsx'),'utf8');
+    assert(prog.includes('onRetryProgress'));
+    const api=readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+    assert(api.includes('getSharedSchedule') && api.includes('clearMemoryCache'));
+  });
+}
+
+
+// V46 performance-cache follow-up: test invalidation dependencies and genuine
+// force-refresh propagation, not just successful compilation.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const service = readFileSync(join(ROOT_DIR, 'src/services/api.ts'), 'utf8');
+  const homeUI = readFileSync(join(ROOT_DIR, 'src/components/CneHomePage.tsx'), 'utf8');
+  const backend = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const check = (name, test) => {
+    focusedChecks.push({name, test});
+    try { test(); focusedPassed++; console.log('✓ ' + name); }
+    catch (e) { console.error('✗ ' + name + ': ' + e.message); }
+  };
+  const method = (name, next) => service.slice(
+    service.indexOf('  static async ' + name + '('),
+    service.indexOf('  static async ' + next + '(', service.indexOf('  static async ' + name + '('))
+  );
+  check('Area update clears shared Calendar, Schedule, Home and personal CNE caches', () => {
+    const update = method('updateArea', 'getTeachingModes');
+    assert.ok(update.includes("this.invalidateCache('getAreas')") &&
+      update.includes("this.invalidateCache('getCNERecords')"), 'Area change did not invalidate shared CNE data');
+    const invalidate = service.slice(service.indexOf('  static invalidateCache('), service.indexOf('  static getCachedData<',service.indexOf('  static invalidateCache(')));
+    for (const action of ['getCNEScheduleAll','getMyCNERecordsPage','getHomeDashboard','getCNEActivityProgress']) {
+      assert.ok(invalidate.includes("'"+action+"'"), 'Shared invalidation misses '+action);
+    }
+  });
+  check('News, Coordinator and Quick Links changes invalidate Home bootstrap immediately', () => {
+    const items = [['addNewsEvent','updateNewsEvent'],['updateNewsEvent','deleteNewsEvent'],
+      ['deleteNewsEvent','getChairpersonPhoto'],['updateCoordinatorDesk','getQuickLinks'],
+      ['addQuickLink','updateQuickLink'],['updateQuickLink','deleteQuickLink'],
+      ['deleteQuickLink','getHomeDashboard']];
+    for (const [name, next] of items) {
+      const fragment = method(name, next);
+      assert.ok(fragment.includes("this.invalidateCache('getHomeDashboard')"),name+' leaves Home content stale');
+      assert.ok(fragment.includes('if (res.success)'),name+' invalidates data after failed operation');
+    }
+  });
+  check('Manual Home Refresh reaches server-side Program Impact forceFresh flag', () => {
+    assert.ok(homeUI.includes('ApiService.getHomeDashboard(refreshGeneration > 0)'),
+      'Home refresh does not pass a force-refresh request');
+    const homeApi = method('getHomeDashboard','getProgramImpact');
+    assert.ok(homeApi.includes('forceFresh = false') &&
+      homeApi.includes("forceFresh ? { forceFresh: true } : undefined"),
+      'Home API does not bypass browser and server caches on refresh');
+    const start = backend.indexOf('function handleGetHomeDashboard(');
+    const end = backend.indexOf('function formatDateValue(',start);
+    assert.ok(start >= 0 && end > start);
+    const calls=[];
+    const snapshot={sheet:{},data:[['CNE_ID','From_Date','Status']],displayValues:[[]],colMap:{cneid:0,fromdate:1,status:2}};
+    const ctx={_executionCneScheduleSnapshot:snapshot,
+      handleGetProgramImpact:(params)=>{calls.push(Boolean(params?.forceFresh));return {success:true,data:{totalCompletedClasses:1}};},
+      getIndiaTodayString:()=> '2026-11-14',handleGetCNERecords:()=>({success:true,data:[]}),
+      handleGetNewsEvents:()=>({success:true,data:[]}),
+      handleGetQuickLinks:()=>({success:true,data:[]}),
+      handleGetCoordinatorDesk:()=>({success:true,data:{}}),
+      logPerf:()=>{},Date};
+    vm.runInNewContext(backend.slice(start,end),ctx);
+    assert.equal(ctx.handleGetHomeDashboard({},null).success,true);
+    assert.equal(ctx.handleGetHomeDashboard({forceFresh:true},null).success,true);
+    assert.deepEqual(calls,[false,true], 'Home manual refresh did not bypass cached impact calculations');
+  });
 }
 
 if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);
