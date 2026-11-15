@@ -45,9 +45,10 @@ function spreadsheet(rows){
   const self={rows:rows.map(row=>row.slice()),getLastRow(){return this.rows.length;},getLastColumn(){return Math.max(...this.rows.map(row=>row.length));},getMaxColumns(){return Math.max(26,this.getLastColumn());},getName(){return this.name||'Test';},
     getDataRange(){return {getValues:()=>self.rows.map(row=>row.slice())};},
     appendRow(row){self.rows.push(row.slice());},
+    insertColumnsAfter(){return self;},
     getRange(r,c,n=1,w=1){return {getValues(){return Array.from({length:n},(_,i)=>Array.from({length:w},(_,j)=>self.rows[r-1+i]?.[c-1+j]??''));},getDisplayValues(){return this.getValues();},
-      getValue(){return self.rows[r-1]?.[c-1]??'';},setValue(value){while(self.rows.length<r)self.rows.push([]);self.rows[r-1][c-1]=value;},
-      setValues(values){values.forEach((row,i)=>row.forEach((v,j)=>{while(self.rows.length<r+i)self.rows.push([]);self.rows[r-1+i][c-1+j]=v;}));},setFontWeight(){return this;}};}
+      getValue(){return self.rows[r-1]?.[c-1]??'';},setValue(value){while(self.rows.length<r)self.rows.push([]);self.rows[r-1][c-1]=value;return this;},
+      setValues(values){values.forEach((row,i)=>row.forEach((v,j)=>{while(self.rows.length<r+i)self.rows.push([]);self.rows[r-1+i][c-1+j]=v;}));return this;},setFontWeight(){return this;}};}
   };return self;
 }
 const HEADERS=['Question_ID','Unit','Topic','Subtopic','Clinical_Keywords','Question_Type','Question_Text','Option_A','Option_B','Option_C','Option_D','Option_E','Option_F','Correct_Answer','Explanation_Rationale','Question_PDF_Page','Image_Table_Reference','Verification_Status','Updated_At','Image_Drive_File_ID','Original_Question_Format','Response_Format','Scoring_Method'];
@@ -190,7 +191,7 @@ const hybridChecks=[
  {name:'Verify Sheets initializes both evidence indexes and Question Index without a migration flag',run(){
     const {ctx}=fixture(), created={};
     ctx.setupSecurityProperties=()=>{};
-    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>created[n]||null,getSheets:()=>Object.values(created)};
+    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>created[n]||null,getSheets:()=>Object.values(created),insertSheet(n){const sh=spreadsheet([]);sh.name=n;created[n]=sh;return sh;}};
     ctx.getOrCreateSheet=name=>{
       if (!created[name]){
         const headers=ctx.CNE_SHEET_HEADERS[name]||[];
@@ -210,7 +211,7 @@ const hybridChecks=[
     const old=['Index_ID','Source_Type','CNE_ID','Drive_File_ID','Resource_Title','Topic','Section_Heading','Chunk_Index','Chunk_Text','Clinical_Keywords','Extraction_Status','Updated_At'];
     existing['Library_Index']=spreadsheet([old.slice()]);
     ctx.setupSecurityProperties=()=>{};
-    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>existing[n]||null,getSheets:()=>Object.values(existing)};
+    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>existing[n]||null,getSheets:()=>Object.values(existing),insertSheet(n){const sh=spreadsheet([]);sh.name=n;existing[n]=sh;return sh;}};
     ctx.getOrCreateSheet=name=>existing[name]||(existing[name]=spreadsheet([(ctx.CNE_SHEET_HEADERS[name]||[]).slice()]));
     const result=ctx.setupAndVerifyCNESheets('ADMIN',null);
     assert(result.success&&result.auditReport.some(x=>x.tab==='Library_Index'&&x.extraColumns.some(c=>c.includes('Source_Type'))),'Extra legacy index columns not reported');
@@ -356,7 +357,7 @@ const hybridChecks=[
     const excluded=ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session);
     assert(excluded.data.some(item=>item.questionId==='REF-001' && !item.canImport),'Legacy status incorrectly importable in search');
   }},
- {name:'Old 20-column schema is refused until separately corrected',run(){
+ {name:'Old 19-column schema is refused until separately corrected',run(){
     const {ctx,b}=fixture();b.rows.forEach(row=>row.splice(16,2));
     assert(ctx.handleSearchCNEReferenceQuestions({cneId:'CNE-123'},session).errorCode==='QUESTION_BANK_SCHEMA_INVALID','Obsolete Question Bank schema accepted');
   }},
@@ -463,7 +464,7 @@ const hybridChecks=[
     bank.name='Question_Index';named[bank.name]=bank;
     const archived=spreadsheet([['Old Data'],['Value']]);archived.name='Old Backup';named[archived.name]=archived;
     ctx.setupSecurityProperties=()=>{};
-    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>named[n]||null,getSheets:()=>Object.values(named)};
+    ctx.getSpreadsheet=type=>type==='OFFICERS'?{getSheetByName:()=>null}:{getSheetByName:n=>named[n]||null,getSheets:()=>Object.values(named),insertSheet(n){const sh=spreadsheet([]);sh.name=n;named[n]=sh;return sh;}};
     ctx.getOrCreateSheet=name=>{
       if(!named[name]){const headers=ctx.CNE_SHEET_HEADERS[name]||[];named[name]=spreadsheet([headers.slice()]);named[name].name=name;}
       return named[name];
@@ -527,7 +528,8 @@ check('Areas response comes from Sheets and no hard-coded default population is 
   assert.ok(start >= 0 && end > start);
   const source = gas.slice(start,end);
   assert.match(source, /getOrCreateSheet\('Area'\)/);
-  assert.match(source, /sheet\.getDataRange\(\)\.getValues\(\)/);
+  assert.match(source, /cneCanonicalSheetData_\(sheet,CNE_SHEET_HEADERS\['Area'\]\)/);
+  assert.doesNotMatch(source, /sheet\.getDataRange\(\)\.getValues\(\)/);
 });
 check('Force-refresh bypasses both client and server ward caches', () => {
   assert.match(api, /static async getAreas\(forceFresh = false\)/);
@@ -545,7 +547,13 @@ check('Backend fresh read ignores stale cached ward and uses active Sheet rows',
   const context = {
     Date, JSON,
     CacheService: {getScriptCache:()=>({get:()=>{calls.cache++;return JSON.stringify([{name:'STALE'}])},put:()=>{}})},
-    getOrCreateSheet:()=>({getDataRange:()=>({getValues:()=>{calls.sheet++;return [['Area','Status'],['NICU','ACTIVE'],['CLOSED','INACTIVE']]}})}),
+    getOrCreateSheet:()=>({getDataRange:()=>({getValues:()=>{calls.sheet++;return [
+      ['Created_At','Status','Area','Extra'],['2026-01-01','ACTIVE','NICU','untouched'],
+      ['2026-01-02','INACTIVE','CLOSED','untouched']];}})}),
+    cneCanonicalSheetData_:(sheet,names)=>{const values=sheet.getDataRange().getValues();
+      const keys=values[0].map(x=>x.toLowerCase().replace(/[^a-z0-9]/g,''));
+      return [names,...values.slice(1).map(row=>names.map(n=>row[keys.indexOf(n.toLowerCase().replace(/[^a-z0-9]/g,''))]))];},
+    CNE_SHEET_HEADERS:{Area:['Area','Status','Created_At']},
     logPerf:()=>{}
   };
   vm.createContext(context);
@@ -1102,7 +1110,7 @@ const suites = [
     originalFilename: "verify-security-and-access.js",
     mode: "module",
     expectedChecks: 30,
-    sha256: "8b7c47e94834280b55fe850ece6327c7694a0e0bbed86fa0a26354c004042eef",
+    sha256: "2c246609d94e36c8a7c9ac4c9b9d589ebea14b418f770593564ab21b5ce11211",
     source: `/**
  * Security & Access Verification Suite
  *
@@ -1938,7 +1946,7 @@ runTest('Authentication hot paths use targeted single-row lookups and reuse the 
   );
   const credentialSection = codeGs.substring(
     codeGs.indexOf('function getAuthCredentialRecord('),
-    codeGs.indexOf('function getUserCredentialSecurityState(')
+    codeGs.indexOf('function clearCredentialSecurityCache(')
   );
   const tokenSection = codeGs.substring(
     codeGs.indexOf('function generateSessionToken('),
@@ -2078,7 +2086,7 @@ runTest('Registered-email password OTP flow is rate-limited, hashed, single-use,
 
   const setPasswordSection = codeGs.substring(
     codeGs.indexOf('function handleSetPasswordWithOtp('),
-    codeGs.indexOf('/**\\n * Legacy reset endpoint intentionally disabled.')
+    codeGs.indexOf('function handleAdminResetPassword(')
   );
   assert.ok(
     setPasswordSection.includes('verifyOtpVerificationToken(') &&
@@ -2093,14 +2101,18 @@ runTest('Registered-email password OTP flow is rate-limited, hashed, single-use,
   );
 });
 
-runTest('Legacy password reset is disabled and admin reset invalidates sessions without assigning a shared password', () => {
-  const resetSection = codeGs.substring(
-    codeGs.indexOf('function handleResetPassword('),
-    codeGs.indexOf('function handleAdminResetPassword(')
+runTest('Retired resetPassword route fails closed; admin reset clears credentials without a shared password', () => {
+  const routerSection = codeGs.substring(
+    codeGs.indexOf('function handleRequest('),
+    codeGs.indexOf('function handleAdminAction(')
   );
   assert.ok(
-    resetSection.includes("errorCode: 'OTP_REQUIRED'") && resetSection.includes('registered-email verification'),
-    'Legacy resetPassword endpoint must be disabled in favor of registered-email OTP'
+    !routerSection.includes("case 'resetPassword':") &&
+    !codeGs.includes('function handleResetPassword(') &&
+    routerSection.includes("case 'requestPasswordOtp':") &&
+    routerSection.includes("case 'verifyPasswordOtp':") &&
+    routerSection.includes("case 'setPasswordWithOtp':"),
+    'Retired direct password reset must not be routable; the three OTP endpoints must remain available'
   );
 
   const adminResetSection = codeGs.substring(
@@ -2473,7 +2485,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-workflows.js",
     mode: "module",
     expectedChecks: 76,
-    sha256: "08c6342de6dfdd417839d410aa8d0b521ff6e9319c11c459753c7816ae7be734",
+    sha256: "9dbaa4e894c76e7975c75da8652ce4212be6135242ae3b30fef764e8d01a0bde",
     source: `/**
  * CNE Business Workflows & Schema Verification Suite
  *
@@ -2662,10 +2674,13 @@ runTest('Unscheduled types create Completed records with seven-type collision-ch
     'Unscheduled CNE status must be Completed immediately'
   );
   assert.ok(
-    handleAddSection.includes("if (isUnscheduled) {\\n      setCell('finalizedat', 21, new Date().toISOString());\\n      setCell('finalizedby', 22, session.employeeId || '');\\n    }"),
-    'Unscheduled CNE must set finalizedat and finalizedby upon creation'
-  );
-});
+    handleAddSection.includes("setCell('createdat', 19, new Date().toISOString())") &&
+    handleAddSection.includes("setCell('createdby', 20, session.employeeId || '')") &&
+    !handleAddSection.includes("setCell('finalizedat'") &&
+    !handleAddSection.includes("setCell('finalizedby'") &&
+    handleAddSection.includes("cneRequireMutationHeaders_(sheet,'CNE_Schedule')"),
+    'Unscheduled CNE must use the approved reduced schema, retain creation metadata, and never write obsolete finalized columns'
+  );});
 
 runTest('Unscheduled CNE explicitly permits past dates', () => {
   const checkFromPastIdx = codeGs.indexOf("if (!isUnscheduled) {");
@@ -2741,18 +2756,19 @@ runTest('Participant roster, staff counts, and post-test participants are record
     codeGs.indexOf('function handleUpdateCNE')
   );
   assert.ok(
-    handleAddSection.includes('cneParticipantUpsertBatch_(cneId, newRoster') &&
+    handleAddSection.includes('cneRecordConfirmedAttendanceBatch_(cneId,retrospectiveAttendees') &&
+    handleAddSection.includes('var retrospectiveAttendees=isUnscheduled') &&
     !handleAddSection.includes("setCell('internalparticipants'"),
-    'CNE creation must batch-write the authoritative participant register instead of Schedule roster cells'
+    'Only retrospective CNE creation must batch-write confirmed attendance; scheduled CNEs create no participant rows'
   );
   assert.ok(
     !handleAddSection.includes("setCell('staffcount'") && handleAddSection.includes('var totalStaffCount = staffClean.length + extStaffClean.length;'),
     'Staff count is derived for validation and is not stored in CNE Schedule'
   );
   assert.ok(
-    handleAddSection.includes('cneScheduleRosterParticipants_') &&
+    handleAddSection.includes('cneBuildRetrospectiveAttendees_') &&
     !handleAddSection.includes("setCell('externalparticipants'"),
-    'Internal/external roster must use one canonical CNE_Participants register'
+    'Retrospective attendees must use the canonical CNE_Participants register; no scheduled pending roster'
   );
 
   // Manual participant additions write to participant responses sheet via canonical plural action/handler
@@ -2779,7 +2795,7 @@ runTest('Participant roster, staff counts, and post-test participants are record
     codeGs.indexOf('function handleGetCNEParticipants')
   );
   assert.ok(
-    manualPartSection.includes('cneParticipantUpsertBatch_') && manualPartSection.includes("source:'MANUAL'"),
+    manualPartSection.includes('cneRecordConfirmedAttendanceBatch_') && manualPartSection.includes("source:'MANUAL'"),
     'handleAddManualParticipants must batch-upsert attendance in CNE_Participants'
   );
 
@@ -2811,18 +2827,23 @@ runTest('Unified CNE_Participants register merges attendance and post-test resul
     ['p2','CNE-X','002','Officer Two','INTERNAL','Nursing Officer','ATTENDED','POST_TEST','2026-11-01','COMPLETED','resp2','{}',4,5,80,'2026-11-01','[]','PASSED','2026-11-01','ADMIN'],
     ['p3','CNE-X','EXT-ABCDEFABCDEFABCDEFABCDEF','Guest A','EXTERNAL','External Participant','ATTENDED','MANUAL','2026-11-01','NOT_TAKEN','','','','','','','','','2026-11-01','ADMIN'],
     ['p4','CNE-X','','Guest B','EXTERNAL','External Participant','ATTENDED','RETROSPECTIVE','2026-11-01','NOT_TAKEN','','','','','','','','','2026-11-01','ADMIN']
-  ];
+  ].map(row=>{const canonical=row.slice();canonical.splice(8,1);return canonical;});
   const context = {
     sanitizeCellInput: x => String(x || '').trim(),
     getCNEScheduleRecord: () => ({cneId:'CNE-X',topic:'Clinical Update',area:'Ward',status:'Completed'}),
     checkCNEActionAuthorized: () => null,
     cneParticipantRows_: () => roster,
-    cnePostTestCompleted_: row => String(row[9]) === 'COMPLETED',
-    isConfirmedCNEAttendanceResponse_: src => src === 'POST_TEST' || src === 'MANUAL',
+    cnePostTestCompleted_: row => String(row[8]) === 'COMPLETED',
+    normalizeEmpId: x => String(x || '').trim().toUpperCase(),
     isExternalParticipantId: x => /^EXT-[A-F0-9]{24}$/.test(x),
     logPerf: () => {},
     Date
   };
+  const helperStart=codeGs.indexOf('function cneParticipantHasConfirmedAttendance_(');
+  const identityStart=codeGs.indexOf('function cneParticipantIdentity_(');
+  assert.ok(helperStart>=0 && identityStart>=0, 'Unified attendance and identity helpers must exist');
+  vm.runInNewContext(codeGs.slice(helperStart,codeGs.indexOf('/** Attendance-only CNE progress lookup',helperStart)),context);
+  vm.runInNewContext(codeGs.slice(identityStart,codeGs.indexOf('function cneParticipantRows_(',identityStart)),context);
   vm.runInNewContext(source, context);
   const result = context.handleGetCNEParticipants({cneId:'CNE-X'}, {role:'ADMIN'});
   assert.equal(result.success,true);
@@ -2833,11 +2854,19 @@ runTest('Unified CNE_Participants register merges attendance and post-test resul
   assert.equal(result.data.participants.find(p => p.employeeId === '001').name,'Officer One');
   assert.equal(result.data.participants.filter(p => p.name === 'Guest A').length,1,'No duplicated external attendee');
   assert.equal(result.data.participants.find(p => p.employeeId === '002').percentage,80,'Post-test score preserved');
-  roster.forEach(row => { row[6]='PENDING'; row[7]=''; row[8]=''; });
-  const pending = context.handleGetCNEParticipants({cneId:'CNE-X'}, {role:'ADMIN'});
-  assert.equal(pending.data.totalParticipants,4,'Pending Scheduled roster should still be visible');
-  assert.equal(pending.data.attendedCount,0,'PENDING is never counted as attendance');
-  assert.equal(pending.data.pendingCount,4,'All four remain pending');
+  roster.forEach(row => { row[6]='PENDING'; row[7]=''; });
+  const unconfirmed = context.handleGetCNEParticipants({cneId:'CNE-X'}, {role:'ADMIN'});
+  assert.equal(unconfirmed.data.totalParticipants,0,'Unconfirmed rows are excluded, not displayed');
+  assert.equal(unconfirmed.data.attendedCount,0,'PENDING is never counted as attendance');
+  assert.equal(unconfirmed.data.participants.length,0,'No pending participant UI records are returned');
+  roster[0][6]='ATTENDED';roster[0][7]='EXTERNAL_REGISTRATION';
+  const invalid=context.handleGetCNEParticipants({cneId:'CNE-X'}, {role:'ADMIN'});
+  assert.equal(invalid.data.attendedCount,0,'Invalid source with ATTENDED flag must not inflate count');
+  roster[0][7]='RETROSPECTIVE';
+  roster.push([...roster[0]]);
+  const deduped=context.handleGetCNEParticipants({cneId:'CNE-X'}, {role:'ADMIN'});
+  assert.equal(deduped.data.attendedCount,1,'Duplicate identity must not inflate attendance count');
+  assert.equal(deduped.data.totalParticipants,1,'Invalid and duplicate rows must not inflate participant count');
 });
 
 // -----------------------------------------------------------------------------
@@ -4465,7 +4494,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 27,
-    sha256: "e83e48f008d4320d9c2e22983f566c2eb593bd3a066d082658de4b48e97ef2fd",
+    sha256: "be80bff165d9e6157629ac01373f36469fef4d9686dfe97370dc5e4ba5d420f8",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -4808,8 +4837,8 @@ runTest('CNE Schedule sheet architecture & no obsolete Time column', () => {
   assert.ok(!headers.includes('Internal_Participants') && !headers.includes('External_Participants'),
     'Schedule must not duplicate canonical participant roster');
   const participantsSchema = codeGs.match(/'CNE_Participants':\\s*\\[([^\\]]+)\\]/);
-  assert.ok(participantsSchema && eval('['+participantsSchema[1]+']').length === 20,
-    'CNE_Participants must define exactly twenty canonical fields');
+  assert.ok(participantsSchema && eval('['+participantsSchema[1]+']').length === 19,
+    'CNE_Participants must define exactly nineteen canonical fields');
 
   // Obsolete separate 'Time' column is not present
   assert.ok(
@@ -5364,8 +5393,8 @@ runTest('QR Post-Test root routing, Internal/External email OTP verification, an
 
   // 10. Verification validates the challenge binding, persists external registration only after success,
   //     consumes the challenge, and issues the signed participant token used to load/submit the test.
-  const verifyOtpEnd = codeGs.indexOf('function handleVerifyPostTestParticipant(', verifyOtpStart);
-  assert.ok(verifyOtpEnd > verifyOtpStart, 'Legacy compatibility handler must follow handleVerifyPostTestOtp');
+  const verifyOtpEnd = codeGs.indexOf('function handleGetQRToken(', verifyOtpStart);
+  assert.ok(verifyOtpEnd > verifyOtpStart, 'Post-Test OTP verifier must be bounded by the next active handler');
   const verifyOtpSection = codeGs.substring(verifyOtpStart, verifyOtpEnd);
   assert.ok(
     verifyOtpSection.includes('challenge.purpose !== purpose') &&
@@ -5376,23 +5405,23 @@ runTest('QR Post-Test root routing, Internal/External email OTP verification, an
     "Post-Test OTP verification must validate purpose, participant type, CNE-bound principal, email, and active status"
   );
   assert.ok(
-    verifyOtpSection.includes("participantType === 'EXTERNAL'") &&
-    verifyOtpSection.includes('cneParticipantUpsertBatch_') &&
+    verifyOtpSection.includes("participantType==='EXTERNAL'") &&
+    !verifyOtpSection.includes('cneRecordConfirmedAttendanceBatch_') &&
     verifyOtpSection.includes("'Status':'CONSUMED'") &&
-    verifyOtpSection.includes('generatePostTestParticipantVerificationToken('),
-    "Successful OTP verification must persist verified external identity, consume the OTP, and issue a signed participant token"
+    verifyOtpSection.includes('generatePostTestParticipantVerificationToken(cneId, participantId, participantType, participantName)') &&
+    codeGs.includes('nonce+=') &&
+    codeGs.includes('base64DecodeWebSafe('),
+    "OTP verification must issue a CNE-bound signed external identity without creating a pending attendance row"
   );
 
-  // 11. The legacy direct verification endpoint is fail-closed unless it is used only as a challenge+OTP alias.
-  const legacyVerifyStart = codeGs.indexOf('function handleVerifyPostTestParticipant(');
-  const qrHandlerStart = codeGs.indexOf('function handleGetQRToken(', legacyVerifyStart);
-  assert.ok(legacyVerifyStart >= 0 && qrHandlerStart > legacyVerifyStart, 'Legacy compatibility verification handler must remain bounded');
-  const legacyVerifySection = codeGs.substring(legacyVerifyStart, qrHandlerStart);
+  // 11. The retired direct identity-verification action must stay unroutable.
+  const activeRouter = codeGs.slice(codeGs.indexOf('function handleRequest('),codeGs.indexOf('function handleAdminAction('));
   assert.ok(
-    legacyVerifySection.includes('params.challengeId && params.otp') &&
-    legacyVerifySection.includes('handleVerifyPostTestOtp(params, session)') &&
-    legacyVerifySection.includes("errorCode: 'POST_TEST_OTP_REQUIRED'"),
-    "Legacy participant verification endpoint must not allow Employee ID + DOJ or unverified Name + Email bypass"
+    !activeRouter.includes("case 'verifyPostTestParticipant':") &&
+    !codeGs.includes('function handleVerifyPostTestParticipant(') &&
+    activeRouter.includes("case 'requestPostTestOtp':") &&
+    activeRouter.includes("case 'verifyPostTestOtp':"),
+    'Legacy ID/DOJ or unverified Name/Email Post-Test verification must not bypass OTP'
   );
 
   // 12. Safe query parameter removal on close without reload.
@@ -5601,7 +5630,7 @@ runTest('Obsolete production endpoints, OCR, and real employee data permanent ab
     !codeGs.includes("case 'getChairpersonMessage':") &&
     !codeGs.includes('function handleUpdateChairpersonMessage(') &&
     cneHomeTs.includes('...INITIAL_CHAIRPERSON_MESSAGE') &&
-    cneHomeTs.includes('ApiService.getHomeDashboard(refreshGeneration > 0)') &&
+    cneHomeTs.includes('ApiService.getHomeDashboard(false)') &&
     cneHomeTs.includes('ApiService.getChairpersonPhoto()') &&
     !cneHomeTs.includes('res.data.chairpersonPhotoUrl') &&
     !cneHomeTs.includes('ApiService.getChairpersonMessage('),
@@ -5767,7 +5796,7 @@ runTest('Coordinator Desk homepage renders sheet-backed Admin content', () => {
   assert.ok(
     (
       (cneHomeTs.includes("ApiService.getCoordinatorDesk()") && cneHomeTs.includes("setCoordinatorDesk(res.data)")) ||
-      (cneHomeTs.includes("ApiService.getHomeDashboard(refreshGeneration > 0)") && cneHomeTs.includes("setCoordinatorDesk(res.data.coordinatorDesk"))
+      (cneHomeTs.includes("ApiService.getHomeDashboard(false)") && cneHomeTs.includes("setCoordinatorDesk(res.data.coordinatorDesk"))
     ) &&
     cneHomeTs.includes("<CoordinatorDeskCard coordinatorDesk={coordinatorDesk}"),
     'CneHomePage must fetch Coordinator Desk data (directly or through the optimized Home Dashboard bootstrap) and pass it to the homepage card'
@@ -5796,6 +5825,7 @@ function createStage4CmsEnvironment() {
     const grid = [headers.slice(), ...rows.map(row => row.slice())];
     return {
       grid,
+      getName() { return 'News_Events'; },
       getLastColumn() { return grid[0].length; },
       getMaxColumns() { return 30; },
       getLastRow() { return grid.length; },
@@ -5878,10 +5908,16 @@ runTest('Stage 4 CNE Desk roster writes are Admin-only, validated and non-destru
   assert.strictEqual(env.portal.grid.filter(row => row[1] === 'MEMBERS_V2').length, 1);
 });
 
-runTest('Stage 4 News flags add two optional columns on Admin publish and remain independently editable', () => {
+runTest('Stage 4 News mutations reject absent headers and allow approved flags when present', () => {
   const env = createStage4CmsEnvironment();
   assert.strictEqual(env.news.grid[0].length, 9);
   assert.strictEqual(env.sandbox.handleAddNewsEvent({ title: 'Blocked', summary: 'Private' }, env.employee).errorCode, 'FORBIDDEN');
+  // A partial historical schema is rejected: publishing may not append columns silently.
+  assert.throws(() => env.sandbox.handleAddNewsEvent({ title: 'Memo', summary: 'Read me' }, env.admin), /MISSING_HEADER/);
+  assert.strictEqual(env.news.grid[0].length, 9);
+  assert.strictEqual(env.news.grid.length, 1);
+  // After an authorized schema migration, add/update must use the named flag headers.
+  env.news.grid[0].push('Is_Important', 'Blink_Attention');
   const created = env.sandbox.handleAddNewsEvent({ title: 'Memo', summary: 'Read me', isImportant: true, blinkAttention: false }, env.admin);
   assert.strictEqual(created.success, true);
   assert.deepStrictEqual(env.news.grid[0].slice(9), ['Is_Important', 'Blink_Attention']);
@@ -5974,7 +6010,7 @@ process.exit(0);
     originalFilename: "verify-delete-cne-behavior.js",
     mode: "module",
     expectedChecks: 38,
-    sha256: "b6c89afecf0196d500651e3f9e35189eb97656af53b5821ff4ccfbfd72fb1529",
+    sha256: "efe74a79d470ac2c379299eafb0d7a8a01c9af24e99f081571bdfef069c5dae5",
     source: `/**
  * ============================================================================
  * EXECUTABLE BEHAVIORAL TEST SUITE: Delete CNE Data Integrity & Concurrency
@@ -6347,7 +6383,7 @@ function createFreshTestEnvironment() {
   ]);
 
   cneSpreadsheet.addSheet('CNE_Participants', [
-    ['Participant_ID','CNE_ID','Employee_ID','Participant_Name','Participant_Type','Designation','Attendance_Status','Attendance_Source','Attendance_At','Post_Test_Status','Post_Test_Response_ID','Post_Test_Answers_JSON','Post_Test_Score','Post_Test_Total','Post_Test_Percentage','Post_Test_Submitted_At','Post_Test_Questions_JSON','Post_Test_Result','Created_At','Created_By'],
+    ['Participant_ID','CNE_ID','Employee_ID','Participant_Name','Participant_Type','Designation','Attendance_Status','Attendance_Source','Post_Test_Status','Post_Test_Response_ID','Post_Test_Answers_JSON','Post_Test_Score','Post_Test_Total','Post_Test_Percentage','Post_Test_Submitted_At','Post_Test_Questions_JSON','Post_Test_Result','Created_At','Created_By'],
   ]);
 
   // Setup Standard QR Tokens Sheet
@@ -6360,6 +6396,20 @@ function createFreshTestEnvironment() {
   cneSpreadsheet.addSheet('Audit_Log', [
     ['Timestamp', 'Action', 'Employee_ID', 'Details', 'Status']
   ]);
+
+  cneSpreadsheet.addSheet('Deleted_Archive', [Array.from(sandbox.CNE_SHEET_HEADERS['Deleted_Archive'])]);
+
+  // All other deletion scenarios start with sheets already initialized by Admin Verify Sheets.
+  // Project historical fixture values onto the *current* canonical headers without
+  // invoking a header-writing mutation in the CNE deletion workflow.
+  for (const tabName of ['CNE_Schedule', 'Deleted_Archive']) {
+    const testSheet = cneSpreadsheet.sheets[tabName];
+    const oldHeaders = testSheet.grid[0];
+    const canonical = Array.from(sandbox.CNE_SHEET_HEADERS[tabName]);
+    testSheet.grid = [canonical, ...testSheet.grid.slice(1).map(row =>
+      canonical.map(header => { const n=oldHeaders.indexOf(header); return n>=0 ? (row[n]??'') : ''; })
+    )];
+  }
 
   const adminSession = {
     employeeId: 'ADMIN001',
@@ -6402,7 +6452,7 @@ runBehavioralTest('1. Missing mandatory attendance sheet fails closed with ATTEN
   assert.strictEqual(res.success, false, 'Deletion must fail');
   assert.strictEqual(res.errorCode, 'PARTICIPANT_REGISTER_ERROR', 'Must reject missing canonical register');
   assert.strictEqual(env.cneSpreadsheet.sheets['CNE_Schedule'].grid.length, 3, 'CNE Schedule row must be preserved');
-  assert.strictEqual(Boolean(env.cneSpreadsheet.sheets['Deleted_Archive']), false, 'No archive sheet or row should be created');
+  assert.strictEqual(env.cneSpreadsheet.sheets['Deleted_Archive'].getLastRow(), 1, 'No archive data row or header change should be made');
 });
 
 // Test 2: Invalid CNE ID header in attendance sheet
@@ -6734,7 +6784,7 @@ runBehavioralTest('13. Duplicate or blank archive headers are rejected with ARCH
 
   assert.strictEqual(res.success, false);
   assert.strictEqual(res.errorCode, 'ARCHIVE_SCHEMA_INVALID');
-  assert.ok(res.message.includes('duplicate or conflicting header'), 'Message must indicate duplicate header');
+  assert.ok(res.message.includes('DUPLICATE_HEADER'), 'Message must report the precise duplicate-header error');
 });
 
 // Test 14: Deleted CNE ID collision prevention
@@ -7405,7 +7455,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-interest.js",
     mode: "module",
     expectedChecks: 47,
-    sha256: "3626bbaaddb6be55f6c073ee8354bf7a005b2c501afea95379a53d2c558012c3",
+    sha256: "ae783c53e56e7bb49d228d63019f31f743ebbe5707d62c560f706fab6e21f4bc",
     source: `/**
  * ============================================================================
  * EXECUTABLE BEHAVIORAL TEST SUITE: CNE Expression of Interest (Phase 1)
@@ -7805,7 +7855,7 @@ function createFreshTestEnvironment() {
   ]);
 
   cneSpreadsheet.addSheet('CNE_Participants', [
-    ['Participant_ID','CNE_ID','Employee_ID','Participant_Name','Participant_Type','Designation','Attendance_Status','Attendance_Source','Attendance_At','Post_Test_Status','Post_Test_Response_ID','Post_Test_Answers_JSON','Post_Test_Score','Post_Test_Total','Post_Test_Percentage','Post_Test_Submitted_At','Post_Test_Questions_JSON','Post_Test_Result','Created_At','Created_By'],
+    ['Participant_ID','CNE_ID','Employee_ID','Participant_Name','Participant_Type','Designation','Attendance_Status','Attendance_Source','Post_Test_Status','Post_Test_Response_ID','Post_Test_Answers_JSON','Post_Test_Score','Post_Test_Total','Post_Test_Percentage','Post_Test_Submitted_At','Post_Test_Questions_JSON','Post_Test_Result','Created_At','Created_By'],
   ]);
 
   // 6. CNE Deleted Archive
@@ -7933,6 +7983,24 @@ function createFreshTestEnvironment() {
   vm.createContext(sandbox);
   vm.runInContext(codeGsSource, sandbox);
 
+  // Fixtures model a database initialized by Admin Verify Sheets. Registering
+  // interest is a data mutation and must not lazily create missing headers/tabs.
+  cneSpreadsheet.addSheet('Interest_Registrations', [
+    Array.from(sandbox.CNE_SHEET_HEADERS['Interest_Registrations'])
+  ]);
+
+  // Delete tests also require an archive that was initialized by Verify Sheets;
+  // neither interest registration nor CNE deletion may create or repair it.
+  cneSpreadsheet.addSheet('Deleted_Archive', [
+    Array.from(sandbox.CNE_SHEET_HEADERS['Deleted_Archive'])
+  ]);
+  const schedule=cneSpreadsheet.getSheetByName('CNE_Schedule');
+  const oldHeader=schedule.grid[0];
+  const canonical=Array.from(sandbox.CNE_SHEET_HEADERS['CNE_Schedule']);
+  schedule.grid=[canonical,...schedule.grid.slice(1).map(row=>
+    canonical.map(name=>{const k=oldHeader.indexOf(name);return k>=0?(row[k]??''):'';})
+  )];
+
   return { sandbox, cneSpreadsheet, officersSpreadsheet };
 }
 
@@ -7949,7 +8017,7 @@ runBehavioralTest('1. Registering interest saves record in CNE Interest Registra
   assert.strictEqual(res.data.status, 'INTERESTED');
 
   const sheet = cneSpreadsheet.getSheetByName('Interest_Registrations');
-  assert.ok(sheet, 'CNE Interest Registrations tab must be created');
+  assert.ok(sheet, 'CNE Interest Registrations tab must already exist after Admin Verify Sheets');
   assert.strictEqual(sheet.getLastRow(), 2, 'Must have 1 header row + 1 data row');
 
   const row = sheet.getRange(2, 1, 1, 7).getValues()[0];
@@ -8907,7 +8975,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-read-performance.cjs",
     mode: "commonjs",
     expectedChecks: 40,
-    sha256: "e381faaf03c5de8537b44ae3ea3bd03f720427e2ea5700d8732bf11072efef9f",
+    sha256: "77786aa9e924f0c6b98e14686ad18903e5172b0844eeb6894a74ee17517f9eb9",
     source: `/**
  * CNE Read Performance & Bounded Query Regression Verification Suite
  *
@@ -9195,6 +9263,11 @@ function createFreshTestEnvironment() {
     ['CNE-OTHER-999', 'Q100', 'Other Q', 'A', 'B', 'C', 'D', 'A', 'Expl', 'YES', 'YES', '2026-10-10', 'RP', 'Source', 'ACTIVE']
   ]);
 
+  // Admin Verify Sheets initializes all 17 canonical question headers.
+  // The two image/type columns were absent from the older 15-column fixture.
+  cneSpreadsheet.getSheetByName('Post_Test_Questions').grid[0].push(
+    'Question_Type','Image_Drive_File_ID');
+
   // 3. CNE Reference
   cneSpreadsheet.addSheet('Material_List', [
     [
@@ -9256,12 +9329,18 @@ function createFreshTestEnvironment() {
   cneSpreadsheet.addSheet('Post_Test_Responses', initialResponses);
 
   const participantSheet = cneSpreadsheet.addSheet('CNE_Participants', [
-    ["Participant_ID", "CNE_ID", "Employee_ID", "Participant_Name", "Participant_Type", "Designation", "Attendance_Status", "Attendance_Source", "Attendance_At", "Post_Test_Status", "Post_Test_Response_ID", "Post_Test_Answers_JSON", "Post_Test_Score", "Post_Test_Total", "Post_Test_Percentage", "Post_Test_Submitted_At", "Post_Test_Questions_JSON", "Post_Test_Result", "Created_At", "Created_By"],
+    ["Participant_ID", "CNE_ID", "Employee_ID", "Participant_Name", "Participant_Type", "Designation", "Attendance_Status", "Attendance_Source", "Post_Test_Status", "Post_Test_Response_ID", "Post_Test_Answers_JSON", "Post_Test_Score", "Post_Test_Total", "Post_Test_Percentage", "Post_Test_Submitted_At", "Post_Test_Questions_JSON", "Post_Test_Result", "Created_At", "Created_By"],
     ["PART-01", "CNE-2026-PERF1", "EMP-STF-001", "John Doe", "INTERNAL", "Nursing Officer", "ATTENDED", "MANUAL", "2026-10-15T09:45:00Z", "COMPLETED", "RESP-PART-01", "{}", 8, 10, 80, "2026-10-15T10:00:00Z", "[]", "PASSED", "2026-10-15T09:45:00Z", "EMP-ADM-001"],
     ["PART-02", "CNE-2026-PERF1", "EMP-STF-002", "Jane Smith", "INTERNAL", "Nursing Officer", "ATTENDED", "POST_TEST", "2026-10-15T09:45:00Z", "COMPLETED", "RESP-PART-02", "{}", 9, 10, 90, "2026-10-15T10:00:00Z", "[]", "PASSED", "2026-10-15T09:45:00Z", "EMP-ADM-001"],
     ["PART-03", "CNE-2026-PERF1", "EMP-STF-003", "Bob Johnson", "INTERNAL", "Nursing Officer", "ATTENDED", "MANUAL", "2026-10-15T09:45:00Z", "NOT_TAKEN", "", "", "", "", "", "", "", "", "2026-10-15T09:45:00Z", "EMP-ADM-001"],
     ["PART-OTHER", "CNE-OTHER-1", "EMP-EXT-1", "Other", "INTERNAL", "Nursing Officer", "ATTENDED", "MANUAL", "2026-10-15T09:45:00Z", "NOT_TAKEN", "", "", "", "", "", "", "", "", "2026-10-15T09:45:00Z", "EMP-ADM-001"]
   ]);
+
+  // Historical mock data used the retired Attendance_At slot. Reproject fixture rows
+  // to the approved 19-column canonical layout; production code never auto-migrates.
+  participantSheet.grid.slice(1).forEach(row=>{if(row.length===20)row.splice(8,1);});
+  const appendCanonical=participantSheet.appendRow.bind(participantSheet);
+  participantSheet.appendRow=function(row){const r=Array.from(row);if(r.length===20)r.splice(8,1);return appendCanonical(r);};
 
   // 6. Officers Data
   officersSpreadsheet.addSheet('Officers data', [
@@ -9512,9 +9591,11 @@ runTest('handleGetCNEActivityProgress uses bounded, CNE-specific reads without f
   assert.strictEqual(env.participantsSheet.getDataRangeCount, 0);
   const regReads = env.participantsSheet.readOps.filter(op => op.row >= 2);
   const names = env.participantsSheet.grid[0];
-  const cneColumn = names.indexOf('CNE_ID')+1, statusColumn = names.indexOf('Attendance_Status')+1;
-  assert.ok(regReads.some(op => op.col===cneColumn && op.numCols===1),'Progress must read the named CNE_ID column');
-  assert.ok(regReads.some(op => op.col===statusColumn && op.numCols===1),'Progress must read the named Attendance_Status column');
+  const cneColumn = names.indexOf('CNE_ID')+1, statusColumn = names.indexOf('Attendance_Status')+1,
+    sourceColumn = names.indexOf('Attendance_Source')+1;
+  assert.ok(regReads.some(op => op.col===cneColumn && op.numCols===1),'Progress must scan only the named CNE_ID column for matching CNEs');
+  assert.ok(regReads.some(op => op.col<=statusColumn && op.col+op.numCols>statusColumn),'Progress must project Attendance_Status');
+  assert.ok(regReads.some(op => op.col<=sourceColumn && op.col+op.numCols>sourceColumn),'Progress must also project Attendance_Source for eligibility');
 
   // Large answers JSON column (column 12 / L) must NOT be read during progress check
   const answersJsonReads = env.participantsSheet.readOps.filter(op => op.row >= 2 && op.col <= 12 && (op.col + op.numCols - 1) >= 12);
@@ -9598,8 +9679,8 @@ runTest('handleGetCNEParticipants retrieves records using bounded reads without 
     'Participant sheet must NEVER have getDataRange() called during participant fetch'
   );
 
-  // Must use bounded 20-column reads only for the selected CNE, not unrelated rows
-  const boundedReads = env.participantsSheet.readOps.filter(op => op.row >= 2 && op.col === 1 && op.numCols === 20);
+  // Must use bounded 19-column reads only for the selected CNE, not unrelated rows
+  const boundedReads = env.participantsSheet.readOps.filter(op => op.row >= 2 && op.col === 1 && op.numCols === 19);
   assert.ok(
     boundedReads.length > 0,
     'handleGetCNEParticipants must read bounded blocks of matched rows'
@@ -9898,16 +9979,18 @@ runTest('Admin analytics aggregates verified attendance once per CNE and skips r
   const code=codeGsSource.slice(codeGsSource.lastIndexOf('function handleGetCNEAnalytics('));
   const headers=['CNE_ID','Area','From_Date','To_Date','Duration','Topic','Internal_Resource_Person_IDs','Mode_of_Teaching','Status','Total_Allotted_Staff'];
   const sheetRows=[headers,['CNE-1','ICU','2026-10-01','2026-10-01','01:30:00','Sepsis','RP1','Lecture','Completed',40],['CNE-2','ICU','2026-10-10','2026-10-10','01:00:00','Vitals','RP1','Lecture','Scheduled',40]];
-  const participantCanonicalHeaders=['Participant_ID','CNE_ID','Employee_ID','Participant_Name','Participant_Type','Designation','Attendance_Status','Attendance_Source','Attendance_At','Post_Test_Status','Post_Test_Response_ID','Post_Test_Answers_JSON','Post_Test_Score','Post_Test_Total','Post_Test_Percentage','Post_Test_Submitted_At','Post_Test_Questions_JSON','Post_Test_Result','Created_At','Created_By'];
+  const participantCanonicalHeaders=['Participant_ID','CNE_ID','Employee_ID','Participant_Name','Participant_Type','Designation','Attendance_Status','Attendance_Source','Post_Test_Status','Post_Test_Response_ID','Post_Test_Answers_JSON','Post_Test_Score','Post_Test_Total','Post_Test_Percentage','Post_Test_Submitted_At','Post_Test_Questions_JSON','Post_Test_Result','Created_At','Created_By'];
   const participantCanonicalRows=[
     ['P1','CNE-1','E1','Nurse A','INTERNAL','','ATTENDED','MANUAL','2026-10-01','COMPLETED','R1','{"Q1":"B"}',8,10,80,'2026-10-01','["Q1"]','PASSED','',''],
     ['P2','CNE-1','E2','Nurse B','INTERNAL','','ATTENDED','MANUAL','2026-10-01','NOT_TAKEN','','','','','','','','','',''],
-    ['P3','CNE-1','EXT-1','External','EXTERNAL','External','PENDING','','','NOT_TAKEN','','','','','','','','','','']
+    ['P3','CNE-1','EXT-1','External','EXTERNAL','External','PENDING','','','NOT_TAKEN','','','','','','','','','',''],
+    // Tampered registration status and fake score must not inflate analytics.
+    ['P4','CNE-1','EXT-2','Registration Only','EXTERNAL','External','ATTENDED','EXTERNAL_REGISTRATION','','COMPLETED','R4','{}',10,10,100,'2026-10-01','[]','PASSED','','']
   ];
   // Deliberately permute the physical participant columns. Answers JSON is adjacent to
   // frequently-read columns, and must not be fetched by aggregate analytics.
   const physicalHeaderOrder=['Post_Test_Answers_JSON','CNE_ID','Post_Test_Result','Employee_ID','Participant_Type','Attendance_Status','Participant_Name','Post_Test_Total','Post_Test_Status','Post_Test_Score','Post_Test_Percentage',...participantCanonicalHeaders.filter(h=>!['Post_Test_Answers_JSON','CNE_ID','Post_Test_Result','Employee_ID','Participant_Type','Attendance_Status','Participant_Name','Post_Test_Total','Post_Test_Status','Post_Test_Score','Post_Test_Percentage'].includes(h))];
-  const participantGrid=[physicalHeaderOrder,...participantCanonicalRows.map(row=>physicalHeaderOrder.map(name=>row[participantCanonicalHeaders.indexOf(name)]))];
+  const participantGrid=[physicalHeaderOrder,...participantCanonicalRows.map(original=>{const row=[...original];if(row.length===20)row.splice(8,1);return physicalHeaderOrder.map(name=>row[participantCanonicalHeaders.indexOf(name)]);})];
   let readCount=0;
   const inMemoryAnalyticsCache = new Map();
   const scheduleSheet={getLastRow:()=>sheetRows.length,getLastColumn:()=>headers.length,getRange:(r,c,n)=>({getValues:()=>r===1?[headers]:sheetRows.slice(r-1,r+n-1)})};
@@ -9915,7 +9998,7 @@ runTest('Admin analytics aggregates verified attendance once per CNE and skips r
     if(r>1){readCount++;for(let col=c-1;col<c-1+w;col++)assert.ok(!['Post_Test_Answers_JSON','Post_Test_Questions_JSON'].includes(physicalHeaderOrder[col]),'Analytics must not load answer/question JSON');}
     return Array.from({length:n},(_,ri)=>Array.from({length:w},(_,ci)=>participantGrid[r-1+ri]?.[c-1+ci]??''));
   }})};
-  const readNames=['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status','Post_Test_Status','Post_Test_Score','Post_Test_Total','Post_Test_Percentage'];
+  const readNames=['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status','Attendance_Source','Post_Test_Status','Post_Test_Score','Post_Test_Total','Post_Test_Percentage'];
   const physicalReads = readNames.map(h=>physicalHeaderOrder.indexOf(h)).sort((a,b)=>a-b).reduce((state,c,i,all)=>state+(i===0||c!==all[i-1]+1?1:0),0);
   const helperSource=codeGsSource.slice(codeGsSource.indexOf('function cneReadNamedColumns_('),codeGsSource.indexOf('function cneParticipantAttendanceRows_('));
   const ctx={
@@ -10058,8 +10141,10 @@ runTest('Report analytics scans canonical participant fields without fetching po
   assert.strictEqual(result.success,true);
   const dataReads=sh.readOps.filter(op=>op.row>=2 && op.numCols>1);
   assert.ok(dataReads.length>0,'Analytics must read the participant register');
-  assert.ok(dataReads.every(op=>!(op.col<=12 && op.col+op.numCols-1>=12)),'Analytics must never read answers JSON');
-  assert.ok(dataReads.every(op=>!(op.col<=17 && op.col+op.numCols-1>=17)),'Analytics must never read question snapshots');
+  const forbidden=['Post_Test_Answers_JSON','Post_Test_Questions_JSON'].map(name=>sh.grid[0].indexOf(name)+1);
+  assert.ok(forbidden.every(column=>column>0),'Test fixture must contain both assessment JSON headers');
+  assert.ok(dataReads.every(op=>forbidden.every(column=>!(op.col<=column && op.col+op.numCols-1>=column))),
+    'Analytics must not fetch answer JSON or question snapshots under the 19-column canonical schema');
 });
 
 runTest('Schedule search narrows by status/date and allows authenticated historical viewing', () => {
@@ -10128,20 +10213,22 @@ runTest('Date-filtered outcomes do not scan full history when matches are scatte
 // -----------------------------------------------------------------------------
 // Attendance eligibility consistency: registration is never attendance.
 // -----------------------------------------------------------------------------
-runTest('Shared attendance policy excludes registration and unsupported sources', () => {
+runTest('Shared canonical participant eligibility requires attended status AND approved source', () => {
   const env = createFreshTestEnvironment();
-  const eligible = env.sandbox.isConfirmedCNEAttendanceResponse_;
-  assert.strictEqual(eligible('EXTERNAL_REGISTRATION', 'REGISTERED'), false);
-  assert.strictEqual(eligible('EXTERNAL_REGISTRATION', 'ATTENDED'), false,
-    'A registration row must never become attendance by changing status alone');
-  assert.strictEqual(eligible('', 'ATTENDED'), false, 'Unknown Source fails closed');
-  assert.strictEqual(eligible('PENDING', 'ATTENDED'), false);
-  assert.strictEqual(eligible('MANUAL', 'REGISTERED'), false);
-  assert.strictEqual(eligible('POST_TEST', 'PENDING'), false);
-  assert.strictEqual(eligible('MANUAL', 'ATTENDED'), true);
-  assert.strictEqual(eligible('QR', 'ATTENDED'), true);
-  assert.strictEqual(eligible('POST_TEST', 'PASSED'), true);
-  assert.strictEqual(eligible('POST_TEST', 'NEEDS_IMPROVEMENT'), true);
+  const eligible = env.sandbox.cneParticipantHasConfirmedAttendance_;
+  const row=(source,status)=>{const r=Array(19).fill('');r[6]=status;r[7]=source;return r;};
+  assert.strictEqual(eligible(row('EXTERNAL_REGISTRATION','PENDING')), false);
+  assert.strictEqual(eligible(row('EXTERNAL_REGISTRATION','ATTENDED')), false,
+    'Registration-only record cannot become attendance by changing status');
+  assert.strictEqual(eligible(row('','ATTENDED')), false,'Blank source fails closed');
+  assert.strictEqual(eligible(row('UNKNOWN','ATTENDED')), false,'Unsupported source fails closed');
+  assert.strictEqual(eligible(row('MANUAL','PENDING')), false);
+  assert.strictEqual(eligible(row('POST_TEST','PENDING')), false);
+  assert.strictEqual(eligible(row('MANUAL','ATTENDED')), true);
+  assert.strictEqual(eligible(row('QR','ATTENDED')), true);
+  assert.strictEqual(eligible(row('POST_TEST','ATTENDED')), true);
+  assert.strictEqual(eligible(row('RETROSPECTIVE','ATTENDED')), true);
+  assert.strictEqual(eligible(row('POST_TEST','PASSED')), false,'Assessment result is not attendance status');
 });
 
 runTest('Registration alone does not inflate Participants or Calendar Progress', () => {
@@ -10180,7 +10267,7 @@ runTest('Finalization rejects registration-only CNE, then deduplicates confirmed
     'External Participant','Emergency','','','','EXTERNAL_REGISTRATION',
     '2026-10-01T09:00:00Z','','REGISTERED','Registration retained'
   ]);
-  env.participantsSheet.appendRow(['PART-REG-1','CNE-2026-EMPTY','EXT-AAAAAAAAAAAAAAAAAAAAAAAA','Visitor A','EXTERNAL','External Participant','PENDING','','','NOT_TAKEN','','','','','','','','','2026-10-01T09:00:00Z','EMP-ADM-001']);
+  assert.strictEqual(env.participantsSheet.grid.filter(row=>row[1]==='CNE-2026-EMPTY').length,0,'External registration cannot create an attendee');
   const denied = env.sandbox.handleFinalizeCNE({cneId:'CNE-2026-EMPTY'},admin);
   assert.strictEqual(denied.success,false);
   assert.strictEqual(denied.errorCode,'NO_PARTICIPANTS');
@@ -10208,9 +10295,9 @@ runTest('Finalization rejects registration-only CNE, then deduplicates confirmed
     '2026-10-01T10:09:00Z','','REGISTERED',''
   ]);
   // Scored Post_Test_Responses are evidence; the authoritative register holds attendance.
-  env.participantsSheet.appendRow(['PART-EM-1','CNE-2026-EMPTY','EMP-STF-001','John','INTERNAL','Nursing Officer','ATTENDED','MANUAL','2026-10-01T10:00:00Z','COMPLETED','PT-1','{}',8,10,80,'2026-10-01T10:05:00Z','[]','PASSED','2026-10-01T10:00:00Z','EMP-ADM-001']);
-  const externalRow = env.participantsSheet.grid.find(row => row[0] === 'PART-REG-1');
-  Object.assign(externalRow,{6:'ATTENDED',7:'POST_TEST',8:'2026-10-01T10:08:00Z',9:'COMPLETED',10:'PT-2',11:'{}',12:7,13:10,14:70,15:'2026-10-01T10:08:00Z',16:'[]',17:'NEEDS_IMPROVEMENT'});
+  env.participantsSheet.appendRow(['PART-EM-1','CNE-2026-EMPTY','EMP-STF-001','John','INTERNAL','Nursing Officer','ATTENDED','MANUAL','COMPLETED','PT-1','{}',8,10,80,'2026-10-01T10:05:00Z','[]','PASSED','2026-10-01T10:00:00Z','EMP-ADM-001']);
+  // Only the verified Post-Test submission (not email registration) creates the external attendee.
+  env.participantsSheet.appendRow(['PART-POST-2','CNE-2026-EMPTY','EXT-AAAAAAAAAAAAAAAAAAAAAAAA','Visitor A','EXTERNAL','External Participant','ATTENDED','POST_TEST','COMPLETED','PT-2','{}',7,10,70,'2026-10-01T10:08:00Z','[]','NEEDS_IMPROVEMENT','2026-10-01T10:08:00Z','POST_TEST']);
   const beforeFinal = env.sandbox.handleGetCNEParticipants({cneId:'CNE-2026-EMPTY'},admin);
   const progress = env.sandbox.handleGetCNEActivityProgress({cneId:'CNE-2026-EMPTY',forceFresh:true},admin);
   assert.strictEqual(beforeFinal.data.totalParticipants,2);
@@ -10224,53 +10311,58 @@ runTest('Finalization rejects registration-only CNE, then deduplicates confirmed
   assert.ok(schedule.grid[3][14].includes('Total Attendees: 2'),'Finalization summary must count exactly two confirmed attendees');
   assert.ok(schedule.grid[3][14].includes('75%'), 'Average score must use unique Post-Test attendees');
   assert.strictEqual(env.responsesSheet.getDataRangeCount,0,'No full response history inside ScriptLock');
-  assert.ok(env.participantsSheet.readOps.some(op=>op.col===1&&op.numCols===20),
+  assert.ok(env.participantsSheet.readOps.some(op=>op.col===1&&op.numCols===19),
     'Finalization must use bounded participant register reads');
   assert.strictEqual(env.responsesSheet.grid.at(-1)[9],'EXTERNAL_REGISTRATION',
     'Registration-only rows must remain unchanged');
 });
 
-runTest('Manual attendance converts one verified external registration to a shared identity', () => {
-  const env = createFreshTestEnvironment();
-  const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
-  env.sandbox.refreshMutationSession = session => ({success:true,session});
-  env.sandbox.logAuditActionsBatch = () => {};
-  const externalId = 'EXT-CCCCCCCCCCCCCCCCCCCCCCCC';
-  env.participantsSheet.appendRow(['PART-REG-C','CNE-2026-EMPTY',externalId,'Visitor C','EXTERNAL','External Participant','PENDING','','','NOT_TAKEN','','','','','','','','','2026-10-01T08:00:00Z','EMP-ADM-001']);
-  const beforeCount = env.sandbox.handleGetCNEParticipants({cneId:'CNE-2026-EMPTY'},admin);
-  assert.strictEqual(beforeCount.data.totalParticipants,1);
-  assert.strictEqual(beforeCount.data.pendingCount,1);
-  env.responsesSheet.resetReadOps();
-  const added = env.sandbox.handleAddManualParticipants({
+runTest('Manual external attendee and verified Post-Test share one confirmed row', () => {
+  const env=createFreshTestEnvironment();
+  const admin={employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  env.sandbox.refreshMutationSession=session=>({success:true,session});
+  env.sandbox.logAuditActionsBatch=()=>{};
+  assert.strictEqual(env.participantsSheet.grid.filter(row=>row[1]==='CNE-2026-EMPTY').length,0,'No pending participant exists on new CNE');
+  const added=env.sandbox.handleAddManualParticipants({
     cneId:'CNE-2026-EMPTY',participants:[{name:'Visitor C',designation:'External Participant',department:'Emergency'}]
   },admin);
   assert.strictEqual(added.success,true,added.message);
-  const manual = env.participantsSheet.grid.at(-1);
-  assert.strictEqual(manual[2],externalId,'Participant row must reuse external verified ID');
-  assert.strictEqual(manual[7],'MANUAL');
-  assert.strictEqual(manual[6],'ATTENDED');
-  assert.strictEqual(env.responsesSheet.getDataRangeCount,0,'Manual duplicate check avoids reading response history');
-  const completed = env.participantsSheet.grid.find(row => row[2] === externalId);
-  Object.assign(completed,{9:'COMPLETED',10:'PT-C',11:'{}',12:8,13:10,14:80,15:'2026-10-01T10:00:00Z',16:'[]',17:'PASSED'});
-  const counted = env.sandbox.handleGetCNEParticipants({cneId:'CNE-2026-EMPTY'},admin);
-  assert.strictEqual(counted.data.totalParticipants,1,'Registration + manual + test count once');
-  assert.strictEqual(counted.data.postTestCount,1);
-  const prog = env.sandbox.handleGetCNEActivityProgress({cneId:'CNE-2026-EMPTY',forceFresh:true},admin);
-  assert.strictEqual(prog.data.participantsCount,1);
+  const before=env.participantsSheet.getLastRow();
+  const source=env.participantsSheet.grid.at(-1);
+  assert.strictEqual(source[6],'ATTENDED');assert.strictEqual(source[7],'MANUAL');
+  assert.strictEqual(source[2],'','Name-only attendee has no verified email ID yet');
+  const saved=env.sandbox.saveUnifiedPostTest_('CNE-2026-EMPTY','EXT-CCCCCCCCCCCCCCCCCCCCCCCC','EXTERNAL',
+    'Visitor C','External Participant',{Q1:'B'},{answerKeys:[{id:'Q1',correctOption:'B'}]},
+    {score:4,total:5,percentage:80,status:'PASSED'},'POST_TEST','2026-10-01T10:00:00Z','PT-C');
+  assert.strictEqual(saved.alreadySubmitted,false);
+  assert.strictEqual(env.participantsSheet.getLastRow(),before,'Signed verified Post-Test updates the same attendee, never appends a duplicate');
+  const confirmed=env.participantsSheet.grid.at(-1);
+  assert.strictEqual(confirmed[2],'EXT-CCCCCCCCCCCCCCCCCCCCCCCC');
+  assert.strictEqual(confirmed[7],'MANUAL','First valid attendance source stays intact');
+  assert.strictEqual(confirmed[8],'COMPLETED');
+  const result=env.sandbox.handleGetCNEParticipants({cneId:'CNE-2026-EMPTY'},admin);
+  assert.strictEqual(result.data.totalParticipants,1);
+  assert.strictEqual(result.data.postTestCount,1);
+  const progress=env.sandbox.handleGetCNEActivityProgress({cneId:'CNE-2026-EMPTY',forceFresh:true},admin);
+  assert.strictEqual(progress.data.participantsCount,1);
+  const repeated=env.sandbox.saveUnifiedPostTest_('CNE-2026-EMPTY','EXT-CCCCCCCCCCCCCCCCCCCCCCCC','EXTERNAL',
+    'Visitor C','External Participant',{Q1:'B'},{answerKeys:[{id:'Q1',correctOption:'B'}]},
+    {score:4,total:5,percentage:80,status:'PASSED'},'POST_TEST','2026-10-01T10:30:00Z','PT-C-2');
+  assert.strictEqual(repeated.alreadySubmitted,true,'Post-Test cannot be submitted twice');
 });
 
-runTest('Ambiguous same-name external registrations cannot be assigned to one attendee', () => {
-  const env = createFreshTestEnvironment();
-  const admin = {employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
-  env.sandbox.refreshMutationSession = session => ({success:true,session});
-  for (const suffix of ['DDDDDDDDDDDDDDDDDDDDDDDD','EEEEEEEEEEEEEEEEEEEEEEEE']) {
-    env.participantsSheet.appendRow(['PART-REG-'+suffix,'CNE-2026-EMPTY','EXT-'+suffix,'Shared Visitor','EXTERNAL','External Participant','PENDING','','','NOT_TAKEN','','','','','','','','','2026-10-01T08:00:00Z','EMP-ADM-001']);
-  }
-  const before = env.participantsSheet.getLastRow();
-  const attempted = env.sandbox.handleAddManualParticipants({cneId:'CNE-2026-EMPTY',name:'Shared Visitor'},admin);
-  assert.strictEqual(attempted.success,false);
-  assert.strictEqual(attempted.errorCode,'AMBIGUOUS_EXTERNAL_PARTICIPANT');
-  assert.strictEqual(env.participantsSheet.getLastRow(),before,'No attendance row may be added');
+runTest('Manual attendance cannot create duplicate confirmed attendees', () => {
+  const env=createFreshTestEnvironment();
+  const admin={employeeId:'EMP-ADM-001',role:'ADMIN',assignedAreas:[]};
+  env.sandbox.refreshMutationSession=session=>({success:true,session});
+  env.sandbox.logAuditActionsBatch=()=>{};
+  const first=env.sandbox.handleAddManualParticipants({cneId:'CNE-2026-EMPTY',participants:[{name:'Shared Visitor'}]},admin);
+  assert.strictEqual(first.success,true);
+  const before=env.participantsSheet.getLastRow();
+  const duplicate=env.sandbox.handleAddManualParticipants({cneId:'CNE-2026-EMPTY',participants:[{name:'Shared Visitor'}]},admin);
+  assert.strictEqual(duplicate.success,false);
+  assert.strictEqual(duplicate.errorCode,'DUPLICATE_PARTICIPANT');
+  assert.strictEqual(env.participantsSheet.getLastRow(),before,'Duplicate cannot add a row');
 });
 
 // AI Question Generation reliability tests: expand existing performance suite only.
@@ -10433,7 +10525,7 @@ runTest('Failed clinical evidence generation releases reservation without saving
 runTest('AI prompt and validation require real source excerpts before any persistence', () => {
   const source = codeGsSource;
   const start = source.indexOf('function generateAiQuestionsInternal(');
-  const end = source.indexOf('function cneAiHasOwnMaterial_(', start);
+  const end = source.indexOf('function cneAiMaterialReadiness_(', start);
   const generation = source.slice(start, end);
   assert.ok(generation.includes('evidenceQuote'), 'Gemini schema must request the source quotation');
   assert.ok(generation.includes('cneAiEvidenceSupported_('), 'Quotation and correct-answer support must be checked before saving');
@@ -10738,7 +10830,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if (!handler.includes('materialCheckRef.current') || !ui.includes('checkingMaterial || materialCheckRef.current')) throw Error('Missing manual busy guards');
   });
   focusCheck('Loading failure, contextual popup and uncertain-outcome recovery exist', () => {
-    if (!ui.includes('Unable to Load Questions') || !ui.includes('reconcileUncertainGeneration') || !ui.includes('AI Questions Did Not Pass Validation') || !ui.includes('Refresh Questions & Quota')) throw Error('Failure UI/recovery missing');
+    if (!ui.includes('Unable to Load Questions') || !ui.includes('reconcileUncertainGeneration') || !ui.includes('AI Questions Did Not Pass Validation') || !ui.includes('Recheck Saved Questions & Quota')) throw Error('Failure UI/recovery missing');
   });
   // Retired Library Index Management tests are replaced by material-only safety tests.
   // The Learning Resources library remains readable but is never Gemini evidence.
@@ -10951,7 +11043,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if(ctx.cneAiEvidenceSupported_('Paediatric Basic Life Support','Nursing CPR - Child CPR',source,'Do not begin CPR during cardiac arrest','Avoid chest compressions entirely.','',[entry],'BLS_1')) throw Error('Contradiction accepted');
   });
   focusCheck('New generation preserves evidence validation and quota reservation without library consent',()=>{
-    const source=gas.slice(gas.indexOf('function generateAiQuestionsInternal('),gas.indexOf('function cneAiHasOwnMaterial_('));
+    const source=gas.slice(gas.indexOf('function generateAiQuestionsInternal('),gas.indexOf('function cneAiMaterialReadiness_('));
     if(!source.includes('handleValidateAiQuotaReservation(') || !source.includes('cneAiEvidenceSupported_(') || source.includes('params.allowLibraryOnly')) throw Error('Material-only quota or evidence validation weakened');
     const commit=gas.slice(gas.indexOf('function handleGenerateCNEQuestions('),gas.indexOf('function normalizeCneId('));
     if(!commit.includes('handleCommitAiQuota(')||!commit.includes('ONLY handleCommitAiQuota persists')) throw Error('Authoritative save-path safeguard altered');
@@ -11458,7 +11550,6 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     fresh.checkQuestionManagementAuthorized=()=>null;
     fresh.normalizeCNEStatus=()=> 'Scheduled';
     fresh.isCNEQuestionsLocked=()=>false;
-    fresh.cneAiHasOwnMaterial_=()=>true;
     fresh.cneAiMaterialReadiness_=()=>({hasOwnMaterial:true,driveFileId:'CURRENT-FILE',indexedAt:'V1',status:'READY'});
     fresh.cneAiProgressKey_=(id,employee)=>id+'-'+employee;
     fresh.updateCNEAiProgress_=()=>{};
@@ -11797,7 +11888,9 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     const ctx={result:null};
     vm.runInNewContext(`${historyCode} result=parseParticipatingWards_('', 'NICU');`,ctx,{timeout:2500});
     if(JSON.stringify(Array.from(ctx.result))!==JSON.stringify(['NICU']))throw Error('legacy fallback must be primary only');
-    if(!gs.includes("key: 'participatingwards'") && !gs.includes("getHeaderMap(sheet)['participatingwards']"))throw Error('dedicated selected ward column missing');
+    // Normal editing validates the header without adding it. Admin Verify Sheets owns repairs.
+    if(!gs.includes("cneHeaderLayout_(sheet,['Participating_Wards'])") ||
+       !gs.includes("setCell('participatingwards'"))throw Error('dedicated selected ward header validation or write missing');
   });
   check('Schedule desktop and mobile display only the primary ward', () => {
     if (!desktop.includes("{cls.area || '—'}") || !mobile.includes("{item.area || '—'}") ||
@@ -12134,7 +12227,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   });
   check('Executable Ward-Level Publish creates once, recovers same IDs, and preserves intentional new batches',()=>{
     const handlerSource=gs.slice(gs.indexOf('function handleAddWardLevelSchedule('),gs.indexOf('/**',gs.indexOf('function handleAddWardLevelSchedule(')+30));
-    const f=['cneid','topic','area','fromdate','todate','duration','internalresourcepersonids','modeofteaching','description','maxparticipants','status','cnetype','externalresourcepersons','internalparticipants','staffcount','externalparticipants','createdby','adminremarks','remarks','createdat','createdby','coverageareassnapshot','totalallottedstaff','internalattendancecount','attendancepercentage','posttestoutcomepercentage','coveragefinalizedat','participatingwards','wardlevelsubmissionid','wardlevelsubmissiondigest','wardlevelsubmissioncount'];
+    const f=['cneid','topic','area','fromdate','todate','duration','internalresourcepersonids','modeofteaching','description','status','cnetype','externalresourcepersons','adminremarks','remarks','createdat','createdby','coverageareassnapshot','totalallottedstaff','internalattendancecount','attendancepercentage','posttestoutcomepercentage','coveragefinalizedat','participatingwards','wardlevelsubmissionid','wardlevelsubmissiondigest','wardlevelsubmissioncount'];
     const cm=Object.fromEntries(f.map((key,index)=>[key,index]));
     let rows=[], writes=0, audits=[], mockIdSerial=0;
     const sheet={
@@ -12153,6 +12246,8 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       refreshMutationSession:session=>({success:true,session}),getAreaStatusMap_:()=>({NICU:'ACTIVE'}),
       getTeachingModeStatusMap_:()=>({'LECTURE CUM DISCUSSION':'ACTIVE'}),
       getOrCreateSheet:()=>sheet,getSpreadsheet:()=>({getSheetByName:()=>sheet}),getHeaderMap:()=>cm,
+      cneRequireMutationHeaders_:()=>{for(const field of f)if(!Object.hasOwn(cm,field))throw Error('MISSING_HEADER: '+field);},
+      cneRequireMappedColumn_:(map,field)=>{const key=String(field).toLowerCase().replace(/[^a-z0-9]/g,'');if(!Object.hasOwn(map,key))throw Error('MISSING_HEADER: '+field);return map[key];},
       ensureCneScheduleCoverageHeaders_:()=>{},ensureParticipatingWardsHeader_:()=>{},
       resolveWardLevelWards_:selected=>({success:true,wards:selected,coverageAreasSnapshot:'NICU:42',totalAllottedStaff:42}),
       isCneIdInUse_:()=>false,
@@ -12413,7 +12508,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   });
   check('Question-repair evidence switch preserves original four-repair budget',()=>{
     const start=gas.indexOf('function generateAiQuestionsInternal(');
-    const end=gas.indexOf('function cneAiHasOwnMaterial_',start);
+    const end=gas.indexOf('function cneAiMaterialReadiness_(',start);
     const src=gas.slice(start,end);
     if(!src.includes('MAX_CORRECTIONS=4, MAX_CORRECTIONS_PER_QUESTION=2') ||
        !src.includes('correctionCount<MAX_CORRECTIONS') ||
@@ -12422,7 +12517,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
       throw Error('Retry quotas or final clinical check were weakened');
   });
   check('Original clinical citation and answer checks still precede question staging',()=>{
-    const src=gas.slice(gas.indexOf('function generateAiQuestionsInternal('),gas.indexOf('function cneAiHasOwnMaterial_('));
+    const src=gas.slice(gas.indexOf('function generateAiQuestionsInternal('),gas.indexOf('function cneAiMaterialReadiness_('));
     if(!src.includes('cneAiCheckBlueprint_(')||!src.includes('cneAiResolveVerifiedSpan_(')||
        !src.includes('cneAiEvidenceSupported_(') ||
        !(src.indexOf('cneAiEvidenceSupported_(')<src.indexOf('validatedQuestions.push(')))
@@ -12442,210 +12537,67 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
 }
 
 // -----------------------------------------------------------------------------
-// Clinical semantic chunking and metadata-first, fail-safe index retrieval.
-// These are executable Apps Script helper tests, not string-only declarations.
+// Current material-only retrieval: bounded CNE ID scans and source validation.
+// The retired cross-library sparse reader is intentionally not restored.
 // -----------------------------------------------------------------------------
 if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   const gas=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
   const checks=[];const check=(name,test)=>checks.push({name,test});
-  const semantic=gas.slice(gas.indexOf('var CNE_MATERIAL_INDEX_VERSION_'),gas.indexOf('function deleteReferenceLibraryResource('));
-  const helper=gas.slice(gas.indexOf('function cneAiReadTopicIndexRows_('),gas.indexOf('function retrieveCNETopicEvidence(',gas.indexOf('function cneAiReadTopicIndexRows_(')));
-  const setup=()=>{
-    const ctx={isProbableHeading:(s)=>/^(?:Chapter \d+|Site Selection|Infection Prevention)$/i.test(s),calculateTopicRelevanceScore:(q,c)=>[c.sectionHeading,c.clinicalKeywords,c.topic,c.resourceTitle].join(' ').toLowerCase().includes(q.toLowerCase())?50:0,
-      cneAiObjectiveEvidenceScore_:()=>0,cneAiObjectiveSearchTokens_:()=>['intravenous','catheter']};
-    // These semantic-retrieval fixtures intentionally use the legacy 12-field
-    // in-memory view. Exact physical sheet-schema guards are tested separately.
-    ctx.cneMaterialTextReadable_ = text => String(text||'').trim().length >= 70;
-    ctx.cneRequireIndexHeaders_=()=>{};
-    ctx.CNE_SHEET_HEADERS={'Library_Index':['Index_ID','Drive_File_ID','Resource_Title','Topic','Section_Heading','Chunk_Index','Chunk_Text','Clinical_Keywords','Extraction_Status','Updated_At'],
-      'Material_Index':['Index_ID','CNE_ID','Drive_File_ID','Resource_Title','Topic','Section_Heading','Chunk_Index','Chunk_Text','Clinical_Keywords','Extraction_Status','Updated_At']};
-    ctx.CNE_INDEX_CANONICAL_HEADERS_=['Index_ID','Source_Type','CNE_ID','Drive_File_ID','Resource_Title','Topic','Section_Heading','Chunk_Index','Chunk_Text','Clinical_Keywords','Extraction_Status','Updated_At'];
-    vm.runInNewContext(semantic+'\n'+helper,ctx,{timeout:3000});
-    return ctx;
-  };
-  const headers={indexid:0,sourcetype:1,cneid:2,drivefileid:3,resourcetitle:4,topic:5,sectionheading:6,chunkindex:7,chunktext:8,clinicalkeywords:9,extractionstatus:10,updatedat:11};
-  const makeRows=(size=160,matching=20)=>{
-    const result=[['Index_ID','Source_Type','CNE_ID','Drive_File_ID','Resource_Title','Topic','Section_Heading','Chunk_Index','Chunk_Text','Clinical_Keywords','Extraction_Status','Updated_At']];
-    for(let i=0;i<size;i++){
-      const special=i<matching;
-      result.push([`IDX-${i}`,'LOCAL_REFERENCE_LIB','','ACTIVE','Approved Handbook',special?'IV cannulation':'Fluid balance',special?'IV cannulation insertion':'Electrolyte monitoring',i+1,
-        special?'Peripheral intravenous catheter preparation and aseptic insertion clinical assessment. '.repeat(5):'Unrelated clinical care fluid electrolyte passage. '.repeat(5),
-        special?'peripheral IV catheter':'fluid electrolyte','SUCCESS','2026-10-24']);
-    }
-    return result;
-  };
-  const sheet=(data)=>{
-    const log={full:0,ranges:[],textRead:0};
-    const sh={getLastRow:()=>data.length,getLastColumn:()=>data[0].length,
-      getDataRange:()=>({getValues:()=>{log.full++;return data;}}),
-      getRange:(row,col,rows,cols)=>({getValues:()=>{
-        log.ranges.push([row,col,rows,cols]);
-        if(col<=9&&col+cols>9)log.textRead+=rows;
-        return data.slice(row-1,row-1+rows).map(r=>r.slice(col-1,col-1+cols));
-      }})};
-    return {sh,log};
-  };
-  check('Metadata-first search reads only selected source-text cells, not 160 full passages',()=>{
-    const ctx=setup(),{sh,log}=sheet(makeRows());
-    const result=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
-    if(result.mode!=='SPARSE'||log.full!==0||log.textRead>=80||result.rows.length!==20)
-      throw Error(`Expected sparse mode / 20 passages, got ${result.mode}, ${result.rows.length} rows, ${log.textRead} text rows`);
-    if(result.rows[0][8].indexOf('intravenous catheter')<0 ||result.rows[0].__sheetRow!==2)
-      throw Error('Sparse row mapping lost the authoritative PDF passage or sheet row');
-  });
-  check('Inactive reference books never enter shortlist and activation is checked anew',()=>{
-    const ctx=setup(),{sh,log}=sheet(makeRows());
-    const disabled=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{},{});
-    const enabled=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
-    if(disabled.rows.length!==0 || enabled.rows.length!==20 ||log.full!==0)
-      throw Error('Stale/inactive library evidence was allowed or live state was not rechecked');
-  });
-  check('Metadata shortlist excludes other CNE uploads and failed extraction rows',()=>{
-    const data=makeRows(160,20);
-    data[1][1]='UPLOADED_CNE';data[1][2]='OTHER';
-    data[2][10]='FAILED';
-    const ctx=setup(),{sh}=sheet(data);
-    const out=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
-    if(out.rows.some(r=>r[0]==='IDX-0'||r[0]==='IDX-1') ||out.rows.length!==18)
-      throw Error('Unauthorized CNE or FAILED evidence entered the shortlist');
-  });
-  check('Weak metadata triggers original authoritative full-sheet recall path',()=>{
-    const data=makeRows(160,2),ctx=setup(),{sh,log}=sheet(data);
-    const out=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
-    if(out.mode!=='FULL_LOW_METADATA_RECALL'||log.full!==1||out.rows.length!==data.length)
-      throw Error('Weak chapter metadata silently hid text-only relevant passages');
-  });
-  check('Scattered topic matches use one full-sheet read rather than excessive sparse RPCs',()=>{
-    const data=makeRows(1400,0);
-    for(let i=0;i<32;i++){
-      const at=2+i*40;data[at][5]='IV cannulation';data[at][6]='Aseptic IV cannulation';
-    }
-    const ctx=setup(),{sh,log}=sheet(data),out=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true},{});
-    if(out.mode!=='FULL_SCATTERED'||log.full!==1||log.textRead!==0)
-      throw Error('Scattered matches triggered too many text-column reads');
-  });
-  check('Missing header map invokes safe original read instead of guessing wrong columns',()=>{
-    const ctx=setup(),{sh,log}=sheet(makeRows()),invalid={...headers};delete invalid.chunktext;
-    const out=ctx.cneAiReadTopicIndexRows_(sh,invalid,'IV cannulation','CNE-A',{ACTIVE:true},{});
-    if(out.mode!=='FULL_SMALL_OR_SCHEMA'||log.full!==1)
-      throw Error('Schema drift was silently projected into incorrect clinical passages');
-  });
-  check('Clinical passage scoring prefers actual IV text over duplicated chapter labels',()=>{
-    const ctx=setup(),generic={topic:'IV cannulation',sectionHeading:'IV cannulation',chunkText:'General information about resources and scheduling for professional nursing staff. '.repeat(3)},
-      precise={topic:'IV cannulation',sectionHeading:'Vein selection',chunkText:'Peripheral intravenous catheter placement requires careful vein selection, aseptic technique and monitoring. '.repeat(3)};
-    if(ctx.cneAiClinicalPassageScore_('IV cannulation',precise,100)<=ctx.cneAiClinicalPassageScore_('IV cannulation',generic,100))
-      throw Error('Metadata-only chapter hit incorrectly ranked above a clinical passage match');
-  });
-  check('Semantic splitting prefers complete sentences and respects the 1,450-character cap',()=>{
-    const ctx=setup(),source='The nurse checks IV site integrity and assesses for infiltration. '.repeat(70);
-    const windows=ctx.cneMaterialSemanticWindows_(source);
-    if(windows.length<3 ||windows.some(w=>w.length>1450)||windows.some(w=>!/[.!?]$/.test(w)))
-      throw Error('Long clinical paragraphs were split mid-instruction or exceeded limits');
-  });
-  check('CNE material chunker retains real subheadings and paragraph-based clinical concepts',()=>{
-    const ctx=setup();
-    const chunks=ctx.chunkExtractedContent('Chapter 4\n\nSite Selection\n\n'+
-      'Choose a peripheral vein for intravenous catheter placement and monitor the site. '.repeat(5)+'\n\n'+
-      'Infection Prevention\n\nApply hand hygiene and aseptic technique during IV catheter insertion. '.repeat(5),'PDF');
-    if(!chunks.some(c=>c.heading==='Site Selection')||!chunks.some(c=>c.heading==='Infection Prevention'))
-      throw Error('Clinical subheadings were discarded by chunking');
-  });
-  check('PLAN-FINISH preserve clinical verification with only uploaded material',()=>{
-    const src=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
-    const generate=gas.slice(gas.indexOf('function handleGenerateCNEQuestions('));
-    if(!src.includes('cneAiExpandObjectiveEvidence_(totalEvidence, scoredUploaded, options.objectives)')||
-      !src.includes('cneAiTopicBoundEvidence_(cleanTopic, uc)') ||
-      !gas.includes('MAX_CORRECTIONS=4, MAX_CORRECTIONS_PER_QUESTION=2')||
-      !generate.includes("phase==='FINISH' && (!savedJob || savedJob.materialDriveFileId!==readiness.driveFileId") ||
-      !generate.includes('afterGeminiReadiness.driveFileId !== readiness.driveFileId') ||
-      gas.includes('allowLibraryOnly') )
-      throw Error('PLAN-FINISH generation, post-Gemini version guard, or verification regressed');
-  });
-  check('Live retrieval selects matching CNE uploaded source text with original index IDs',()=>{
-    const data=makeRows();
-    for(let i=1;i<=20;i++){data[i][1]='UPLOADED_CNE';data[i][2]='CNE-A';}
-    const ctx=setup(),{sh}=sheet(data);
-    ctx.sanitizeCellInput=x=>String(x||'');ctx.getCNEScheduleRecord=()=>({topic:'IV cannulation'});
+  const indexHeaders=['Index_ID','CNE_ID','Drive_File_ID','Resource_Title','Topic','Section_Heading','Chunk_Index','Chunk_Text','Clinical_Keywords','Extraction_Status','Updated_At'];
+  const passage='Peripheral intravenous catheter insertion requires hand hygiene, aseptic technique, correct vein selection, monitoring and reassessment. '.repeat(4);
+  const row=(i,cneId='OTHER-CNE',drive='CURRENT-FILE',status='SUCCESS')=>[
+    'MIDX-V3_'+i,cneId,drive,'Nursing teaching resource','IV cannulation','Vein selection',i,passage,'IV access',status,'2026-11-15'];
+  const setup=(includeCurrent=true)=>{
+    const grid=[indexHeaders];
+    for(let i=0;i<160;i++)grid.push(row(i));
+    if(includeCurrent)for(let i=0;i<20;i++)grid.push(row(i+160,'CNE-A',i===3?'STALE-FILE':'CURRENT-FILE',i===4?'FAILED':'SUCCESS'));
+    const stats={full:0,reads:[],readiness:0};
+    const sh={getLastRow:()=>grid.length,getLastColumn:()=>indexHeaders.length,
+      getDataRange:()=>({getValues:()=>{stats.full++;return grid.map(r=>r.slice());}}),
+      getRange:(r,c,n=1,w=1)=>({getValues:()=>{
+        stats.reads.push({r,c,n,w});return grid.slice(r-1,r-1+n).map(row=>row.slice(c-1,c-1+w));}})};
+    const ctx=vm.createContext({console,Date});vm.runInContext(gas,ctx,{timeout:15000});
+    ctx.sanitizeCellInput=v=>String(v||'').trim();
+    ctx.getCNEScheduleRecord=()=>({topic:'IV cannulation'});
     ctx.checkCNEActionAuthorized=()=>null;
-    ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='Material_Index'?sh:null});
-    ctx.getHeaderMap=()=>headers;
+    ctx.getSpreadsheet=()=>({getSheetByName:name=>name==='Material_Index'?sh:null});
+    ctx.cneRequireIndexHeaders_=()=>{};
+    ctx.getHeaderMap=()=>Object.fromEntries(indexHeaders.map((h,i)=>[h.toLowerCase().replace(/[^a-z0-9]/g,''),i]));
+    ctx.cneAiMaterialReadiness_=()=>{stats.readiness++;return {hasOwnMaterial:true,driveFileId:'CURRENT-FILE',indexedAt:'VERSION-1'};};
     ctx.cneMaterialCurrentIndexId_=()=>true;
-    ctx.cneMaterialTeachingPassage_=t=>Boolean(t);
+    ctx.cneMaterialTeachingPassage_=()=>true;
     ctx.cneAiTopicBoundEvidence_=()=>true;
-    ctx.cneAiMaterialReadiness_=()=>({hasOwnMaterial:true,driveFileId:'ACTIVE',indexedAt:'VERSION-1'});
-    ctx.passesClinicalRelevanceGate=()=>true;
-    ctx.cneAiSelectTopicEvidence_=(arr)=>arr.slice(0,12);
-    ctx.cneAiExpandObjectiveEvidence_=(base)=>({evidence:base,addedCount:0,perObjective:{}});
-    vm.runInNewContext(gas.slice(gas.indexOf('function cneMaterialTextReadable_('),gas.indexOf('function cneExtractPdfWithDriveOcr_(')),ctx,{timeout:3000});
-    vm.runInNewContext(gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf(')),ctx,{timeout:3000});
-    const result=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{employeeId:'STAFF-A'},{});
-    if(!result.success || result.indexSearchMode!=='UPLOADED_CNE_MATERIAL'||result.evidence.length!==12 ||
-       result.evidence[0].indexId!=='IDX-0'||result.evidence.some(e=>e.sourceType!=='UPLOADED_CNE'||e.chunkText.indexOf('intravenous catheter')<0))
-      throw Error('Authoritative current CNE material, clinical passage or Index ID was lost');
+    ctx.calculateTopicRelevanceScore=()=>50;
+    ctx.cneAiClinicalPassageScore_=(_,__,score)=>score;
+    ctx.cneAiSelectTopicEvidence_=(items)=>items.slice(0,12);
+    return {ctx,stats,sh,grid};
+  };
+  check('Material-only lookup scans CNE IDs, batches relevant rows and avoids loading unrelated passage text',()=>{
+    const {ctx,stats}=setup(),res=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{},{});
+    if(!res.success||res.evidence.length!==12||res.evidence.some(x=>x.sourceType!=='UPLOADED_CNE'))
+      throw Error('Current CNE evidence was not selected');
+    if(stats.full!==0||!stats.reads.some(x=>x.c===2&&x.w===1)||stats.reads.some(x=>x.w>1 && x.n>40))
+      throw Error('Material-only retrieval fetched full history or unrelated CNE text');
+    if(res.evidence.some(x=>x.indexId==='MIDX-V3_163'||x.indexId==='MIDX-V3_164'))
+      throw Error('Stale-file or failed-extraction passages were accepted');
   });
-  check('Live retrieval never grants access to deactivated references or unrelated CNE uploads',()=>{
-    const ctx=setup(),data=makeRows(160,20),{sh}=sheet(data);
-    ctx.sanitizeCellInput=x=>String(x||'');ctx.getCNEScheduleRecord=()=>({topic:'IV cannulation'});
-    ctx.checkCNEActionAuthorized=()=>null;
-    ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='Library_Index'?sh:null});
-    ctx.getHeaderMap=()=>headers;ctx.cneReferenceChunkReadable_=s=>String(s||'').length>90;
-    ctx.passesClinicalRelevanceGate=()=>true;ctx.cneAiSelectTopicEvidence_=a=>a.slice(0,12);
-    ctx.cneAiExpandObjectiveEvidence_=b=>({evidence:b,addedCount:0,perObjective:{}});
-    vm.runInNewContext(gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf(')),ctx,{timeout:3000});
-    const blocked=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{},{});
-    if(blocked.success ||blocked.evidence.length!==0)throw Error('A missing active registry did not block library evidence');
-    for(let i=1;i<10;i++){data[i][1]='UPLOADED_CNE';data[i][2]='OTHER-CNE';}
-    const other=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{},{});
-    if(other.success||other.evidence.length!==0)throw Error('Another CNE\'s private uploads entered the evidence pool');
+  check('No current indexed CNE source fails closed without consulting Library_Index',()=>{
+    const {ctx,stats}=setup(false),res=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{},{});
+    if(res.success||res.errorCode!=='INSUFFICIENT_TOPIC_MATERIAL'||stats.full!==0)
+      throw Error('Unrelated CNE material improperly satisfied retrieval');
   });
-  check('Dense scattered shortlists remain bounded and span approved sources',()=>{
-    const data=makeRows(1400,0);
-    for(let cluster=0;cluster<26;cluster++)for(let j=0;j<4;j++){
-      const at=2+cluster*45+j;
-      data[at][5]='IV cannulation';data[at][6]='IV cannulation clinical steps';
-      data[at][3]=cluster%2?'ACTIVE':'SECOND';
-      data[at][4]=cluster%2?'Handbook A':'Handbook B';
-    }
-    const ctx=setup(),{sh,log}=sheet(data);
-    const out=ctx.cneAiReadTopicIndexRows_(sh,headers,'IV cannulation','CNE-A',{ACTIVE:true,SECOND:true},{});
-    if(out.mode!=='SPARSE'||out.rows.length<12||log.textRead>=data.length/3||
-      log.ranges.filter(r=>r[1]===9).length>14 ||
-      !out.rows.some(r=>r[3]==='ACTIVE')||!out.rows.some(r=>r[3]==='SECOND'))
-      throw Error('Dense multi-book selection was not bounded, fast to read, and source-diverse');
+  check('Unindexed current file fails closed before reading topic passages',()=>{
+    const {ctx}=setup();ctx.cneAiMaterialReadiness_=()=>({hasOwnMaterial:false,status:'INDEXING',message:'Material not indexed'});
+    const res=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{},{});
+    if(res.success||res.errorCode!=='MATERIAL_NOT_INDEXED')throw Error('Index readiness gate bypassed');
   });
-  check('Live retrieval refuses historical library index when no current material exists',()=>{
-    const ctx=setup(),{sh}=sheet(makeRows(160,8));
-    ctx.sanitizeCellInput=x=>String(x||'');ctx.getCNEScheduleRecord=()=>({topic:'IV cannulation'});
-    ctx.checkCNEActionAuthorized=()=>null;
-    ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='Library_Index'?sh:null});
-    ctx.getHeaderMap=()=>headers;
-    ctx.cneRequireIndexHeaders_=()=>{};
-    ctx.cneAiMaterialReadiness_=()=>({hasOwnMaterial:false,driveFileId:'',status:'NOT_UPLOADED',message:'Upload material'});
-    vm.runInNewContext(gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf(')),ctx,{timeout:3000});
-    const out=ctx.retrieveCNETopicEvidence('CNE-A','IV cannulation',{employeeId:'STAFF-A'},{});
-    if(out.success||out.evidence?.length>0||!['INSUFFICIENT_TOPIC_MATERIAL','MATERIAL_NOT_INDEXED'].includes(out.errorCode))
-      throw Error('Old library data unexpectedly rescued a CNE without indexed material');
+  check('Semantic clinical windows are bounded and preserve complete sentences',()=>{
+    const {ctx}=setup(false);
+    const windows=ctx.cneMaterialSemanticWindows_('The nurse checks IV site integrity and assesses for infiltration. '.repeat(70));
+    if(windows.length<3||windows.some(w=>w.length>1450)||windows.some(w=>!/[.!?]$/.test(w)))
+      throw Error('Semantic passage splitting dropped clinical sentences or exceeded cap');
   });
-  check('New nursing keywords are derived from actual clinical passage text',()=>{
-    const start=gas.indexOf('function cneMaterialClinicalKeywords_('),end=gas.indexOf('function cneAiIvCannulationStem_(',start);
-    const sandbox={};vm.runInNewContext(gas.slice(start,end),sandbox,{timeout:3000});
-    const found=sandbox.cneMaterialClinicalKeywords_(
-      'The nurse uses supplemental oxygen and pulse oximetry in respiratory assessment, with pressure injury prevention, fluid balance and wound assessment.');
-    for(const expected of ['oxygen therapy','pulse oximetry','respiratory assessment','pressure injuries','fluid balance','wound assessment'])
-      if(!found.includes(expected))throw Error('Omitted grounded nursing keyword: '+expected);
-    if(found.includes('blood transfusion')||found.includes('insulin administration'))
-      throw Error('Clinical keyword was invented without source passage support');
-  });
-  check('Material retrieval enforces authorization, index status, and current file identity',()=>{
-    const src=gas.slice(gas.indexOf('function retrieveCNETopicEvidence('),gas.indexOf('function extractTextFromPdf('));
-    const terms=['checkCNEActionAuthorized(session, record)', 'cneAiMaterialReadiness_(cleanCneId)',
-      'rowCneId !== upperCneId', 'currentDriveId', "status !== 'SUCCESS'",
-      'cneAiTopicBoundEvidence_(cleanTopic, uc)',
-      'cneAiSelectTopicEvidence_', 'cneAiExpandObjectiveEvidence_', 'cneAiClinicalPassageScore_'];
-    for(const term of terms)if(!src.includes(term))throw Error('Material-only retrieval verification step missing: '+term);
-    if(src.includes('Library_Index') || src.includes('activeLibFiles'))throw Error('Legacy library retrieval was restored');
-  });
-  console.log('\n>>> Metadata-first source retrieval and semantic clinical chunking checks');
+  console.log('\n>>> Current material-only evidence retrieval and semantic chunking');
   for(const item of checks){focusedChecks.push(item);try{item.test();focusedPassed++;console.log('✓ '+item.name);}catch(e){console.error('✗ '+item.name+': '+e.message);}}
 }
 
@@ -12732,14 +12684,15 @@ THANK YOU!`;
     const isolate={console,Date,Math};vm.createContext(isolate);
     vm.runInContext(gas,isolate,{timeout:15000});
     const indexHeaders=['Index_ID','CNE_ID','Drive_File_ID','Resource_Title','Topic','Section_Heading','Chunk_Index','Chunk_Text','Clinical_Keywords','Extraction_Status','Updated_At'];
-    const refHeaders=['CNE_ID','Drive_File_ID','Indexing_Status','Indexing_Error_Code','Indexing_Message','Chunks_Count','Indexed_At'];
-    function sheet(rows){return {rows,getLastRow(){return rows.length;},getLastColumn(){return rows[0].length;},
+    const refHeaders=Array.from(isolate.CNE_SHEET_HEADERS['Material_List']);
+    function sheet(rows){return {rows,getName(){return this===ref?'Material_List':'Material_Index';},getLastRow(){return rows.length;},getLastColumn(){return rows[0].length;},
       getRange(row,col,height=1,width=1){return {
         getValue(){return rows[row-1]?.[col-1]??'';},
         getValues(){return Array.from({length:height},(_,i)=>Array.from({length:width},(_,j)=>rows[row-1+i]?.[col-1+j]??''));},
         setValues(values){values.forEach((r,i)=>r.forEach((v,j)=>{while(rows.length<row+i)rows.push([]);rows[row-1+i][col-1+j]=v;}));}
       };},deleteRow(at){rows.splice(at-1,1);},deleteRows(at,n){rows.splice(at-1,n);}};}
-    const ref=sheet([refHeaders,['CNE-X','FILE123','SUCCESS','','old',1,'now']]);
+    const refRecord={CNE_ID:'CNE-X',Drive_File_ID:'FILE123',Indexing_Status:'SUCCESS',Indexing_Error_Code:'',Indexing_Message:'old',Chunks_Count:1,Indexed_At:'now'};
+    const ref=sheet([refHeaders,refHeaders.map(h=>refRecord[h]??'')]);
     const idx=sheet([indexHeaders,['IDX_OLD','CNE-X','FILE123','Old','CKD','General Content',1,'Old passage','','SUCCESS','2026']]);
     const sheets={'Material_List':ref,'Material_Index':idx};
     isolate.getOrCreateSheet=name=>sheets[name];
@@ -12770,7 +12723,7 @@ THANK YOU!`;
     isolate.extractLearningResourceContentCore=()=>({success:false,errorCode:'OCR_FAILED',message:'Test OCR failure'});
     const failed=run();assert.equal(failed.success,false);
     assert(idx.rows.some(r=>r[0]===latestId),'Last good index must not be erased by failed extraction');
-    assert.equal(ref.rows[1][2],'FAILED','Failed indexing cannot advertise stale evidence as ready');
+    assert.equal(ref.rows[1][refHeaders.indexOf('Indexing_Status')],'FAILED','Failed indexing cannot advertise stale evidence as ready');
   });
   add('Gemini blueprint requires clinical topic diversity using indexed passages only',()=>{
     assert(gas.includes('Cover distinct source sections'));
@@ -12939,7 +12892,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     }],
     ['Question Bank search runs on entering the view and can be retried without starting Gemini', () => {
       assert(modal.includes('if (!bankSearched && !bankLoading) void searchBank()'));
-      assert(bankPanel.includes('onClick={() => void searchBank()}') && bankPanel.includes('Refresh Results'));
+      assert(bankPanel.includes('!bankSearched') || bankPanel.includes('searchBank('),'Bank search must remain available on tab activation or topic edits');
+      assert(!bankPanel.includes('Refresh Results'),'Manual Refresh Results button must remain removed');
       assert(modal.includes('bankRequestRef.current') && modal.includes('currentCneIdRef.current'));
       assert(!section('const requestAiGeneration = async', '  const handleGenerateAi = async').includes('void searchBank('));
     }],
@@ -13536,6 +13490,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       checkCNEAuthorized:()=>null,
       getSpreadsheet:()=>({getSheetByName:name=>name==='CNE_Schedule'?sheet:null}),
       getHeaderMap:()=>Object.fromEntries(headers.map((x,i)=>[x.toLowerCase().replace(/[^a-z0-9]/g,''),i])),
+      cneRequireMutationHeaders_:()=>true,
+      cneRequireMappedColumn_:(map,field)=>{const key=String(field).toLowerCase().replace(/[^a-z0-9]/g,'');if(!Object.hasOwn(map,key))throw Error('MISSING_HEADER: '+field);return map[key];},
       LockService:{getScriptLock:()=>({waitLock:()=>{events.locks++;},releaseLock:()=>{}})},
       refreshMutationSession:()=>({success:true,session:{employeeId:'STAFF001',role:freshRole}}),
       parseCneStartTimestamp_:v=>Date.parse(String(v)),
@@ -13785,7 +13741,7 @@ if (selected.some(item => item.id === 'security' || item.id === 'workflows') && 
       assert(create.includes("isUnscheduled ? 'Completed' : normalizeCNEStatus"));
       assert(create.includes('if (isUnscheduled && !isAdmin)'));
       assert(create.includes('if (retrospectiveType && !isAdmin)'));
-      assert(create.includes("if (isUnscheduled) {\n      setCell('finalizedat'"));
+      assert(create.includes("cneRequireMutationHeaders_(sheet,'CNE_Schedule')") && !create.includes("setCell('finalizedat'") && !create.includes("setCell('finalizedby'"));
       assert(popup.includes('selectedWards') && popup.includes('participatingWards:'));
       assert(!popup.includes('id="conducting-department"'));
     }],
@@ -15687,7 +15643,7 @@ if (selected.length === passed) {
     }],
     ['CNE participant upsert and single-row post-test retain QR proof in shuffled layout',()=>{
       const sh=makeSheet('CNE_Participants',Array.from(c.CNE_SHEET_HEADERS.CNE_Participants));
-      const added=c.cneParticipantUpsertBatch_('CNE-42',[{employeeId:'E42',name:'Nurse Test',type:'INTERNAL',status:'ATTENDED',source:'QR'}],'ADMIN',sh);
+      const added=c.cneRecordConfirmedAttendanceBatch_('CNE-42',[{employeeId:'E42',name:'Nurse Test',type:'INTERNAL',status:'ATTENDED',source:'QR'}],'ADMIN',sh);
       assert.equal(added.inserted,1);assert.equal(sh.value(1,'Attendance_Status'),'ATTENDED');
       assert.equal(sh.value(1,'Attendance_Source'),'QR');
       // Extra user-maintained data must survive the full-row atomic assessment update.
@@ -15885,10 +15841,10 @@ if (passed === selected.length && selected.some(s => s.id === 'security' || s.id
       assert.equal(calls,2);
     });
   } finally { rmSync(temp,{recursive:true,force:true}); }
-  await check('Manual Refresh controls exist across four shared CNE views',()=>{
+  await check('Manual Refresh controls are removed but recovery and cache invalidation remain',()=>{
     for(const file of ['src/components/CneHomePage.tsx','src/components/CNECalendar.tsx','src/components/CNESchedule.tsx','src/components/MyCNERecords.tsx']){
       const source=readFileSync(join(ROOT_DIR,file),'utf8');
-      assert(source.includes('RefreshCw') && source.includes('Refresh'));
+      assert(!/title=["']Refresh(?: data| schedule| records| calendar)?["']|>\s*Refresh\s*</.test(source),file+' still exposes manual Refresh control');
     }
     const prog=readFileSync(join(ROOT_DIR,'src/components/cne/ProgressPanel.tsx'),'utf8');
     assert(prog.includes('onRetryProgress'));
@@ -15934,7 +15890,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     }
   });
   check('Manual Home Refresh reaches server-side Program Impact forceFresh flag', () => {
-    assert.ok(homeUI.includes('ApiService.getHomeDashboard(refreshGeneration > 0)'),
+    assert.ok(homeUI.includes('ApiService.getHomeDashboard(false)'),
       'Home refresh does not pass a force-refresh request');
     const homeApi = method('getHomeDashboard','getProgramImpact');
     assert.ok(homeApi.includes('forceFresh = false') &&
@@ -15956,6 +15912,356 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     assert.equal(ctx.handleGetHomeDashboard({},null).success,true);
     assert.equal(ctx.handleGetHomeDashboard({forceFresh:true},null).success,true);
     assert.deepEqual(calls,[false,true], 'Home manual refresh did not bypass cached impact calculations');
+  });
+}
+
+// Version 47: executable header-order regression checks against the actual
+// Apps Script helpers. Tests use in-memory sheets only; never touch Drive/Sheets.
+if (selected.some(item => item.id === 'workflows' || item.id === 'performance') && passed === selected.length) {
+  const gas = readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const ctx = vm.createContext({console,Date,Math,JSON});
+  vm.runInContext(gas,ctx,{timeout:20000});
+  class MockSheet {
+    constructor(name,rows){this.name=name;this.rows=rows.map(r=>r.slice());}
+    getName(){return this.name;}
+    getLastRow(){return this.rows.length;}
+    getLastColumn(){return Math.max(1,...this.rows.map(r=>r.length));}
+    getMaxColumns(){return Math.max(30,this.getLastColumn());}
+    getMaxRows(){return Math.max(100,this.getLastRow());}
+    insertColumnsAfter(){return this;}
+    insertRowsAfter(){return this;}
+    getDataRange(){return {getValues:()=>this.rows.map(r=>r.slice())};}
+    getRange(row,column,count=1,width=1){const self=this;
+      return {getValues(){return Array.from({length:count},(_,i)=>Array.from({length:width},(_,j)=>self.rows[row-1+i]?.[column-1+j]??''));},
+        getDisplayValues(){return this.getValues().map(r=>r.map(v=>String(v??'')));},
+        setFontWeight(){return this;},
+        getValue(){return self.rows[row-1]?.[column-1]??'';},
+        setValue(value){while(self.rows.length<row)self.rows.push([]);self.rows[row-1][column-1]=value;return this;},
+        setValues(data){data.forEach((values,i)=>values.forEach((value,j)=>{while(self.rows.length<row+i)self.rows.push([]);self.rows[row-1+i][column-1+j]=value;}));return this;}};
+    }
+    deleteRow(r){this.rows.splice(r-1,1);}
+    deleteRows(r,n){this.rows.splice(r-1,n);}
+  }
+  const normalize=h=>String(h||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const shuffled=(name,canonical,values={})=>{
+    const headers=[...canonical].reverse();headers.splice(2,0,'Unrelated_Extra');
+    return new MockSheet(name,[headers,headers.map(h=>Object.hasOwn(values,h)?values[h]:h==='Unrelated_Extra'?'PRESERVE_ME':'')]);
+  };
+  const checks=[];
+  const check=(name,run)=>checks.push({name,run});
+  check('Shuffled Area columns and extra field return the correct Area/Status/Created At',()=>{
+    const area=new MockSheet('Area',[
+      ['Created_At','Status','Other_Column','Area'],
+      ['2026-11-14','ACTIVE','x','NICU'],['2026-11-15','INACTIVE','y','Closed Ward']]);
+    ctx.getOrCreateSheet=name=>{assert.equal(name,'Area');return area;};
+    ctx.CacheService={getScriptCache:()=>({get:()=>null,put:()=>{}})};
+    ctx.logPerf=()=>{};
+    const result=ctx.handleGetAreas({forceFresh:true});
+    assert.equal(result.success,true);assert.equal(result.data[0].name,'NICU');
+    assert.equal(result.data[0].status,'ACTIVE');assert.equal(result.data[0].createdAt,'2026-11-14');
+    assert.equal(result.data[1].name,'Closed Ward');assert.equal(result.data[1].status,'INACTIVE');
+  });
+  check('Shuffled Role columns preserve administrator roles and assigned areas',()=>{
+    const roles=new MockSheet('Role',[
+      ['Designation','Department_Area','Extra','Role','Employee_ID_No','Name_of_the_Officers'],
+      ['Nursing Officer','NICU, ICU','ignored','AREA_INCHARGE','EMP001','Sample Staff']]);
+    ctx.getOrCreateSheet=name=>{assert.equal(name,'Role');return roles;};
+    ctx.requireAdmin=()=>null;
+    const result=ctx.handleGetRoles({}, {role:'ADMIN',employeeId:'ADMIN'});
+    assert.equal(result.success,true);assert.equal(result.data[0].employeeId,'EMP001');
+    assert.equal(result.data[0].name,'Sample Staff');assert.equal(result.data[0].role,'AREA_INCHARGE');
+    assert.equal(result.data[0].assignedAreas.join(','),'NICU,ICU');
+  });
+  check('Shuffled CNE Schedule edits update only the named canonical cells',()=>{
+    const sch=shuffled('CNE_Schedule',ctx.CNE_SHEET_HEADERS['CNE_Schedule'],{
+      CNE_ID:'CNE-HEADER-001',Topic:'Original Topic',Status:'Scheduled',Area:'NICU'});
+    ctx.cneRequireMutationHeaders_(sch,'CNE_Schedule');
+    ctx.cneUpdateHeaderFields_(sch,2,{Topic:'Updated Topic',Status:'Completed',Area:'ICU'});
+    const header=sch.rows[0],row=sch.rows[1];
+    assert.equal(row[header.indexOf('Topic')],'Updated Topic');
+    assert.equal(row[header.indexOf('Status')],'Completed');
+    assert.equal(row[header.indexOf('Area')],'ICU');
+    assert.equal(row[header.indexOf('Unrelated_Extra')],'PRESERVE_ME');
+  });
+  check('Shuffled Material_List metadata changes use Drive ID and indexing headers',()=>{
+    const material=shuffled('Material_List',ctx.CNE_SHEET_HEADERS['Material_List'],{CNE_ID:'CNE-HEADER-001'});
+    ctx.cneRequireMutationHeaders_(material,'Material_List');
+    ctx.cneUpdateHeaderFields_(material,2,{Drive_File_ID:'FILE-NEW',Indexing_Status:'PENDING',Updated_At:'2026-11-15'});
+    const headers=material.rows[0],row=material.rows[1];
+    assert.equal(row[headers.indexOf('Drive_File_ID')],'FILE-NEW');
+    assert.equal(row[headers.indexOf('Indexing_Status')],'PENDING');
+    assert.equal(row[headers.indexOf('Updated_At')],'2026-11-15');
+    assert.equal(row[headers.indexOf('Unrelated_Extra')],'PRESERVE_ME');
+  });
+  check('Shuffled Material_Index cleanup deletes only the matching CNE ID',()=>{
+    const names=[...ctx.CNE_SHEET_HEADERS['Material_Index']].reverse();names.splice(1,0,'Extra_Field');
+    const make=id=>names.map(h=>h==='CNE_ID'?id:h==='Index_ID'?'IDX-'+id:h==='Extra_Field'?'KEEP':'');
+    const index=new MockSheet('Material_Index',[names,make('CNE-OTHER'),make('CNE-TARGET'),make('CNE-SECOND')]);
+    ctx.getSpreadsheet=()=>({getSheetByName:name=>name==='Material_Index'?index:null});
+    ctx.cneMaterialIndexSheet_=()=>index;
+    ctx.cleanUpIndexRowsForCNELocked_('CNE-TARGET');
+    assert.equal(index.rows.length,3);
+    const idCol=names.indexOf('CNE_ID');
+    assert.deepEqual(Array.from(index.rows.slice(1),r=>r[idCol]),['CNE-OTHER','CNE-SECOND']);
+  });
+  check('Required header missing in user mutation fails before any Sheets write',()=>{
+    const required=Array.from(ctx.CNE_SHEET_HEADERS['CNE_Schedule']);
+    const sh=new MockSheet('CNE_Schedule',[required.filter(h=>h!=='Topic')]);
+    assert.throws(()=>ctx.cneRequireMutationHeaders_(sh,'CNE_Schedule'),/MISSING_HEADER.*Topic/);
+  });
+  check('Duplicate normalized required headers fail closed',()=>{
+    const required=Array.from(ctx.CNE_SHEET_HEADERS['Material_List']);
+    const sh=new MockSheet('Material_List',[[...required,'TOPIC']]);
+    assert.throws(()=>ctx.cneRequireMutationHeaders_(sh,'Material_List'),/DUPLICATE_HEADER.*Topic/);
+    assert.throws(()=>ctx.getHeaderMap(sh),/DUPLICATE_HEADER/);
+  });
+  check('CNE create/edit and upload require strict schema before writing',()=>{
+    const create=gas.slice(gas.indexOf('function handleCreateCNE('),gas.indexOf('function handleUpdateCNE('));
+    const edit=gas.slice(gas.indexOf('function handleUpdateCNE('),gas.indexOf('function handleAddWardLevelSchedule('));
+    const ward=gas.slice(gas.indexOf('function handleAddWardLevelSchedule('),gas.indexOf('function handleGetWardLevelCneOutcomeReport('));
+    const upload=gas.slice(gas.indexOf('function handleUploadLearningResource('),gas.indexOf('function handleDeleteLearningResource('));
+    assert(create.includes("cneRequireMutationHeaders_(sheet,'CNE_Schedule')"));
+    assert(edit.includes("cneRequireMutationHeaders_(sheet,'CNE_Schedule')"));
+    assert(ward.includes("cneRequireMutationHeaders_(sheet,'CNE_Schedule')"));
+    const preflight=upload.indexOf("cneRequireMutationHeaders_(getOrCreateSheet('Material_List'),'Material_List')");
+    assert(preflight>0 && preflight<upload.indexOf('newlyCreatedDriveFile = targetFolder.createFile(blob)'));
+    assert(!upload.includes('else rowValues[5] = newDriveFileId'));
+  });
+  // Verify-only schema ownership tests execute the real source under isolated
+  // Apps Script mocks. These tests deliberately create absent/invalid sheets.
+  function freshSchemaEnv(){
+    const sandbox=vm.createContext({console,Date,Math,JSON,Number});
+    vm.runInContext(gas,sandbox,{timeout:20000});
+    const sheets={};
+    const ss={
+      getSheetByName(name){return sheets[name]||null;},
+      insertSheet(name){
+        if(sheets[name])throw Error('Duplicate insert '+name);
+        sheets[name]=new MockSheet(name,[]);return sheets[name];
+      },
+      getSheets(){return Object.values(sheets);}
+    };
+    const calls=[];
+    sandbox.getSpreadsheet=()=>ss;
+    sandbox.getOfficerHeaderMeta_=()=>{throw Error('Officers not connected in schema fixture');};
+    sandbox.logAuditAction=()=>{};
+    sandbox.LockService={getScriptLock:()=>({waitLock(){},releaseLock(){}})};
+    sandbox.SpreadsheetApp={flush(){}};
+    return {sandbox,ss,sheets,calls,
+      add(name,headers){sheets[name]=new MockSheet(name,[Array.from(headers)]);return sheets[name];}};
+  }
+  check('Ordinary sheet accessor never creates a missing tab',()=>{
+    const env=freshSchemaEnv();
+    assert.throws(()=>env.sandbox.getOrCreateSheet('Area'),/MISSING_SHEET.*Area/);
+    assert.equal(Object.keys(env.sheets).length,0);
+  });
+  check('Ordinary sheet accessor refuses blank headers without modifying the sheet',()=>{
+    const env=freshSchemaEnv();const area=env.add('Area',['Area','','Created_At']);
+    const original=JSON.stringify(area.rows);
+    assert.throws(()=>env.sandbox.getOrCreateSheet('Area'),/MISSING_HEADER.*Status/);
+    assert.equal(JSON.stringify(area.rows),original);
+  });
+  check('Ordinary sheet accessor refuses duplicate normalized headers and leaves data unchanged',()=>{
+    const env=freshSchemaEnv();const area=env.add('Area',['Area','Status','Created_At','STATUS']);
+    const original=JSON.stringify(area.rows);
+    assert.throws(()=>env.sandbox.getOrCreateSheet('Area'),/DUPLICATE_HEADER.*Status/);
+    assert.equal(JSON.stringify(area.rows),original);
+  });
+  check('All normal legacy ensure helpers validate instead of adding missing headers',()=>{
+    const env=freshSchemaEnv();const area=env.add('Material_List',['CNE_ID']);
+    const index=env.add('Material_Index',[]);
+    const schedule=env.add('CNE_Schedule',['CNE_ID']);
+    const news=env.add('News_Events',['Event_ID']);
+    for(const action of [
+      ()=>env.sandbox.ensureReferenceSheetHeaders(area),
+      ()=>env.sandbox.ensureLearningResourceSheetHeaders(area),
+      ()=>env.sandbox.cneRequireIndexHeaders_(index,env.sandbox.CNE_SHEET_HEADERS.Material_Index),
+      ()=>env.sandbox.ensureCneScheduleCoverageHeaders_(schedule),
+      ()=>env.sandbox.ensureParticipatingWardsHeader_(schedule),
+      ()=>env.sandbox.ensureNewsAttentionColumns_(news)
+    ])assert.throws(action,/MISSING_HEADER/);
+    assert.deepEqual(Array.from(area.rows[0]),['CNE_ID']);
+    assert.deepEqual(Array.from(index.rows[0]),[]);
+    assert.deepEqual(Array.from(schedule.rows[0]),['CNE_ID']);
+    assert.deepEqual(Array.from(news.rows[0]),['Event_ID']);
+  });
+  check('Legacy question-header helper is validation-only and never repairs a sheet',()=>{
+    const env=freshSchemaEnv();
+    const question=env.add('Post_Test_Questions',['CNE_ID','Question_ID']);
+    const before=JSON.stringify(question.rows);
+    assert.throws(()=>env.sandbox.ensureQuestionsSheetHeaders(question),/MISSING_HEADER/);
+    assert.equal(JSON.stringify(question.rows),before);
+  });
+  check('Archive resolution and Interest registration cannot create missing tabs',()=>{
+    const env=freshSchemaEnv();
+    assert.throws(()=>env.sandbox.getOrCreateDeletedArchiveSheet_(env.ss,null),/MISSING_SHEET.*Deleted_Archive/);
+    assert.throws(()=>env.sandbox.getInterestRegistrationsSheet(),/MISSING_SHEET.*Interest_Registrations/);
+    assert.equal(Object.keys(env.sheets).length,0);
+  });
+  check('Only Verify Sheets can run schema migration helpers',()=>{
+    const env=freshSchemaEnv();
+    const schedule=env.add('CNE_Schedule',['CNE_ID']);
+    const participants=env.add('CNE_Participants',['Participant_ID']);
+    for(const action of [
+      ()=>env.sandbox.adoptCneReducedSchemaHeaders_(schedule),
+      ()=>env.sandbox.ensureWardLevelSubmissionHeaders_(schedule)
+    ])assert.throws(action,/SCHEMA_MUTATION_FORBIDDEN/);
+    assert.deepEqual(Array.from(schedule.rows[0]),['CNE_ID']);
+    assert.deepEqual(Array.from(participants.rows[0]),['Participant_ID']);
+    assert.equal(typeof env.sandbox.adoptCneParticipantAssessmentHeaders_,'undefined','Historical 20-column participant migration should be removed');
+    assert.equal(env.sandbox.CNE_SHEET_HEADERS['CNE_Participants'].includes('Attendance_At'),false,'19-column schema must not recreate Attendance_At');
+  });
+  check('Admin Verify Sheets is the only workflow that creates all missing tabs and headers',()=>{
+    const env=freshSchemaEnv();
+    const result=env.sandbox.setupAndVerifyCNESheets('SYSTEM',null);
+    assert.equal(result.success,true,result.message);
+    assert.equal(result.createdTabs,Object.keys(env.sandbox.CNE_SHEET_HEADERS).length);
+    for(const [name,headers] of Object.entries(env.sandbox.CNE_SHEET_HEADERS)){
+      assert.deepEqual(Array.from(env.sheets[name].rows[0]),Array.from(headers),'Invalid verified header row: '+name);
+    }
+    assert.equal(env.sandbox._cneVerifySchemaActive_,false);
+  });
+  check('Verify Sheets adds missing named headers and preserves existing extra columns and rows',()=>{
+    const env=freshSchemaEnv();
+    const area=env.add('Area',['Created_At','Area','Custom_Field']);
+    area.rows.push(['2026-11-15','NICU','unchanged']);
+    const result=env.sandbox.setupAndVerifyCNESheets('SYSTEM',null);
+    assert.equal(result.success,true,result.message);
+    assert.deepEqual(Array.from(area.rows[0]),['Created_At','Area','Custom_Field','Status']);
+    assert.deepEqual(Array.from(area.rows[1]),['2026-11-15','NICU','unchanged']);
+    assert.equal(env.sandbox._cneVerifySchemaActive_,false);
+  });
+  check('Verify Sheets reports duplicate headers and leaves the affected sheet unchanged',()=>{
+    const env=freshSchemaEnv();
+    const area=env.add('Area',['Area','Status','Created_At','STATUS']);
+    const before=JSON.stringify(area.rows);
+    const result=env.sandbox.setupAndVerifyCNESheets('SYSTEM',null);
+    assert.equal(result.success,false);
+    assert(Array.from(result.unsafeTabs).includes('Area'));
+    assert.equal(JSON.stringify(area.rows),before);
+    assert.equal(env.sandbox._cneVerifySchemaActive_,false);
+  });
+  check('Non-admin frontend Verify Sheets action cannot change any schema',()=>{
+    const env=freshSchemaEnv();
+    const denied=env.sandbox.handleSetupAndVerifyCNESheets({}, {employeeId:'STAFF1',role:'EMPLOYEE'});
+    assert.equal(denied.success,false);
+    assert.equal(Object.keys(env.sheets).length,0);
+  });
+  check('Canonical archive and questions access allow reordered headers, but never repair missing ones',()=>{
+    const env=freshSchemaEnv();
+    const archive=env.add('Deleted_Archive',Array.from(env.sandbox.CNE_SHEET_HEADERS['Deleted_Archive']).reverse());
+    assert.equal(env.sandbox.getOrCreateDeletedArchiveSheet_(env.ss,null),archive);
+    const q=env.add('Post_Test_Questions',Array.from(env.sandbox.CNE_SHEET_HEADERS['Post_Test_Questions']).reverse());
+    assert.equal(env.sandbox.getQuestionsSheet(),q);
+    const p=env.sandbox.getQuestionColIndexes(q);
+    assert.equal(q.rows[0][p.questionType],'Question_Type');
+    q.rows[0]=q.rows[0].filter(x=>x!=='Image_Drive_File_ID');
+    const before=JSON.stringify(q.rows);
+    assert.throws(()=>env.sandbox.getQuestionsSheet(),/MISSING_HEADER.*Image_Drive_File_ID/);
+    assert.equal(JSON.stringify(q.rows),before);
+  });
+  check('Only Verify Sheets copies extra Schedule headers into Deleted Archive for lossless archival',()=>{
+    const env=freshSchemaEnv();
+    const scheduleColumns=[...Array.from(env.sandbox.CNE_SHEET_HEADERS['CNE_Schedule']),'Local_CNE_Note'];
+    const schedule=env.add('CNE_Schedule',scheduleColumns);
+    schedule.rows.push(scheduleColumns.map(h=>h==='CNE_ID'?'CNE-LOCAL-1':h==='Local_CNE_Note'?'keep note':''));
+    const archive=env.add('Deleted_Archive',Array.from(env.sandbox.CNE_SHEET_HEADERS['Deleted_Archive']));
+    archive.rows.push(Array.from(archive.rows[0],h=>h==='CNE_ID'?'CNE-OLD-ARCHIVED':''));
+    const beforeSchedule=JSON.stringify(schedule.rows);
+    const beforeArchive=JSON.stringify(archive.rows);
+    assert.equal(env.sandbox.getOrCreateDeletedArchiveSheet_(env.ss,schedule),archive);
+    assert.equal(JSON.stringify(archive.rows),beforeArchive,'Normal accessor modified archive headers');
+    const result=env.sandbox.setupAndVerifyCNESheets('SYSTEM',null);
+    assert.equal(result.success,true,JSON.stringify(result));
+    assert(archive.rows[0].includes('Local_CNE_Note'),'Verify did not extend archive with Schedule extension header');
+    assert.equal(archive.rows[1][archive.rows[0].indexOf('CNE_ID')],'CNE-OLD-ARCHIVED');
+    assert.equal(archive.rows[1][archive.rows[0].indexOf('Local_CNE_Note')]??'','');
+    assert.equal(JSON.stringify(schedule.rows),beforeSchedule,'Verify changed Schedule data');
+    assert.equal(env.sandbox._cneVerifySchemaActive_,false);
+    const resultAgain=env.sandbox.setupAndVerifyCNESheets('SYSTEM',null);
+    assert.equal(resultAgain.success,true);
+    assert.equal(archive.rows[0].filter(x=>x==='Local_CNE_Note').length,1,'Repeat Verify duplicated header');
+  });
+  check('CNE deletion never invents Archive extension headers on its own',()=>{
+    const src=gas.slice(gas.indexOf('function handleDeleteCNE('),gas.indexOf('function handle',gas.indexOf('function handleDeleteCNE(')+9));
+    assert(src.includes('ARCHIVE_SCHEMA_INVALID') && src.includes('Run Admin Verify Sheets'));
+    assert(!src.includes('insertSheet(') && !src.includes('insertColumnsAfter('));
+  });
+  check('Missing and duplicate sheet errors are labeled for frontend display',()=>{
+    const handler=gas.slice(gas.indexOf('function handleRequest(e, method)'),gas.indexOf('function handleAdminAction(',gas.indexOf('function handleRequest(e, method)')));
+    for(const marker of ['MISSING_HEADER','DUPLICATE_HEADER','MISSING_SHEET','SCHEMA_MUTATION_FORBIDDEN'])
+      assert(handler.includes(marker),'Frontend error code does not identify '+marker);
+    assert(handler.includes('message: sheetFailure ? failureText'));
+  });
+
+  console.log('\n>>> Header-based Google Sheets operations: shuffled/missing/duplicate headers');
+  for(const item of checks){focusedChecks.push({name:item.name,test:item.run});
+    try{item.run();focusedPassed++;console.log('✓ '+item.name);}
+    catch(e){console.error('✗ '+item.name+': '+e.message);}
+  }
+}
+
+// Version 47 participant simplification: keep tests on the CURRENT 19-column workflow.
+if (selected.some(item => item.id === 'performance') && passed === selected.length) {
+  const check = (name, test) => {
+    focusedChecks.push({name, test});
+    try { test(); focusedPassed++; console.log('✓ ' + name); }
+    catch (e) { console.error('✗ ' + name + ': ' + e.message); }
+  };
+  const backend=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const staffUI=readFileSync(join(ROOT_DIR,'src/components/cne/CNEParticipantsModal.tsx'),'utf8');
+  check('Old scheduled/pending roster helpers are removed and confirmed batch writer is retained',()=>{
+    for(const name of ['cneScheduleRosterParticipants_','cneParticipantUpsertBatch_','cneParticipantReplacePendingRoster_'])
+      assert(!backend.includes('function '+name+'('),'Retired helper still exists: '+name);
+    assert(backend.includes('function cneRecordConfirmedAttendanceBatch_('));
+    assert(backend.includes('function cneBuildRetrospectiveAttendees_('));
+    assert(backend.includes('if(retrospectiveAttendees.length)'));
+  });
+  check('CNE participant schema has 19 fields, with Created_At but no Attendance_At',()=>{
+    const ctx={console};vm.createContext(ctx);vm.runInContext(backend,ctx);
+    const fields=Array.from(ctx.CNE_SHEET_HEADERS['CNE_Participants']);
+    assert.equal(fields.length,19);
+    assert(fields.includes('Created_At') && fields.includes('Post_Test_Submitted_At'));
+    assert(!fields.includes('Attendance_At') && fields[17]==='Created_At');
+  });
+  check('External verification uses signed name binding and cannot forge a participant name',()=>{
+    const ctx={console,Date,PropertiesService:{getScriptProperties:()=>({getProperty:()=> 'V47_SESSION_SECRET_TEST'})},
+      Utilities:{getUuid:()=> 'uuid-1234-5678',Charset:{UTF_8:'UTF-8'},
+        computeHmacSha256Signature:(msg,key)=> Array.from(createHmac('sha256',key).update(msg).digest()),
+        base64EncodeWebSafe:value=> Buffer.from(value,'utf8').toString('base64url'),
+        base64DecodeWebSafe:value=> Array.from(Buffer.from(value,'base64url')),
+        newBlob:bytes=>({getDataAsString:()=>Buffer.from(bytes).toString('utf8')})}};
+    vm.createContext(ctx);vm.runInContext(backend,ctx);
+    const token=ctx.generatePostTestParticipantVerificationToken('CNE-100','EXT-ONE','EXTERNAL','Visitor One');
+    const valid=ctx.verifyPostTestParticipantVerificationToken(token,'CNE-100');
+    assert.equal(valid.participantName,'Visitor One');assert.equal(valid.participantId,'EXT-ONE');
+    assert.equal(ctx.verifyPostTestParticipantVerificationToken(token,'CNE-OTHER'),null);
+    const altered=token.replace('EXT-ONE','EXT-TWO');
+    assert.equal(ctx.verifyPostTestParticipantVerificationToken(altered,'CNE-100'),null);
+    const parts=token.split('|');parts[5]=parts[5].replace(/.$/,'A');
+    assert.equal(ctx.verifyPostTestParticipantVerificationToken(parts.join('|'),'CNE-100'),null);
+  });
+  check('Post-Test OTP verification cannot add participant attendance before submission',()=>{
+    const otpSection=backend.slice(backend.indexOf('function handleVerifyPostTestOtp('),backend.indexOf('function handleGetQRToken('));
+    assert(otpSection.includes('generatePostTestParticipantVerificationToken('));
+    assert(!otpSection.includes('cneRecordConfirmedAttendanceBatch_('));
+    assert(!otpSection.includes('cneWriteHeaderRows_('));
+  });
+  check('Attendance & Completion shows only name and unprefixed ID in staff details',()=>{
+    assert(!staffUI.includes('Attendance not confirmed'));
+    assert(!staffUI.includes('summary?.pendingCount'));
+    assert(!staffUI.includes('ID: ${p.employeeId}'));
+    assert(staffUI.includes("{p.employeeId || ''}"));
+    assert(!staffUI.includes('p.designation ?'));
+  });
+  check('Manual refresh removed while technical retries and state updates remain intact',()=>{
+    for(const path of ['CneHomePage','CNECalendar','CNESchedule','MyCNERecords','AdminRoles','AdminAreas','AdminTeachingModes','AdminContent']){
+      const ui=readFileSync(join(ROOT_DIR,'src/components/'+path+'.tsx'),'utf8');
+      assert(!/aria-label=["']Refresh [^"']+["']|title=["']Refresh [^"']+["']|>\s*Refresh Results\s*</.test(ui),path+' retains manual Refresh control');
+    }
+    const qUI=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+    assert(!qUI.includes('Refresh Results') && !qUI.includes('Refresh Questions & Quota'));
+    assert(qUI.includes('Recheck Saved Questions & Quota'),'Technical AI recovery must remain available');
   });
 }
 

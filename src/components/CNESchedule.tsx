@@ -1254,14 +1254,8 @@ export const CNESchedule: React.FC<CNEScheduleProps> = ({
         </div>
       </FilterBarShell>
 
-      {/* Shared Schedule is cached across Calendar and Home. Explicit refresh
-          bypasses its TTL and retains the previous rows while loading. */}
       <div className="flex justify-end -mt-1">
-        <button type="button" onClick={() => void loadData(true)} disabled={loading}
-          title="Refresh CNE Schedule from Google Sheets" aria-label="Refresh CNE Schedule"
-          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
-        </button>
+        
       </div>
       {/* Main Content Area */}
       <div className="space-y-4">

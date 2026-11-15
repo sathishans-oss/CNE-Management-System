@@ -191,9 +191,10 @@ function computePasswordHash(password, salt) {
 }
 
 /**
- * Cryptographic Session Token Generation & Verification.
- * Session tokens carry the persistent Password Version from Auth_Credentials.
- * Any password create/reset/change increments the version and invalidates older sessions immediately.
+ * Cryptographic Session Token Generation & Verification (Option A).
+ * Session tokens carry the Password Version at issuance but verification is stateless.
+ * Credential, account and role changes apply on the next login or token expiry
+ * (maximum 24 hours), not as immediate revocation of already-issued tokens.
  */
 function generateSessionToken(employeeId, credentialRecord, roleSnapshot) {
   var normId = normalizeEmpId(employeeId);
@@ -304,11 +305,7 @@ function requireAdmin(session) {
 }
 
 /**
- * Revalidate an authenticated session immediately before a protected mutation.
- * This closes the race where password reset/account deactivation/role reassignment occurs
- * after initial request authentication but before the mutation obtains ScriptLock.
- */
-/**
+ * Option A: reuse verified stateless session claims for protected mutations.
  * The request already passed signed-token validation in verifySession().
  * Reuse those verified claims in mutation handlers too: no repeat Officers,
  * Auth_Credentials or Role reads until the user signs in again.
@@ -1169,10 +1166,12 @@ function handleRequest(e, method) {
         output = { success: false, message: 'Unknown action requested: ' + action };
     }
   } catch (error) {
+    var failureText=String(error && error.message ? error.message : error);
+    var sheetFailure=/^(MISSING_SHEET|MISSING_HEADER|DUPLICATE_HEADER|HEADER_SHEET_MISSING|INVALID_HEADER_COLUMN|INDEX_SCHEMA_MISMATCH|SCHEMA_MUTATION_FORBIDDEN)(?::|$)/.exec(failureText);
     output = {
       success: false,
-      errorCode: 'SERVER_EXECUTION_ERROR',
-      message: 'Server execution error: ' + error.message
+      errorCode: sheetFailure ? sheetFailure[1] : 'SERVER_EXECUTION_ERROR',
+      message: sheetFailure ? failureText : 'Server execution error: ' + failureText
     };
   }
   
@@ -1236,26 +1235,26 @@ function getRoleHeaderMeta_() {
   return _roleHeaderMeta;
 }
 
-function getAreaInchargeHeaderMeta_() {
-  if (_areaInchargeHeaderMeta && _areaInchargeHeaderMeta.sheet) return _areaInchargeHeaderMeta;
-  var ss = getSpreadsheet('CNE');
-  var sheet = ss.getSheetByName('Area');
-  if (!sheet || sheet.getLastColumn() < 1) {
-    _areaInchargeHeaderMeta = { sheet: sheet, inchargeCol: -1 };
-    return _areaInchargeHeaderMeta;
-  }
-  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
-  var inchargeCol = -1;
-  for (var i = 0; i < headers.length; i++) {
-    var h = String(headers[i] || '').toLowerCase().trim();
-    if (h.indexOf('incharge') !== -1 && h.indexOf('id') !== -1) {
-      inchargeCol = i;
-      break;
-    }
-  }
-  _areaInchargeHeaderMeta = { sheet: sheet, inchargeCol: inchargeCol };
-  return _areaInchargeHeaderMeta;
-}
+/* Extracted to Extra_Code.gs: getAreaInchargeHeaderMeta_ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /**
  * Comprehensive User Role & Assigned Area Resolution.
@@ -2286,25 +2285,6 @@ function getAuthCredentialRecord(employeeId, forceFresh) {
   return record;
 }
 
-function getUserCredentialSecurityState(employeeId) {
-  var cleanId = normalizeEmpId(employeeId);
-  if (!cleanId) return { accountStatus: 'ACTIVE', passwordVersion: 0, hasPassword: false };
-
-  var cache = CacheService.getScriptCache();
-  var cached = cache.get('cred_sec_' + cleanId);
-  if (cached) {
-    try { return JSON.parse(cached); } catch (e) {}
-  }
-
-  var record = getAuthCredentialRecord(cleanId);
-  var state = {
-    accountStatus: record ? record.accountStatus : 'ACTIVE',
-    passwordVersion: record ? record.passwordVersion : 0,
-    hasPassword: Boolean(record && record.passwordHash && record.passwordSalt)
-  };
-  cache.put('cred_sec_' + cleanId, JSON.stringify(state), 300);
-  return state;
-}
 
 function clearCredentialSecurityCache(employeeId) {
   var cleanId = normalizeEmpId(employeeId);
@@ -2964,19 +2944,6 @@ function handleSetPasswordWithOtp(params) {
     lock.releaseLock();
   }
 }
-
-/**
- * Legacy reset endpoint intentionally disabled.
- * Password creation/reset must use requestPasswordOtp -> verifyPasswordOtp -> setPasswordWithOtp.
- */
-function handleResetPassword(params) {
-  return {
-    success: false,
-    errorCode: 'OTP_REQUIRED',
-    message: 'Password reset now requires registered-email verification. Please use Create / Reset Password on the login page.'
-  };
-}
-
 /**
  * Admin reset no longer assigns a shared/default password.
  * It clears the password, increments Password Version, invalidates existing sessions,
@@ -3059,7 +3026,7 @@ function handleGetAreas(params) {
   } catch (e) {}
 
   var sheet = getOrCreateSheet('Area');
-  var data = sheet.getDataRange().getValues();
+  var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Area']);
   var areas = [];
   
   for (var r = 1; r < data.length; r++) {
@@ -3380,39 +3347,19 @@ function handleGetWardStaffCounts(params, session) {
 }
 
 /**
- * Idempotently ensures the 6 Ward-Level CNE Coverage headers exist on CNE Schedule sheet.
+ * Validate the 6 Ward-Level CNE coverage headers; only Admin Verify Sheets may add them.
  */
 function ensureCneScheduleCoverageHeaders_(sheet) {
-  if (!sheet) return;
-  var colMap = getHeaderMap(sheet);
-  var targetHeaders = [
-    { key: 'coverageareassnapshot', name: 'Coverage_Areas_Snapshot' },
-    { key: 'totalallottedstaff', name: 'Total_Allotted_Staff' },
-    { key: 'internalattendancecount', name: 'Internal_Attendance_Count' },
-    { key: 'attendancepercentage', name: 'Attendance_Percentage' },
-    { key: 'posttestoutcomepercentage', name: 'Post_Test_Outcome_Percentage' },
-    { key: 'coveragefinalizedat', name: 'Coverage_Finalized_At' }
-  ];
-  var missing = [];
-  for (var i = 0; i < targetHeaders.length; i++) {
-    if (colMap[targetHeaders[i].key] === undefined) {
-      missing.push(targetHeaders[i].name);
-    }
-  }
-  if (missing.length > 0) {
-    var lastCol = sheet.getLastColumn() || 1;
-    sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
-    sheet.getRange(1, lastCol + 1, 1, missing.length).setFontWeight('bold');
-  }
+  return cneHeaderLayout_(sheet,[
+    'Coverage_Areas_Snapshot','Total_Allotted_Staff','Internal_Attendance_Count',
+    'Attendance_Percentage','Post_Test_Outcome_Percentage','Coverage_Finalized_At'
+  ]);
 }
 
 /** Additive column: explicitly chosen wards are never inferred from old coverage snapshots. */
 function ensureParticipatingWardsHeader_(sheet) {
-  if (!sheet) return;
-  if (getHeaderMap(sheet)['participatingwards'] !== undefined) return;
-  var next = sheet.getLastColumn() + 1;
-  if (sheet.getMaxColumns() < next) sheet.insertColumnsAfter(sheet.getMaxColumns(), next - sheet.getMaxColumns());
-  sheet.getRange(1, next).setValue('Participating_Wards').setFontWeight('bold');
+  // A normal CNE edit cannot repair or append headers; the administrator must Verify Sheets.
+  return cneHeaderLayout_(sheet,['Participating_Wards']);
 }
 
 function parseParticipatingWards_(raw, primary) {
@@ -4257,7 +4204,12 @@ function buildHeaderMapFromRow_(headers) {
   var row = Array.isArray(headers) ? headers : [];
   for (var c = 0; c < row.length; c++) {
     var key = String(row[c] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (key) map[key] = c;
+    if (key) {
+      if (Object.prototype.hasOwnProperty.call(map, key)) {
+        throw new Error('DUPLICATE_HEADER: ' + String(row[c] || '') + '. Run Verify Sheets.');
+      }
+      map[key] = c;
+    }
   }
   return map;
 }
@@ -4302,8 +4254,8 @@ function cnePersonalPageScores_(employeeId, cneIds) {
   var values=cneParticipantAllRows_(sheet,['CNE_ID','Employee_ID','Post_Test_Status','Post_Test_Percentage']);
   values.forEach(function(row){
     var cne=String(row[1]||'').trim().toUpperCase(),id=normalizeEmpId(row[2]);
-    if(!wanted[cne]||id!==employeeId||String(row[9]||'')!=='COMPLETED')return;
-    var percentage=row[14];if(percentage!==''&&percentage!==null&&isFinite(Number(percentage)))scores[cne]=Number(percentage);
+    if(!wanted[cne]||id!==employeeId||String(row[8]||'')!=='COMPLETED')return;
+    var percentage=row[13];if(percentage!==''&&percentage!==null&&isFinite(Number(percentage)))scores[cne]=Number(percentage);
   });
   return scores;
 }
@@ -4333,20 +4285,20 @@ function handleGetCNERecords(params, session, scheduleSnapshot) {
   var idCol = colMap['cneid'];
   if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
   var areaCol = colMap['area'];
-  var fromDateCol = colMap['fromdate'] !== undefined ? colMap['fromdate'] : (colMap['date'] !== undefined ? colMap['date'] : 2);
-  var toDateCol = colMap['todate'] !== undefined ? colMap['todate'] : 3;
-  var durCol = colMap['duration'] !== undefined ? colMap['duration'] : 4;
-  var topicCol = colMap['topic'] !== undefined ? colMap['topic'] : 5;
+  var fromDateCol = cneRequireMappedColumn_(colMap,'From_Date','CNE_Schedule');
+  var toDateCol = cneRequireMappedColumn_(colMap,'To_Date','CNE_Schedule');
+  var durCol = cneRequireMappedColumn_(colMap,'Duration','CNE_Schedule');
+  var topicCol = cneRequireMappedColumn_(colMap,'Topic','CNE_Schedule');
   var rpCol = colMap['internalresourcepersonids'];
-  var modeCol = colMap['modeofteaching'] !== undefined ? colMap['modeofteaching'] : (colMap['mode'] !== undefined ? colMap['mode'] : 7);
-  var descCol = colMap['description'] !== undefined ? colMap['description'] : -1;
+  var modeCol = cneRequireMappedColumn_(colMap,'Mode_of_Teaching','CNE_Schedule');
+  var descCol = cneRequireMappedColumn_(colMap,'Description','CNE_Schedule');
   // Participant identities are maintained exclusively in CNE_Participants.
-  var adminRemarksCol = colMap['adminremarks'] !== undefined ? colMap['adminremarks'] : -1;
-  var remarksCol = colMap['remarks'] !== undefined ? colMap['remarks'] : -1;
-  var typeCol = colMap['cnetype'] !== undefined ? colMap['cnetype'] : -1;
-  var extRpCol = colMap['externalresourcepersons'] !== undefined ? colMap['externalresourcepersons'] : 13;
+  var adminRemarksCol = colMap['adminremarks'] !== undefined ? colMap['adminremarks'] : cneRequireMappedColumn_(colMap,'Admin_Remarks','CNE_Schedule');
+  var remarksCol = colMap['remarks'] !== undefined ? colMap['remarks'] : cneRequireMappedColumn_(colMap,'Remarks','CNE_Schedule');
+  var typeCol = cneRequireMappedColumn_(colMap,'CNE_Type','CNE_Schedule');
+  var extRpCol = cneRequireMappedColumn_(colMap,'External_Resource_Persons','CNE_Schedule');
   var proposedByCol = colMap['createdby'];
-  var statusCol = colMap['status'] !== undefined ? colMap['status'] : -1;
+  var statusCol = cneRequireMappedColumn_(colMap,'Status','CNE_Schedule');
   if ([areaCol, rpCol, proposedByCol].some(function(v) { return v === undefined; })) {
     throw new Error('CNE_Schedule is missing a required canonical header. Run Verify Sheets.');
   }
@@ -4555,9 +4507,9 @@ function handleGetMyCNERecordsPage(params, session) {
   var personalAttendedCneIds={};
   var ps=cneParticipantSheet_();
   if(ps.getLastRow()>1) {
-    var personRows=cneParticipantAllRows_(ps,['CNE_ID','Employee_ID','Attendance_Status']);
+    var personRows=cneParticipantAllRows_(ps,['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status','Attendance_Source']);
     personRows.forEach(function(row) {
-      if(normalizeEmpId(row[2])===employeeId && String(row[6]||'').toUpperCase()==='ATTENDED')
+      if(normalizeEmpId(row[2])===employeeId && cneParticipantHasConfirmedAttendance_(row))
         personalAttendedCneIds[String(row[1]||'').trim().toUpperCase()]=true;
     });
   }
@@ -4727,8 +4679,8 @@ function handleGetCNECalendarMonth(params, session) {
   if (!sheet || sheet.getLastRow() < 2) return { success: true, data: [] };
   var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   var cols = buildHeaderMapFromRow_(headers);
-  var fromCol = cols['fromdate'] !== undefined ? cols['fromdate'] : (cols['date'] !== undefined ? cols['date'] : 2);
-  var toCol = cols['todate'] !== undefined ? cols['todate'] : 3;
+  var fromCol = cneRequireMappedColumn_(cols,'From_Date','CNE_Schedule');
+  var toCol = cneRequireMappedColumn_(cols,'To_Date','CNE_Schedule');
   var dates = getCneScheduleColumnValues_(sheet, fromCol, sheet.getLastRow());
   var endDates = fromCol === toCol ? dates : getCneScheduleColumnValues_(sheet, toCol, sheet.getLastRow());
   var selected = [];
@@ -4793,9 +4745,9 @@ function handleGetCNESchedulePage(params, session) {
   var cols=buildHeaderMapFromRow_(headers);
   var idCol=cols['cneid'];
   if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
-  var statusCol=cols['status']!==undefined?cols['status']:-1;
+  var statusCol=cneRequireMappedColumn_(cols,'Status','CNE_Schedule');
   var fromCol=cols['fromdate']!==undefined?cols['fromdate']:(cols['date']!==undefined?cols['date']:2);
-  var toCol=cols['todate']!==undefined?cols['todate']:fromCol;
+  var toCol=cneRequireMappedColumn_(cols,'To_Date','CNE_Schedule');
   var count=sheet.getLastRow()-1;
   var ids=getCneScheduleColumnValues_(sheet,idCol,sheet.getLastRow());
   var statuses=statusCol>=0?getCneScheduleColumnValues_(sheet,statusCol,sheet.getLastRow()):[];
@@ -5180,8 +5132,7 @@ function handleCreateCNE(params, session) {
 
     var participantSheetForCreate=cneParticipantSheet_();
     var sheet = getOrCreateSheet('CNE_Schedule');
-    ensureCneScheduleCoverageHeaders_(sheet);
-    ensureParticipatingWardsHeader_(sheet);
+    cneRequireMutationHeaders_(sheet,'CNE_Schedule');
     var cneId = generateUniqueCneId_(cneType);
 
     var colMap = getHeaderMap(sheet);
@@ -5190,9 +5141,7 @@ function handleCreateCNE(params, session) {
     for (var col = 0; col < maxCol; col++) rowData.push('');
 
     var setCell = function(key, fallbackCol, val) {
-      var idx = colMap[key];
-      if (idx === undefined) return;
-      while (rowData.length <= idx) rowData.push('');
+      var idx = cneRequireMappedColumn_(colMap,key,'CNE_Schedule');
       rowData[idx] = val;
     };
 
@@ -5211,12 +5160,10 @@ function handleCreateCNE(params, session) {
     setCell('topic', 1, topic);
     setCell('area', 2, area);
     setCell('fromdate', 3, fromDate);
-    if (colMap['date'] !== undefined) rowData[colMap['date']] = fromDate;
     setCell('todate', 4, toDate);
     setCell('duration', 5, sanitizeCellInput(duration));
     setCell('internalresourcepersonids', 7, rpClean.join(', '));
     setCell('modeofteaching', 8, modeOfTeaching);
-    if (colMap['mode'] !== undefined) rowData[colMap['mode']] = modeOfTeaching;
     setCell('description', 9, sanitizeCellInput(params.description || ''));
     setCell('status', 11, status);
     setCell('cnetype', 12, cneType);
@@ -5224,10 +5171,8 @@ function handleCreateCNE(params, session) {
     setCell('adminremarks', 15, sanitizeCellInput(params.adminRemarks || params.remarks || ''));
     setCell('createdat', 19, new Date().toISOString());
     setCell('createdby', 20, session.employeeId || '');
-    if (isUnscheduled) {
-      setCell('finalizedat', 21, new Date().toISOString());
-      setCell('finalizedby', 22, session.employeeId || '');
-    }
+    // The reduced CNE_Schedule schema has no Finalized_At/Finalized_By.
+    // Do not silently skip or create noncanonical columns for retrospective CNEs.
 
     // Every CNE type retains the explicitly selected wards for Schedule display.
     // Unscheduled records deliberately have no allocated-staff denominator.
@@ -5241,16 +5186,18 @@ function handleCreateCNE(params, session) {
       setCell('coveragefinalizedat', 28, '');
     }
 
-    // Participant register is authoritative for both scheduled and retrospective CNEs.
-    var newRoster = cneScheduleRosterParticipants_(staffString, extStaffClean.join(', '), isUnscheduled, getOfficerNameMap());
+    // Scheduling does not establish attendance. Only retrospective sessions
+    // create confirmed participant rows at the time they are recorded.
+    var retrospectiveAttendees=isUnscheduled ? cneBuildRetrospectiveAttendees_(
+      staffString,extStaffClean.join(', '),getOfficerNameMap()) : [];
     sheet.appendRow(rowData);
-    try {
-      cneParticipantUpsertBatch_(cneId, newRoster, session.employeeId, participantSheetForCreate);
-    } catch (participantWriteError) {
-      // Cross-sheet writes are not transactional. Never silently claim success;
-      // preserve the CNE_ID and surface a precise reconciliation error.
-      return {success:false,errorCode:'PARTICIPANT_COMMIT_UNCERTAIN',
-        cneId:cneId,message:'CNE created, but participant registration could not be confirmed. Review CNE_Participants before retrying.'};
+    if(retrospectiveAttendees.length) {
+      try {
+        cneRecordConfirmedAttendanceBatch_(cneId,retrospectiveAttendees,session.employeeId,participantSheetForCreate);
+      } catch (participantWriteError) {
+        return {success:false,errorCode:'PARTICIPANT_COMMIT_UNCERTAIN',
+          cneId:cneId,message:'CNE created, but confirmed attendees could not be saved. Review CNE_Participants before retrying.'};
+      }
     }
 
     logAuditAction('CREATE_CNE', session.employeeId, 'Created ' + (isUnscheduled ? 'Unscheduled ' : '') + cneType + ' CNE: ' + cneId + ' (' + topic + ') Status: ' + status, 'SUCCESS');
@@ -5480,14 +5427,14 @@ function handleUpdateCNE(params, session) {
         var previousWards = liveUpdateRecord.participatingWards || [liveUpdateRecord.area];
         var wardsChanged = editedCoverage.wards.join('\u0001').toUpperCase() !== previousWards.join('\u0001').toUpperCase() || targetPrimary.toUpperCase() !== String(liveUpdateRecord.area || '').trim().toUpperCase();
         if (wardsChanged) {
-          var hasAttendance = cneParticipantRows_(cneId).some(function(pr){return String(pr[6]||'').toUpperCase()==='ATTENDED';});
-          // All attendance and post-tests are stored in the participant register.
-          // The ATTENDED check above is sufficient under the canonical schema.
+          var hasAttendance = cneParticipantRows_(cneId).some(cneParticipantHasConfirmedAttendance_);
+          // Only a legitimate attendance source may lock ward assignment changes.
           if (hasAttendance) return {success:false,errorCode:'WARD_EDIT_LOCKED',message:'Cannot change participating wards after attendance activity.'};
         }
       }
     }
 
+    cneRequireMutationHeaders_(sheet,'CNE_Schedule');
     var data = sheet.getDataRange().getValues();
     var colMap = getHeaderMap(sheet);
     var idCol = colMap['cneid'];
@@ -5499,12 +5446,9 @@ function handleUpdateCNE(params, session) {
         var updatedRow = data[r].slice();
         var rowDirty = false;
         var setColVal = function(key, fallbackCol, val) {
-          var c = colMap[key];
-          if (c !== undefined && c >= 0) {
-            while (updatedRow.length <= c) updatedRow.push('');
-            updatedRow[c] = val;
-            rowDirty = true;
-          }
+          var c = cneRequireMappedColumn_(colMap,key,'CNE_Schedule');
+          updatedRow[c] = val;
+          rowDirty = true;
         };
 
         if (params.topic !== undefined) setColVal('topic', 1, sanitizeCellInput(params.topic));
@@ -5517,9 +5461,9 @@ function handleUpdateCNE(params, session) {
           setColVal('participatingwards', -1, JSON.stringify(editedCoverage.wards));
         }
 
-        var effDate = params.date !== undefined ? String(params.date).trim() : (params.fromDate !== undefined ? String(params.fromDate).trim() : String(data[r][colMap['fromdate'] !== undefined ? colMap['fromdate'] : 3] || ''));
-        var effToDate = params.toDate !== undefined ? String(params.toDate).trim() : String(data[r][colMap['todate'] !== undefined ? colMap['todate'] : 4] || effDate);
-        var effDuration = params.duration !== undefined ? String(params.duration).trim() : String(data[r][colMap['duration'] !== undefined ? colMap['duration'] : 6] || '');
+        var effDate = params.date !== undefined ? String(params.date).trim() : (params.fromDate !== undefined ? String(params.fromDate).trim() : String(data[r][colMap['fromdate']] || ''));
+        var effToDate = params.toDate !== undefined ? String(params.toDate).trim() : String(data[r][colMap['todate']] || effDate);
+        var effDuration = params.duration !== undefined ? String(params.duration).trim() : String(data[r][colMap['duration']] || '');
 
         if (params.date !== undefined || params.fromDate !== undefined || params.toDate !== undefined) {
           if (!effDate) {
@@ -5558,7 +5502,6 @@ function handleUpdateCNE(params, session) {
 
         if (params.date !== undefined || params.fromDate !== undefined) {
           setColVal('fromdate', 3, effDate);
-          if (colMap['date'] !== undefined) setColVal('date', colMap['date'], effDate);
         }
         if (params.toDate !== undefined) setColVal('todate', 4, effToDate);
         if (params.duration !== undefined) setColVal('duration', 5, effDuration);
@@ -5566,8 +5509,8 @@ function handleUpdateCNE(params, session) {
         // Resource person update
         var existingRp = data[r][colMap['internalresourcepersonids']]
           ? String(data[r][colMap['internalresourcepersonids']]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
-        var existingExtRp = data[r][colMap['externalresourcepersons'] !== undefined ? colMap['externalresourcepersons'] : 13]
-          ? String(data[r][colMap['externalresourcepersons'] !== undefined ? colMap['externalresourcepersons'] : 13]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+        var existingExtRp = data[r][colMap['externalresourcepersons']]
+          ? String(data[r][colMap['externalresourcepersons']]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
         var rpClean = existingRp;
         var extRpClean = existingExtRp;
 
@@ -5626,65 +5569,15 @@ function handleUpdateCNE(params, session) {
 
         if (params.modeOfTeaching !== undefined) {
           setColVal('modeofteaching', 8, sanitizeCellInput(params.modeOfTeaching));
-          if (colMap['mode'] !== undefined) setColVal('mode', colMap['mode'], sanitizeCellInput(params.modeOfTeaching));
         }
         if (params.description !== undefined) setColVal('description', 9, sanitizeCellInput(params.description));
 
-        // Staff participant update (if provided)
-        if (params.staffEmpIds !== undefined || params.staffEmpId !== undefined || params.externalStaffParticipants !== undefined) {
-          var rawStaff = params.staffEmpIds !== undefined ? params.staffEmpIds : params.staffEmpId;
-          var listStaff = Array.isArray(rawStaff) ? rawStaff : (rawStaff || '').split(',');
-          var inputStaff = [];
-          for (var sk = 0; sk < listStaff.length; sk++) {
-            var sParts = String(listStaff[sk] || '').split(/[,;\n]+/);
-            for (var ssp = 0; ssp < sParts.length; ssp++) {
-              var sTrimmed = sParts[ssp].trim();
-              if (sTrimmed) inputStaff.push(sTrimmed);
-            }
-          }
-          var cleanStaffMap = {};
-          var staffClean = [];
-          var invalidStaffIds = [];
-
-          for (var si = 0; si < inputStaff.length; si++) {
-            var sid = normalizeEmpId(inputStaff[si]);
-            if (!sid) continue;
-            if (!cleanStaffMap[sid]) {
-              cleanStaffMap[sid] = true;
-              var officerCheck = findOfficerById(sid);
-              if (!officerCheck) {
-                invalidStaffIds.push(sid);
-              } else {
-                staffClean.push(sid);
-              }
-            }
-          }
-
-          if (invalidStaffIds.length > 0) {
-            return {
-              success: false,
-              message: 'Invalid participant Employee ID(s) not found in Officers data: ' + invalidStaffIds.join(', ')
-            };
-          }
-
-          var extStaffClean = [];
-          if (params.externalStaffParticipants !== undefined) {
-            var extStaff = Array.isArray(params.externalStaffParticipants)
-              ? params.externalStaffParticipants
-              : (params.externalStaffParticipants || '').split(',');
-            extStaffClean = extStaff.map(function(s) { return sanitizeCellInput(String(s).trim()); }).filter(Boolean);
-          }
-
-          // Editing Scheduled CNE roster changes only PENDING participants.
-          // Confirmed attendance is immutable through the Edit CNE form.
-          if (liveUpdateStatus !== 'Scheduled') {
-            return {success:false,errorCode:'ATTENDANCE_EDIT_FORBIDDEN',message:'Participants of completed or canceled CNEs cannot be changed through Edit CNE.'};
-          }
-          var updateInternal=params.staffEmpIds !== undefined || params.staffEmpId !== undefined;
-          var updateExternal=params.externalStaffParticipants !== undefined;
-          var pendingNew=cneScheduleRosterParticipants_(staffClean.join(', '),extStaffClean.join(', '),false,getOfficerNameMap());
-          cneParticipantReplacePendingRoster_(cneId,pendingNew,updateInternal,updateExternal,session.employeeId);
-
+        // Edit CNE cannot add, remove, or infer attendance from a planned roster.
+        // Staff become attendees only through manual/QR/Post-Test confirmation.
+        if(params.staffEmpIds!==undefined || params.staffEmpId!==undefined ||
+            params.externalStaffParticipants!==undefined) {
+          return {success:false,errorCode:'ATTENDANCE_REQUIRES_CONFIRMATION',
+            message:'Scheduled roster editing is retired. Use Attendance & Completion to record confirmed participants.'};
         }
 
 
@@ -5869,6 +5762,7 @@ function validateCneDuration(durationStr, fromDtStr, toDtStr) {
  * mutation handler occur under ScriptLock.
  */
 function ensureWardLevelSubmissionHeaders_(sheet) {
+  cneAssertVerifySchemaMutation_();
   if (!sheet) throw new Error('CNE Schedule is unavailable.');
   var fields = [
     { key: 'wardlevelsubmissionid', name: 'Ward_Level_Submission_ID', legacy: 'Ward-Level Submission ID' },
@@ -6189,9 +6083,7 @@ function handleAddWardLevelSchedule(params, session) {
     }
 
     var sheet = getOrCreateSheet('CNE_Schedule');
-    ensureCneScheduleCoverageHeaders_(sheet);
-    ensureParticipatingWardsHeader_(sheet);
-    ensureWardLevelSubmissionHeaders_(sheet);
+    cneRequireMutationHeaders_(sheet,'CNE_Schedule');
 
     // Recover a successful previous write before allocating any new CNE IDs.
     var requestDigest = wardLevelSubmissionDigest_(validatedList);
@@ -6226,9 +6118,7 @@ function handleAddWardLevelSchedule(params, session) {
       for (var col = 0; col < targetCols; col++) rowData.push('');
 
       var setCell = function(key, fallbackCol, val) {
-        var idx = colMap[key];
-        if (idx === undefined) return;
-        while (rowData.length <= idx) rowData.push('');
+        var idx = cneRequireMappedColumn_(colMap,key,'CNE_Schedule');
         rowData[idx] = val;
       };
 
@@ -6244,12 +6134,10 @@ function handleAddWardLevelSchedule(params, session) {
       setCell('topic', 1, item.topic);
       setCell('area', 2, item.area);
       setCell('fromdate', 3, item.date);
-      if (colMap['date'] !== undefined) rowData[colMap['date']] = item.date;
       setCell('todate', 4, item.toDate);
       setCell('duration', 5, item.duration);
       setCell('internalresourcepersonids', 7, item.rpClean.join(', '));
       setCell('modeofteaching', 8, item.mode);
-      if (colMap['mode'] !== undefined) rowData[colMap['mode']] = item.mode;
       setCell('description', 9, item.description);
       setCell('status', 11, 'Scheduled');
       setCell('cnetype', 12, 'WARD_LEVEL');
@@ -6294,7 +6182,8 @@ function handleAddWardLevelSchedule(params, session) {
       }
       var maxCols = sheet.getMaxColumns();
       if (numColumns > maxCols) {
-        sheet.insertColumnsAfter(maxCols, numColumns - maxCols);
+        return {success:false,errorCode:'MISSING_HEADER',
+          message:'CNE_Schedule needs additional columns. Run Admin Verify Sheets; scheduling did not modify the schema.'};
       }
 
       try {
@@ -6600,7 +6489,7 @@ function handleGetWardLevelCneOutcomeReport(params, session) {
 
   // 1. Read Area master to collect all currently ACTIVE areas
   var areaSheet = getOrCreateSheet('Area');
-  var areaData = areaSheet.getDataRange().getValues();
+  var areaData = cneCanonicalSheetData_(areaSheet,CNE_SHEET_HEADERS['Area']);
   var activeAreas = [];
   for (var ar = 1; ar < areaData.length; ar++) {
     var aName = String(areaData[ar][0] || '').trim();
@@ -6619,20 +6508,23 @@ function handleGetWardLevelCneOutcomeReport(params, session) {
 
   var idCol = cneColMap['cneid'];
   if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
-  var topicCol = cneColMap['topic'] !== undefined ? cneColMap['topic'] : 1;
-  var areaCol = cneColMap['area'];
-  var fromDateCol = cneColMap['fromdate'] !== undefined ? cneColMap['fromdate'] : (cneColMap['date'] !== undefined ? cneColMap['date'] : 3);
+  // Fail closed on missing outcome columns; numeric fallbacks could report the
+  // wrong ward or silently change the outcome after a column rearrangement.
+  cneRequireMutationHeaders_(cneSheet,'CNE_Schedule');
+  var required=function(header){return cneRequireMappedColumn_(cneColMap,header,'CNE_Schedule');};
+  var topicCol = required('Topic');
+  var areaCol = required('Area');
+  var fromDateCol = required('From_Date');
   var cneData = readWardLevelOutcomeScheduleRows_(cneSheet, fromDateCol, fromDateFilter, toDateFilter);
-  var statusCol = cneColMap['status'] !== undefined ? cneColMap['status'] : 10;
-  var typeCol = cneColMap['cnetype'] !== undefined ? cneColMap['cnetype'] : -1;
-  var adminRemarksCol = cneColMap['adminremarks'] !== undefined ? cneColMap['adminremarks'] : (cneColMap['remarks'] !== undefined ? cneColMap['remarks'] : 17);
-  var proposedByCol = cneColMap['createdby'];
-  var createdByCol = cneColMap['createdby'] !== undefined ? cneColMap['createdby'] : -1;
-
-  var allottedCol = cneColMap['totalallottedstaff'];
-  var internalAttCol = cneColMap['internalattendancecount'];
-  var attPctCol = cneColMap['attendancepercentage'];
-  var outcomeCol = cneColMap['posttestoutcomepercentage'];
+  var statusCol = required('Status');
+  var typeCol = required('CNE_Type');
+  var adminRemarksCol = required('Admin_Remarks');
+  var proposedByCol = required('Created_By');
+  var createdByCol = required('Created_By');
+  var allottedCol = required('Total_Allotted_Staff');
+  var internalAttCol = required('Internal_Attendance_Count');
+  var attPctCol = required('Attendance_Percentage');
+  var outcomeCol = required('Post_Test_Outcome_Percentage');
 
   // Resolve officer names only when at least one matching ward-level CNE needs it.
   var officerMap = null;
@@ -6780,89 +6672,10 @@ function handleGetRoles(params, session) {
   if (adminError) return adminError;
 
   var sheet = getOrCreateSheet('Role');
-  var data = sheet.getDataRange().getValues();
-  if (data.length < 2) {
-    return { success: true, data: [] };
-  }
-  var colMap = getHeaderMap(sheet);
-  var headers = data[0];
-
-  // Resiliently locate Employee ID column
-  var empIdCol = -1;
-  var possibleEmpKeys = ['employeeidno', 'employeeid', 'empid', 'id', 'officerid'];
-  for (var k = 0; k < possibleEmpKeys.length; k++) {
-    if (colMap[possibleEmpKeys[k]] !== undefined) {
-      empIdCol = colMap[possibleEmpKeys[k]];
-      break;
-    }
-  }
-  if (empIdCol === -1) {
-    for (var c = 0; c < headers.length; c++) {
-      var h = String(headers[c] || '').toLowerCase();
-      if (h.indexOf('emp') !== -1 && h.indexOf('id') !== -1) {
-        empIdCol = c;
-        break;
-      }
-    }
-  }
-  if (empIdCol === -1) empIdCol = 0;
-
-  // Resiliently locate Name column
-  var nameCol = -1;
-  var possibleNameKeys = ['nameoftheofficers', 'name', 'officername', 'employeename'];
-  for (var k = 0; k < possibleNameKeys.length; k++) {
-    if (colMap[possibleNameKeys[k]] !== undefined) {
-      nameCol = colMap[possibleNameKeys[k]];
-      break;
-    }
-  }
-  if (nameCol === -1) nameCol = 1;
-
-  // Resiliently locate Designation column
-  var desigCol = -1;
-  if (colMap['designation'] !== undefined) desigCol = colMap['designation'];
-  else if (colMap['desig'] !== undefined) desigCol = colMap['desig'];
-  if (desigCol === -1) desigCol = 2;
-
-  // Resiliently locate Role column
-  var roleCol = -1;
-  if (colMap['role'] !== undefined) roleCol = colMap['role'];
-  else if (colMap['assignedrole'] !== undefined) roleCol = colMap['assignedrole'];
-  else if (colMap['userrole'] !== undefined) roleCol = colMap['userrole'];
-  if (roleCol === -1) {
-    for (var c = 0; c < headers.length; c++) {
-      var h = String(headers[c] || '').toLowerCase();
-      if (h.indexOf('role') !== -1) {
-        roleCol = c;
-        break;
-      }
-    }
-  }
-  if (roleCol === -1) roleCol = 3;
-
-  // Resiliently locate Area / Department / Ward column
-  var areaCol = -1;
-  var possibleAreaKeys = [
-    'departmentarea', 'area', 'department', 'ward', 'wardarea',
-    'assignedareas', 'assignedarea', 'assignedwards', 'assignedward',
-    'departmentward', 'wards', 'areas', 'clinicalarea', 'clinicalareas'
-  ];
-  for (var k = 0; k < possibleAreaKeys.length; k++) {
-    if (colMap[possibleAreaKeys[k]] !== undefined) {
-      areaCol = colMap[possibleAreaKeys[k]];
-      break;
-    }
-  }
-  if (areaCol === -1) {
-    for (var c = 0; c < headers.length; c++) {
-      var h = String(headers[c] || '').toLowerCase();
-      if (h.indexOf('area') !== -1 || h.indexOf('dept') !== -1 || h.indexOf('ward') !== -1) {
-        areaCol = c;
-        break;
-      }
-    }
-  }
-  if (areaCol === -1) areaCol = 4;
+  // Canonical logical rows are independent of the physical columns in Role.
+  var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['Role']);
+  if (data.length < 2) return { success: true, data: [] };
+  var empIdCol=0, nameCol=1, desigCol=2, roleCol=3, areaCol=4;
 
   var roles = [];
   for (var r = 1; r < data.length; r++) {
@@ -7072,25 +6885,14 @@ var HOME_CACHE_CHAIR_PHOTO = 'cne_public_chairphoto_v1';
 /**
  * 11. News & Events Management (Public Read, Admin Write)
  */
-// Optional, backward-compatible News flags. Existing nine-column sheets remain readable.
-// Missing columns are appended only inside an Admin mutation's ScriptLock.
+// News flags are canonical required headers. Missing flags must be repaired
+// exclusively through Admin Verify Sheets, never a read or edit action.
 function newsFlagEnabled_(value) {
   return value === true || value === 1 || String(value || '').trim().toUpperCase() === 'TRUE' || String(value || '').trim() === '1';
 }
 
 function ensureNewsAttentionColumns_(sheet) {
-  var map = getHeaderMap(sheet);
-  var additions = [];
-  if (map.isimportant === undefined) additions.push('Is_Important');
-  if (map.blinkattention === undefined) additions.push('Blink_Attention');
-  if (additions.length) {
-    var first = sheet.getLastColumn() + 1;
-    var needed = first + additions.length - 1;
-    if (sheet.getMaxColumns() < needed) sheet.insertColumnsAfter(sheet.getMaxColumns(), needed - sheet.getMaxColumns());
-    sheet.getRange(1, first, 1, additions.length).setValues([additions]);
-    map = getHeaderMap(sheet);
-  }
-  return map;
+  return cneHeaderLayout_(sheet,['Is_Important','Blink_Attention']);
 }
 
 function handleGetNewsEvents(params) {
@@ -7169,7 +6971,7 @@ function handleAddNewsEvent(params, session) {
   
   try {
     var sheet = getOrCreateSheet('News_Events');
-    var flagCols = ensureNewsAttentionColumns_(sheet);
+    cneRequireMutationHeaders_(sheet,'News_Events');
 
     var curYear = new Date().getFullYear();
     var eventId = 'NEWS-' + curYear + '-' + Date.now().toString().slice(-4) + ('000' + Math.floor(Math.random() * 1000)).slice(-3);
@@ -7208,7 +7010,7 @@ function handleUpdateNewsEvent(params, session) {
     var ss = getSpreadsheet('CNE');
     var sheet = ss.getSheetByName('News_Events');
     if (!sheet) return { success: false, message: 'News and Events sheet not found.' };
-    var flagCols = ensureNewsAttentionColumns_(sheet);
+    cneRequireMutationHeaders_(sheet,'News_Events');
 
     var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['News_Events']);
     for (var r = 1; r < data.length; r++) {
@@ -7256,6 +7058,7 @@ function handleDeleteNewsEvent(params, session) {
     var ss = getSpreadsheet('CNE');
     var sheet = ss.getSheetByName('News_Events');
     if (!sheet) return { success: false, message: 'News and Events sheet not found.' };
+    cneRequireMutationHeaders_(sheet,'News_Events');
     
     var data = cneCanonicalSheetData_(sheet,CNE_SHEET_HEADERS['News_Events'].slice(0,9));
     for (var r = 1; r < data.length; r++) {
@@ -7575,6 +7378,8 @@ function handleAddQuickLink(params, session) {
 
   try {
     var sheet = ensureQuickLinksSheetSeeded_();
+    // Every admin write validates all canonical headers before changing cells.
+    cneRequireMutationHeaders_(sheet,'Quick_Links');
     var map = getHeaderMap(sheet);
     var data = sheet.getDataRange().getValues();
     var maxSort = 0;
@@ -7622,6 +7427,8 @@ function handleUpdateQuickLink(params, session) {
 
   try {
     var sheet = ensureQuickLinksSheetSeeded_();
+    // Every admin write validates all canonical headers before changing cells.
+    cneRequireMutationHeaders_(sheet,'Quick_Links');
     var map = getHeaderMap(sheet);
     var data = sheet.getDataRange().getValues();
     var foundRow = -1;
@@ -7633,21 +7440,14 @@ function handleUpdateQuickLink(params, session) {
     }
     if (foundRow < 0) return { success: false, message: 'Quick link not found.' };
 
-    function setIfProvided(paramName, headerKey, sanitize) {
-      if (params[paramName] === undefined || map[headerKey] === undefined) return;
-      var value = sanitize === false ? params[paramName] : sanitizeCellInput(params[paramName]);
-      sheet.getRange(foundRow, map[headerKey] + 1).setValue(value);
-    }
-
-    setIfProvided('title', 'title');
-    setIfProvided('description', 'description');
-    setIfProvided('iconName', 'iconname');
-    setIfProvided('target', 'target');
-    setIfProvided('badge', 'badge');
-    setIfProvided('actionType', 'actiontype');
-    setIfProvided('url', 'url');
-    if (map['updatedat'] !== undefined) sheet.getRange(foundRow, map['updatedat'] + 1).setValue(new Date().toISOString());
-    if (map['updatedby'] !== undefined) sheet.getRange(foundRow, map['updatedby'] + 1).setValue(session.employeeId);
+    var changes={Updated_At:new Date().toISOString(),Updated_By:session.employeeId};
+    var editable={title:'Title',description:'Description',iconName:'Icon_Name',
+      target:'Target',badge:'Badge',actionType:'Action_Type',url:'URL'};
+    Object.keys(editable).forEach(function(paramName){
+      if(params[paramName]!==undefined) changes[editable[paramName]]=sanitizeCellInput(params[paramName]);
+    });
+    // One header-directed row update: no skipped required field or partial changes.
+    cneUpdateHeaderFields_(sheet,foundRow,changes);
 
     removeScriptCacheEntry_(HOME_CACHE_QUICK_LINKS);
     logAuditAction('UPDATE_QUICK_LINK', session.employeeId, 'Updated Quick Link ID: ' + id, 'SUCCESS');
@@ -7676,13 +7476,14 @@ function handleDeleteQuickLink(params, session) {
 
   try {
     var sheet = ensureQuickLinksSheetSeeded_();
+    // Every admin write validates all canonical headers before changing cells.
+    cneRequireMutationHeaders_(sheet,'Quick_Links');
     var map = getHeaderMap(sheet);
     var data = sheet.getDataRange().getValues();
     for (var r = 1; r < data.length; r++) {
       if (String(data[r][map['id']] || '').trim() === id) {
-        sheet.getRange(r + 1, map['status'] + 1).setValue('INACTIVE');
-        if (map['updatedat'] !== undefined) sheet.getRange(r + 1, map['updatedat'] + 1).setValue(new Date().toISOString());
-        if (map['updatedby'] !== undefined) sheet.getRange(r + 1, map['updatedby'] + 1).setValue(session.employeeId);
+        cneUpdateHeaderFields_(sheet,r+1,{Status:'INACTIVE',
+          Updated_At:new Date().toISOString(),Updated_By:session.employeeId});
         removeScriptCacheEntry_(HOME_CACHE_QUICK_LINKS);
         logAuditAction('DELETE_QUICK_LINK', session.employeeId, 'Deactivated Quick Link ID: ' + id, 'SUCCESS');
         return { success: true, message: 'Quick link removed successfully.' };
@@ -7935,9 +7736,9 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
   var colMap = snapshot.colMap || buildHeaderMapFromRow_(data[0] || []);
   var idCol = colMap['cneid'];
   if (idCol === undefined) throw new Error('CNE Schedule is missing required CNE ID header. Run Verify Sheets.');
-  var durCol = colMap['duration'] !== undefined ? colMap['duration'] : (colMap['dur'] !== undefined ? colMap['dur'] : 4);
+  var durCol = cneRequireMappedColumn_(colMap,'Duration','CNE_Schedule');
   var rpCol = colMap['internalresourcepersonids'];
-  var statusCol = colMap['status'] !== undefined ? colMap['status'] : -1;
+  var statusCol = cneRequireMappedColumn_(colMap,'Status','CNE_Schedule');
   if ([rpCol].some(function(v) { return v === undefined; })) {
     throw new Error('CNE_Schedule is missing a required participant header. Run Verify Sheets.');
   }
@@ -7953,8 +7754,8 @@ function handleGetProgramImpact(params, session, scheduleSnapshot) {
   var impactPeople = {};
   var impactSheet = cneParticipantSheet_();
   if (impactSheet.getLastRow() > 1) {
-    cneParticipantAllRows_(impactSheet,['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status']).forEach(function(pr) {
-      if (String(pr[6]||'').toUpperCase() !== 'ATTENDED') return;
+    cneParticipantAllRows_(impactSheet,['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status','Attendance_Source']).forEach(function(pr) {
+      if (!cneParticipantHasConfirmedAttendance_(pr)) return;
       var cne = String(pr[1]||'').trim().toUpperCase();if(!cne)return;
       if(!impactPeople[cne])impactPeople[cne]={staff:[],external:[],seen:{}};
       var item=impactPeople[cne],emp=normalizeEmpId(pr[2]);
@@ -8064,8 +7865,8 @@ function handleGetHomeDashboard(params, session) {
   if (scheduleSnapshot && scheduleSnapshot.data && scheduleSnapshot.data.length) {
     var allRows = scheduleSnapshot.data;
     var cols = scheduleSnapshot.colMap || {};
-    var fromCol = cols['fromdate'] !== undefined ? cols['fromdate'] : (cols['date'] !== undefined ? cols['date'] : 2);
-    var statusCol = cols['status'] !== undefined ? cols['status'] : -1;
+    var fromCol = cols['fromdate'] !== undefined ? cols['fromdate'] : cneRequireMappedColumn_(cols,'From_Date','CNE_Schedule');
+    var statusCol = cols['status'] !== undefined ? cols['status'] : cneRequireMappedColumn_(cols,'Status','CNE_Schedule');
     var todaysData = [allRows[0]];
     var todaysDisplay = scheduleSnapshot.displayValues && scheduleSnapshot.displayValues.length
       ? [scheduleSnapshot.displayValues[0]] : [[]];
@@ -8086,8 +7887,8 @@ function handleGetHomeDashboard(params, session) {
     } else {
       var headers = sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0];
       var cols = buildHeaderMapFromRow_(headers);
-      var fromCol = cols['fromdate'] !== undefined ? cols['fromdate'] : (cols['date'] !== undefined ? cols['date'] : 2);
-      var statusCol = cols['status'] !== undefined ? cols['status'] : -1;
+      var fromCol = cols['fromdate'] !== undefined ? cols['fromdate'] : cneRequireMappedColumn_(cols,'From_Date','CNE_Schedule');
+      var statusCol = cols['status'] !== undefined ? cols['status'] : cneRequireMappedColumn_(cols,'Status','CNE_Schedule');
       var selected = [];
       if (statusCol >= 0) {
         var n = sheet.getLastRow() - 1;
@@ -8160,6 +7961,25 @@ function getHeaderMap(sheet) {
   return buildHeaderMapFromRow_(sheet.getRange(1, 1, 1, lastCol).getValues()[0]);
 }
 
+/** Fail closed when a physical Sheets column cannot be resolved by header name.
+ * The argument `map` is derived from the actual sheet's first row; never use
+ * legacy physical offsets for missing canonical headers. */
+function cneRequireMappedColumn_(map, header, sheetName) {
+  var key=String(header||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  if (!map || !Object.prototype.hasOwnProperty.call(map,key)) {
+    throw new Error('MISSING_HEADER: '+String(sheetName||'Sheet')+': '+header+'. Run Verify Sheets.');
+  }
+  var column=map[key];
+  if (!Number.isInteger(column) || column<0) throw new Error('INVALID_HEADER_COLUMN: '+header);
+  return column;
+}
+/** Validate the complete approved schema before committing a frontend mutation. */
+function cneRequireMutationHeaders_(sheet, sheetName) {
+  var canonical=CNE_SHEET_HEADERS[sheetName];
+  if (!canonical) throw new Error('UNKNOWN_SHEET_SCHEMA: '+sheetName);
+  return cneHeaderLayout_(sheet,canonical);
+}
+
 /**
  * ============================================================================
  * AUTHORITATIVE CNE SPREADSHEET INITIALIZATION & HEADER ARCHITECTURE
@@ -8178,7 +7998,7 @@ var CNE_SHEET_HEADERS = {
   'Deleted_Archive': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Deleted_At', 'Deleted_By', 'Delete_Reason', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
   'Interest_Registrations': ['CNE_ID', 'Employee_ID', 'Employee_Name', 'Designation', 'Interest_Status', 'Interested_At', 'Updated_At'],
   'Post_Test_Questions': ['CNE_ID', 'Question_ID', 'Question_Text', 'Option_A', 'Option_B', 'Option_C', 'Option_D', 'Correct_Option', 'Explanation', 'Is_Finalized', 'Is_Locked', 'Created_At', 'Created_By', 'Authoritative_Source', 'Status', 'Question_Type', 'Image_Drive_File_ID'],
-  'CNE_Participants': ['Participant_ID', 'CNE_ID', 'Employee_ID', 'Participant_Name', 'Participant_Type', 'Designation', 'Attendance_Status', 'Attendance_Source', 'Attendance_At', 'Post_Test_Status', 'Post_Test_Response_ID', 'Post_Test_Answers_JSON', 'Post_Test_Score', 'Post_Test_Total', 'Post_Test_Percentage', 'Post_Test_Submitted_At', 'Post_Test_Questions_JSON', 'Post_Test_Result', 'Created_At', 'Created_By'],
+  'CNE_Participants': ['Participant_ID', 'CNE_ID', 'Employee_ID', 'Participant_Name', 'Participant_Type', 'Designation', 'Attendance_Status', 'Attendance_Source', 'Post_Test_Status', 'Post_Test_Response_ID', 'Post_Test_Answers_JSON', 'Post_Test_Score', 'Post_Test_Total', 'Post_Test_Percentage', 'Post_Test_Submitted_At', 'Post_Test_Questions_JSON', 'Post_Test_Result', 'Created_At', 'Created_By'],
   'Quiz_Attempts': ['Attempt_ID', 'Employee_ID', 'Employee_Name', 'Units_JSON', 'Question_IDs_JSON', 'Question_Count', 'Status', 'Started_At', 'Updated_At', 'Completed_At', 'Correct_Count', 'Wrong_Count', 'Percentage', 'Result_JSON', 'Answers_Encoded', 'Committed_Count'],
   'CNE_Schedule': ['CNE_ID', 'Topic', 'Area', 'From_Date', 'To_Date', 'Duration', 'Internal_Resource_Person_IDs', 'Mode_of_Teaching', 'Description', 'Status', 'CNE_Type', 'External_Resource_Persons', 'Admin_Remarks', 'Remarks', 'Created_At', 'Created_By', 'Coverage_Areas_Snapshot', 'Total_Allotted_Staff', 'Internal_Attendance_Count', 'Attendance_Percentage', 'Post_Test_Outcome_Percentage', 'Coverage_Finalized_At', 'Participating_Wards', 'Ward_Level_Submission_ID', 'Ward_Level_Submission_Digest', 'Ward_Level_Submission_Count'],
   'AI_Quota': ['CNE_ID', 'Topic', 'Attempts_Used', 'Max_Quota', 'Last_Attempt_At', 'Last_Generated_By', 'Reservation_Token', 'Reserved_Until', 'Last_Committed_Token'],
@@ -8201,6 +8021,16 @@ var CNE_SHEET_HEADERS = {
  * Header alias normalization map to prevent duplicate or mismatched headers
  */
 var CNE_HEADER_ALIASES = {}; // Migrated headers are authoritative; do not accept historical aliases.
+
+/** Only the Admin Verify Sheets workflow may create tabs or change header row 1.
+ * Reset in setupAndVerifyCNESheets finally, even on an exception.
+ */
+var _cneVerifySchemaActive_ = false;
+function cneAssertVerifySchemaMutation_() {
+  if (!_cneVerifySchemaActive_) {
+    throw new Error('SCHEMA_MUTATION_FORBIDDEN: Only Admin Verify Sheets may create or change sheet headers.');
+  }
+}
 
 
 /**
@@ -8271,7 +8101,7 @@ function cneUpdateHeaderRows_(sheet,names,startRow,canonicalRows,layout){
   }
   range.setValues(physical);
 }
-/** Canonical 20-column participant row projection, regardless of physical order. */
+/** Canonical 19-column participant row projection, regardless of physical order. */
 function cneParticipantLayout_(sheet){return cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['CNE_Participants']);}
 /** Read only named physical columns, merging adjacent columns into a Sheets batch.
  * No fixed positions, and aggregate reports avoid loading answer JSON payloads.
@@ -8300,10 +8130,22 @@ function cneParticipantAllRows_(sheet,needed){
   var indexes=names.map(function(name){return all.indexOf(name);});
   return projected.map(function(row){var out=Array(all.length).fill('');indexes.forEach(function(idx,i){out[idx]=row[i];});return out;});
 }
+/**
+ * Centralized attendance eligibility for canonical 19-column CNE_Participants rows.
+ * Attendance requires both ATTENDED status and a trusted source.
+ * The four accepted sources are the real write paths, including unscheduled CNEs.
+ * Fail closed on blank or unknown sources; never use Post_Test_Status as a substitute.
+ */
+function cneParticipantHasConfirmedAttendance_(row) {
+  if (!row || String(row[6] || '').trim().toUpperCase() !== 'ATTENDED') return false;
+  var source = String(row[7] || '').trim().toUpperCase();
+  return source === 'MANUAL' || source === 'QR' ||
+    source === 'POST_TEST' || source === 'RETROSPECTIVE';
+}
 /** Attendance-only CNE progress lookup without loading scores or answer JSON. */
 function cneParticipantAttendanceRows_(cneId){
   var sheet=cneParticipantSheet_(),all=CNE_SHEET_HEADERS['CNE_Participants'];
-  var names=['CNE_ID','Attendance_Status'];
+  var names=['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status','Attendance_Source'];
   var layout=cneHeaderLayout_(sheet,names);
   var matches=findExactRowsInColumn_(sheet,layout.positions[0],cneId,2);
   if(!matches.length)return [];
@@ -8313,7 +8155,9 @@ function cneParticipantAttendanceRows_(cneId){
     var rows=cneReadNamedColumns_(sheet,names,start,last-start+1);
     rows.forEach(function(row,i){if(!selected[start+i])return;
       if(String(row[0]||'').trim().toUpperCase()!==String(cneId||'').trim().toUpperCase())return;
-      var out=Array(all.length).fill('');out[1]=row[0];out[6]=row[1];result.push(out);
+      var out=Array(all.length).fill('');
+      out[1]=row[0];out[2]=row[1];out[3]=row[2];out[4]=row[3];
+      out[6]=row[4];out[7]=row[5];result.push(out);
     });
   }
   for(var i=1;i<matches.length;i++){
@@ -8373,37 +8217,19 @@ function cneHeaderColumn_(sheet,name,layout){
 }
 
 /**
- * Single Standardized Generic Sheet Helper:
- * Strictly NON-DESTRUCTIVE Sheet Tab & Header Resolver
- * If tab exists: leaves existing rows, structure, and formatting completely untouched.
- * If tab is missing: creates tab and writes initial bold headers.
+ * Historical accessor name retained for existing callers, but it is now strictly
+ * READ-ONLY. Only setupAndVerifyCNESheets may create a missing tab or row-1 headers.
+ * Validate the complete canonical schema before allowing application data access.
  */
 function getOrCreateSheet(sheetName, defaultHeaders) {
   var ss = getSpreadsheet('CNE');
   var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error('MISSING_SHEET: ' + sheetName + '. Run Admin Verify Sheets to create it.');
   var headers = defaultHeaders || CNE_SHEET_HEADERS[sheetName] || [];
-
-  if (!sheet) {
-    try {
-      sheet = ss.insertSheet(sheetName);
-    } catch (insertErr) {
-      // Another execution may have created the sheet after our first read.
-      sheet = ss.getSheetByName(sheetName);
-      if (!sheet) throw insertErr;
-    }
-  }
-
-  // Header initialization is deliberately idempotent: set row 1 rather than appendRow,
-  // so concurrent first-use executions cannot create duplicate header rows.
-  if (headers && headers.length > 0 && sheet.getLastRow() === 0) {
-    if (sheet.getMaxColumns() < headers.length) {
-      sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
-    }
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
-  }
+  if (headers.length) cneHeaderLayout_(sheet,headers);
   return sheet;
 }
+
 
 /**
  * One-time, non-destructive header adoption for the approved reduced CNE schema.
@@ -8411,6 +8237,7 @@ function getOrCreateSheet(sheetName, defaultHeaders) {
  * Rejects old+new duplicates before making any change.
  */
 function adoptCneReducedSchemaHeaders_(sheet) {
+  cneAssertVerifySchemaMutation_();
   if (!sheet || sheet.getLastRow() < 1 || sheet.getLastColumn() < 1) return [];
   var renames = [
     ['Ward_Name_Area', 'Area'],
@@ -8455,6 +8282,7 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
   catch (e) { return {success:false,message:'Server is busy verifying sheets. Please try again.'}; }
 
   try {
+    _cneVerifySchemaActive_ = true;
     if (session) {
       var fresh = requireFreshAdminMutation(session);
       if (!fresh.success) return fresh;
@@ -8483,15 +8311,6 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
           continue;
         }
       }
-      if (tabName === 'CNE_Participants' && sheet && sheet.getLastRow() > 0) {
-        try { adoptCneParticipantAssessmentHeaders_(sheet); }
-        catch (schemaError) {
-          unsafe.push(tabName);
-          report.push({tab:tabName,status:'Needs manual review: participant assessment schema',
-            error:String(schemaError.message||schemaError),rowCount:sheet.getLastRow()});
-          continue;
-        }
-      }
       // Adopt existing Ward-Level submission receipts in place before comparing
       // schema headers; the values in existing data rows are preserved.
       if (tabName === 'CNE_Schedule' && sheet && sheet.getLastRow() > 0) {
@@ -8503,7 +8322,13 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
         }
       }
       if (!sheet) {
-        sheet = getOrCreateSheet(tabName, expected);
+        // Header/table creation is permitted ONLY within this verified Admin workflow.
+        cneAssertVerifySchemaMutation_();
+        sheet = ss.insertSheet(tabName);
+        if (sheet.getMaxColumns() < expected.length) {
+          sheet.insertColumnsAfter(sheet.getMaxColumns(),expected.length-sheet.getMaxColumns());
+        }
+        sheet.getRange(1,1,1,expected.length).setValues([expected]).setFontWeight('bold');
         createdTabs++;
         report.push({tab:tabName,status:'Created missing tab with required headers',rowCount:sheet.getLastRow(),addedHeaders:expected.slice()});
         continue;
@@ -8571,6 +8396,53 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
       report.push({tab:tabName,status:missing.length?'Added '+missing.length+' missing required header(s)':(extraColumns.length||blankHeaders.length?'Verified with extra/blank columns to review':'Verified required headers'),rowCount:sheet.getLastRow(),addedHeaders:missing,extraColumns:extraColumns,duplicateHeaders:duplicateHeaders,blankHeaderColumns:blankHeaders});
     }
 
+    // Lossless archival: synchronize any *named extra* Schedule fields into
+    // Deleted_Archive ONLY when Admin Verify Sheets is explicitly run.
+    // Normal CNE deletion is read-only for headers and fails if these are absent.
+    var scheduleForArchive=ss.getSheetByName('CNE_Schedule');
+    var archiveForSchedule=ss.getSheetByName('Deleted_Archive');
+    if (scheduleForArchive && archiveForSchedule &&
+        unsafe.indexOf('CNE_Schedule')<0 && unsafe.indexOf('Deleted_Archive')<0) {
+      try {
+        cneAssertVerifySchemaMutation_();
+        var scheduleWidth=scheduleForArchive.getLastColumn();
+        var archiveWidth=archiveForSchedule.getLastColumn();
+        var scheduleHeaders=scheduleForArchive.getRange(1,1,1,scheduleWidth).getValues()[0];
+        var archiveHeaders=archiveForSchedule.getRange(1,1,1,archiveWidth).getValues()[0];
+        // Duplicate normalized names are never guessed or silently merged.
+        var knownArchive=buildHeaderMapFromRow_(archiveHeaders);
+        buildHeaderMapFromRow_(scheduleHeaders);
+        var missingExtensions=[];
+        for (var sx=0;sx<scheduleHeaders.length;sx++) {
+          var extra=String(scheduleHeaders[sx]||'').trim();
+          if(!extra)continue;
+          var key=extra.toLowerCase().replace(/[^a-z0-9]/g,'');
+          if (!Object.prototype.hasOwnProperty.call(knownArchive,key)) {
+            missingExtensions.push(extra);
+            knownArchive[key]=archiveWidth+missingExtensions.length-1;
+          }
+        }
+        if(missingExtensions.length) {
+          var total=archiveWidth+missingExtensions.length;
+          if(archiveForSchedule.getMaxColumns()<total) {
+            archiveForSchedule.insertColumnsAfter(archiveForSchedule.getMaxColumns(),
+              total-archiveForSchedule.getMaxColumns());
+          }
+          archiveForSchedule.getRange(1,archiveWidth+1,1,missingExtensions.length)
+            .setValues([missingExtensions]).setFontWeight('bold');
+          addedHeaders+=missingExtensions.length;
+          report.push({tab:'Deleted_Archive',status:'Added '+missingExtensions.length+
+            ' Schedule extension header(s) for lossless CNE archival',
+            addedHeaders:missingExtensions,rowCount:archiveForSchedule.getLastRow()});
+        }
+      } catch (archiveVerifyError) {
+        unsafe.push('Deleted_Archive');
+        report.push({tab:'Deleted_Archive',status:'Needs manual review: Schedule-to-archive headers',
+          error:String(archiveVerifyError.message||archiveVerifyError),
+          rowCount:archiveForSchedule.getLastRow()});
+      }
+    }
+
     // Report unrelated tabs; never delete a tab, including a backup sheet.
     var allSheets=ss.getSheets();
     for (var j=0;j<allSheets.length;j++) {
@@ -8600,7 +8472,10 @@ function setupAndVerifyCNESheets(executorEmpId, session) {
       : 'Verification completed. Added '+addedHeaders+' missing header(s), created '+createdTabs+' tab(s), and reported '+extras+' extra column(s)/tab(s). No existing data were deleted or reordered.';
     logAuditAction('SETUP_AND_VERIFY_SHEETS', executorEmpId||'SYSTEM',msg,unsafe.length?'WARNING':'SUCCESS');
     return {success:unsafe.length===0,message:msg,auditReport:report,createdTabs:createdTabs,addedHeaders:addedHeaders,extraItems:extras,unsafeTabs:unsafe};
-  } finally { lock.releaseLock(); }
+  } finally {
+    _cneVerifySchemaActive_ = false;
+    lock.releaseLock();
+  }
 }
 
 /**
@@ -8625,6 +8500,8 @@ function getCNEScheduleRecord(cneId) {
   var sheet = ss.getSheetByName('CNE_Schedule');
   if (!sheet || sheet.getLastRow() <= 1) return null;
 
+  // Frontend mutations validate all canonical headers; this read may inspect
+  // older historical rows with optional columns not yet populated.
   var colMap = getHeaderMap(sheet);
   var cleanId = String(cneId).trim().toUpperCase();
   var idCol = colMap['cneid'];
@@ -8640,19 +8517,19 @@ function getCNEScheduleRecord(cneId) {
   return {
     rowIndex: rowIndex,
     cneId: String(row[idCol] || '').trim(),
-    topic: String((colMap['topic'] !== undefined ? row[colMap['topic']] : row[1]) || '').trim(),
+    topic: String((row[colMap['topic']]) || '').trim(),
     area: String((colMap['area'] !== undefined ? row[colMap['area']] : '') || '').trim(),
-    date: formatDateValue(colMap['fromdate'] !== undefined ? row[colMap['fromdate']] : (colMap['date'] !== undefined ? row[colMap['date']] : row[3])),
-    toDate: formatDateValue(colMap['todate'] !== undefined ? row[colMap['todate']] : (row[4] || row[3])),
+    date: formatDateValue(row[colMap['fromdate']]),
+    toDate: formatDateValue(row[colMap['todate']]),
     duration: durVal ? Number(durVal) : 60,
     instructor: String((colMap['internalresourcepersonids'] !== undefined ? row[colMap['internalresourcepersonids']] : '') || '').trim(),
-    mode: String((colMap['modeofteaching'] !== undefined ? row[colMap['modeofteaching']] : (colMap['mode'] !== undefined ? row[colMap['mode']] : row[8])) || 'Offline').trim(),
-    description: String((colMap['description'] !== undefined ? row[colMap['description']] : row[9]) || '').trim(),
+    mode: String((row[colMap['modeofteaching']]) || 'Offline').trim(),
+    description: String((row[colMap['description']]) || '').trim(),
     staffCount: null, // Calculated in CNE record listings from the authoritative register
     status: normalizeCNEStatus(rawStatus),
-    externalResourcePersons: String((colMap['externalresourcepersons'] !== undefined ? row[colMap['externalresourcepersons']] : row[13]) || '').trim(),
+    externalResourcePersons: String((row[colMap['externalresourcepersons']]) || '').trim(),
     proposedBy: String((colMap['createdby'] !== undefined ? row[colMap['createdby']] : '') || '').trim(),
-    adminRemarks: String((colMap['adminremarks'] !== undefined ? row[colMap['adminremarks']] : row[15]) || '').trim(),
+    adminRemarks: String((row[colMap['adminremarks']]) || '').trim(),
     cneType: normalizeCNEType(rawType),
     coverageAreasSnapshot: String((colMap['coverageareassnapshot'] !== undefined ? row[colMap['coverageareassnapshot']] : '') || '').trim(),
     participatingWards: parseParticipatingWards_(colMap['participatingwards'] !== undefined ? row[colMap['participatingwards']] : '', String((colMap['area'] !== undefined ? row[colMap['area']] : '') || '').trim()),
@@ -8731,9 +8608,10 @@ function handleSaveReferenceMaterial(params, session) {
     record = liveMaterialRecord;
 
     var sheet = getOrCreateSheet('Material_List');
+    cneRequireMutationHeaders_(sheet,'Material_List');
     var data = sheet.getDataRange().getValues();
     var colMap = getHeaderMap(sheet);
-    var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+    var idCol = cneRequireMappedColumn_(colMap,'cneid','Material_List');
     var existingRow = -1;
     
     for (var r = 1; r < data.length; r++) {
@@ -8793,62 +8671,13 @@ function handleSaveReferenceMaterial(params, session) {
 }
 
 /**
- * Non-destructively ensure all 10 CNE_Reference headers exist.
- * Preserves existing columns 1-5 and existing row data.
+ * Validate existing Material_List headers without creating or changing columns.
  */
 function ensureSheetHeadersSafe_(sheet, expected, lockAlreadyHeld) {
-  if (!sheet || !expected || expected.length === 0) return;
-
-  function applyMissingHeaders_() {
-    if (sheet.getLastRow() === 0) {
-      if (sheet.getMaxColumns() < expected.length) {
-        sheet.insertColumnsAfter(sheet.getMaxColumns(), expected.length - sheet.getMaxColumns());
-      }
-      sheet.getRange(1, 1, 1, expected.length).setValues([expected]).setFontWeight('bold');
-      return;
-    }
-    var colMap = getHeaderMap(sheet);
-    var missing = [];
-    for (var i = 0; i < expected.length; i++) {
-      var key = expected[i].toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (colMap[key] === undefined) missing.push(expected[i]);
-    }
-    if (missing.length === 0) return;
-    var lastCol = sheet.getLastColumn() || 1;
-    if (sheet.getMaxColumns() < lastCol + missing.length) {
-      sheet.insertColumnsAfter(sheet.getMaxColumns(), (lastCol + missing.length) - sheet.getMaxColumns());
-    }
-    sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]).setFontWeight('bold');
-  }
-
-  // Fast no-write path avoids lock overhead after setup is complete.
-  if (sheet.getLastRow() > 0) {
-    var fastMap = getHeaderMap(sheet);
-    var allPresent = true;
-    for (var f = 0; f < expected.length; f++) {
-      var fastKey = expected[f].toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (fastMap[fastKey] === undefined) { allPresent = false; break; }
-    }
-    if (allPresent) return;
-  }
-
-  if (lockAlreadyHeld) {
-    applyMissingHeaders_();
-    return;
-  }
-
-  var headerLock = LockService.getScriptLock();
-  try {
-    headerLock.waitLock(10000);
-  } catch (e) {
-    throw new Error('Server is busy initializing sheet headers. Please try again.');
-  }
-  try {
-    // Re-read after acquiring the lock so another request cannot append duplicates.
-    applyMissingHeaders_();
-  } finally {
-    headerLock.releaseLock();
-  }
+  // Compatibility name retained. This helper cannot change any header or tab.
+  // The caller must use the administrator's Verify Sheets action to repair schema.
+  if (!sheet) throw new Error('MISSING_SHEET: Required sheet unavailable. Run Admin Verify Sheets.');
+  return cneHeaderLayout_(sheet,expected||[]);
 }
 
 function ensureReferenceSheetHeaders(sheet, lockAlreadyHeld) {
@@ -8869,28 +8698,24 @@ function cneIndexProjectRows_(rows,headers){
 /** Fail closed on missing/ambiguous required index names, never on reorder alone. */
 function cneRequireIndexHeaders_(sheet, headers) {
   if (!sheet) throw new Error('Required CNE index tab not found. Use Verify / Initialize CNE Sheets.');
-  if (sheet.getLastRow() === 0) ensureSheetHeadersSafe_(sheet, headers, true);
+  // Never auto-initialize an empty sheet during indexing or ordinary reads.
   try { return cneHeaderLayout_(sheet,headers); }
   catch (e) { throw new Error('INDEX_SCHEMA_MISMATCH: '+e.message); }
 }
 /** Verify the permanent library-only 10-column evidence index schema. */
-function ensureReferenceIndexSheetHeaders(sheet, lockAlreadyHeld) {
-  cneRequireIndexHeaders_(sheet, CNE_SHEET_HEADERS['Library_Index']);
-}
+/* Extracted to Extra_Code.gs: ensureReferenceIndexSheetHeaders */
+
+
 
 /**
- * Non-destructively ensure all CNE_Reference headers exist.
- * Preserves existing rows, structure, and formatting.
- * Appends missing headers only if necessary.
+ * Validate existing Material_List headers without creating or changing columns.
  */
 function ensureLearningResourceSheetHeaders(sheet, lockAlreadyHeld) {
   ensureSheetHeadersSafe_(sheet, CNE_SHEET_HEADERS['Material_List'] || [], Boolean(lockAlreadyHeld));
 }
 
 /**
- * Non-destructively ensure all 12 CNE_Reference_Library headers exist.
- * Preserves existing rows, structure, and formatting.
- * Appends missing headers only if necessary.
+ * Validate existing Library headers without creating or changing columns.
  */
 function ensureReferenceLibrarySheetHeaders(sheet, lockAlreadyHeld) {
   ensureSheetHeadersSafe_(sheet, CNE_SHEET_HEADERS['Library'] || [], Boolean(lockAlreadyHeld));
@@ -8946,21 +8771,21 @@ function getOrCreateOpenRnFolder() { return getOrCreateNursingRefLibraryFolder()
 /**
  * Server-side validation: Verifies whether a Drive File is strictly located within the Open RN folder.
  */
-function isFileInOpenRnFolder(file, openRnFolder) {
-  if (!file || !openRnFolder) return false;
-  try {
-    var parents = file.getParents();
-    while (parents.hasNext()) {
-      var p = parents.next();
-      if (p.getId() === openRnFolder.getId()) {
-        return true;
-      }
-    }
-  } catch (err) {
-    return false;
-  }
-  return false;
-}
+/* Extracted to Extra_Code.gs: isFileInOpenRnFolder */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /**
  * Helper: Sanitize string to create safe filename part.
@@ -9104,6 +8929,10 @@ function handleUploadLearningResource(params, session) {
     finalFileName = baseFileName + ' (' + Utilities.getUuid().substring(0, 8) + ').' + ext;
   }
 
+  // Preflight the live metadata schema BEFORE creating a Drive file.
+  // An invalid/missing header must never leave an orphaned upload.
+  cneRequireMutationHeaders_(getOrCreateSheet('Material_List'),'Material_List');
+
   // Drive file creation is independent work and must not monopolize ScriptLock.
   var newlyCreatedDriveFile = null;
   var newDriveFileId = null;
@@ -9146,32 +8975,28 @@ function handleUploadLearningResource(params, session) {
           } else {
             record = liveRecord;
             var sheet = getOrCreateSheet('Material_List');
-            ensureReferenceSheetHeaders(sheet, true);
-            ensureLearningResourceSheetHeaders(sheet, true);
+            cneRequireMutationHeaders_(sheet,'Material_List');
             var colMap = getHeaderMap(sheet);
-            var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+            var idCol = cneRequireMappedColumn_(colMap,'CNE_ID','Material_List');
             var existingRow = findExactRowInColumn_(sheet, idCol, cneId.toUpperCase(), 2);
             var rowWidth = sheet.getLastColumn();
             var rowValues = existingRow > 1 ? sheet.getRange(existingRow, 1, 1, rowWidth).getValues()[0] : new Array(rowWidth).fill('');
-            var refCol = colMap['referencetextclinicalguides'] !== undefined ? colMap['referencetextclinicalguides'] : (colMap['referencetext'] !== undefined ? colMap['referencetext'] : 2);
+            var refCol = cneRequireMappedColumn_(colMap,'Reference_Text_Clinical_Guides','Material_List');
             var existingText = existingRow > 1 ? String(rowValues[refCol] || '') : '';
             var contentText = existingText || sanitizeCellInput(params.unifiedContent || params.referenceText || '');
-
-            if (colMap['cneid'] !== undefined) rowValues[colMap['cneid']] = cneId; else rowValues[0] = cneId;
-            if (colMap['topic'] !== undefined) rowValues[colMap['topic']] = record.topic; else rowValues[1] = record.topic;
-            if (refCol !== undefined) rowValues[refCol] = contentText;
-            if (colMap['updatedat'] !== undefined) rowValues[colMap['updatedat']] = updatedAt; else rowValues[3] = updatedAt;
-            if (colMap['updatedby'] !== undefined) rowValues[colMap['updatedby']] = session.employeeId; else rowValues[4] = session.employeeId;
-            if (colMap['drivefileid'] !== undefined) rowValues[colMap['drivefileid']] = newDriveFileId; else rowValues[5] = newDriveFileId;
-            if (colMap['filename'] !== undefined) rowValues[colMap['filename']] = finalFileName; else rowValues[6] = finalFileName;
-            if (colMap['filetype'] !== undefined) rowValues[colMap['filetype']] = ext.toUpperCase(); else rowValues[7] = ext.toUpperCase();
-            if (colMap['resourcepersonname'] !== undefined) rowValues[colMap['resourcepersonname']] = authoritativeRpName; else rowValues[8] = authoritativeRpName;
-            if (colMap['filesize'] !== undefined) rowValues[colMap['filesize']] = fileSize; else rowValues[9] = fileSize;
-            if (colMap['indexingstatus'] !== undefined) rowValues[colMap['indexingstatus']] = 'PENDING';
-            if (colMap['indexingerrorcode'] !== undefined) rowValues[colMap['indexingerrorcode']] = '';
-            if (colMap['indexingmessage'] !== undefined) rowValues[colMap['indexingmessage']] = 'Indexing is in progress.';
-            if (colMap['chunkscount'] !== undefined) rowValues[colMap['chunkscount']] = 0;
-            if (colMap['indexedat'] !== undefined) rowValues[colMap['indexedat']] = '';
+            var uploadFields = {
+              CNE_ID:cneId, Topic:record.topic,
+              Reference_Text_Clinical_Guides:contentText,
+              Updated_At:updatedAt, Updated_By:session.employeeId,
+              Drive_File_ID:newDriveFileId, File_Name:finalFileName,
+              File_Type:ext.toUpperCase(), Resource_Person_Name:authoritativeRpName,
+              File_Size:fileSize, Indexing_Status:'PENDING',
+              Indexing_Error_Code:'', Indexing_Message:'Indexing is in progress.',
+              Chunks_Count:0, Indexed_At:''
+            };
+            Object.keys(uploadFields).forEach(function(header){
+              rowValues[cneRequireMappedColumn_(colMap,header,'Material_List')]=uploadFields[header];
+            });
 
             if (existingRow > 1) sheet.getRange(existingRow, 1, 1, rowWidth).setValues([rowValues]);
             else sheet.getRange(sheet.getLastRow() + 1, 1, 1, rowWidth).setValues([rowValues]);
@@ -9301,10 +9126,10 @@ function handleDeleteLearningResource(params, session) {
 
   // 3. Resolve the associated Drive File ID from the authoritative CNE_Reference record
   var sheet = getOrCreateSheet('Material_List');
-  ensureReferenceSheetHeaders(sheet);
+  cneRequireMutationHeaders_(sheet,'Material_List');
   var colMap = getHeaderMap(sheet);
   var data = sheet.getDataRange().getValues();
-  var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+  var idCol = cneRequireMappedColumn_(colMap,'cneid','Material_List');
   var driveFileIdCol = colMap['drivefileid'];
   var fileNameCol = colMap['filename'];
   var fileTypeCol = colMap['filetype'];
@@ -9314,8 +9139,8 @@ function handleDeleteLearningResource(params, session) {
   var indexingMessageCol = colMap['indexingmessage'];
   var chunksCountCol = colMap['chunkscount'];
   var indexedAtCol = colMap['indexedat'];
-  var updatedCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 3;
-  var byCol = colMap['updatedby'] !== undefined ? colMap['updatedby'] : 4;
+  var updatedCol = cneRequireMappedColumn_(colMap,'updatedat','Material_List');
+  var byCol = cneRequireMappedColumn_(colMap,'updatedby','Material_List');
 
   var existingRow = -1;
   var targetDriveFileId = '';
@@ -9406,11 +9231,10 @@ function handleDeleteLearningResource(params, session) {
     // Re-resolve metadata under the lock so a concurrent replacement cannot make us
     // trash an old file and then clear the newer file's metadata row.
     sheet = getOrCreateSheet('Material_List');
-    ensureReferenceSheetHeaders(sheet, true);
-    ensureLearningResourceSheetHeaders(sheet, true);
+    cneRequireMutationHeaders_(sheet,'Material_List');
     colMap = getHeaderMap(sheet);
     data = sheet.getDataRange().getValues();
-    idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+    idCol = cneRequireMappedColumn_(colMap,'cneid','Material_List');
     driveFileIdCol = colMap['drivefileid'];
     fileNameCol = colMap['filename'];
     fileTypeCol = colMap['filetype'];
@@ -9420,8 +9244,8 @@ function handleDeleteLearningResource(params, session) {
     indexingMessageCol = colMap['indexingmessage'];
     chunksCountCol = colMap['chunkscount'];
     indexedAtCol = colMap['indexedat'];
-    updatedCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 3;
-    byCol = colMap['updatedby'] !== undefined ? colMap['updatedby'] : 4;
+    updatedCol = cneRequireMappedColumn_(colMap,'updatedat','Material_List');
+    byCol = cneRequireMappedColumn_(colMap,'updatedby','Material_List');
     existingRow = -1;
     targetDriveFileId = '';
     targetFileName = '';
@@ -9543,11 +9367,11 @@ function getLearningResourceIndexingInfoFromIndex(cneId, driveFileId) {
     if (indexData.length <= 1) return null;
 
     var indexMap = getHeaderMap(indexSheet);
-    var cneCol = indexMap['cneid'] !== undefined ? indexMap['cneid'] : 2;
-    var driveCol = indexMap['drivefileid'] !== undefined ? indexMap['drivefileid'] : 3;
-    var statusCol = indexMap['extractionstatus'] !== undefined ? indexMap['extractionstatus'] : 10;
-    var chunkTextCol = indexMap['chunktext'] !== undefined ? indexMap['chunktext'] : 8;
-    var updatedAtCol = indexMap['updatedat'] !== undefined ? indexMap['updatedat'] : 11;
+    var cneCol = cneRequireMappedColumn_(indexMap,'cneid','Material_Index');
+    var driveCol = cneRequireMappedColumn_(indexMap,'drivefileid','Material_Index');
+    var statusCol = cneRequireMappedColumn_(indexMap,'extractionstatus','Material_Index');
+    var chunkTextCol = cneRequireMappedColumn_(indexMap,'chunktext','Material_Index');
+    var updatedAtCol = cneRequireMappedColumn_(indexMap,'updatedat','Material_Index');
 
     var targetCne = String(cneId).trim().toUpperCase();
     var targetDrive = String(driveFileId).trim();
@@ -9625,16 +9449,15 @@ function handleGetLearningResource(params, session) {
   if (authErr) return authErr;
 
   var sheet = getOrCreateSheet('Material_List');
-  ensureReferenceSheetHeaders(sheet);
-  ensureLearningResourceSheetHeaders(sheet);
+  cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['Material_List']);
 
   var data = sheet.getDataRange().getValues();
   var colMap = getHeaderMap(sheet);
 
-  var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
-  var topicCol = colMap['topic'] !== undefined ? colMap['topic'] : 1;
-  var updatedCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 3;
-  var byCol = colMap['updatedby'] !== undefined ? colMap['updatedby'] : 4;
+  var idCol = cneRequireMappedColumn_(colMap,'cneid','Material_List');
+  var topicCol = cneRequireMappedColumn_(colMap,'topic','Material_List');
+  var updatedCol = cneRequireMappedColumn_(colMap,'updatedat','Material_List');
+  var byCol = cneRequireMappedColumn_(colMap,'updatedby','Material_List');
   var driveFileIdCol = colMap['drivefileid'];
   var fileNameCol = colMap['filename'];
   var fileTypeCol = colMap['filetype'];
@@ -9751,17 +9574,17 @@ function handleListLearningResources(params, session) {
   }
 
   var sheet = getOrCreateSheet('Material_List');
-  ensureLearningResourceSheetHeaders(sheet);
+  cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['Material_List']);
   var data = sheet.getDataRange().getValues();
   if (data.length <= 1) {
     return { success: true, data: [] };
   }
   var colMap = getHeaderMap(sheet);
 
-  var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
-  var topicCol = colMap['topic'] !== undefined ? colMap['topic'] : 1;
-  var updatedCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 3;
-  var byCol = colMap['updatedby'] !== undefined ? colMap['updatedby'] : 4;
+  var idCol = cneRequireMappedColumn_(colMap,'cneid','Material_List');
+  var topicCol = cneRequireMappedColumn_(colMap,'topic','Material_List');
+  var updatedCol = cneRequireMappedColumn_(colMap,'updatedat','Material_List');
+  var byCol = cneRequireMappedColumn_(colMap,'updatedby','Material_List');
   var driveFileIdCol = colMap['drivefileid'];
   var fileNameCol = colMap['filename'];
   var fileTypeCol = colMap['filetype'];
@@ -9913,7 +9736,7 @@ function handleDownloadLearningResource(params, session) {
   var sheet = getOrCreateSheet('Material_List');
   var data = sheet.getDataRange().getValues();
   var colMap = getHeaderMap(sheet);
-  var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
+  var idCol = cneRequireMappedColumn_(colMap,'cneid','Material_List');
   var driveFileIdCol = colMap['drivefileid'];
   var fileNameCol = colMap['filename'];
   var fileTypeCol = colMap['filetype'];
@@ -10022,7 +9845,7 @@ function extractLearningResourceContentCore(cneId, session, options) {
 
   var refData = refSheet.getDataRange().getValues();
   var refColMap = getHeaderMap(refSheet);
-  var idCol = refColMap['cneid'] !== undefined ? refColMap['cneid'] : 0;
+  var idCol = cneRequireMappedColumn_(refColMap,'cneid','Material_List');
   var driveCol = refColMap['drivefileid'];
   var fileNameCol = refColMap['filename'];
   var fileTypeCol = refColMap['filetype'];
@@ -10395,63 +10218,11 @@ function isProbableHeading(line) {
   // Title-case clinical subsection labels only, not normal short sentences.
   return /^(?:[A-Z][a-zA-Z-]+\s+){1,5}[A-Z][a-zA-Z-]+:?$/.test(t);
 }
-function flushAccumulatedText(chunks, heading, text) {
-  var windows=cneMaterialSemanticWindows_(String(text||'').trim());
-  windows.forEach(function(part){if(part.trim())chunks.push({heading:heading||'Clinical Teaching Content',text:part.trim()});});
-}
+/* Extracted to Extra_Code.gs: flushAccumulatedText */
 
-function splitTextIntoWindows(text, targetSize, overlap) {
-  var result = [];
-  if (!text) return result;
-  if (text.length <= targetSize) {
-    result.push(text);
-    return result;
-  }
 
-  var pos = 0;
-  while (pos < text.length) {
-    var end = pos + targetSize;
-    if (end >= text.length) {
-      var remaining = text.substring(pos).trim();
-      if (remaining) result.push(remaining);
-      break;
-    }
 
-    var breakPos = -1;
-    var searchStart = pos + Math.floor(targetSize * 0.7);
-    var searchEnd = Math.min(pos + targetSize + 150, text.length);
-    var searchSlice = text.substring(searchStart, searchEnd);
 
-    var pIdx = searchSlice.lastIndexOf('\n\n');
-    if (pIdx !== -1) {
-      breakPos = searchStart + pIdx + 2;
-    } else {
-      var sMatch = searchSlice.match(/[\.\?!]\s+/g);
-      if (sMatch) {
-        var lastS = searchSlice.lastIndexOf(sMatch[sMatch.length - 1]);
-        if (lastS !== -1) {
-          breakPos = searchStart + lastS + sMatch[sMatch.length - 1].length;
-        }
-      }
-    }
-
-    if (breakPos === -1) {
-      var spaceIdx = searchSlice.lastIndexOf(' ');
-      if (spaceIdx !== -1) {
-        breakPos = searchStart + spaceIdx + 1;
-      } else {
-        breakPos = end;
-      }
-    }
-
-    var chunk = text.substring(pos, breakPos).trim();
-    if (chunk) result.push(chunk);
-
-    pos = Math.max(pos + 1, breakPos - overlap);
-  }
-
-  return result;
-}
 
 /**
  * Helper: Delete specific 1-based row numbers from a sheet in descending order,
@@ -10489,7 +10260,7 @@ function cleanUpIndexRowsForCNELocked_(cneId) {
   if (!sheet || sheet.getLastRow() <= 1) return;
 
   var colMap = getHeaderMap(sheet);
-  var cneIdCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 2;
+  var cneIdCol = cneRequireMappedColumn_(colMap,'CNE_ID','Material_Index');
   var targetCne = String(cneId).trim().toUpperCase();
   var values = sheet.getRange(2, cneIdCol + 1, sheet.getLastRow() - 1, 1).getValues();
   var rowsToDelete = [];
@@ -10499,20 +10270,6 @@ function cleanUpIndexRowsForCNELocked_(cneId) {
   if (rowsToDelete.length > 0) deleteSheetRowsByIndices(sheet, rowsToDelete);
 }
 
-function cleanUpIndexRowsForCNE(cneId) {
-  if (!cneId) return;
-  var lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(15000);
-  } catch (lockErr) {
-    return;
-  }
-  try {
-    cleanUpIndexRowsForCNELocked_(cneId);
-  } finally {
-    lock.releaseLock();
-  }
-}
 
 /** Only original, readable clinical passages count towards a usable evidence index. */
 function cneMaterialTeachingPassage_(text,heading) {
@@ -10643,10 +10400,9 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
 
   try {
     refSheet = getOrCreateSheet('Material_List');
-    ensureReferenceSheetHeaders(refSheet, true);
-    ensureLearningResourceSheetHeaders(refSheet, true);
+    cneRequireMutationHeaders_(refSheet,'Material_List');
     refMap = getHeaderMap(refSheet);
-    var refIdCol = refMap['cneid'] !== undefined ? refMap['cneid'] : 0;
+    var refIdCol = cneRequireMappedColumn_(refMap,'cneid','Material_List');
     var refDriveCol = refMap['drivefileid'];
     refRow = findExactRowInColumn_(refSheet, refIdCol, String(cneId).trim().toUpperCase(), 2);
     var currentDriveId = (refRow > 1 && refDriveCol !== undefined)
@@ -10659,9 +10415,9 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
     var sheet = getOrCreateSheet('Material_Index');
     cneRequireIndexHeaders_(sheet, CNE_SHEET_HEADERS['Material_Index']);
     var colMap = getHeaderMap(sheet);
-    var cneIdCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 2;
-    var driveCol = colMap['drivefileid'] !== undefined ? colMap['drivefileid'] : 3;
-    var statusCol = colMap['extractionstatus'] !== undefined ? colMap['extractionstatus'] : 10;
+    var cneIdCol = cneRequireMappedColumn_(colMap,'CNE_ID','Material_Index');
+    var driveCol = cneRequireMappedColumn_(colMap,'Drive_File_ID','Material_Index');
+    var statusCol = cneRequireMappedColumn_(colMap,'Extraction_Status','Material_Index');
     var targetCne = String(cneId).trim().toUpperCase();
     var rowCount = Math.max(0, sheet.getLastRow() - 1);
     var cneVals = rowCount ? sheet.getRange(2, cneIdCol + 1, rowCount, 1).getValues() : [];
@@ -10683,8 +10439,8 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
         // previous version. Failed readback must preserve old usable material.
         SpreadsheetApp.flush();
         var written = sheet.getRange(startRow, 1, rowsToInsert.length, sheet.getLastColumn()).getValues();
-        var idCol = colMap['indexid'] !== undefined ? colMap['indexid'] : 0;
-        var textCol = colMap['chunktext'] !== undefined ? colMap['chunktext'] : 8;
+        var idCol = cneRequireMappedColumn_(colMap,'Index_ID','Material_Index');
+        var textCol = cneRequireMappedColumn_(colMap,'Chunk_Text','Material_Index');
         var verifiedCount = 0;
         for (var chk = 0; chk < rowsToInsert.length; chk++) {
           if (String(written[chk][idCol] || '') === rowsToInsert[chk][0] &&
@@ -10952,7 +10708,7 @@ function deleteReferenceLibraryResource(driveFileId, session) {
       var idxMap = getHeaderMap(indexSheet);
       var idxData = indexSheet.getDataRange().getValues();
       var srcTypeCol = idxMap['sourcetype'];
-      var driveColIdx = idxMap['drivefileid'] !== undefined ? idxMap['drivefileid'] : 3;
+      var driveColIdx = cneRequireMappedColumn_(idxMap,'Drive_File_ID','Library_Index');
 
       var rowsToDelete = [];
       for (var r = 1; r < idxData.length; r++) {
@@ -10974,9 +10730,9 @@ function deleteReferenceLibraryResource(driveFileId, session) {
     if (libSheet && libSheet.getLastRow() > 1) {
       var libMap = getHeaderMap(libSheet);
       var libData = libSheet.getDataRange().getValues();
-      var driveColLib = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
-      var activeColLib = libMap['active'] !== undefined ? libMap['active'] : 8;
-      var updatedColLib = libMap['updatedat'] !== undefined ? libMap['updatedat'] : 10;
+      var driveColLib = cneRequireMappedColumn_(libMap,'drivefileid','Library');
+      var activeColLib = cneRequireMappedColumn_(libMap,'active','Library');
+      var updatedColLib = cneRequireMappedColumn_(libMap,'updatedat','Library');
 
       for (var lr = 1; lr < libData.length; lr++) {
         if (String(libData[lr][driveColLib] || '').trim() === cleanDriveFileId) {
@@ -11021,21 +10777,21 @@ function listNursingReferenceResources(session) {
   try {
     var libSheet = getSpreadsheet('CNE').getSheetByName('Library');
     if (libSheet && libSheet.getLastRow() > 1) {
-      ensureReferenceLibrarySheetHeaders(libSheet);
+      cneHeaderLayout_(libSheet,CNE_SHEET_HEADERS['Library']);
       var libMap = getHeaderMap(libSheet);
       var libData = libSheet.getDataRange().getValues();
 
-      var resIdCol = libMap['resourceid'] !== undefined ? libMap['resourceid'] : 0;
-      var srcTypeCol = libMap['sourcetype'] !== undefined ? libMap['sourcetype'] : 1;
-      var titleCol = libMap['resourcetitle'] !== undefined ? libMap['resourcetitle'] : 2;
-      var driveCol = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
-      var authorCol = libMap['authororganization'] !== undefined ? libMap['authororganization'] : 4;
-      var licCol = libMap['license'] !== undefined ? libMap['license'] : 5;
-      var verCol = libMap['version'] !== undefined ? libMap['version'] : 6;
-      var typeCol = libMap['filetype'] !== undefined ? libMap['filetype'] : 7;
-      var activeCol = libMap['active'] !== undefined ? libMap['active'] : 8;
-      var indAtCol = libMap['indexedat'] !== undefined ? libMap['indexedat'] : 9;
-      var updAtCol = libMap['updatedat'] !== undefined ? libMap['updatedat'] : 10;
+      var resIdCol = cneRequireMappedColumn_(libMap,'resourceid','Library');
+      var srcTypeCol = cneRequireMappedColumn_(libMap,'sourcetype','Library');
+      var titleCol = cneRequireMappedColumn_(libMap,'resourcetitle','Library');
+      var driveCol = cneRequireMappedColumn_(libMap,'drivefileid','Library');
+      var authorCol = cneRequireMappedColumn_(libMap,'authororganization','Library');
+      var licCol = cneRequireMappedColumn_(libMap,'license','Library');
+      var verCol = cneRequireMappedColumn_(libMap,'version','Library');
+      var typeCol = cneRequireMappedColumn_(libMap,'filetype','Library');
+      var activeCol = cneRequireMappedColumn_(libMap,'active','Library');
+      var indAtCol = cneRequireMappedColumn_(libMap,'indexedat','Library');
+      var updAtCol = cneRequireMappedColumn_(libMap,'updatedat','Library');
 
       for (var r = 1; r < libData.length; r++) {
         var isActive = String(libData[r][activeCol] || '').trim().toUpperCase() === 'TRUE';
@@ -11057,7 +10813,9 @@ function listNursingReferenceResources(session) {
       }
     }
   } catch (sheetErr) {
-    // Non-blocking
+    // Invalid headers are configuration errors, not an empty library.
+    if (/MISSING_HEADER|DUPLICATE_HEADER/.test(String(sheetErr && sheetErr.message || sheetErr))) throw sheetErr;
+    // Other transient library read errors retain the original non-blocking behavior.
   }
 
   // 2. Scan Nursing Reference Library Drive folder (Admin only)
@@ -11133,7 +10891,7 @@ function handleReindexLearningResource(params, session) {
   }
 
   var refMap = getHeaderMap(refSheet);
-  var refIdCol = refMap['cneid'] !== undefined ? refMap['cneid'] : 0;
+  var refIdCol = cneRequireMappedColumn_(refMap,'cneid','Material_List');
   var row = findExactRowInColumn_(refSheet, refIdCol, String(cneId).trim().toUpperCase(), 2);
   if (row < 2) {
     return { success: false, errorCode: 'RESOURCE_NOT_FOUND', message: 'No learning resource uploaded for this CNE.' };
@@ -11199,12 +10957,12 @@ function handleDownloadNursingReferenceResource(params, session) {
   var libMap = getHeaderMap(libSheet);
   var libData = libSheet.getDataRange().getValues();
 
-  var resIdCol = libMap['resourceid'] !== undefined ? libMap['resourceid'] : 0;
-  var titleCol = libMap['resourcetitle'] !== undefined ? libMap['resourcetitle'] : 2;
-  var driveCol = libMap['drivefileid'] !== undefined ? libMap['drivefileid'] : 3;
-  var authorCol = libMap['authororganization'] !== undefined ? libMap['authororganization'] : 4;
-  var typeCol = libMap['filetype'] !== undefined ? libMap['filetype'] : 7;
-  var activeCol = libMap['active'] !== undefined ? libMap['active'] : 8;
+  var resIdCol = cneRequireMappedColumn_(libMap,'resourceid','Library');
+  var titleCol = cneRequireMappedColumn_(libMap,'resourcetitle','Library');
+  var driveCol = cneRequireMappedColumn_(libMap,'drivefileid','Library');
+  var authorCol = cneRequireMappedColumn_(libMap,'authororganization','Library');
+  var typeCol = cneRequireMappedColumn_(libMap,'filetype','Library');
+  var activeCol = cneRequireMappedColumn_(libMap,'active','Library');
 
   var matchedRow = null;
   for (var r = 1; r < libData.length; r++) {
@@ -11825,139 +11583,6 @@ function cneAiChooseObjectiveEvidence_(objectives, evidence, supplementalIds) {
       evidenceId:best?String(best.indexId):obj.evidenceId};
   });
 }
-
-/**
- * Read a metadata-only catalog first, then fetch source text for a bounded
- * shortlist.  No cache is kept: the active-file register and extraction status
- * are checked on EVERY request so disabling a book takes effect immediately.
- *
- * For topics spread over too many noncontiguous sheet ranges, or where the
- * metadata shortlist could exclude text-only hits, fall back to the original
- * one-call full-sheet read rather than silently reducing evidence coverage.
- */
-function cneAiReadTopicIndexRows_(sheet, headerMap, topic, cneId, activeLibFiles, options) {
-  var lastRow=sheet.getLastRow(), width=sheet.getLastColumn(), count=lastRow-1;
-  var textIndex=headerMap['chunktext'];
-  var required=['indexid','drivefileid','resourcetitle',
-    'topic','sectionheading','clinicalkeywords','extractionstatus'];
-  var sourceHint=String(options&&options.sourceHint||'').toUpperCase();
-  if(!sourceHint)required.push('sourcetype','cneid');
-  var valid=(typeof textIndex==='number' && textIndex>=0 && textIndex<width && width<=40);
-  for(var x=0;x<required.length;x++)if(typeof headerMap[required[x]]!=='number')valid=false;
-  function original(reason) {return {rows:sheet.getDataRange().getValues(),mode:'FULL_'+reason};}
-  if(!valid || count<80) return original('SMALL_OR_SCHEMA');
-
-  // Columns physically before and after Chunk Text; never pull the huge text
-  // column during the first stage. All indexes remain 0-based, as in getHeaderMap.
-  var left=textIndex?sheet.getRange(2,1,count,textIndex).getValues():null;
-  var right=textIndex<width-1?sheet.getRange(2,textIndex+2,count,width-textIndex-1).getValues():null;
-  var scores=[], eligible=0, cneUpper=String(cneId||'').toUpperCase();
-  var objectives=options&&Array.isArray(options.objectives)?options.objectives.slice(0,5):[];
-  var statusCol=headerMap['extractionstatus'], typeCol=headerMap['sourcetype'];
-  var cneCol=headerMap['cneid'], driveCol=headerMap['drivefileid'];
-  function getMeta(rowIndex,col) {
-    return col<textIndex?left[rowIndex][col]:col>textIndex?right[rowIndex][col-textIndex-1]:'';
-  }
-  for(var r=0;r<count;r++) {
-    if(String(getMeta(r,statusCol)||'').trim().toUpperCase()!=='SUCCESS')continue;
-    var source=typeCol===undefined?sourceHint:String(getMeta(r,typeCol)||'').trim().toUpperCase();
-    if(source==='UPLOADED_CNE') {
-      if(String(getMeta(r,cneCol)||'').trim().toUpperCase()!==cneUpper)continue;
-    } else if(source==='LOCAL_REFERENCE_LIB') {
-      if(!activeLibFiles[String(getMeta(r,driveCol)||'').trim()])continue;
-    } else continue;
-    eligible++;
-    var candidate={resourceTitle:String(getMeta(r,headerMap['resourcetitle'])||''),
-      topic:String(getMeta(r,headerMap['topic'])||''),
-      sectionHeading:String(getMeta(r,headerMap['sectionheading'])||''),
-      clinicalKeywords:String(getMeta(r,headerMap['clinicalkeywords'])||''),chunkText:''};
-    var score=calculateTopicRelevanceScore(topic,candidate);
-    if(score<=0)continue;
-    var objectiveBonus=0;
-    for(var q=0;q<objectives.length;q++){
-      objectiveBonus=Math.max(objectiveBonus,cneAiObjectiveEvidenceScore_(objectives[q].objective,candidate));
-    }
-    scores.push({rowIndex:r,score:score+Math.min(objectiveBonus,32),
-      bucket:String(getMeta(r,driveCol)||source)+'_'+Math.floor(r/28)});
-  }
-  // Metadata can be insufficient, especially for older imported workbooks with
-  // generic chapter headings and blank keywords. Scan the full text rather than
-  // declaring an otherwise indexed clinical topic absent.
-  if(scores.length<8 && eligible>scores.length) return original('LOW_METADATA_RECALL');
-  if(!scores.length) return {rows:[],mode:'EMPTY',eligibleCount:eligible};
-  scores.sort(function(a,b){return b.score-a.score||a.rowIndex-b.rowIndex;});
-  var limit=objectives.length===5?96:56;
-  var chosen=[], picked={}, perBucket={};
-  // Distribute reads across chapters, page neighborhoods and approved books
-  // so generic headings cannot occupy the complete text-read budget.
-  for(var round=1;round<=14 && chosen.length<limit;round++) {
-    for(var n=0;n<scores.length && chosen.length<limit;n++) {
-      var entry=scores[n], b=entry.bucket;
-      if(picked[entry.rowIndex] || (perBucket[b]||0)>=round*2)continue;
-      chosen.push(entry.rowIndex);picked[entry.rowIndex]=true;
-      perBucket[b]=(perBucket[b]||0)+1;
-    }
-  }
-  chosen.sort(function(a,b){return a-b;});
-  var windows=[];
-  for(var i=0;i<chosen.length;i++) {
-    var at=chosen[i], current=windows[windows.length-1];
-    if(current && at-current.end<=10 && at-current.start<64)current.end=at;
-    else windows.push({start:at,end:at});
-  }
-  // When matches span many areas of two large textbooks, retain the best
-  // *dense* page-neighborhoods from multiple approved sources. Fall back to a
-  // full scan when a 14-range shortlist would discard most possible matches.
-  if(windows.length>14) {
-    var scoreLookup={};
-    scores.forEach(function(entry){scoreLookup[entry.rowIndex]=entry.score;});
-    windows.forEach(function(win){
-      var hits=0,maxScore=0,source='';
-      for(var k=0;k<chosen.length;k++)if(chosen[k]>=win.start&&chosen[k]<=win.end){
-        hits++;maxScore=Math.max(maxScore,scoreLookup[chosen[k]]||0);
-        if(!source)source=String(getMeta(chosen[k],driveCol)||'UPLOADED_CNE');
-      }
-      win.hits=hits;win.source=source;
-      win.rank=maxScore+Math.min(hits,8)*10;
-    });
-    var byRank=windows.slice().sort(function(a,b){return b.rank-a.rank||a.start-b.start;});
-    var kept=[],selectedWindows={};
-    // Give each competitive source one range before filling remaining slots.
-    var sourcesUsed={};
-    for(var s=0;s<byRank.length&&kept.length<14;s++) {
-      var src=byRank[s].source;
-      if(!sourcesUsed[src]){kept.push(byRank[s]);sourcesUsed[src]=true;selectedWindows[byRank[s].start]=true;}
-    }
-    for(var b=0;b<byRank.length&&kept.length<14;b++) {
-      if(!selectedWindows[byRank[b].start]){
-        kept.push(byRank[b]);selectedWindows[byRank[b].start]=true;
-      }
-    }
-    var reduced=chosen.filter(function(row){
-      for(var c=0;c<kept.length;c++)if(row>=kept[c].start&&row<=kept[c].end)return true;
-      return false;
-    });
-    // Aggressive compression cannot silently suppress clinical evidence.
-    if(reduced.length<12||reduced.length<chosen.length*0.40||reduced.length/kept.length<1.7) return original('SCATTERED');
-    chosen=reduced;
-    windows=kept.sort(function(a,b){return a.start-b.start;});
-  }
-  var textByRow={};
-  for(var w=0;w<windows.length;w++) {
-    var range=windows[w], block=sheet.getRange(range.start+2,textIndex+1,
-      range.end-range.start+1,1).getValues();
-    for(var b=0;b<block.length;b++) textByRow[range.start+b]=block[b][0];
-  }
-  var result=[];
-  for(var z=0;z<chosen.length;z++) {
-    var rowAt=chosen[z], data=new Array(width);
-    for(var col=0;col<width;col++)data[col]=col===textIndex?textByRow[rowAt]:getMeta(rowAt,col);
-    data.__sheetRow=rowAt+2;
-    result.push(data);
-  }
-  return {rows:result,mode:'SPARSE',eligibleCount:eligible,metadataMatches:scores.length};
-}
-
 /** Rank the clinical *passage* more strongly than repeated chapter metadata.
  * A matching chapter title alone is not strong evidence for a narrow question.
  * This is a ranking adjustment, NOT a bypass of the existing clinical gate.
@@ -12047,17 +11672,17 @@ function retrieveCNETopicEvidence(cneId, topic, session, options) {
   if(!readiness.hasOwnMaterial)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:readiness.message,evidence:[]};
   var currentDriveId=readiness.driveFileId;
   var map = getHeaderMap(materialIndexSheet);
-  var idCol = map['indexid'] !== undefined ? map['indexid'] : 0;
+  var idCol = cneRequireMappedColumn_(map,'indexid','Material_Index');
   var srcTypeCol = map['sourcetype'];
-  var cneIdCol = map['cneid'] !== undefined ? map['cneid'] : 2;
-  var driveCol = map['drivefileid'] !== undefined ? map['drivefileid'] : 3;
-  var fileNameCol = map['filename'] !== undefined ? map['filename'] : 4;
-  var topicCol = map['topic'] !== undefined ? map['topic'] : 5;
-  var secCol = map['sectionheading'] !== undefined ? map['sectionheading'] : 6;
-  var chunkIdxCol = map['chunkindex'] !== undefined ? map['chunkindex'] : 7;
-  var textCol = map['chunktext'] !== undefined ? map['chunktext'] : 8;
+  var cneIdCol = cneRequireMappedColumn_(map,'cneid','Material_Index');
+  var driveCol = cneRequireMappedColumn_(map,'drivefileid','Material_Index');
+  var fileNameCol = cneRequireMappedColumn_(map,'Resource_Title','Material_Index');
+  var topicCol = cneRequireMappedColumn_(map,'topic','Material_Index');
+  var secCol = cneRequireMappedColumn_(map,'sectionheading','Material_Index');
+  var chunkIdxCol = cneRequireMappedColumn_(map,'chunkindex','Material_Index');
+  var textCol = cneRequireMappedColumn_(map,'chunktext','Material_Index');
   var keywordsCol = map['clinicalkeywords'];
-  var statusCol = map['extractionstatus'] !== undefined ? map['extractionstatus'] : 10;
+  var statusCol = cneRequireMappedColumn_(map,'extractionstatus','Material_Index');
 
   var rowCount = Math.max(0, materialIndexSheet.getLastRow() - 1);
   // Scan only the CNE ID column, then read compact blocks around matching rows.
@@ -12612,11 +12237,11 @@ function handleGetReferenceMaterial(params, session) {
   var data = sheet.getDataRange().getValues();
   var colMap = getHeaderMap(sheet);
   
-  var idCol = colMap['cneid'] !== undefined ? colMap['cneid'] : 0;
-  var topicCol = colMap['topic'] !== undefined ? colMap['topic'] : 1;
-  var refCol = colMap['referencetextclinicalguides'] !== undefined ? colMap['referencetextclinicalguides'] : (colMap['referencetext'] !== undefined ? colMap['referencetext'] : 2);
-  var updatedCol = colMap['updatedat'] !== undefined ? colMap['updatedat'] : 3;
-  var byCol = colMap['updatedby'] !== undefined ? colMap['updatedby'] : 4;
+  var idCol = cneRequireMappedColumn_(colMap,'cneid','Material_List');
+  var topicCol = cneRequireMappedColumn_(colMap,'topic','Material_List');
+  var refCol = cneRequireMappedColumn_(colMap,'Reference_Text_Clinical_Guides','Material_List');
+  var updatedCol = cneRequireMappedColumn_(colMap,'updatedat','Material_List');
+  var byCol = cneRequireMappedColumn_(colMap,'updatedby','Material_List');
   var driveFileIdCol = colMap['drivefileid'];
   var fileNameCol = colMap['filename'];
   var fileTypeCol = colMap['filetype'];
@@ -12730,10 +12355,8 @@ function handleGetCNEActivityProgress(params, session) {
   try {
     var refSheet = getOrCreateSheet('Material_List');
     var refColMap = getHeaderMap(refSheet);
-    var refIdCol = refColMap['cneid'] !== undefined ? refColMap['cneid'] : 0;
-    var refTextCol = refColMap['referencetextclinicalguides'] !== undefined
-      ? refColMap['referencetextclinicalguides']
-      : (refColMap['referencetext'] !== undefined ? refColMap['referencetext'] : 2);
+    var refIdCol = cneRequireMappedColumn_(refColMap,'cneid','Material_List');
+    var refTextCol = cneRequireMappedColumn_(refColMap,'Reference_Text_Clinical_Guides','Material_List');
     var refFileIdCol = refColMap['drivefileid'];
     var refRowNum = findExactRowInColumn_(refSheet, refIdCol, cleanId, 2);
     if (refRowNum >= 2) {
@@ -12779,9 +12402,15 @@ function handleGetCNEActivityProgress(params, session) {
   var participantsCount = 0;
   try {
     var registeredRows=cneParticipantAttendanceRows_(cleanId);
-    participantsCount=registeredRows.filter(function(row) {
-      return String(row[6]||'').trim().toUpperCase()==='ATTENDED';
-    }).length;
+    participantsCount=(function(){
+      var seen={};
+      return registeredRows.filter(function(row) {
+        if(!cneParticipantHasConfirmedAttendance_(row))return false;
+        var key=cneParticipantIdentity_(row[4],row[2],row[3]);
+        if(!key || key==='N:' || seen[key])return false;
+        seen[key]=true;return true;
+      }).length;
+    })();
   } catch (e) {
     // Do not confuse missing schema with zero attendance.
     return {success:false,errorCode:'PARTICIPANT_REGISTER_ERROR',message:String(e.message||e)};
@@ -12830,18 +12459,18 @@ function checkQuestionManagementAuthorized(session, record) {
 /**
  * Retrieve learning material text from CNE_Reference
  */
-function getCNELearningMaterial(cneId) {
-  if (!cneId) return '';
-  var sheet = getSpreadsheet('CNE').getSheetByName('Material_List');
-  if (!sheet || sheet.getLastRow() <= 1) return '';
-  var data = sheet.getDataRange().getValues();
-  for (var r = 1; r < data.length; r++) {
-    if (String(data[r][0] || '').trim().toUpperCase() === String(cneId).trim().toUpperCase()) {
-      return String(data[r][2] || '').trim();
-    }
-  }
-  return '';
-}
+/* Extracted to Extra_Code.gs: getCNELearningMaterial */
+
+
+
+
+
+
+
+
+
+
+
 
 /**
  * Get CNE AI Generation Quota Status
@@ -13755,9 +13384,9 @@ function handleValidateAiQuotaReservation(params, session) {
   if (refSheet && refSheet.getLastRow() > 1) {
     var refData = refSheet.getDataRange().getValues();
     var refColMap = getHeaderMap(refSheet);
-    var idCol = refColMap['cneid'] !== undefined ? refColMap['cneid'] : 0;
+    var idCol = cneRequireMappedColumn_(refColMap,'cneid','Material_List');
     var driveCol = refColMap['drivefileid'];
-    var textCol = refColMap['referencetextclinicalguides'] !== undefined ? refColMap['referencetextclinicalguides'] : (refColMap['referencetext'] !== undefined ? refColMap['referencetext'] : 2);
+    var textCol = cneRequireMappedColumn_(refColMap,'Reference_Text_Clinical_Guides','Material_List');
     var rpCol = refColMap['resourcepersonname'];
 
     for (var r = 1; r < refData.length; r++) {
@@ -14493,7 +14122,8 @@ function cneAiMaterialReadiness_(cneId) {
     driveFileId:'',indexCount:0,sectionCount:0,keywordCount:0,indexVersion:CNE_MATERIAL_INDEX_VERSION_};
   var ss=getSpreadsheet('CNE'),ref=ss.getSheetByName('Material_List');
   if(!ref||ref.getLastRow()<2)return result;
-  var cols=getHeaderMap(ref),idCol=cols['cneid']!==undefined?cols['cneid']:0;
+  cneHeaderLayout_(ref,['CNE_ID','Drive_File_ID','Indexing_Status','Indexed_At','Indexing_Message']);
+  var cols=getHeaderMap(ref),idCol=cneRequireMappedColumn_(cols,'CNE_ID','Material_List');
   var row=findExactRowInColumn_(ref,idCol,String(cneId).trim().toUpperCase(),2);
   if(row<2)return result;
   var values=ref.getRange(row,1,1,ref.getLastColumn()).getValues()[0];
@@ -14557,7 +14187,6 @@ function cneAiMaterialReadiness_(cneId) {
   return result;
 }
 
-function cneAiHasOwnMaterial_(cneId) {return cneAiMaterialReadiness_(cneId).hasOwnMaterial;}
 function handleGetCNEAiMaterialStatus(params, session) {
   var cneId=sanitizeCellInput(params.cneId);
   if(!session || !session.employeeId)return {success:false,errorCode:'UNAUTHORIZED',message:'Sign in required.'};
@@ -15766,22 +15395,17 @@ function getCachedSanitizedQuestions(cneId) {
  * Helper: Ensure Question Sheet has all necessary headers
  */
 function ensureQuestionsSheetHeaders(sheet) {
-  // Legacy external-source headers (Source URL, Source Retrieved At) are removed from dynamic creation.
-  // Existing sheet columns are preserved untouched.
-  return;
+  // Historical helper name retained. It validates the existing approved schema
+  // and MUST NEVER append or repair columns outside Admin Verify Sheets.
+  return cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['Post_Test_Questions']);
 }
 
 /**
- * Helper: Resolve Questions Sheet
- * Prefers 'Post_Test_Questions' tab; falls back to 'CNE_Questions' if already present.
+ * Helper: Resolve existing Post_Test_Questions sheet with canonical headers.
  */
 function getQuestionsSheet() {
-  var ss = getSpreadsheet('CNE');
-  var sheet = ss.getSheetByName('Post_Test_Questions');
-  if (!sheet) {
-    sheet = getOrCreateSheet('Post_Test_Questions');
-  }
-  ensureQuestionsSheetHeaders(sheet);
+  var sheet = getOrCreateSheet('Post_Test_Questions');
+  cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['Post_Test_Questions']);
   return sheet;
 }
 
@@ -15790,19 +15414,14 @@ function getQuestionsSheet() {
  * Dynamically resolves 0-based column indexes from the header row.
  */
 function getQuestionColIndexes(sheet) {
-  ensureQuestionsSheetHeaders(sheet);
   var standard=CNE_SHEET_HEADERS['Post_Test_Questions'];
-  var layout=cneHeaderLayout_(sheet,standard.slice(0,15));
-  var p=layout.positions,map=getHeaderMap(sheet);
-  // The two last columns are optional in historical 15-column sheets. The
-  // Verify Sheets action adds them; missing required columns never fall back.
-  if(map.questiontype!==undefined)cneHeaderLayout_(sheet,['Question_Type']);
-  if(map.imagedrivefileid!==undefined)cneHeaderLayout_(sheet,['Image_Drive_File_ID']);
+  var p=cneHeaderLayout_(sheet,standard).positions;
   return {cneId:p[0],qId:p[1],question:p[2],optA:p[3],optB:p[4],optC:p[5],optD:p[6],
     correctOption:p[7],explanation:p[8],isFinalized:p[9],isLocked:p[10],
     createdAt:p[11],createdBy:p[12],authoritativeSource:p[13],status:p[14],
-    questionType:map.questiontype,imageFileId:map.imagedrivefileid};
+    questionType:p[15],imageFileId:p[16]};
 }
+
 function buildQuestionRowArray(cols, item, totalCols, existingRow) {
   var row = existingRow ? existingRow.slice() : [];
   var targetLen = Math.max(totalCols || 0, 15);
@@ -15865,54 +15484,12 @@ function countActiveCNEQuestions(cneId) {
  * Assessment responses only. Attendance membership is stored in CNE_Participants.
  */
 /** Unified participant register. Caller must hold ScriptLock for mutations.
- * Existing registered identities keep their immutable Participant_ID / Created_At.
+ * Existing confirmed identities keep their immutable Participant_ID / Created_At.
  * A single contiguous setValues write appends every new participant in a batch;
  * existing updates are grouped by neighboring row to reduce Spreadsheet calls.
  * Post-test answers, status and scoring are stored in the same participant row.
  */
-/** In-place upgrade of the existing 11-column participant register.
- * Inserts nine columns before Created_At; Sheets shifts all existing values
- * and column metadata to the right. Never overwrite historical rows.
- * Fail closed for mixed, malformed or duplicate header layouts.
- */
-function adoptCneParticipantAssessmentHeaders_(sheet) {
-  var expected=CNE_SHEET_HEADERS['CNE_Participants'];
-  var header=sheet.getRange(1,1,1,Math.max(1,sheet.getLastColumn())).getValues()[0]
-    .map(function(v){return String(v||'').trim();});
-  var old=expected.slice(0,9).concat(['Created_At','Created_By']);
-  var present={},duplicates={};
-  header.forEach(function(value){
-    var key=value.toLowerCase().replace(/[^a-z0-9]/g,'');
-    if(!key)return;
-    if(present[key])duplicates[key]=true;
-    present[key]=true;
-  });
-  old.forEach(function(name){
-    var key=name.toLowerCase().replace(/[^a-z0-9]/g,'');
-    if(duplicates[key]||!present[key])throw new Error('Invalid or missing participant header: '+name+'. Review before migration.');
-  });
-  if(expected.every(function(name){return present[name.toLowerCase().replace(/[^a-z0-9]/g,'')];})){
-    cneHeaderLayout_(sheet,expected); // Reject duplicate required headers, allow any order.
-    return;
-  }
-  var missing=expected.filter(function(name){return !present[name.toLowerCase().replace(/[^a-z0-9]/g,'')];});
-  // A partially migrated register needs manual review rather than risk a second insert.
-  if(missing.length!==9 || !missing.every(function(name){return expected.slice(9,18).indexOf(name)>=0;}))
-    throw new Error('Partial participant assessment schema. Back up and review before changing headers.');
-  var originalOrder=header.length===11 && old.every(function(name,i){return header[i]===name;});
-  if(originalOrder){
-    // The historical layout's existing Created fields shift right safely.
-    sheet.insertColumnsBefore(10,9);
-    sheet.getRange(1,10,1,9).setValues([expected.slice(9,18)]);
-  }else{
-    // Nonstandard order: append missing fields without moving ANY existing cells.
-    var first=sheet.getLastColumn()+1;
-    if(sheet.getMaxColumns()<first+missing.length-1)
-      sheet.insertColumnsAfter(sheet.getMaxColumns(),first+missing.length-1-sheet.getMaxColumns());
-    sheet.getRange(1,first,1,missing.length).setValues([missing]);
-  }
-  cneHeaderLayout_(sheet,expected);
-}
+
 function cneParticipantSheet_() {
   var sh=getSpreadsheet('CNE').getSheetByName('CNE_Participants');
   if(!sh)throw new Error('CNE_Participants is missing. Run Admin Verify Sheets first.');
@@ -15933,7 +15510,12 @@ function cneParticipantRows_(cneId, sheet) {
   var hits=cneParticipantMatchedRows_(sh,cneId);
   return hits;
 }
-function cneParticipantUpsertBatch_(cneId, people, actor, sheet) {
+
+/** Insert or merge confirmed attendees only; never create planned/OTP-only rows.
+ * Existing attendance is never revoked by ordinary CNE editing.
+ * Caller must hold the global ScriptLock.
+ */
+function cneRecordConfirmedAttendanceBatch_(cneId, people, actor, sheet) {
   if (!people || !people.length) return {inserted:0, updated:0};
   var sh=sheet || cneParticipantSheet_();
   var layout=cneParticipantLayout_(sh);
@@ -15958,8 +15540,11 @@ function cneParticipantUpsertBatch_(cneId, people, actor, sheet) {
     var key=cneParticipantIdentity_(t,eid,name);
     if (!key || seen[key]) return;
     seen[key]=true;
-    var attended=String(person.status||'').toUpperCase()==='ATTENDED';
-    var source=attended?String(person.source||'MANUAL').toUpperCase():'';
+    // No planned or pending records may be saved in the participant register.
+    if(String(person.status||'ATTENDED').toUpperCase()!=='ATTENDED') throw new Error('ATTENDANCE_NOT_CONFIRMED');
+    var source=String(person.source||'MANUAL').trim().toUpperCase();
+    if(['MANUAL','QR','POST_TEST','RETROSPECTIVE'].indexOf(source)===-1)
+      throw new Error('INVALID_ATTENDANCE_SOURCE');
     var old=lookup[key];
     if (!old && t==='EXTERNAL' && eid && name) old=lookup['N:'+name.toLowerCase()];
     if (old) {
@@ -15967,16 +15552,15 @@ function cneParticipantUpsertBatch_(cneId, people, actor, sheet) {
       if (t==='EXTERNAL' && eid && !row[2]) row[2]=eid;
       if (!row[3] && name) row[3]=name;
       if (!row[5] && person.designation) row[5]=sanitizeCellInput(String(person.designation));
-      if (attended && String(row[6]||'').toUpperCase()!=='ATTENDED') {
-        row[6]='ATTENDED'; row[7]=source; row[8]=String(person.attendanceAt||now);
+      if (!cneParticipantHasConfirmedAttendance_(row)) {
+        row[6]='ATTENDED'; row[7]=source;
       }
       if (JSON.stringify(row)!==JSON.stringify(old.values)) updates.push({row:old.row,values:row});
     } else {
       var values=['PART-'+Utilities.getUuid(),cneId,eid,name,t,
-        sanitizeCellInput(String(person.designation||'')),attended?'ATTENDED':'PENDING',
-        source,attended?String(person.attendanceAt||now):'',
+        sanitizeCellInput(String(person.designation||'')),'ATTENDED',source,
         'NOT_TAKEN','','','','','','','','',now,String(actor||'SYSTEM')];
-      if(values.length!==20)throw new Error('Invalid participant row width.');
+      if(values.length!==19)throw new Error('Invalid participant row width.');
       inserts.push(values);
       lookup[key]={row:-1,values:values};
     }
@@ -15995,71 +15579,43 @@ function cneParticipantUpsertBatch_(cneId, people, actor, sheet) {
   }
   return {inserted:inserts.length,updated:updates.length};
 }
-/** Replace only the pending portion of a scheduled CNE roster.
- * ATTENDED history is immutable through ordinary Edit CNE; confirmation requires
- * the attendance endpoints. Delete pending rows in reverse contiguous blocks.
- * Caller must hold the global ScriptLock.
- */
-function cneParticipantReplacePendingRoster_(cneId, people, includeInternal, includeExternal, actor) {
-  var sh=cneParticipantSheet_();
-  var wanted={};
-  people.forEach(function(person) {
-    var t=person.type==='EXTERNAL'?'EXTERNAL':'INTERNAL';
-    var key=cneParticipantIdentity_(t,person.employeeId,person.name);
-    if(key)wanted[key]=true;
-  });
-  var layout=cneParticipantLayout_(sh);
-  var matches=findExactRowsInColumn_(sh,layout.positions[1],cneId,2),remove=[];
-  matches.sort(function(a,b){return a-b;});
-  for(var i=0;i<matches.length;) {
-    var start=matches[i],last=start;i++;
-    while(i<matches.length && matches[i]===last+1){last=matches[i];i++;}
-    var oldRows=cneReadHeaderRows_(sh,layout.names,start,last-start+1,layout);
-    for(var x=0;x<oldRows.length;x++) {
-      var vals=oldRows[x],t=String(vals[4]||'').toUpperCase();
-      if ((t==='INTERNAL'&&!includeInternal)||(t==='EXTERNAL'&&!includeExternal))continue;
-      if(String(vals[6]||'').toUpperCase()!=='PENDING')continue;
-      var key=cneParticipantIdentity_(t,vals[2],vals[3]);
-      if(!wanted[key])remove.push(start+x);
-    }
-  }
-  remove.sort(function(a,b){return b-a;});
-  for(var k=0;k<remove.length;) {
-    var high=remove[k],low=high;k++;
-    while(k<remove.length&&remove[k]===low-1){low=remove[k];k++;}
-    sh.deleteRows(low,high-low+1);
-  }
-  return cneParticipantUpsertBatch_(cneId,people,actor,sh);
-}
-function cneScheduleRosterParticipants_(staff,external,attended,officers) {
-  var people=[], ids={}, names={};
-  String(staff||'').split(/[,;\n\r]+/).forEach(function(v){
-    var id=normalizeEmpId(v);if(!id||ids[id])return;ids[id]=true;
-    var info=officers&&officers[id];
-    people.push({employeeId:id,name:typeof info==='string'?info:(info&&info.name)||id,type:'INTERNAL',designation:(info&&info.designation)||'',status:attended?'ATTENDED':'PENDING',source:attended?'RETROSPECTIVE':''});
-  });
-  String(external||'').split(/[,;\n\r]+/).forEach(function(v){
-    var name=String(v||'').trim(),key=name.toLowerCase();if(!key||names[key])return;names[key]=true;
-    people.push({name:name,type:'EXTERNAL',designation:'External Participant',status:attended?'ATTENDED':'PENDING',source:attended?'RETROSPECTIVE':''});
-  });
-  return people;
-}
+
+
 
 /** A single canonical participant row is the assessment and attendance transaction boundary.
  * Caller holds ScriptLock. One physical row write commits both states together.
  */
-function cneParticipantFindByIdentity_(cneId, participantId, participantType) {
-  var sh=cneParticipantSheet_();
-  var rows=cneParticipantMatchedRows_(sh,cneId);
-  var identity=cneParticipantIdentity_(participantType,participantId,'');
-  for(var i=0;i<rows.length;i++) {
-    if(cneParticipantIdentity_(rows[i][4],rows[i][2],rows[i][3])===identity) return {sheet:sh,values:rows[i]};
-  }
-  return null;
+/* Extracted to Extra_Code.gs: cneParticipantFindByIdentity_ */
+
+
+
+
+
+
+
+
+function cneBuildRetrospectiveAttendees_(staff,external,officers) {
+  var people=[], ids={}, names={};
+  String(staff||'').split(/[,;\n\r]+/).forEach(function(v){
+    var id=normalizeEmpId(v);if(!id||ids[id])return;ids[id]=true;
+    var info=officers&&officers[id];
+    people.push({employeeId:id,name:typeof info==='string'?info:(info&&info.name)||id,type:'INTERNAL',designation:(info&&info.designation)||'',status:'ATTENDED',source:'RETROSPECTIVE'});
+  });
+  String(external||'').split(/[,;\n\r]+/).forEach(function(v){
+    var name=String(v||'').trim(),key=name.toLowerCase();if(!key||names[key])return;names[key]=true;
+    people.push({name:name,type:'EXTERNAL',designation:'External Participant',status:'ATTENDED',source:'RETROSPECTIVE'});
+  });
+  return people;
 }
+
 function cnePostTestCompleted_(row) {
-  return String((row||[])[9]||'').trim().toUpperCase()==='COMPLETED';
+  return String((row||[])[8]||'').trim().toUpperCase()==='COMPLETED';
 }
+
+
+/**
+ * Helper: Resolve QR Tokens Sheet
+ */
 function saveUnifiedPostTest_(cneId, participantId, participantType, name, designation, answers, snapshot, scored, actor, timestamp, responseId) {
   var sh=cneParticipantSheet_();
   var layout=cneParticipantLayout_(sh);
@@ -16070,34 +15626,40 @@ function saveUnifiedPostTest_(cneId, participantId, participantType, name, desig
     var key=cneParticipantIdentity_(values[4],values[2],values[3]);
     if(key===identity) {targetRow=matches[i];existing=values;break;}
   }
+  if(!existing && participantType==='EXTERNAL' && name) {
+    var byName=[];
+    for(var j=0;j<matches.length;j++) {
+      var candidate=cneReadHeaderRows_(sh,layout.names,matches[j],1,layout)[0];
+      if(String(candidate[4]||'')==='EXTERNAL' && !String(candidate[2]||'').trim() &&
+         String(candidate[3]||'').trim().toLowerCase()===String(name).trim().toLowerCase())
+        byName.push({row:matches[j],values:candidate});
+    }
+    if(byName.length===1){targetRow=byName[0].row;existing=byName[0].values;}
+  }
   if(existing && cnePostTestCompleted_(existing)) return {alreadySubmitted:true};
   var now=timestamp || new Date().toISOString();
   var isExternal=participantType==='EXTERNAL';
   var row=existing?existing.slice():['PART-'+Utilities.getUuid(),cneId,participantId,name,participantType,designation,
-    'PENDING','','','NOT_TAKEN','','','','','','','','',now,String(actor||'POST_TEST')];
+    'ATTENDED','POST_TEST','NOT_TAKEN','','','','','','','','',now,String(actor||'POST_TEST')];
   row[2]=participantId; if(!row[3])row[3]=sanitizeCellInput(name);
   if(!row[5])row[5]=sanitizeCellInput(designation);
-  if(String(row[6]||'').toUpperCase()!=='ATTENDED') {
-    row[6]='ATTENDED';row[7]='POST_TEST';row[8]=now;
+  if(!cneParticipantHasConfirmedAttendance_(row)) {
+    row[6]='ATTENDED';row[7]='POST_TEST';
   }
-  row[9]='COMPLETED';row[10]=responseId;
-  row[11]=JSON.stringify(answers);row[12]=scored.score;row[13]=scored.total;
-  row[14]=scored.percentage;row[15]=now;
-  row[16]=JSON.stringify(snapshot.answerKeys.map(function(q){return {id:q.id,correctOption:q.correctOption};}));
-  row[17]=scored.status;
-  if(row.length!==20)throw new Error('Invalid participant row width.');
+  row[8]='COMPLETED';row[9]=responseId;
+  row[10]=JSON.stringify(answers);row[11]=scored.score;row[12]=scored.total;
+  row[13]=scored.percentage;row[14]=now;
+  row[15]=JSON.stringify(snapshot.answerKeys.map(function(q){return {id:q.id,correctOption:q.correctOption};}));
+  row[16]=scored.status;
+  if(row.length!==19)throw new Error('Invalid participant row width.');
   // Google Sheets cell size limits: fail without writing any result if too large.
-  if(row[11].length>48000 || row[16].length>48000)throw new Error('Post-test JSON exceeds safe cell size.');
+  if(row[10].length>48000 || row[15].length>48000)throw new Error('Post-test JSON exceeds safe cell size.');
   var rowNumber=targetRow || sh.getLastRow()+1;
   if(rowNumber>sh.getMaxRows())sh.insertRowsAfter(sh.getMaxRows(),rowNumber-sh.getMaxRows());
   if(targetRow)cneUpdateHeaderRows_(sh,layout.names,rowNumber,[row],layout);
   else cneWriteHeaderRows_(sh,layout.names,[row],rowNumber,layout);
   return {alreadySubmitted:false,row:row,responseId:responseId};
 }
-
-/**
- * Helper: Resolve QR Tokens Sheet
- */
 function getQRTokensSheet() {
   return getOrCreateSheet('QR_Tokens');
 }
@@ -16121,7 +15683,7 @@ function isCNEQuestionsLocked(cneId) {
   var assessmentRows=cneParticipantAllRows_(partSheet,['CNE_ID','Post_Test_Status']);
   for(var p=0;p<assessmentRows.length;p++) {
     if(String(assessmentRows[p][1]||'').trim().toUpperCase()===target &&
-       String(assessmentRows[p][9]||'').trim().toUpperCase()==='COMPLETED') {
+       String(assessmentRows[p][8]||'').trim().toUpperCase()==='COMPLETED') {
       markCNEQuestionsLockedCache_(cneId);return true;
     }
   }
@@ -16571,7 +16133,7 @@ function deactivateQRTokensForCNE(cneId, qrColMap) {
   }
 }
 
-function generatePostTestParticipantVerificationToken(cneId, participantId, participantType) {
+function generatePostTestParticipantVerificationToken(cneId, participantId, participantType, participantName) {
   var secret = PropertiesService.getScriptProperties().getProperty('SESSION_SECRET');
   if (!secret || !secret.trim()) throw new Error('SESSION_SECRET is not configured in Script Properties.');
   var type = String(participantType || '').trim().toUpperCase();
@@ -16579,6 +16141,11 @@ function generatePostTestParticipantVerificationToken(cneId, participantId, part
   var pid = String(participantId || '').trim().toUpperCase();
   var timestamp = Date.now();
   var nonce = Utilities.getUuid().replace(/-/g, '');
+  if(type==='EXTERNAL') {
+    var verifiedName=String(participantName||'').trim();
+    if(verifiedName.length<2 || verifiedName.length>200) throw new Error('INVALID_EXTERNAL_NAME');
+    nonce+='~'+Utilities.base64EncodeWebSafe(verifiedName,Utilities.Charset.UTF_8);
+  }
   var payload = 'PT|' + type + '|' + cne + '|' + pid + '|' + timestamp + '|' + nonce;
   var sigBytes = Utilities.computeHmacSha256Signature(payload, secret.trim());
   var signature = sigBytes.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
@@ -16606,7 +16173,15 @@ function verifyPostTestParticipantVerificationToken(token, expectedCneId) {
   var sigBytes = Utilities.computeHmacSha256Signature(payload, secret.trim());
   var expectedSig = sigBytes.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
   if (!timingSafeEqual(receivedSig, expectedSig)) return null;
-  return { participantType: type, cneId: cneId, participantId: participantId };
+  var verifiedName='';
+  if(type==='EXTERNAL') {
+    var encoded=nonce.split('~');
+    if(encoded.length!==2 || !encoded[1]) return null;
+    try {verifiedName=Utilities.newBlob(Utilities.base64DecodeWebSafe(encoded[1])).getDataAsString('UTF-8').trim();}
+    catch(e) {return null;}
+    if(verifiedName.length<2 || verifiedName.length>200)return null;
+  }
+  return { participantType:type, cneId:cneId, participantId:participantId,participantName:verifiedName };
 }
 
 function findExternalRegistration(cneId, participantId) {
@@ -16629,19 +16204,20 @@ function buildPostTestOtpPrincipal(cneId, identity) {
   return cne && id ? (cne + '#' + id) : '';
 }
 
+
+
 function findExistingPostTestSubmission(cneId, participantId) {
   var rows=cneParticipantRows_(cneId),pid=String(participantId||'').trim().toUpperCase();
   for(var i=0;i<rows.length;i++) {
     var row=rows[i];
     if(String(row[2]||'').trim().toUpperCase()!==pid || !cnePostTestCompleted_(row))continue;
-    return {responseId:String(row[10]||''),participantId:pid,participantName:String(row[3]||''),
-      designation:String(row[5]||''),score:row[12],totalQuestions:row[13],percentage:row[14],
-      submittedAt:String(row[15]||''),answersJson:String(row[11]||''),
-      questionsJson:String(row[16]||''),status:String(row[17]||'')};
+    return {responseId:String(row[9]||''),participantId:pid,participantName:String(row[3]||''),
+      designation:String(row[5]||''),score:row[11],totalQuestions:row[12],percentage:row[13],
+      submittedAt:String(row[14]||''),answersJson:String(row[10]||''),
+      questionsJson:String(row[15]||''),status:String(row[16]||'')};
   }
   return null;
 }
-
 /**
  * Reconstruct the original, immutable post-test review from a saved response.
  * Original score/timestamp always come from CNE_Responses; never regrade or overwrite it.
@@ -17082,23 +16658,16 @@ function handleVerifyPostTestOtp(params, session) {
     var verifiedAt = new Date().toISOString();
     cneUpdateHeaderFields_(otpSheet, challenge.rowIndex, {'OTP_Hash':'','Verified_At':verifiedAt,'Consumed_At':verifiedAt,'Status':'CONSUMED','Updated_At':verifiedAt});
 
-    // For external participants, persist registration only after successful email ownership verification.
-    if (participantType === 'EXTERNAL') {
-      var existing = findExternalRegistration(cneId, participantId);
-      if (existing && existing.name && existing.name.toLowerCase() !== externalName.toLowerCase()) {
-        return { success: false, errorCode: 'EXTERNAL_EMAIL_ALREADY_REGISTERED', message: 'This email is already registered for this CNE under another participant name.' };
-      }
-      if (!existing) {
-        // Successful OTP verification establishes identity, not attendance.
-        cneParticipantUpsertBatch_(cneId,[{employeeId:participantId,name:externalName,
-          type:'EXTERNAL',designation:'External Participant',status:'PENDING'}],
-          'POST_TEST_OTP');
-        logAuditAction('REGISTER_EXTERNAL_POST_TEST_PARTICIPANT', participantId,
-          'CNE: '+cneId+', verified email ownership', 'SUCCESS');
-      }
+    // OTP verification proves email ownership, but never creates attendance.
+    // The short-lived signed token binds the external name to this identity.
+    if(participantType==='EXTERNAL') {
+      var prior=findExternalRegistration(cneId,participantId);
+      if(prior && prior.name && prior.name.toLowerCase()!==externalName.toLowerCase())
+        return {success:false,errorCode:'EXTERNAL_EMAIL_ALREADY_REGISTERED',
+          message:'This email is already linked to a different participant name for this CNE.'};
     }
 
-    var verificationToken = generatePostTestParticipantVerificationToken(cneId, participantId, participantType);
+    var verificationToken = generatePostTestParticipantVerificationToken(cneId, participantId, participantType, participantName);
     logAuditAction('POST_TEST_OTP_VERIFIED', participantId, 'CNE: ' + cneId + ', type: ' + participantType, 'SUCCESS');
 
     return {
@@ -17120,23 +16689,6 @@ function handleVerifyPostTestOtp(params, session) {
     lock.releaseLock();
   }
 }
-
-/**
- * Legacy participant-verification endpoint is deliberately disabled as a direct
- * Employee ID + DOJ / Name + Email bypass. New clients must use the email OTP flow.
- * A challenge+OTP payload is accepted here only as a compatibility alias.
- */
-function handleVerifyPostTestParticipant(params, session) {
-  if (params && params.challengeId && params.otp) {
-    return handleVerifyPostTestOtp(params, session);
-  }
-  return {
-    success: false,
-    errorCode: 'POST_TEST_OTP_REQUIRED',
-    message: 'Email OTP verification is required before the Post-Test can be opened.'
-  };
-}
-
 function handleGetQRToken(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
@@ -17303,9 +16855,8 @@ function handleGetPostTestQuestions(params, session) {
     if (!officer || !officer.name) return { success: false, errorCode: 'INVALID_EMPLOYEE_ID', message: 'Verified employee is no longer present in the Officers data.' };
     participantName = officer.name;
   } else {
-    var registration = findExternalRegistration(cneId, participantId);
-    if (!registration) return { success: false, errorCode: 'EXTERNAL_REGISTRATION_REQUIRED', message: 'External participant registration was not found. Please register again.' };
-    participantName = registration.name;
+    participantName = isPublicQrAccess && verification ? String(verification.participantName||'') : '';
+    if(!participantName)return {success:false,errorCode:'PARTICIPANT_VERIFICATION_REQUIRED',message:'External identity verification is required.'};
   }
 
   var existingSubmission = findExistingPostTestSubmission(cneId, participantId);
@@ -17446,12 +16997,10 @@ function handleSubmitPostTest(params, session) {
     designation = liveParticipantOfficer.designation || 'Nursing Officer';
     department = liveParticipantOfficer.department || record.area || '';
   } else if (participantType === 'EXTERNAL') {
-    var registration = findExternalRegistration(cneId, participantId);
-    if (!registration) return { success: false, errorCode: 'EXTERNAL_REGISTRATION_REQUIRED', message: 'External participant registration was not found. Please register again.' };
-    participantName = registration.name;
-    designation = registration.designation || 'External Participant';
-    department = registration.department || record.area || 'External';
-    responseRemarks = registration.email ? ('External Email: ' + registration.email) : '';
+    participantName = verification ? String(verification.participantName||'') : '';
+    if(!participantName)return {success:false,errorCode:'PARTICIPANT_VERIFICATION_REQUIRED',message:'External identity verification is required.'};
+    designation = 'External Participant';
+    department = record.area || 'External';
   } else {
     return { success: false, errorCode: 'INVALID_PARTICIPANT_TYPE', message: 'Verified participant type is invalid.' };
   }
@@ -17503,12 +17052,11 @@ function handleSubmitPostTest(params, session) {
     record = liveRecord;
 
     if (participantType === 'EXTERNAL') {
-      var liveRegistration = findExternalRegistration(cneId, participantId);
-      if (!liveRegistration) return { success: false, errorCode: 'EXTERNAL_REGISTRATION_REQUIRED', message: 'External participant registration was not found. Please register again.' };
-      participantName = liveRegistration.name;
-      designation = liveRegistration.designation || 'External Participant';
-      department = liveRegistration.department || liveRecord.area || 'External';
-      responseRemarks = liveRegistration.email ? ('External Email: ' + liveRegistration.email) : '';
+      // Recheck the signed external name without depending on pending registration.
+      var liveVerification=verifyPostTestParticipantVerificationToken(params.participantVerificationToken,cneId);
+      if(!liveVerification || liveVerification.participantId!==participantId || !liveVerification.participantName)
+        return {success:false,errorCode:'PARTICIPANT_VERIFICATION_REQUIRED',message:'Please verify the external participant again.'};
+      participantName=liveVerification.participantName;
     }
 
     if (findExistingPostTestSubmission(cneId, participantId)) {
@@ -17719,7 +17267,7 @@ function handleAddManualParticipants(params, session) {
     }
 
     var existingEmpIds = {}, existingNames = {}, registrationByName = {};
-    // Verified external identities are held in CNE_Participants as PENDING.
+    // Only existing confirmed external attendees are in CNE_Participants.
     cneParticipantRows_(cneId).forEach(function(pr){
       if(String(pr[4]||'').toUpperCase()!=='EXTERNAL')return;
       var id=String(pr[2]||'').trim(),nm=String(pr[3]||'').trim().toLowerCase();
@@ -17728,9 +17276,9 @@ function handleAddManualParticipants(params, session) {
         registrationByName[nm][id]=true;
       }
     });
-    // One CNE-scoped register read; PENDING can be upgraded to ATTENDED.
+    // One CNE-scoped register read of confirmed attendance.
     cneParticipantRows_(cneId).forEach(function(pr) {
-      if(String(pr[6]||'').toUpperCase()!=='ATTENDED')return;
+      if(!cneParticipantHasConfirmedAttendance_(pr))return;
       var id=normalizeEmpId(pr[2]);
       var nm=String(pr[3]||'').trim().toLowerCase();
       if(id)existingEmpIds[id]=true;
@@ -17769,14 +17317,13 @@ function handleAddManualParticipants(params, session) {
       }
     }
 
-    // One append block for all new attendees; update existing pending rows in
-    // contiguous batches. No duplicate manual attendance response rows are created.
+    // One append block for new confirmed attendees. No pending rows are created.
     var incoming=validatedList.map(function(item){
       return {employeeId:item.empId,name:item.manualName,
         type:item.empId && !isExternalParticipantId(item.empId)?'INTERNAL':'EXTERNAL',
         designation:item.designation,status:'ATTENDED',source:'MANUAL'};
     });
-    var saved=cneParticipantUpsertBatch_(cneId,incoming,session.employeeId);
+    var saved=cneRecordConfirmedAttendanceBatch_(cneId,incoming,session.employeeId);
     var auditEntries=validatedList.map(function(item){return {
       action:'ADD_MANUAL_PARTICIPANT',employeeId:session.employeeId,
       details:'Recorded attendee '+(item.empId||item.manualName)+' for CNE: '+cneId,status:'SUCCESS'
@@ -17795,29 +17342,16 @@ function handleAddManualParticipants(params, session) {
     lock.releaseLock();
   }
 }
-
-/**
- * A registration/OTP verification is not evidence of CNE attendance.
- * Only a recorded manual/QR attendance or an actual Post-Test response qualifies.
- * Keep this policy shared by Progress, Participants and Finalization to prevent
- * inconsistent totals. Historical records with an accepted Source and a blank
- * Status remain valid; explicit registration/pending/revoked statuses do not.
- * Fail closed for missing, unsupported or ambiguous Source values.
- */
-function isConfirmedCNEAttendanceResponse_(source, status) {
-  var normalizedSource = String(source || '').trim().toUpperCase();
-  var normalizedStatus = String(status || '').trim().toUpperCase();
-  if (normalizedSource === 'EXTERNAL_REGISTRATION') return false;
-  if (normalizedStatus === 'REGISTERED' || normalizedStatus === 'PENDING' ||
-      normalizedStatus === 'CANCELED' || normalizedStatus === 'CANCELLED' ||
-      normalizedStatus === 'REVOKED' || normalizedStatus === 'INVALID') return false;
-  return normalizedSource === 'MANUAL' || normalizedSource === 'QR' || normalizedSource === 'POST_TEST';
-}
-
 /**
  * Get All Participants for CNE & Calculate Pure Average Score
  * Note: Average Score is computed EXCLUSIVELY from POST_TEST participants!
  * If no post-test submissions exist, averageScore is null (never 0).
+ */
+
+
+/**
+ * Finalize CNE Session and Update CNE Schedule Record
+ * Atomic & In-place lifecycle update via ScriptLock
  */
 function handleGetCNEParticipants(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
@@ -17830,30 +17364,45 @@ function handleGetCNEParticipants(params, session) {
   var participantsReadStartedAt = Date.now();
   var participants=[];
   var rosterEntries=cneParticipantRows_(cneId);
+  // Merge duplicate rows for the same CNE-scoped identity without altering
+  // data. Prefer confirmed attendance, then a completed Post-Test.
+  var uniqueEntries={}, entryOrder=[];
   for(var ri=0;ri<rosterEntries.length;ri++) {
-    var rr=rosterEntries[ri],pid=String(rr[2]||'').trim(),name=String(rr[3]||'').trim();
+    var row=rosterEntries[ri];
+    var identity=cneParticipantIdentity_(row[4],row[2],row[3]);
+    if(!identity || identity==='N:')continue;
+    if(!Object.prototype.hasOwnProperty.call(uniqueEntries,identity)) {
+      uniqueEntries[identity]=row;entryOrder.push(identity);
+    } else {
+      var prior=uniqueEntries[identity];
+      var newAttend=cneParticipantHasConfirmedAttendance_(row),oldAttend=cneParticipantHasConfirmedAttendance_(prior);
+      if((newAttend && !oldAttend) || (newAttend===oldAttend && cnePostTestCompleted_(row) && !cnePostTestCompleted_(prior)))
+        uniqueEntries[identity]=row;
+    }
+  }
+  for(var ri=0;ri<entryOrder.length;ri++) {
+    var rr=uniqueEntries[entryOrder[ri]],pid=String(rr[2]||'').trim(),name=String(rr[3]||'').trim();
     var external=String(rr[4]||'').toUpperCase()==='EXTERNAL';
-    var attended=String(rr[6]||'').toUpperCase()==='ATTENDED';
+    var attended=cneParticipantHasConfirmedAttendance_(rr);
+    if(!attended)continue; // Never display unconfirmed/invalid records as attendees.
     var postTest=cnePostTestCompleted_(rr);
     participants.push({
       id:String(rr[0]||''),cneId:cneId,employeeId:external?'':pid,
       externalParticipantId:external?pid:'',name:name,designation:String(rr[5]||''),department:'',
       participantType:postTest?'POST_TEST':(external?'EXTERNAL':'MANUAL'),
-      score:postTest?Number(rr[12]):null,totalQuestions:postTest?Number(rr[13]):null,
-      percentage:postTest?Number(rr[14]):null,source:String(rr[7]||''),
-      submittedAt:postTest?String(rr[15]||''):String(rr[8]||''),
-      answersJson:postTest?String(rr[11]||''):'',status:attended?'ATTENDED':'PENDING',remarks:''
+      score:postTest?Number(rr[11]):null,totalQuestions:postTest?Number(rr[12]):null,
+      percentage:postTest?Number(rr[13]):null,source:String(rr[7]||''),
+      submittedAt:postTest?String(rr[14]||''):String(rr[17]||''),
+      answersJson:postTest?String(rr[10]||''):'',status:'ATTENDED',remarks:''
     });
   }
   var postTestCount = 0;
   var manualCount = 0;
-  var pendingCount = 0;
   var attendedCount = 0;
   var totalScorePercent = 0;
   var scoredPostTests = 0;
   for (var i = 0; i < participants.length; i++) {
     var item = participants[i];
-    if (item.status === 'PENDING') {pendingCount++;continue;}
     attendedCount++;
     if (item.participantType === 'POST_TEST') {
       postTestCount++;
@@ -17874,9 +17423,8 @@ function handleGetCNEParticipants(params, session) {
       topic: record.topic,
       area: record.area,
       status: record.status,
-      totalParticipants: participants.length,
+      totalParticipants: attendedCount,
       attendedCount: attendedCount,
-      pendingCount: pendingCount,
       postTestCount: postTestCount,
       manualCount: manualCount,
       averageScore: avgScore,
@@ -17884,11 +17432,6 @@ function handleGetCNEParticipants(params, session) {
     }
   };
 }
-
-/**
- * Finalize CNE Session and Update CNE Schedule Record
- * Atomic & In-place lifecycle update via ScriptLock
- */
 function handleFinalizeCNE(params, session) {
   var cneId = sanitizeCellInput(params.cneId);
   if (!cneId) return { success: false, message: 'CNE ID is required.' };
@@ -17984,7 +17527,7 @@ function handleFinalizeCNE(params, session) {
     var registered=cneParticipantRows_(cneId);
     for(var pi=0;pi<registered.length;pi++) {
       var pr=registered[pi];
-      if(String(pr[6]||'').toUpperCase()!=='ATTENDED')continue;
+      if(!cneParticipantHasConfirmedAttendance_(pr))continue;
       var emp=String(pr[2]||'').trim(),nm=String(pr[3]||'').trim();
       var key=emp?('ID:'+emp.toUpperCase()):('NAME:'+nm.toLowerCase());
       if(key==='NAME:')continue;
@@ -17995,8 +17538,8 @@ function handleFinalizeCNE(params, session) {
       var rawEmp=String(scoredRow[2]||'').trim().toUpperCase(),pName=String(scoredRow[3]||'').trim();
       var k=rawEmp?('ID:'+rawEmp):('NAME:'+pName.toLowerCase());
       if(!participantMap[k])continue;
-      var pct=Number(scoredRow[14]);
-      if(scoredRow[14]!=='' && isFinite(pct) && pct>=0 && pct<=100) {
+      var pct=Number(scoredRow[13]);
+      if(scoredRow[13]!=='' && isFinite(pct) && pct>=0 && pct<=100) {
         participantMap[k].percentage=pct;participantMap[k].postTestCompleted=true;
       }
     }
@@ -18034,7 +17577,13 @@ function handleFinalizeCNE(params, session) {
     // 8. One bounded row read + one setValues() call for all finalization
     // fields. Avoid multiple per-column round trips inside ScriptLock.
     var isWardFinalize = liveFinalizeType === 'WARD_LEVEL';
-    if (isWardFinalize) ensureCneScheduleCoverageHeaders_(cneSheet);
+    // Require every field this finalization actually writes/reads by header name.
+    // Never append missing columns or guess a physical offset.
+    var finalizeNames=['Status','Admin_Remarks'];
+    if (isWardFinalize) finalizeNames=finalizeNames.concat([
+      'Total_Allotted_Staff','Internal_Attendance_Count','Attendance_Percentage',
+      'Post_Test_Outcome_Percentage','Coverage_Finalized_At']);
+    cneHeaderLayout_(cneSheet,finalizeNames);
     var colMap = getHeaderMap(cneSheet);
     var rowWidth=cneSheet.getLastColumn();
     var finalRow=cneSheet.getRange(liveRecord.rowIndex,1,1,rowWidth).getValues()[0];
@@ -18173,83 +17722,16 @@ function normalizeHeaderKey_(name) {
 }
 
 /**
- * Resolves or creates the append-only 'Deleted_Archive' sheet in the CNE spreadsheet.
- * Dynamic: Preserves every current column in 'CNE_Schedule' plus 'Deleted_At', 'Deleted_By', 'Delete_Reason'.
+ * Resolves the existing Deleted_Archive schema without creating or editing headers.
+ * Admin Verify Sheets is the only schema initialization and repair workflow.
  */
 function getOrCreateDeletedArchiveSheet_(ss, scheduleSheet) {
-  var sheet = ss.getSheetByName('Deleted_Archive');
-  if (!sheet) {
-    sheet = ss.insertSheet('Deleted_Archive');
-    var schedHeaders = (scheduleSheet && scheduleSheet.getLastColumn() > 0)
-      ? scheduleSheet.getRange(1, 1, 1, scheduleSheet.getLastColumn()).getValues()[0]
-      : (CNE_SHEET_HEADERS['CNE_Schedule'] || []);
-    
-    var archHeaders = [];
-    var seenKeys = {};
-    for (var i = 0; i < schedHeaders.length; i++) {
-      var h = String(schedHeaders[i] || '').trim();
-      if (!h) {
-        throw new Error('CNE Schedule contains a blank header at column ' + (i + 1) + '.');
-      }
-      var k = normalizeHeaderKey_(h);
-      if (seenKeys[k]) {
-        throw new Error('CNE Schedule contains duplicate or conflicting header: "' + h + '".');
-      }
-      seenKeys[k] = true;
-      archHeaders.push(h);
-    }
-    if (!seenKeys['deletedat']) archHeaders.push('Deleted_At');
-    if (!seenKeys['deletedby']) archHeaders.push('Deleted_By');
-    if (!seenKeys['deletereason']) archHeaders.push('Delete_Reason');
-    
-    sheet.getRange(1, 1, 1, archHeaders.length).setValues([archHeaders]);
-    sheet.getRange(1, 1, 1, archHeaders.length).setFontWeight('bold');
-    sheet.setFrozenRows(1);
-    SpreadsheetApp.flush();
-    return sheet;
-  }
-  
-  var archLastCol = sheet.getLastColumn();
-  var existingArchHeaders = archLastCol > 0 ? sheet.getRange(1, 1, 1, archLastCol).getValues()[0] : [];
-  var existingKeys = [];
-  var seenArchKeys = {};
-  for (var a = 0; a < existingArchHeaders.length; a++) {
-    var aName = String(existingArchHeaders[a] || '').trim();
-    if (!aName) {
-      throw new Error('CNE Deleted Archive contains a blank header at column ' + (a + 1) + '.');
-    }
-    var aKey = normalizeHeaderKey_(aName);
-    if (seenArchKeys[aKey]) {
-      throw new Error('CNE Deleted Archive contains duplicate or conflicting header: "' + aName + '".');
-    }
-    seenArchKeys[aKey] = true;
-    existingKeys.push(aKey);
-  }
-  
-  var schedHeaders = (scheduleSheet && scheduleSheet.getLastColumn() > 0)
-    ? scheduleSheet.getRange(1, 1, 1, scheduleSheet.getLastColumn()).getValues()[0]
-    : [];
-  
-  var missing = [];
-  for (var s = 0; s < schedHeaders.length; s++) {
-    var sName = String(schedHeaders[s] || '').trim();
-    if (!sName) continue;
-    var sKey = normalizeHeaderKey_(sName);
-    if (existingKeys.indexOf(sKey) === -1) {
-      missing.push(sName);
-      existingKeys.push(sKey);
-    }
-  }
-  if (existingKeys.indexOf('deletedat') === -1) missing.push('Deleted_At');
-  if (existingKeys.indexOf('deletedby') === -1) missing.push('Deleted_By');
-  if (existingKeys.indexOf('deletereason') === -1) missing.push('Delete_Reason');
-  
-  if (missing.length > 0) {
-    var startCol = archLastCol + 1;
-    sheet.getRange(1, startCol, 1, missing.length).setValues([missing]);
-    sheet.getRange(1, startCol, 1, missing.length).setFontWeight('bold');
-    SpreadsheetApp.flush();
-  }
+  // Historical name retained for consumers. Deletion must NEVER create a tab,
+  // repair a header, or modify row 1; Verify Sheets owns those operations.
+  var sheet=ss.getSheetByName('Deleted_Archive');
+  if(!sheet) throw new Error('MISSING_SHEET: Deleted_Archive. Run Admin Verify Sheets before deleting a CNE.');
+  cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['Deleted_Archive']);
+  if(scheduleSheet) cneHeaderLayout_(scheduleSheet,CNE_SHEET_HEADERS['CNE_Schedule']);
   return sheet;
 }
 
@@ -18388,7 +17870,7 @@ function inspectStorageStateSafely_(cneSheet, cneColMap, archiveSheet, archIdCol
   };
 
   try {
-    var sCol = (cneColMap && cneColMap['cneid'] !== undefined) ? cneColMap['cneid'] : 0;
+    var sCol = cneRequireMappedColumn_(cneColMap,'CNE_ID','CNE_Schedule');
     var sRow = findExactRowInColumn_(cneSheet, sCol, cneId, 2);
     result.schedRowIndex = sRow;
     result.schedState = (sRow >= 2) ? 'PRESENT' : 'ABSENT';
@@ -18397,7 +17879,8 @@ function inspectStorageStateSafely_(cneSheet, cneColMap, archiveSheet, archIdCol
   }
 
   try {
-    var aCol = (archIdCol !== undefined && archIdCol >= 0) ? archIdCol : 0;
+    if (!Number.isInteger(archIdCol) || archIdCol<0) throw new Error('MISSING_HEADER: Deleted_Archive: CNE_ID');
+    var aCol = archIdCol;
     var aRows = (archiveSheet && archiveSheet.getLastRow() > 1) ? findExactRowsInColumn_(archiveSheet, aCol, cneId, 2) : [];
     result.archRows = aRows || [];
     result.archState = (result.archRows.length > 0) ? 'PRESENT' : 'ABSENT';
@@ -18531,7 +18014,7 @@ function handleDeleteCNE(params, session) {
     }
 
     // Participant register is the only participation/assessment authority.
-    // The guarded cneParticipantRows_ check above protects both PENDING and ATTENDED records.
+    // The guarded cneParticipantRows_ check above protects confirmed attendee records.
 
     // 5. Check Deleted Archive for existing entry (prevent duplicate archive rows / inconsistency)
     var archiveSheet;
@@ -18719,18 +18202,14 @@ function handleDeleteCNE(params, session) {
       };
     }
 
-    // Verify all original schedule columns exist in archive headers
-    for (var sc = 0; sc < cneHeaders.length; sc++) {
-      var sHdrName = String(cneHeaders[sc] || '').trim();
-      if (sHdrName) {
-        var sKey = normalizeHeaderKey_(sHdrName);
-        if (!seenArchKeys[sKey]) {
-          return {
-            success: false,
-            errorCode: 'ARCHIVE_SCHEMA_INVALID',
-            message: 'CNE Deleted Archive is missing schedule column: "' + sHdrName + '".'
-          };
-        }
+    // Never discard data from a Schedule extension column during deletion.
+    // Only Admin Verify Sheets may synchronize these headers to Deleted_Archive.
+    for (var sc=0;sc<cneHeaders.length;sc++) {
+      var sHdrName=String(cneHeaders[sc]||'').trim();
+      if (!sHdrName || !seenArchKeys[normalizeHeaderKey_(sHdrName)]) {
+        return {success:false,errorCode:'ARCHIVE_SCHEMA_INVALID',
+          message:'Deleted_Archive is missing Schedule header '+(sHdrName||'(blank column '+(sc+1)+')')+
+            '. Run Admin Verify Sheets before deleting this CNE.'};
       }
     }
 
@@ -18964,7 +18443,7 @@ function handleDeleteCNE(params, session) {
         }
       }
 
-      var freshRowIndex = findExactRowInColumn_(cneSheet, cneColMap['cneid'] !== undefined ? cneColMap['cneid'] : 0, cneId, 2);
+      var freshRowIndex = findExactRowInColumn_(cneSheet, cneRequireMappedColumn_(cneColMap,'CNE_ID','CNE_Schedule'), cneId, 2);
       if (freshRowIndex >= 2) {
         cneSheet.deleteRow(freshRowIndex);
         SpreadsheetApp.flush();
@@ -19092,33 +18571,14 @@ function handleDeleteCNE(params, session) {
  */
 
 /**
- * Authoritative sheet accessor for CNE Interest Registrations.
- * Automatically creates and initializes the tab if not present.
- * Does NOT overwrite or reinitialize a populated sheet with malformed schema.
+ * Existing-sheet accessor for Interest_Registrations.
+ * Fails closed until Admin Verify Sheets has initialized the canonical schema.
  */
 function getInterestRegistrationsSheet() {
-  var ss = getSpreadsheet('CNE');
-  var sheet = ss.getSheetByName('Interest_Registrations');
-  var headers = [
-    'CNE_ID',
-    'Employee_ID',
-    'Employee_Name',
-    'Designation',
-    'Interest_Status',
-    'Interested_At',
-    'Updated_At'
-  ];
-  if (!sheet) {
-    sheet = ss.insertSheet('Interest_Registrations');
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-    try {
-      sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#f1f5f9');
-    } catch (e) {}
-  } else if (sheet.getLastRow() < 1) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-  }
+  var sheet=getSpreadsheet('CNE').getSheetByName('Interest_Registrations');
+  if(!sheet) throw new Error('MISSING_SHEET: Interest_Registrations. Run Admin Verify Sheets first.');
+  // The registration handlers call validateInterestSheetSchema_ and return
+  // INTEREST_SHEET_INVALID with a precise missing/duplicate-header message.
   return sheet;
 }
 
@@ -20080,8 +19540,8 @@ function handleGetCNEAnalytics(params, session) {
   var registerSheet=cneParticipantSheet_();
   if(registerSheet.getLastRow()>1) {
     // Do not fetch Answers_JSON or Questions_JSON for aggregate reporting.
-    var people=cneParticipantAllRows_(registerSheet,['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status','Post_Test_Status','Post_Test_Score','Post_Test_Total','Post_Test_Percentage']);
-    // Canonical 20-column rows, no raw answer JSON needed by aggregations.
+    var people=cneParticipantAllRows_(registerSheet,['CNE_ID','Employee_ID','Participant_Name','Participant_Type','Attendance_Status','Attendance_Source','Post_Test_Status','Post_Test_Score','Post_Test_Total','Post_Test_Percentage']);
+    // Canonical 19-column rows, no raw answer JSON needed by aggregations.
     for(var j=0;j<people.length;j++) {
       var row=people[j],idKey=String(row[1]||'').trim().toUpperCase(),data=selected[idKey];
       if(!data || data.status!=='Completed')continue;
@@ -20090,9 +19550,10 @@ function handleGetCNEAnalytics(params, session) {
       var identity=empId?('ID:'+empId):('NAME:'+name.toLowerCase());
       if(identity==='NAME:')continue;
       var pair=idKey+'|'+identity;
-      var status=String(row[6]||'').toUpperCase();
-      var complete=String(row[9]||'').toUpperCase()==='COMPLETED';
-      if(status==='ATTENDED'&&!attendanceByCne[pair]) {
+      var attended=cneParticipantHasConfirmedAttendance_(row);
+      if(!attended)continue; // Also exclude invalid-source rows from post-test statistics.
+      var complete=String(row[8]||'').toUpperCase()==='COMPLETED';
+      if(!attendanceByCne[pair]) {
         attendanceByCne[pair]=true;
         data.ref.attendance++;data.areaRef.attendance++;data.modeRef.attendance++;
         if(ptype==='INTERNAL'&&empId) {
@@ -20104,7 +19565,7 @@ function handleGetCNEAnalytics(params, session) {
       }
       if(!complete||sourceSeen[pair])continue;
       sourceSeen[pair]=true;
-      var score=row[12],total=row[13],pct=row[14];
+      var score=row[11],total=row[12],pct=row[13];
       if(pct===''||pct===null||pct===undefined||!isFinite(Number(pct)))continue;
       var percentage=Number(pct);if(percentage<0||percentage>100)continue;
       testScoreSum+=percentage;testPercentCount++;
@@ -21099,4 +20560,4 @@ function handleGetQuizImage(params,session){
   return {success:true,data:{mimeType:checked.mimeType,base64Data:Utilities.base64Encode(checked.bytes)}};
 }
 /** No MailApp call, daily trigger, scheduled job, or dispatch endpoint until admin approval. */
-function cneQuizMonthlyEmailPlanDisabled_(){return {enabled:CNE_QUIZ_EMAIL_ENABLED_,message:'Monthly quiz email sending has not been activated.'};}
+/* Extracted to Extra_Code.gs: cneQuizMonthlyEmailPlanDisabled_ */

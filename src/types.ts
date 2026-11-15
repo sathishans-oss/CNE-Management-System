@@ -382,7 +382,7 @@ export interface CNEParticipant {
   score: number | null;
   totalQuestions: number | null;
   percentage: number | null;
-  status: 'PENDING' | 'ATTENDED';
+  status: 'ATTENDED';
   source?: 'MANUAL' | 'POST_TEST' | 'QR' | 'RETROSPECTIVE' | '';
   submittedAt: string;
   remarks?: string;
@@ -395,7 +395,6 @@ export interface CNEParticipantsSummary {
   status: string;
   totalParticipants: number;
   attendedCount: number;
-  pendingCount: number;
   postTestCount: number;
   manualCount: number;
   averageScore: number | null;

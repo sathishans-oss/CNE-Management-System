@@ -231,15 +231,7 @@ export const CNECalendar: React.FC<CNECalendarProps> = ({ user, initialViewState
             >
               <ChevronRight className="w-4 h-4" />
             </button>
-            <button
-              id="btn-calendar-refresh"
-              onClick={() => void loadEvents(true)}
-              disabled={loading}
-              title="Refresh calendar data"
-              className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'text-teal-600' : ''}`} />
-            </button>
+            
           </div>
         </div>
       </div>

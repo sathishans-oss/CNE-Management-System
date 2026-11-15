@@ -6,7 +6,7 @@ import {
   X,
   CheckCircle2,
   Loader2,
-  RefreshCw,
+
 } from 'lucide-react';
 import { CNERecord, SessionUser } from '../types';
 import { ApiService } from '../services/api';
@@ -99,7 +99,6 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
   const [totalParticipantSeconds, setTotalParticipantSeconds] = useState(0);
   const [totalResourceSeconds, setTotalResourceSeconds] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [refreshGeneration, setRefreshGeneration] = useState(0);
   const [loadProgress, setLoadProgress] = useState({ loaded: 0, total: 0 });
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const generatingPdfRef = useRef(false);
@@ -127,10 +126,8 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     const isCurrent = () => requestId === recordsRequestIdRef.current && sessionGuardRef.current === requestSession;
     setLoading(true);
     setLoadProgress({ loaded: 0, total: 0 });
-    if (refreshGeneration === 0) {
-      setRecords([]);
-      setTotalRecords(0); setTotalParticipantSeconds(0); setTotalResourceSeconds(0);
-    }
+    setRecords([]);
+    setTotalRecords(0); setTotalParticipantSeconds(0); setTotalResourceSeconds(0);
     setSelectedRecord(null);
     const load = async () => {
       try {
@@ -185,7 +182,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
     };
     void load();
     return () => { if (recordsRequestIdRef.current === requestId) recordsRequestIdRef.current++; };
-  }, [identity, error, refreshGeneration]);
+  }, [identity, error]);
 
   // Filters are applied immediately against the complete authorized in-page dataset.
   // They never trigger another Google Apps Script request.
@@ -275,11 +272,7 @@ export const MyCNERecords: React.FC<MyCNERecordsProps> = ({ user }) => {
       {/* Compact Filter / Action Toolbar */}
       <FilterBarShell title="My CNE Records" subtitle="Filter your completed CNE history" icon={<Award className="h-3.5 w-3.5" />}>
         <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
-          <button type="button" disabled={loading} aria-label="Refresh My CNE Records" title="Refresh personal CNE history"
-            onClick={() => { ApiService.invalidateCache('getMyCNERecordsPage'); setRefreshGeneration((v) => v + 1); }}
-            className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
-          </button>
+          
           <div className="w-full sm:w-[280px] lg:w-[360px]">
             <SearchInput
               id="input-my-cne-search"

@@ -283,8 +283,7 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
     return (
       p.employeeId?.toLowerCase().includes(term) ||
       p.name?.toLowerCase().includes(term) ||
-      p.department?.toLowerCase().includes(term) ||
-      p.designation?.toLowerCase().includes(term)
+      p.department?.toLowerCase().includes(term)
     );
   });
 
@@ -335,7 +334,6 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
             <p className="text-base font-bold text-slate-900 mt-0">
               {summary?.attendedCount ?? 0}
             </p>
-            <p className="text-[9px] text-slate-500 mt-0">{summary?.pendingCount ?? 0} pending</p>
           </div>
           <div className="bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-xs">
             <span className="text-[10px] text-slate-500 font-medium">Post-Test Evaluated</span>
@@ -610,22 +608,18 @@ export const CNEParticipantsModal: React.FC<CNEParticipantsModalProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredParticipants.map((p, idx) => {
-                    const isPending = p.status === 'PENDING';
-                    const isPostTest = !isPending && p.participantType === 'POST_TEST';
+                    const isPostTest = p.participantType === 'POST_TEST';
                     return (
                       <tr key={p.id || idx} className="hover:bg-slate-50/70 transition-colors">
                         <td className="px-3 py-2 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
                         <td className="px-3 py-2">
                           <div className="font-bold text-slate-900">{p.name || p.employeeId}</div>
                           <div className="text-[11px] text-slate-500">
-                            {p.employeeId ? `ID: ${p.employeeId}` : 'External / Guest'}
-                            {p.designation ? ` • ${p.designation}` : ''}
+                            {p.employeeId || ''}
                           </div>
                         </td>
                         <td className="px-3 py-2 font-medium">
-                          {isPending ? (
-                            <span className="text-amber-700 text-[11px]">Attendance not confirmed</span>
-                          ) : isPostTest && typeof p.score === 'number' ? (
+                          {isPostTest && typeof p.score === 'number' ? (
                             <div className="flex items-center gap-1.5">
                               <span className="font-bold text-slate-900 font-mono">
                                 {p.score}/{p.totalQuestions}

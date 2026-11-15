@@ -956,10 +956,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 <h4 className="text-sm font-bold text-indigo-950">Institutional Question Bank</h4>
                 <p className="text-slate-600 mt-1">Up to 20 clinically relevant matches. Review and choose which questions to import as Drafts; manual and AI creation remain optional.</p>
               </div>
-              <button type="button" onClick={() => void searchBank()} disabled={bankLoading || !!importingBankId || !canModify}
-                className="px-3 py-1.5 rounded-lg border border-indigo-300 bg-white font-bold text-indigo-800 disabled:opacity-50">
-                {bankLoading ? 'Searching…' : 'Refresh Results'}
-              </button>
+
             </div>
             {bankClinicalSearch && <div className="bg-white border border-indigo-200 rounded-lg p-3 space-y-2" aria-label="Recognized clinical search concept">
               <div className="flex flex-wrap items-center gap-2 justify-between">
@@ -985,7 +982,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               {bankSearchOverride && <button type="button" onClick={() => {setBankSearchOverride('');setBankClinicalSearch(null);setBankSearched(false);setBankMatches([]);void searchBank('');}} disabled={bankLoading} className="self-end px-2 py-2 underline text-indigo-800">Use CNE topic</button>}
             </form>}
             {bankLoading && <div role="status" className="flex items-center gap-2 text-indigo-800"><Loader2 className="w-4 h-4 animate-spin" /> Searching clinically relevant Question Bank entries…</div>}
-            {bankError && <div role="alert" className="text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">{bankError} Use Refresh Results to try again.</div>}
+            {bankError && <div role="alert" className="text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">{bankError} Reopen Question Bank to retry the search.</div>}
             {!bankLoading && !bankError && bankSearched && !bankMatches.length && <div role="status" className="rounded-lg border border-slate-200 bg-white p-3 space-y-1">
               <div className="font-bold text-slate-800">{bankClinicalSearch?.requiresClarification ? 'Clarify the clinical topic to search' : 'No clinically relevant Question Bank questions found'}</div>
               <p className="text-slate-600">{bankClinicalSearch?.requiresClarification ? 'Use Edit concept to enter a specific disease, procedure, nursing practice or an expanded abbreviation.' : 'No indexed textbook MCQs matched the clinical concept. Unrelated care/patient questions have been excluded. You can use AI Question Generation or Add Manual Question under My Questions.'}</p>
@@ -1388,7 +1385,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                   {failureDialog.retryAction === 'material-check' ? 'Retry Material Check' : 'Retry AI Generation'}
                 </button>}
                 {pendingGenerationJob && !isGenerating && <button type="button" onClick={() => { setFailureDialog(null); void handleGenerateAi(true); }} className="px-3 py-2 rounded-lg bg-indigo-700 text-white font-semibold text-xs">Resume Generation</button>}
-                {failureDialog.type === 'technical' && !failureDialog.retrySafe && <button type="button" onClick={() => { setFailureDialog(null); void loadQuestions(); void loadQuota(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Refresh Questions & Quota</button>}
+                {failureDialog.type === 'technical' && !failureDialog.retrySafe && <button type="button" onClick={() => { setFailureDialog(null); void loadQuestions(); void loadQuota(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white font-semibold text-xs">Recheck Saved Questions & Quota</button>}
                 <button type="button" onClick={() => setFailureDialog(null)} className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 font-semibold text-xs">Close</button>
               </div>
             </div>

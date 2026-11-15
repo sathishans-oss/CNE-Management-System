@@ -13,7 +13,7 @@ import {
   X,
   Loader2,
   AlertCircle,
-  RefreshCw,
+
   Mail,
   Link2
 } from 'lucide-react';
@@ -660,15 +660,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
             </div>
 
             <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-              <button
-                type="button"
-                onClick={loadNews}
-                disabled={newsLoading}
-                className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-xl text-xs font-semibold disabled:opacity-50"
-                title="Refresh news"
-              >
-                <RefreshCw className={`w-4 h-4 ${newsLoading ? 'animate-spin' : ''}`} />
-              </button>
+              
               <button
                 type="button"
                 onClick={openAddNews}
@@ -768,10 +760,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
               <h2 className="text-sm font-bold text-slate-900">CNE Desk Configuration</h2>
               <p className="text-xs text-slate-500 mt-0.5">Manage the coordinators and committee members shown in the homepage main section.</p>
             </div>
-            <button type="button" onClick={loadDesk} disabled={deskLoading || deskSaving}
-              className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 disabled:opacity-50" title="Reload CNE Desk">
-              <RefreshCw className={`w-4 h-4 ${deskLoading ? 'animate-spin' : ''}`} />
-            </button>
+            
           </div>
           <form onSubmit={handleSaveDesk} className="space-y-5 text-xs">
             {(['coordinatorPeople', 'members'] as const).map((section) => (
@@ -851,15 +840,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={loadLinks}
-                disabled={linksLoading}
-                className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-xl text-xs font-semibold disabled:opacity-50"
-                title="Refresh links"
-              >
-                <RefreshCw className={`w-4 h-4 ${linksLoading ? 'animate-spin' : ''}`} />
-              </button>
+              
               <button
                 type="button"
                 onClick={openAddLink}
@@ -956,15 +937,7 @@ export const AdminContent: React.FC<AdminContentProps> = ({
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={loadGallery}
-                disabled={galleryLoading}
-                className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-xl text-xs font-semibold disabled:opacity-50"
-                title="Refresh photos"
-              >
-                <RefreshCw className={`w-4 h-4 ${galleryLoading ? 'animate-spin' : ''}`} />
-              </button>
+              
               <button
                 type="button"
                 onClick={openUploadPhoto}

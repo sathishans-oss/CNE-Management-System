@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Search,
-  RefreshCw,
+
   KeyRound,
   Loader2,
   X,
@@ -278,7 +278,6 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
   const resettingRef = useRef(false);
   const [updatingEmpId, setUpdatingEmpId] = useState<string | null>(null);
   const updatingEmpIdRef = useRef<string | null>(null);
-  const syncingRef = useRef(false);
   const [confirmResetOfficer, setConfirmResetOfficer] = useState<{ empId: string; name: string } | null>(null);
   const [removingWardKeys, setRemovingWardKeys] = useState<Set<string>>(() => new Set<string>());
   const removingWardsRef = useRef<Set<string>>(new Set<string>());
@@ -359,19 +358,6 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
       error('Failed to load role permissions.');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleSyncRoles = async () => {
-    if (syncingRef.current || loading) return;
-    syncingRef.current = true;
-    try {
-      try {
-        localStorage.removeItem('cne_cache_getRoles');
-      } catch {}
-      await loadRolesData();
-    } finally {
-      syncingRef.current = false;
     }
   };
 
@@ -584,10 +570,7 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({ user }) => {
                 onChange={e => handleSearchChange(e.target.value)}
                 className="w-full min-h-10 pl-9 pr-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus-visible:outline-2 focus-visible:outline-teal-600" />
             </div>
-            <button type="button" onClick={handleSyncRoles} disabled={loading}
-              className="inline-flex min-h-10 justify-center items-center gap-2 px-3 border border-slate-200 bg-white rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50">
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Sync Roles
-            </button>
+            
           </div>
         </div>
       </div>
