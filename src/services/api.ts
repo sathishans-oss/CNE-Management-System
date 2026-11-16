@@ -1651,11 +1651,9 @@ export class ApiService {
   static async deleteNursingReferenceResource(params: {
     driveFileId: string;
   }): Promise<ApiResponse<{
-    deletedChunksCount: number;
     message?: string;
   }>> {
     return this.executeAction<{
-      deletedChunksCount: number;
       message?: string;
     }>('deleteNursingReferenceResource', params);
   }

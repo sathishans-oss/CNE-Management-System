@@ -317,7 +317,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
           driveFileId: itemToDelete.driveFileId
         });
         if (res.success) {
-          success(`Reference library resource unindexed and removed (${res.data?.deletedChunksCount || 0} chunks deleted).`);
+          success('Reference library resource deactivated.');
           setNursingResources((prev) => prev.filter((r) => r.driveFileId !== itemToDelete.driveFileId));
           setItemToDelete(null);
         } else {
@@ -678,7 +678,9 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                   Delete Learning Resource
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Confirm permanent removal from repository
+                  {itemToDelete.sourceType === 'NURSING_REFERENCE_LIB'
+                    ? 'Remove from the library listing (Drive file remains unchanged)'
+                    : 'Confirm removal of this CNE learning resource'}
                 </p>
               </div>
             </div>
@@ -688,8 +690,8 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
               <strong>"{itemToDelete.title}"</strong> (
               <span className="font-mono">{itemToDelete.fileName}</span>)?
               {itemToDelete.sourceType === 'NURSING_REFERENCE_LIB' && (
-                <span className="block mt-1 text-rose-600 font-semibold">
-                  This will also unindex and remove all associated AI evidence chunks from CNE_Reference_Index.
+                <span className="block mt-1 text-slate-600 font-medium">
+                  This deactivates the Library catalog entry only. CNE Material_Index and uploaded learning material are not changed.
                 </span>
               )}
             </p>

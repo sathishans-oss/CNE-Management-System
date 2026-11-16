@@ -68,6 +68,7 @@ var _executionCredentialCache = {};
 var _executionOfficerById = {};
 var _executionCneScheduleSnapshot = null;
 var _executionQuizApprovedPool_ = null;
+var _executionQuizScopedPools_ = Object.create(null);
 var _roleHeaderMeta = null;
 var _areaInchargeHeaderMeta = null;
 
@@ -180,7 +181,6 @@ function ensureRuntimeSecurityState_() {
     initLock.releaseLock();
   }
 }
-
 
 /**
  * Password Hashing Helper: Salted SHA-256 with Server-Side Pepper (No fallback pepper)
@@ -364,8 +364,6 @@ function revalidateCneMutation_(session, cneId, authorizationMode, allowClosed) 
   return { success: true, session: freshSession, record: record, status: status };
 }
 
-
-
 /**
  * Audit Logger (Strictly Non-Destructive to Data Sheets)
  */
@@ -526,17 +524,6 @@ function readMatchedCneRows_(sheet, cneIdColumn, cneId, firstColumn, columnCount
   return result;
 }
 
-function columnNumberToA1Letter_(columnNumber) {
-  var n = Number(columnNumber) || 0;
-  var out = '';
-  while (n > 0) {
-    var rem = (n - 1) % 26;
-    out = String.fromCharCode(65 + rem) + out;
-    n = Math.floor((n - 1) / 26);
-  }
-  return out;
-}
-
 function markCNEQuestionsLockedCache_(cneId) {
   var norm = normalizeCneId(cneId);
   if (!norm) return;
@@ -643,7 +630,7 @@ function scorePostTestAnswers_(answerKeys, answers) {
 
 function lockQuestionRowsBatch_(qSheet, questionRowsToLock, zeroBasedLockColumn) {
   if (!qSheet || !questionRowsToLock || !questionRowsToLock.length) return;
-  var colLetter = columnNumberToA1Letter_(Number(zeroBasedLockColumn) + 1);
+  var colLetter = cneColumnLetter_(Number(zeroBasedLockColumn) + 1);
   if (!colLetter) return;
   var a1 = questionRowsToLock.map(function(rowNum) { return colLetter + rowNum; });
   qSheet.getRangeList(a1).setValue('YES');
@@ -659,7 +646,6 @@ function hasCoordinatorContentRows_(sheet) {
   }
   return false;
 }
-
 
 /**
  * Handle HTTP GET / POST Requests
@@ -683,6 +669,7 @@ function handleRequest(e, method) {
   _officerHeaderMeta = null;
   _executionSpreadsheetCache = {};
   _executionQuizApprovedPool_ = null;
+  _executionQuizScopedPools_ = Object.create(null);
   _executionCredentialCache = {};
   _executionOfficerById = {};
   _executionCneScheduleSnapshot = null;
@@ -1035,9 +1022,6 @@ function handleRequest(e, method) {
         output = handleListNursingReferenceResources(params, session);
         break;
 
-
-
-
       case 'deleteNursingReferenceResource':
         output = handleDeleteNursingReferenceResource(params, session);
         break;
@@ -1105,7 +1089,6 @@ function handleRequest(e, method) {
       case 'verifyPostTestOtp':
         output = handleVerifyPostTestOtp(params, session);
         break;
-
 
       case 'getPostTestQuestions':
         output = handleGetPostTestQuestions(params, session);
@@ -1239,27 +1222,6 @@ function getRoleHeaderMeta_() {
   _roleHeaderMeta = { sheet: sheet, empIdCol: empIdCol, roleCol: roleCol, areaCol: areaCol, lastCol: headers.length };
   return _roleHeaderMeta;
 }
-
-/* Extracted to Extra_Code.gs: getAreaInchargeHeaderMeta_ */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /**
  * Comprehensive User Role & Assigned Area Resolution.
@@ -2290,7 +2252,6 @@ function getAuthCredentialRecord(employeeId, forceFresh) {
   return record;
 }
 
-
 function clearCredentialSecurityCache(employeeId) {
   var cleanId = normalizeEmpId(employeeId);
   if (cleanId) {
@@ -2654,7 +2615,6 @@ function getOtpCooldownRemainingSeconds_(purpose, principalId) {
   return Math.max(0, Math.ceil((resendMs - Date.now()) / 1000));
 }
 
-
 function handleRequestPasswordOtp(params) {
   var employeeId = normalizeEmpId(params.employeeId);
   if (!employeeId) return { success: false, message: 'Employee ID is required.' };
@@ -3011,7 +2971,6 @@ function handleAdminResetPassword(params, session) {
   }
 }
 
-
 /**
  * Areas Management
  * Uses CacheService (TTL 60s) to avoid repeated sheet reads for frequent UI dropdowns.
@@ -3351,16 +3310,6 @@ function handleGetWardStaffCounts(params, session) {
   return { success: true, data: result };
 }
 
-/**
- * Validate the 6 Ward-Level CNE coverage headers; only Admin Verify Sheets may add them.
- */
-function ensureCneScheduleCoverageHeaders_(sheet) {
-  return cneHeaderLayout_(sheet,[
-    'Coverage_Areas_Snapshot','Total_Allotted_Staff','Internal_Attendance_Count',
-    'Attendance_Percentage','Post_Test_Outcome_Percentage','Coverage_Finalized_At'
-  ]);
-}
-
 /** Additive column: explicitly chosen wards are never inferred from old coverage snapshots. */
 function ensureParticipatingWardsHeader_(sheet) {
   // A normal CNE edit cannot repair or append headers; the administrator must Verify Sheets.
@@ -3433,6 +3382,38 @@ function handleAddArea(params, session) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * Group exact-cell rename changes into vertical runs in the same physical column.
+ * Only contiguous target cells are batched: unrelated columns and rows are never
+ * rewritten. Preflight rejects duplicate coordinates before any mutation.
+ * Callers register each original cell in their existing rollback journal BEFORE
+ * attempting setValues(), since a failed Sheets call may have partially applied.
+ */
+function cneContiguousRenameRuns_(changes) {
+  var sorted = (changes || []).slice().sort(function(a, b) {
+    return (a.col - b.col) || (a.row - b.row);
+  });
+  var runs = [], current = [], previous = null;
+  for (var i = 0; i < sorted.length; i++) {
+    var item = sorted[i];
+    if (!item || !Number.isInteger(item.row) || item.row < 2 ||
+        !Number.isInteger(item.col) || item.col < 1) {
+      throw new Error('INVALID_RENAME_COORDINATE');
+    }
+    if (previous && item.col === previous.col && item.row === previous.row) {
+      throw new Error('DUPLICATE_RENAME_COORDINATE');
+    }
+    if (current.length && (item.col !== previous.col || item.row !== previous.row + 1)) {
+      runs.push(current);
+      current = [];
+    }
+    current.push(item);
+    previous = item;
+  }
+  if (current.length) runs.push(current);
+  return runs;
 }
 
 function handleUpdateArea(params, session) {
@@ -3640,19 +3621,41 @@ function handleUpdateArea(params, session) {
     try {
       // 1. Update dependent Role references (only affected cells)
       if (roleSheet && roleUpdates.length > 0) {
-        for (var ru = 0; ru < roleUpdates.length; ru++) {
-          var rItem = roleUpdates[ru];
-          executedRollbacks.push({ sheet: roleSheet, row: rItem.row, col: rItem.col, oldVal: rItem.oldVal });
-          roleSheet.getRange(rItem.row, rItem.col).setValue(rItem.newVal);
+        var roleRuns = cneContiguousRenameRuns_(roleUpdates);
+        for (var ru = 0; ru < roleRuns.length; ru++) {
+          var roleRun = roleRuns[ru];
+          if (roleRun.length === 1) {
+            var rItem = roleRun[0];
+            executedRollbacks.push({ sheet: roleSheet, row: rItem.row, col: rItem.col, oldVal: rItem.oldVal });
+            roleSheet.getRange(rItem.row, rItem.col).setValue(rItem.newVal);
+          } else {
+            for (var rx = 0; rx < roleRun.length; rx++) {
+              var roleCell = roleRun[rx];
+              executedRollbacks.push({ sheet: roleSheet, row: roleCell.row, col: roleCell.col, oldVal: roleCell.oldVal });
+            }
+            roleSheet.getRange(roleRun[0].row, roleRun[0].col, roleRun.length, 1)
+              .setValues(roleRun.map(function(cell) { return [cell.newVal]; }));
+          }
         }
       }
 
       // 2. Update dependent CNE Schedule references (only affected cells)
       if (cneSheet && cneUpdates.length > 0) {
-        for (var cu = 0; cu < cneUpdates.length; cu++) {
-          var cItem = cneUpdates[cu];
-          executedRollbacks.push({ sheet: cneSheet, row: cItem.row, col: cItem.col, oldVal: cItem.oldVal });
-          cneSheet.getRange(cItem.row, cItem.col).setValue(cItem.newVal);
+        var cneRuns = cneContiguousRenameRuns_(cneUpdates);
+        for (var cu = 0; cu < cneRuns.length; cu++) {
+          var cneRun = cneRuns[cu];
+          if (cneRun.length === 1) {
+            var cItem = cneRun[0];
+            executedRollbacks.push({ sheet: cneSheet, row: cItem.row, col: cItem.col, oldVal: cItem.oldVal });
+            cneSheet.getRange(cItem.row, cItem.col).setValue(cItem.newVal);
+          } else {
+            for (var cx = 0; cx < cneRun.length; cx++) {
+              var cneCell = cneRun[cx];
+              executedRollbacks.push({ sheet: cneSheet, row: cneCell.row, col: cneCell.col, oldVal: cneCell.oldVal });
+            }
+            cneSheet.getRange(cneRun[0].row, cneRun[0].col, cneRun.length, 1)
+              .setValues(cneRun.map(function(cell) { return [cell.newVal]; }));
+          }
         }
       }
 
@@ -3750,7 +3753,6 @@ function handleUpdateArea(params, session) {
     lock.releaseLock();
   }
 }
-
 
 /**
  * Teaching Mode Master Management
@@ -4007,19 +4009,21 @@ function handleUpdateTeachingMode(params, session) {
     var cneUpdates = [];
     var cneSheet = ss.getSheetByName('CNE_Schedule');
     if (cneSheet && cneSheet.getLastRow() > 1) {
-      var cneData = cneSheet.getDataRange().getValues();
       var cneMap = getHeaderMap(cneSheet);
       var modeColumns = [];
       if (cneMap['modeofteaching'] !== undefined) modeColumns.push(cneMap['modeofteaching']);
       if (cneMap['mode'] !== undefined && modeColumns.indexOf(cneMap['mode']) === -1) modeColumns.push(cneMap['mode']);
       if (modeColumns.length === 0) throw new Error('CNE Schedule missing Mode_of_Teaching header. Run Verify Sheets.');
 
-      for (var ci = 1; ci < cneData.length; ci++) {
-        for (var mc = 0; mc < modeColumns.length; mc++) {
-          var modeCol = modeColumns[mc];
-          var oldCell = cneData[ci][modeCol];
+      // Read only the authoritative Mode columns, not every Schedule field.
+      var modeRowCount = cneSheet.getLastRow() - 1;
+      for (var mc = 0; mc < modeColumns.length; mc++) {
+        var modeCol = modeColumns[mc];
+        var modeValues = cneSheet.getRange(2, modeCol + 1, modeRowCount, 1).getValues();
+        for (var ci = 0; ci < modeValues.length; ci++) {
+          var oldCell = modeValues[ci][0];
           if (String(oldCell || '').trim().toUpperCase() === oldNorm) {
-            cneUpdates.push({ row: ci + 1, col: modeCol + 1, oldVal: oldCell, newVal: newName });
+            cneUpdates.push({ row: ci + 2, col: modeCol + 1, oldVal: oldCell, newVal: newName });
           }
         }
       }
@@ -4028,10 +4032,21 @@ function handleUpdateTeachingMode(params, session) {
     var executedRollbacks = [];
     try {
       if (cneSheet && cneUpdates.length > 0) {
-        for (var cu = 0; cu < cneUpdates.length; cu++) {
-          var cItem = cneUpdates[cu];
-          executedRollbacks.push({ sheet: cneSheet, row: cItem.row, col: cItem.col, oldVal: cItem.oldVal });
-          cneSheet.getRange(cItem.row, cItem.col).setValue(cItem.newVal);
+        var modeRuns = cneContiguousRenameRuns_(cneUpdates);
+        for (var cu = 0; cu < modeRuns.length; cu++) {
+          var modeRun = modeRuns[cu];
+          if (modeRun.length === 1) {
+            var cItem = modeRun[0];
+            executedRollbacks.push({ sheet: cneSheet, row: cItem.row, col: cItem.col, oldVal: cItem.oldVal });
+            cneSheet.getRange(cItem.row, cItem.col).setValue(cItem.newVal);
+          } else {
+            for (var mx = 0; mx < modeRun.length; mx++) {
+              var modeCell = modeRun[mx];
+              executedRollbacks.push({ sheet: cneSheet, row: modeCell.row, col: modeCell.col, oldVal: modeCell.oldVal });
+            }
+            cneSheet.getRange(modeRun[0].row, modeRun[0].col, modeRun.length, 1)
+              .setValues(modeRun.map(function(cell) { return [cell.newVal]; }));
+          }
         }
       }
 
@@ -4810,7 +4825,6 @@ function handleGetCNEScheduleById(params, session) {
   return one?{success:true,data:one}:{success:false,errorCode:'NOT_FOUND',message:'CNE not found or not authorized.'};
 }
 
-
 /** Generate a permanent, collision-checked, year-free CNE identifier.
  * Prefix describes the type at CREATION; current Type of CNE is authoritative thereafter.
  * Caller MUST hold ScriptLock; reservedIds handles not-yet-written batch siblings.
@@ -5585,7 +5599,6 @@ function handleUpdateCNE(params, session) {
             message:'Scheduled roster editing is retired. Use Attendance & Completion to record confirmed participants.'};
         }
 
-
         var currentCneType = normalizeCNEType(liveUpdateRecord.cneType);
 
         // Status transitions cannot be performed through handleUpdateCNE; identical status is safely ignored
@@ -5637,7 +5650,6 @@ function handleUpdateCNE(params, session) {
     lock.releaseLock();
   }
 }
-
 
 /**
  * Helper: Parse duration string (HH:MM:SS or HH:MM or decimal hours) into total seconds.
@@ -6221,7 +6233,6 @@ function handleAddWardLevelSchedule(params, session) {
   }
 }
 
-
 /**
  * 9 & 10. Gallery & Drive Image Storage (Isolated Public View, Strict Image MIME Validation & 5MB Limit)
  */
@@ -6546,7 +6557,6 @@ function handleGetWardLevelCneOutcomeReport(params, session) {
     // Exclude Central, External, and unscheduled CNEs
     if (cneType !== 'WARD_LEVEL') continue;
     // Exact Type of CNE alone determines Ward-Level Outcome eligibility.
-
 
     var rawDate = row[fromDateCol];
     var canonicalDay = getCNECanonicalDay(rawDate);
@@ -6894,10 +6904,6 @@ var HOME_CACHE_CHAIR_PHOTO = 'cne_public_chairphoto_v1';
 // exclusively through Admin Verify Sheets, never a read or edit action.
 function newsFlagEnabled_(value) {
   return value === true || value === 1 || String(value || '').trim().toUpperCase() === 'TRUE' || String(value || '').trim() === '1';
-}
-
-function ensureNewsAttentionColumns_(sheet) {
-  return cneHeaderLayout_(sheet,['Is_Important','Blink_Attention']);
 }
 
 function handleGetNewsEvents(params) {
@@ -8010,7 +8016,6 @@ var CNE_SHEET_HEADERS = {
   'Material_Index': ['Index_ID', 'CNE_ID', 'Drive_File_ID', 'Resource_Title', 'Topic', 'Section_Heading', 'Chunk_Index', 'Chunk_Text', 'Clinical_Keywords', 'Extraction_Status', 'Updated_At'],
   'QR_Tokens': ['QR_Token', 'CNE_ID', 'Created_At', 'Created_By', 'Status'],
   'Material_List': ['CNE_ID', 'Topic', 'Reference_Text_Clinical_Guides', 'Updated_At', 'Updated_By', 'Drive_File_ID', 'File_Name', 'File_Type', 'Resource_Person_Name', 'File_Size', 'Indexing_Status', 'Indexing_Error_Code', 'Indexing_Message', 'Chunks_Count', 'Indexed_At'],
-  'Library_Index': ['Index_ID', 'Drive_File_ID', 'Resource_Title', 'Topic', 'Section_Heading', 'Chunk_Index', 'Chunk_Text', 'Clinical_Keywords', 'Extraction_Status', 'Updated_At'],
   'Library': ['Resource_ID', 'Source_Type', 'Resource_Title', 'Drive_File_ID', 'Author_Organization', 'License', 'Version', 'File_Type', 'Active', 'Indexed_At', 'Updated_At'],
   'Question_Index': ['Question_ID', 'Unit', 'Topic', 'Subtopic', 'Clinical_Keywords', 'Question_Type', 'Question_Text', 'Option_A', 'Option_B', 'Option_C', 'Option_D', 'Option_E', 'Option_F', 'Correct_Answer', 'Explanation_Rationale', 'Question_PDF_Page', 'Image_Table_Reference', 'Verification_Status', 'Updated_At', 'Image_Drive_File_ID', 'Original_Question_Format', 'Response_Format', 'Scoring_Method'],
   'Gallery': ['Image_ID', 'Title', 'Description', 'Date', 'Drive_File_ID', 'Image_URL', 'Uploaded_By', 'Uploaded_At', 'Status'],
@@ -8036,7 +8041,6 @@ function cneAssertVerifySchemaMutation_() {
     throw new Error('SCHEMA_MUTATION_FORBIDDEN: Only Admin Verify Sheets may create or change sheet headers.');
   }
 }
-
 
 /**
  * Header-directed Sheets I/O (read one header row and map data in memory).
@@ -8234,7 +8238,6 @@ function getOrCreateSheet(sheetName, defaultHeaders) {
   if (headers.length) cneHeaderLayout_(sheet,headers);
   return sheet;
 }
-
 
 /**
  * One-time, non-destructive header adoption for the approved reduced CNE schema.
@@ -8675,30 +8678,9 @@ function handleSaveReferenceMaterial(params, session) {
   }
 }
 
-/**
- * Validate existing Material_List headers without creating or changing columns.
- */
-function ensureSheetHeadersSafe_(sheet, expected, lockAlreadyHeld) {
-  // Compatibility name retained. This helper cannot change any header or tab.
-  // The caller must use the administrator's Verify Sheets action to repair schema.
-  if (!sheet) throw new Error('MISSING_SHEET: Required sheet unavailable. Run Admin Verify Sheets.');
-  return cneHeaderLayout_(sheet,expected||[]);
-}
-
-function ensureReferenceSheetHeaders(sheet, lockAlreadyHeld) {
-  ensureSheetHeadersSafe_(sheet, CNE_SHEET_HEADERS['Material_List'] || [], Boolean(lockAlreadyHeld));
-}
-
-/** Canonical 12-field extraction row layout used in memory only.
- * The physical Google Sheets contain 10 fields for library chunks and 11 for CNE materials.
- */
-var CNE_INDEX_CANONICAL_HEADERS_=['Index_ID','Source_Type','CNE_ID','Drive_File_ID','Resource_Title','Topic','Section_Heading','Chunk_Index','Chunk_Text','Clinical_Keywords','Extraction_Status','Updated_At'];
+/** The only persisted clinical evidence index is Material_Index (11 header-mapped columns). */
 function cneMaterialIndexSheet_(){
   return getSpreadsheet('CNE').getSheetByName('Material_Index');
-}
-/** Convert extracted canonical chunk rows to the physical sheet schema. */
-function cneIndexProjectRows_(rows,headers){
-  return rows.map(function(row){return headers.map(function(h){return row[CNE_INDEX_CANONICAL_HEADERS_.indexOf(h)];});});
 }
 /** Fail closed on missing/ambiguous required index names, never on reorder alone. */
 function cneRequireIndexHeaders_(sheet, headers) {
@@ -8706,24 +8688,6 @@ function cneRequireIndexHeaders_(sheet, headers) {
   // Never auto-initialize an empty sheet during indexing or ordinary reads.
   try { return cneHeaderLayout_(sheet,headers); }
   catch (e) { throw new Error('INDEX_SCHEMA_MISMATCH: '+e.message); }
-}
-/** Verify the permanent library-only 10-column evidence index schema. */
-/* Extracted to Extra_Code.gs: ensureReferenceIndexSheetHeaders */
-
-
-
-/**
- * Validate existing Material_List headers without creating or changing columns.
- */
-function ensureLearningResourceSheetHeaders(sheet, lockAlreadyHeld) {
-  ensureSheetHeadersSafe_(sheet, CNE_SHEET_HEADERS['Material_List'] || [], Boolean(lockAlreadyHeld));
-}
-
-/**
- * Validate existing Library headers without creating or changing columns.
- */
-function ensureReferenceLibrarySheetHeaders(sheet, lockAlreadyHeld) {
-  ensureSheetHeadersSafe_(sheet, CNE_SHEET_HEADERS['Library'] || [], Boolean(lockAlreadyHeld));
 }
 
 /**
@@ -8776,21 +8740,6 @@ function getOrCreateOpenRnFolder() { return getOrCreateNursingRefLibraryFolder()
 /**
  * Server-side validation: Verifies whether a Drive File is strictly located within the Open RN folder.
  */
-/* Extracted to Extra_Code.gs: isFileInOpenRnFolder */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /**
  * Helper: Sanitize string to create safe filename part.
@@ -9315,7 +9264,7 @@ function handleDeleteLearningResource(params, session) {
         cache.remove('cne_res_' + safeFileId);
       } catch (cacheErr) {}
 
-      // Phase 4A: Clean up index rows for this CNE in CNE_Reference_Index
+      // Clean up only this CNE’s Material_Index rows
       try {
         cleanUpIndexRowsForCNELocked_(cneId);
       } catch (cleanIndexErr) {}
@@ -9502,7 +9451,7 @@ function handleGetLearningResource(params, session) {
       }
 
       // Backward-compatible migration for resources uploaded before persistent indexing columns existed.
-      // If the current Drive file already has rows in CNE_Reference_Index, infer and persist that result.
+      // If the current Drive file already has Material_Index rows, infer and persist that result.
       if (driveFileId && !indexingStatus) {
         var inferredIndexing = getLearningResourceIndexingInfoFromIndex(cneId, driveFileId);
         if (inferredIndexing) {
@@ -9664,7 +9613,7 @@ function handleListLearningResources(params, session) {
     var indexedAt = indexedAtCol !== undefined ? String(data[r][indexedAtCol] || '').trim() : '';
 
     // Backward-compatible migration for resources uploaded before indexing metadata
-    // was persisted in CNE_Reference. Infer from CNE_Reference_Index once encountered
+    // was persisted in Material_List. Infer from Material_Index once encountered
     // and persist the result so subsequent list requests are inexpensive and stable.
     if (driveFileId && !indexingStatus) {
       var inferredIndexing = getLearningResourceIndexingInfoFromIndex(cneId, driveFileId);
@@ -10223,11 +10172,6 @@ function isProbableHeading(line) {
   // Title-case clinical subsection labels only, not normal short sentences.
   return /^(?:[A-Z][a-zA-Z-]+\\s+){1,5}[A-Z][a-zA-Z-]+:?$/.test(t);
 }
-/* Extracted to Extra_Code.gs: flushAccumulatedText */
-
-
-
-
 
 /**
  * Helper: Delete specific 1-based row numbers from a sheet in descending order,
@@ -10274,7 +10218,6 @@ function cleanUpIndexRowsForCNELocked_(cneId) {
   }
   if (rowsToDelete.length > 0) deleteSheetRowsByIndices(sheet, rowsToDelete);
 }
-
 
 /** Only original, readable clinical passages count towards a usable evidence index. */
 function cneMaterialTeachingPassage_(text,heading) {
@@ -10367,13 +10310,13 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
         indexedTextKeys[textKey] = true;
         rowsToInsert.push([
           'IDX_' + cneId + '_' + driveFileId.substring(0, 8) + '_'+CNE_MATERIAL_INDEX_VERSION_+'_' + sourceFingerprint + '_C' + (c + 1),
-          'UPLOADED_CNE', cneId, driveFileId, fileName, topic,
+          cneId, driveFileId, fileName, topic,
           chunks[c].heading || 'Clinical Teaching Content', c + 1, chunkText, cneMaterialClinicalKeywords_(chunkText,chunks[c].heading), 'SUCCESS', nowIso
         ]);
       }
     }
     // Do not persist a 'SUCCESS' index for a handful of incidental words.
-    var validLength=rowsToInsert.reduce(function(sum,row){return sum+String(row[8]||'').length;},0);
+    var validLength=rowsToInsert.reduce(function(sum,row){return sum+String(row[7]||'').length;},0);
     if(isSuccess && (!rowsToInsert.length || validLength<600)) {
       rowsToInsert=[];isSuccess=false;
       extResult={success:false,errorCode:'INSUFFICIENT_READABLE_MATERIAL',message:'The PDF did not provide at least 500 characters of validated readable teaching content. OCR or a clearer document is required.'};
@@ -10385,7 +10328,7 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
     var failErrMsg = extResult ? extResult.message : 'No readable textual content could be extracted.';
     rowsToInsert.push([
       'IDX_' + cneId + '_' + driveFileId.substring(0, 8) + '_FAIL',
-      'UPLOADED_CNE', cneId, driveFileId, fileName, topic, 'Extraction Error', 0,
+      cneId, driveFileId, fileName, topic, 'Extraction Error', 0,
       failErrCode + ': ' + failErrMsg, '', 'FAILED', nowIso
     ]);
   }
@@ -10439,7 +10382,7 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
       // other CNEs' evidence. Save and verify the new version first.
       if (rowsToInsert.length > 0) {
         var startRow = sheet.getLastRow() + 1;
-        cneWriteHeaderRows_(sheet,CNE_SHEET_HEADERS['Material_Index'],cneIndexProjectRows_(rowsToInsert,CNE_SHEET_HEADERS['Material_Index']),startRow);
+        cneWriteHeaderRows_(sheet,CNE_SHEET_HEADERS['Material_Index'],rowsToInsert,startRow);
         // Verify the new material evidence is complete BEFORE removing the
         // previous version. Failed readback must preserve old usable material.
         SpreadsheetApp.flush();
@@ -10450,8 +10393,8 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
         for (var chk = 0; chk < rowsToInsert.length; chk++) {
           if (String(written[chk][idCol] || '') === rowsToInsert[chk][0] &&
               String(written[chk][driveCol] || '') === String(driveFileId) &&
-              String(written[chk][statusCol] || '') === rowsToInsert[chk][10] &&
-              String(written[chk][textCol] || '') === rowsToInsert[chk][8]) verifiedCount++;
+              String(written[chk][statusCol] || '') === rowsToInsert[chk][9] &&
+              String(written[chk][textCol] || '') === rowsToInsert[chk][7]) verifiedCount++;
         }
         if (verifiedCount !== rowsToInsert.length) {
           var incompleteRows = [];
@@ -10701,36 +10644,12 @@ function deleteReferenceLibraryResource(driveFileId, session) {
     return { success: false, errorCode: 'SERVER_BUSY', message: 'Server is busy. Please try again.' };
   }
 
-  var deletedChunksCount = 0;
   try {
     var freshDeleteAdmin = requireFreshAdminMutation(session);
     if (!freshDeleteAdmin.success) return freshDeleteAdmin;
     session = freshDeleteAdmin.session;
 
-    // 1. Remove chunks from CNE_Reference_Index
-    var indexSheet = getSpreadsheet('CNE').getSheetByName('Library_Index');
-    if (indexSheet && indexSheet.getLastRow() > 1) {
-      var idxMap = getHeaderMap(indexSheet);
-      var idxData = indexSheet.getDataRange().getValues();
-      var srcTypeCol = idxMap['sourcetype'];
-      var driveColIdx = cneRequireMappedColumn_(idxMap,'Drive_File_ID','Library_Index');
-
-      var rowsToDelete = [];
-      for (var r = 1; r < idxData.length; r++) {
-        var rowSrc = srcTypeCol===undefined?'LOCAL_REFERENCE_LIB':String(idxData[r][srcTypeCol] || '').trim().toUpperCase();
-        var rowDrive = String(idxData[r][driveColIdx] || '').trim();
-        if (rowSrc === 'LOCAL_REFERENCE_LIB' && rowDrive === cleanDriveFileId) {
-          rowsToDelete.push(r + 1);
-        }
-      }
-
-      if (rowsToDelete.length > 0) {
-        deletedChunksCount = rowsToDelete.length;
-        deleteSheetRowsByIndices(indexSheet, rowsToDelete);
-      }
-    }
-
-    // 2. Update active flag in CNE_Reference_Library
+    // Reference PDFs have no text index. Deactivate only the independent Library registry entry.
     var libSheet = getSpreadsheet('CNE').getSheetByName('Library');
     if (libSheet && libSheet.getLastRow() > 1) {
       var libMap = getHeaderMap(libSheet);
@@ -10754,14 +10673,13 @@ function deleteReferenceLibraryResource(driveFileId, session) {
   logAuditAction(
     'REFERENCE_LIBRARY_RESOURCE_DELETED',
     session ? session.employeeId : 'SYSTEM',
-    'Removed reference resource ' + cleanDriveFileId + ' (' + deletedChunksCount + ' index chunks deleted)',
+    'Deactivated reference resource ' + cleanDriveFileId,
     'SUCCESS'
   );
 
   return {
     success: true,
-    deletedChunksCount: deletedChunksCount,
-    message: 'Reference resource successfully removed and unindexed.'
+    message: 'Reference resource deactivated in Library.'
   };
 }
 
@@ -10870,18 +10788,6 @@ function listNursingReferenceResources(session) {
   };
 }
 
-/**
- * Read the authoritative indexing state for one Nursing Reference Library Drive file.
- * Status is derived from persisted CNE_Reference_Index / CNE_Reference_Library rows:
- *   INDEXED = at least one SUCCESS chunk exists
- *   FAILED  = no SUCCESS chunk exists and at least one FAILED row exists
- *   PENDING = file is uploaded but no committed index result exists yet
- * Strictly Admin-only.
- */
-// Retired legacy Nursing Reference Library indexing implementation.
-
-// Retired legacy Nursing Reference Library indexing implementation.
-
 function handleReindexLearningResource(params, session) {
   var cneId = sanitizeCellInput(params ? params.cneId : '');
   if (!cneId) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE ID is required.' };
@@ -10917,17 +10823,9 @@ function handleReindexLearningResource(params, session) {
   return indexLearningResourceContent(cneId, driveFileId, fileName, fileType, record.topic, session, false);
 }
 
-// Retired legacy Nursing Reference Library indexing implementation.
-
 function handleListNursingReferenceResources(params, session) {
   return listNursingReferenceResources(session);
 }
-
-// Retired legacy Nursing Reference Library indexing implementation.
-
-// Retired legacy Nursing Reference Library indexing implementation.
-
-// Retired legacy Nursing Reference Library indexing implementation.
 
 function handleDeleteNursingReferenceResource(params, session) {
   return handleAdminAction(params, session, function(p, s) {
@@ -11458,14 +11356,9 @@ function passesClinicalRelevanceGate(queryTopic, candidate) {
 
 /**
  * Phase 4C: Local Topic-Relevance Retrieval
- * Finds and ranks the most relevant evidence chunks for a CNE topic from CNE_Reference_Index.
- * 
- * Source Priority:
- * 1. UPLOADED_CNE — primary source (rows belonging to cneId)
- * 2. LOCAL_REFERENCE_LIB — supplementary source from Open RN library (active resources only)
- * 
- * Uploaded CNE material always precedes local library material.
- * Within each source, chunks are ranked by deterministic relevance score.
+ * Finds and ranks topic-relevant passages solely from the active CNE file in Material_Index.
+ * Another CNE’s uploads and the unrelated Library registry are never evidence sources.
+ * Passages are ranked using deterministic clinical relevance scores.
  * If no meaningful relevant material is found (score < sufficiency threshold),
  * returns INSUFFICIENT_TOPIC_MATERIAL.
  */
@@ -12464,18 +12357,6 @@ function checkQuestionManagementAuthorized(session, record) {
 /**
  * Retrieve learning material text from CNE_Reference
  */
-/* Extracted to Extra_Code.gs: getCNELearningMaterial */
-
-
-
-
-
-
-
-
-
-
-
 
 /**
  * Get CNE AI Generation Quota Status
@@ -12544,62 +12425,37 @@ function handleGetAiQuota(params, session) {
  * Invariant: IF an AI batch has been successfully persisted for a CNE,
  * that CNE must never become eligible for a second AI generation.
  */
-function findPersistedAiBatchInfo(cneId, questionsSheet, qCols) {
+/**
+ * Scan only this CNE's authoritative question rows for ACTIVE AI batches.
+ * A locked caller can pass its fresh snapshot to avoid repeating a Sheet read;
+ * never cache this across requests or skip reconciliation.
+ */
+function findPersistedAiBatchInfo(cneId, questionsSheet, qCols, selectedSnapshot) {
   var normCne = String(cneId || '').trim().toUpperCase();
-  if (!normCne) {
-    return { hasPersistedBatch: false, activeAiCount: 0, tokens: [], primaryToken: '', matchingRows: [] };
-  }
-  
+  var empty = {hasPersistedBatch:false, activeAiCount:0, tokens:[], primaryToken:'', matchingRows:[], tokenCounts:{}};
+  if (!normCne) return empty;
   var sheet = questionsSheet || getQuestionsSheet();
-  if (!sheet || sheet.getLastRow() <= 1) {
-    return { hasPersistedBatch: false, activeAiCount: 0, tokens: [], primaryToken: '', matchingRows: [] };
-  }
-  
+  if (!sheet || sheet.getLastRow() <= 1) return empty;
   var cols = qCols || getQuestionColIndexes(sheet);
-  var tokenCounts = {};
-  var tokenRows = {};
-  var allAiRows = [];
-  var allAiCount = 0;
-  var candidateRows = [];
-  // Find only questions belonging to this CNE instead of transferring every
-  // post-test question in the institute. Fallback supports older test stubs.
-  try {
-    var idRange = sheet.getRange(2, cols.cneId + 1, sheet.getLastRow() - 1, 1);
-    var cells = idRange.createTextFinder(normCne).matchEntireCell(true).matchCase(false).findAll();
-    for (var c = 0; c < cells.length; c++) candidateRows.push(cells[c].getRow());
-  } catch (e) {
-    var legacyRows = sheet.getDataRange().getValues();
-    for (var r = 1; r < legacyRows.length; r++) {
-      if (String(legacyRows[r][cols.cneId] || '').trim().toUpperCase() === normCne) candidateRows.push(r+1);
-    }
-  }
-  for (var i = 0; i < candidateRows.length; i++) {
-    var rowNum = candidateRows[i];
-    var row = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
-    var rCne = String(row[cols.cneId] || '').trim().toUpperCase();
-    if (rCne !== normCne) continue;
-    var rStatus = String(row[cols.status] || 'ACTIVE').trim().toUpperCase();
-    if (rStatus !== 'ACTIVE') continue;
+  var selected = selectedSnapshot || cneQuestionRowsByCne_(sheet, cols.cneId, normCne);
+  var tokenCounts = {}, allAiRows = [], allAiCount = 0;
+  for (var i = 0; i < selected.rows.length; i++) {
+    var row = selected.rows[i];
+    if (String(row[cols.cneId] || '').trim().toUpperCase() !== normCne) continue;
+    if (String(row[cols.status] || 'ACTIVE').trim().toUpperCase() !== 'ACTIVE') continue;
     var rCreatedBy = String(row[cols.createdBy] || '').trim();
     var rQId = String(row[cols.qId] || '').trim().toLowerCase();
-    
     var match = rCreatedBy.match(/\\[AI:([^\\]]+)\\]/);
     var token = match ? match[1].trim() : '';
-    
     if (token || rCreatedBy.indexOf('[AI:') !== -1 || rQId.indexOf('q_ai_') === 0) {
       allAiCount++;
-      allAiRows.push(rowNum);
+      allAiRows.push(selected.numbers[i]);
       var key = token || '__NO_TOKEN__';
       tokenCounts[key] = (tokenCounts[key] || 0) + 1;
-      if (!tokenRows[key]) tokenRows[key] = [];
-      tokenRows[key].push(rowNum);
     }
   }
-  
   var foundTokens = Object.keys(tokenCounts);
-  var primaryToken = '';
-  var hasBatch = false;
-  
+  var primaryToken = '', hasBatch = false;
   for (var t = 0; t < foundTokens.length; t++) {
     var tk = foundTokens[t];
     if (tokenCounts[tk] >= 5) {
@@ -12608,22 +12464,30 @@ function findPersistedAiBatchInfo(cneId, questionsSheet, qCols) {
       break;
     }
   }
-  
   if (!hasBatch && allAiCount >= 5) {
     hasBatch = true;
-    if (foundTokens.length > 0 && foundTokens[0] !== '__NO_TOKEN__') {
-      primaryToken = foundTokens[0];
-    }
+    if (foundTokens.length && foundTokens[0] !== '__NO_TOKEN__') primaryToken = foundTokens[0];
   }
-  
-  return {
-    hasPersistedBatch: hasBatch,
-    activeAiCount: allAiCount,
-    tokens: foundTokens.filter(function(k) { return k !== '__NO_TOKEN__'; }),
-    primaryToken: primaryToken,
-    matchingRows: allAiRows,
-    tokenCounts: tokenCounts
-  };
+  return {hasPersistedBatch:hasBatch, activeAiCount:allAiCount,
+    tokens:foundTokens.filter(function(k){return k!=='__NO_TOKEN__';}),
+    primaryToken:primaryToken, matchingRows:allAiRows, tokenCounts:tokenCounts};
+}
+
+/**
+ * Locked AI persistence must detect question-ID collisions across ALL CNEs,
+ * but full answer keys and rationales are needed only for the target CNE.
+ * Read the global Question_ID column plus bounded target-CNE rows.
+ */
+function cneAiQuestionSnapshot_(sheet, cols, cneId) {
+  var selected = cneQuestionRowsByCne_(sheet, cols.cneId, cneId);
+  var count = Math.max(0, sheet.getLastRow() - 1);
+  var values = count ? sheet.getRange(2, cols.qId + 1, count, 1).getValues() : [];
+  var allIds = {};
+  for (var i = 0; i < values.length; i++) {
+    var id = String(values[i][0] || '').trim().toLowerCase();
+    if (id) allIds[id] = true;
+  }
+  return {selected:selected, allIds:allIds};
 }
 
 /**
@@ -12670,7 +12534,7 @@ function handleReserveAiQuota(params, session) {
 
   var readyForQuota=cneAiMaterialReadiness_(cneId);
   if(!readyForQuota.hasOwnMaterial)return {success:false,errorCode:'MATERIAL_NOT_INDEXED',message:readyForQuota.message};
-  // Readiness is authoritative; never query general text, library indexes or Drive
+  // Readiness is authoritative; never query a separate library registry or raw Drive content
   // to find substitute evidence when a CNE lacks a successful current-file index.
   var localEvidenceCheck = retrieveCNETopicEvidence(cneId, record.topic, session);
   if (!localEvidenceCheck || !localEvidenceCheck.success || !Array.isArray(localEvidenceCheck.evidence) || !localEvidenceCheck.evidence.length) {
@@ -12916,8 +12780,9 @@ function handleCommitAiQuota(params, session) {
     // Inspect existing questions sheet to prevent duplicate active AI batches and handle recovery
     var questionsSheet = getQuestionsSheet();
     var qCols = getQuestionColIndexes(questionsSheet);
-    var qSheetData = questionsSheet.getDataRange().getValues();
-    var aiBatchInfo = findPersistedAiBatchInfo(cneId, questionsSheet, qCols);
+    var questionSnapshot = cneAiQuestionSnapshot_(questionsSheet, qCols, cneId);
+    var qSheetData = questionSnapshot.selected.rows;
+    var aiBatchInfo = findPersistedAiBatchInfo(cneId, questionsSheet, qCols, questionSnapshot.selected);
 
     // If an AI batch was already persisted for this CNE under another reservation token:
     if (aiBatchInfo.hasPersistedBatch && aiBatchInfo.primaryToken && aiBatchInfo.primaryToken !== reservationToken) {
@@ -12955,16 +12820,12 @@ function handleCommitAiQuota(params, session) {
     var aiBatchTag = '[AI:' + reservationToken + ']';
 
     // Inspect existing questions in sheet across all rows for ID uniqueness & this CNE's reservation
-    var allExistingSheetQIds = {};
+    var allExistingSheetQIds = questionSnapshot.allIds;
     var matchingTagRows = []; // 1-based row numbers
     var matchingTagQIds = [];
 
-    for (var rIdx = 1; rIdx < qSheetData.length; rIdx++) {
+    for (var rIdx = 0; rIdx < qSheetData.length; rIdx++) {
       var rQId = String(qSheetData[rIdx][qCols.qId] || '').trim();
-      if (rQId) {
-        allExistingSheetQIds[rQId.toLowerCase()] = true;
-      }
-
       var rCne = String(qSheetData[rIdx][qCols.cneId] || '').trim().toUpperCase();
       if (rCne === cneId.toUpperCase()) {
         var rStatus = String(qSheetData[rIdx][qCols.status] || 'ACTIVE').trim().toUpperCase();
@@ -12972,7 +12833,7 @@ function handleCommitAiQuota(params, session) {
 
         if (rStatus === 'ACTIVE') {
           if (rCreatedBy.indexOf(aiBatchTag) !== -1) {
-            matchingTagRows.push(rIdx + 1);
+            matchingTagRows.push(questionSnapshot.selected.numbers[rIdx]);
             if (rQId) {
               matchingTagQIds.push(rQId);
             }
@@ -13021,7 +12882,7 @@ function handleCommitAiQuota(params, session) {
     var validatedQuestionIds = [];
     var seenInBatch = {};
     var usedQuestionTexts = {};
-    for (var eq = 1; eq < qSheetData.length; eq++) {
+    for (var eq = 0; eq < qSheetData.length; eq++) {
       if (String(qSheetData[eq][qCols.cneId] || '').trim().toUpperCase() === cneId.toUpperCase() &&
           String(qSheetData[eq][qCols.status] || 'ACTIVE').toUpperCase() === 'ACTIVE') {
         usedQuestionTexts[cneAiCanonicalQuestion_(qSheetData[eq][qCols.question])] = true;
@@ -13120,7 +12981,7 @@ function handleCommitAiQuota(params, session) {
           status: 'ACTIVE',
           questionType: 'TEXT'
         };
-        rowsToSave.push(buildQuestionRowArray(qCols, item, qSheetData[0].length));
+        rowsToSave.push(buildQuestionRowArray(qCols, item, questionsSheet.getLastColumn()));
       }
 
       try {
@@ -13141,10 +13002,11 @@ function handleCommitAiQuota(params, session) {
     var verifiedTagCount = 0;
     for (var vAttempt = 1; vAttempt <= 3; vAttempt++) {
       SpreadsheetApp.flush();
-      var verifyData = questionsSheet.getDataRange().getValues();
+      // Re-read authoritative persisted rows, without transferring other CNEs' answer keys.
+      var verifyData = cneQuestionRowsByCne_(questionsSheet, qCols.cneId, cneId).rows;
       verifiedTagCount = 0;
 
-      for (var vRow = 1; vRow < verifyData.length; vRow++) {
+      for (var vRow = 0; vRow < verifyData.length; vRow++) {
         var rowCne = String(verifyData[vRow][qCols.cneId] || '').trim().toUpperCase();
         var rowStatus = String(verifyData[vRow][qCols.status] || 'ACTIVE').trim().toUpperCase();
         var rowCreatedBy = String(verifyData[vRow][qCols.createdBy] || '').trim();
@@ -14416,8 +14278,8 @@ function cneAiContradictsEvidence_(excerpt, answer, rationale) {
 }
 
 /**
- * Verify evidence against the ACTUAL supplied CNE material or the specifically
- * cited indexed library section, not just a matching document title.
+ * Verify evidence against the ACTUAL supplied CNE learning material,
+ * not just a matching document title.
  * Require Gemini to copy a sufficiently informative verbatim passage so that
  * a hallucinated source title / unrelated section cannot pass validation.
  */
@@ -14683,7 +14545,8 @@ function cneHybridAdditionalClinicalAbbreviations_() {
   return [["arterial blood gas",["abg"]],["allergic bronchopulmonary aspergillosis",["abpa"]],["angiotensin-converting enzyme inhibitor",["acei"]],["advanced cardiovascular life support",["acls"]],["acute coronary syndrome",["acs"]],["assist-control ventilation",["acv"]],["adverse drug event",["ade"]],["attention-deficit/hyperactivity disorder",["adhd"]],["activities of daily living",["adl"]],["autosomal dominant polycystic kidney disease",["adpkd"]],["adverse drug reaction",["adr"]],["acid-fast bacilli",["afb"]],["atrial fibrillation",["afib"]],["appropriate for gestational age",["aga"]],["acquired immunodeficiency syndrome",["aids"]],["acute kidney disease",["akd"]],["acute kidney injury",["aki"]],["alcohol-associated liver disease",["ald"]],["acute lung injury",["ali"]],["age-related macular degeneration",["amd"]],["anti-müllerian hormone",["amh"]],["acute myocardial infarction",["ami"]],["acute myeloid leukemia",["aml"]],["antimicrobial resistance",["amr"]],["antimicrobial stewardship",["ams"]],["aseptic non-touch technique",["antt"]],["automated peritoneal dialysis",["apd"]],["apgar score",["apgar"]],["antepartum hemorrhage",["aph"]],["activated partial thromboplastin time",["aptt"]],["angiotensin receptor blocker",["arb"]],["acute respiratory distress syndrome",["ards"]],["angiotensin receptor-neprilysin inhibitor",["arni"]],["assisted reproductive technology",["art"]],["american society of anesthesiologists",["asa"]],["american spinal injury association",["asia"]],["acute tubular necrosis",["atn"]],["alcohol use disorder",["aud"]],["atrioventricular block",["avb"]],["arteriovenous fistula",["avf"]],["arteriovenous graft",["avg"]],["bronchoalveolar lavage",["bal"]],["best-corrected visual acuity",["bcva"]],["bilevel positive airway pressure",["bipap"]],["basic life support",["bls"]],["bone mineral density",["bmd"]],["body mass index",["bmi"]],["basal metabolic rate",["bmr"]],["bone marrow transplantation",["bmt"]],["biomedical waste",["bmw"]],["biomedical waste management",["bmwm"]],["bipolar affective disorder",["bpad"]],["bronchopulmonary dysplasia",["bpd"]],["benign prostatic hyperplasia",["bph"]],["brief psychiatric rating scale",["bprs"]],["behavioral pain scale",["bps"]],["braden pressure injury risk assessment",["braden"]],["breast cancer susceptibility gene",["brca"]],["branch retinal vein occlusion",["brvo"]],["blood urea nitrogen",["bun"]],["columbia suicide severity rating scale",["c-ssrs"]],["coronary artery bypass grafting",["cabg"]],["coronary artery disease",["cad"]],["coronary angiography",["cag"]],["confusion assessment method for the icu",["cam-icu"]],["community-acquired pneumonia",["cap"]],["corrective and preventive action",["capa"]],["continuous ambulatory peritoneal dialysis",["capd"]],["chimeric antigen receptor t-cell therapy",["car-t"]],["catheter-associated urinary tract infection",["cauti"]],["complete blood count",["cbc"]],["continuous bladder irrigation",["cbi"]],["cartridge-based nucleic acid amplification test",["cbnaat"]],["cognitive behavioural therapy",["cbt"]],["calcium channel blocker",["ccb"]],["carcinoembryonic antigen",["cea"]],["contrast-enhanced computed tomography",["cect"]],["continuous glucose monitoring",["cgm"]],["congestive heart failure",["chf"]],["chronic kidney disease",["ckd"]],["central line-associated bloodstream infection",["clabsi"]],["chronic liver disease",["cld"]],["chronic lymphocytic leukemia",["cll"]],["chronic myeloid leukemia",["cml"]],["comprehensive nursing care plan",["cncp"]],["central nervous system",["cns"]],["chronic obstructive pulmonary disease",["copd"]],["continuous positive airway pressure",["cpap"]],["cardiopulmonary bypass",["cpb"]],["creatine phosphokinase",["cpk"]],["critical-care pain observation tool",["cpot"]],["cerebral perfusion pressure",["cpp"]],["cardiopulmonary resuscitation",["cpr"]],["central retinal artery occlusion",["cra0"]],["catheter-related bloodstream infection",["crbsi"]],["colorectal cancer",["crc"]],["carbapenem-resistant enterobacterales",["cre"]],["closed reduction and internal fixation",["crif"]],["c-reactive protein",["crp"]],["continuous renal replacement therapy",["crrt"]],["cardiac resynchronization therapy",["crt"]],["central retinal vein occlusion",["crvo"]],["cerebrospinal fluid",["csf"]],["continuous subcutaneous insulin infusion",["csii"]],["central sterile supply department",["cssd"]],["cardiotocography",["ctg"]],["cerebrovascular accident",["cva"]],["central venous access device",["cvad"]],["central venous catheter",["cvc"]],["central venous pressure",["cvp"]],["cerebral venous sinus thrombosis",["cvst"]],["continuous venovenous hemofiltration",["cvvh"]],["continuous venovenous hemodialysis",["cvvhd"]],["chest radiograph",["cxr"]],["5% dextrose in water",["d5w"]],["dialectical behaviour therapy",["dbt"]],["decompensated chronic liver disease",["dcld"]],["dynamic condylar screw",["dcs"]],["dual-energy x-ray absorptiometry",["dexa"]],["diabetic foot ulcer",["dfu"]],["dynamic hip screw",["dhs"]],["disseminated intravascular coagulation",["dic"]],["diabetic ketoacidosis",["dka"]],["diabetic macular edema",["dme"]],["direct oral anticoagulant",["doac"]],["doppler ultrasonography",["doppler"]],["directly observed treatment short-course",["dots"]],["diabetic peripheral neuropathy",["dpn"]],["digital subtraction angiography",["dsa"]],["deep tendon reflex",["dtr"]],["deep vein thrombosis",["dvt"]],["external beam radiotherapy",["ebrt"]],["echocardiography",["echo"]],["electroconvulsive therapy",["ect"]],["estimated date of delivery",["edd"]],["extradural hematoma",["edh"]],["extended focused assessment with sonography for trauma",["efast"]],["estimated gestational age",["ega"]],["estimated glomerular filtration rate",["egfr"]],["electrocardiogram",["ekg"]],["extremely low birth weight",["elbw"]],["electronic medication administration record",["emar"]],["electromyography",["emg"]],["expanded programme on immunization",["epi"]],["extrapyramidal symptoms",["eps"]],["enhanced recovery after surgery",["eras"]],["endoscopic retrograde cholangiopancreatography",["ercp"]],["extended-spectrum beta-lactamase",["esbl"]],["end-stage kidney disease",["eskd"]],["erythrocyte sedimentation rate",["esr"]],["end-stage renal disease",["esrd"]],["extracorporeal shock wave lithotripsy",["eswl"]],["end-tidal carbon dioxide",["etco2"]],["ethylene oxide",["eto"]],["endotracheal tube",["ett"]],["endoscopic ultrasound",["eus"]],["endoscopic ultrasound-guided biliary drainage",["eus-bd"]],["endoscopic ultrasound-guided fine needle aspiration",["eus-fna"]],["endoscopic ultrasound-guided fine needle biopsy",["eus-fnb"]],["external ventricular drain",["evd"]],["endoscopic variceal ligation",["evl"]],["endovenous laser ablation",["evla"]],["early warning score",["ews"]],["focused assessment with sonography for trauma",["fast"]],["feeding analgesia sedation thromboembolic prophylaxis head of bed elevation ulcer prophylaxis glucose control",["fasthugs"]],["full blood count",["fbc"]],["fasting blood sugar",["fbs"]],["forced expiratory volume in one second",["fev1"]],["fresh frozen plasma",["ffp"]],["fetal growth restriction",["fgr"]],["fetal heart rate",["fhr"]],["fetal heart sounds",["fhs"]],["fraction of inspired oxygen",["fio2"]],["failure mode and effects analysis",["fmea"]],["fine needle aspiration",["fna"]],["fine needle aspiration cytology",["fnac"]],["focal segmental glomerulosclerosis",["fsgs"]],["forced vital capacity",["fvc"]],["generalized anxiety disorder",["gad"]],["generalized anxiety disorder-7",["gad-7"]],["glasgow coma scale",["gcs"]],["gestational diabetes mellitus",["gdm"]],["gastroesophageal reflux disease",["gerd"]],["glomerular filtration rate",["gfr"]],["gastrointestinal stromal tumor",["gist"]],["histamine-2 receptor antagonist",["h2ra"]],["healthcare-associated infection",["hai"]],["high-alert medication",["ham"]],["hospital-acquired pneumonia",["hap"]],["hepatitis a virus",["hav"]],["glycated hemoglobin",["hba1c"]],["hepatitis b virus",["hbv"]],["hepatocellular carcinoma",["hcc"]],["hematocrit",["hct"]],["hepatitis c virus",["hcv"]],["high dependency unit",["hdu"]],["hemolysis elevated liver enzymes and low platelets",["hellp"]],["human epidermal growth factor receptor 2",["her2"]],["high-flow nasal cannula",["hfnc"]],["high-flow nasal oxygen",["hfno"]],["heart failure with preserved ejection fraction",["hfpef"]],["heart failure with reduced ejection fraction",["hfref"]],["hyperosmolar hyperglycemic state",["hhs"]],["hypoxic-ischemic encephalopathy",["hie"]],["hyperthermic intraperitoneal chemotherapy",["hipec"]],["hospital information system",["his"]],["human immunodeficiency virus",["hiv"]],["high-level disinfection",["hld"]],["head and neck squamous cell carcinoma",["hnscc"]],["hematopoietic stem cell transplantation",["hsct"]],["hysterosalpingography",["hsg"]],["hypoglycemia",["hypo"]],["instrumental activities of daily living",["iadl"]],["inflammatory bowel disease",["ibd"]],["invasive blood pressure",["ibp"]],["intracerebral hemorrhage",["ich"]],["intracranial pressure",["icp"]],["intensive care unit",["icu"]],["intradialytic hypertension",["idhtn"]],["iga nephropathy",["igan"]],["immunohistochemistry",["ihc"]],["ischemic heart disease",["ihd"]],["interstitial lung disease",["ild"]],["intensity-modulated radiotherapy",["imrt"]],["injection",["inj"]],["international normalized ratio",["inr"]],["intraocular lens",["iol"]],["intraocular pressure",["iop"]],["intraoperative ultrasound",["ious"]],["infection prevention and control",["ipc"]],["international patient safety goals",["ipsg"]],["identify situation background assessment recommendation",["isbar"]],["intrauterine fetal demise",["iufd"]],["intrauterine growth restriction",["iugr"]],["intrauterine insemination",["iui"]],["intraventricular hemorrhage",["ivh"]],["intravenous immunoglobulin",["ivig"]],["joint commission international",["jci"]],["kirschner wire",["k-wire"]],["potassium chloride",["kcl"]],["kidney function tests",["kft"]],["kangaroo mother care",["kmc"]],["key performance indicator",["kpi"]],["long-acting reversible contraception",["larc"]],["look-alike sound-alike",["lasa"]],["laser-assisted in situ keratomileusis",["lasik"]],["low birth weight",["lbw"]],["lactate dehydrogenase",["ldh"]],["liver function tests",["lft"]],["large for gestational age",["lga"]],["lower gastrointestinal bleeding",["lgib"]],["laryngeal mask airway",["lma"]],["last menstrual period",["lmp"]],["low-molecular-weight heparin",["lmwh"]],["lower segment cesarean section",["lscs"]],["latent tuberculosis infection",["ltbi"]],["left ventricular ejection fraction",["lvef"]],["monoamine oxidase inhibitor",["maoi"]],["mean arterial pressure",["map"]],["medication administration record",["mar"]],["meconium aspiration syndrome",["mas"]],["metabolic dysfunction-associated steatohepatitis",["mash"]],["metabolic dysfunction-associated steatotic liver disease",["masld"]],["mean corpuscular hemoglobin",["mch"]],["mean corpuscular hemoglobin concentration",["mchc"]],["mean corpuscular volume",["mcv"]],["major depressive disorder",["mdd"]],["multidrug resistant",["mdr"]],["multidrug-resistant tuberculosis",["mdr-tb"]],["multidrug-resistant organism",["mdro"]],["myelodysplastic syndrome",["mds"]],["modified early warning score",["mews"]],["medico-legal case",["mlc"]],["mini-mental state examination",["mmse"]],["motor neuron disease",["mnd"]],["montreal cognitive assessment",["moca"]],["morse fall scale",["morse"]],["myeloproliferative neoplasm",["mpn"]],["magnetic resonance angiography",["mra"]],["magnetic resonance cholangiopancreatography",["mrcp"]],["magnetic resonance imaging",["mri"]],["methicillin-resistant staphylococcus aureus",["mrsa"]],["magnetic resonance venography",["mrv"]],["methicillin-sensitive staphylococcus aureus",["mssa"]],["medical termination of pregnancy",["mtp"]],["n95 filtering facepiece respirator",["n95"]],["nucleic acid amplification test",["naat"]],["national accreditation board for hospitals and healthcare providers",["nabh"]],["n-acetylcysteine",["nac"]],["sodium chloride",["nacl"]],["nonalcoholic fatty liver disease",["nafld"]],["nursing care plan",["ncp"]],["nerve conduction velocity",["ncv"]],["necrotizing enterocolitis",["nec"]],["national early warning score 2",["news2"]],["non-invasive blood pressure",["nibp"]],["neonatal intensive care unit",["nicu"]],["national institutes of health stroke scale",["nihss"]],["non-invasive positive pressure ventilation",["nippv"]],["non-invasive ventilation",["niv"]],["neuroleptic malignant syndrome",["nms"]],["neonatal hyperbilirubinemia",["nnh"]],["non-vitamin k antagonist oral anticoagulant",["noac"]],["nonproliferative diabetic retinopathy",["npdr"]],["negative pressure wound therapy",["npwt"]],["neonatal resuscitation program",["nrp"]],["nonsteroidal anti-inflammatory drug",["nsaid"]],["non-small-cell lung cancer",["nsclc"]],["needlestick injury",["nsi"]],["non-stress test",["nst"]],["non-st-elevation myocardial infarction",["nstemi"]],["oral anticoagulant",["oac"]],["obsessive-compulsive disorder",["ocd"]],["optical coherence tomography",["oct"]],["optical coherence tomography angiography",["octa"]],["oesophagogastroduodenoscopy",["ogd"]],["orogastric tube",["ogt"]],["oral glucose tolerance test",["ogtt"]],["ocular hypertension",["oht"]],["open reduction and internal fixation",["orif"]],["oral rehydration solution",["ors"]],["obstructive sleep apnea",["osa"]],["arterial partial pressure of carbon dioxide",["paco2"]],["post-anesthesia care unit",["pacu"]],["pulmonary arterial hypertension",["pah"]],["pediatric advanced life support",["pals"]],["positive and negative syndrome scale",["panss"]],["arterial partial pressure of oxygen",["pao2"]],["percutaneous coronary intervention",["pci"]],["posterior chamber intraocular lens",["pciol"]],["percutaneous nephrostomy",["pcn"]],["percutaneous nephrolithotomy",["pcnl"]],["polycystic ovarian disease",["pcod"]],["polycystic ovary syndrome",["pcos"]],["pre-conception and pre-natal diagnostic techniques",["pcpndt"]],["polymerase chain reaction",["pcr"]],["procalcitonin",["pct"]],["pressure-controlled ventilation",["pcv"]],["proliferative diabetic retinopathy",["pdr"]],["plan do study act",["pdsa"]],["positive end-expiratory pressure",["peep"]],["peak expiratory flow rate",["pefr"]],["percutaneous endoscopic gastrostomy",["peg"]],["percutaneous endoscopic jejunostomy",["pej"]],["post-exposure prophylaxis",["pep"]],["tunneled hemodialysis catheter",["permcath"]],["positron emission tomography-computed tomography",["pet-ct"]],["pulmonary function test",["pft"]],["patient health questionnaire-9",["phq-9"]],["pulmonary hypertension",["pht"]],["peripherally inserted central catheter",["picc"]],["pediatric intensive care unit",["picu"]],["pregnancy-induced hypertension",["pih"]],["postnatal care",["pnc"]],["postnatal depression",["pnd"]],["peripheral nervous system",["pns"]],["point-of-care testing",["poct"]],["point-of-care ultrasonography",["pocus"]],["postoperative nausea and vomiting",["ponv"]],["postprandial blood sugar",["ppbs"]],["personal protective equipment",["ppe"]],["postpartum hemorrhage",["pph"]],["persistent pulmonary hypertension of the newborn",["pphn"]],["permanent pacemaker",["ppm"]],["preterm prelabor rupture of membranes",["pprom"]],["packed red blood cells",["prbc"]],["pre-exposure prophylaxis",["prep"]],["posterior reversible encephalopathy syndrome",["pres"]],["photorefractive keratectomy",["prk"]],["prelabor rupture of membranes",["prom"]],["prostate-specific antigen",["psa"]],["pressure support ventilation",["psv"]],["percutaneous transhepatic biliary drainage",["ptbd"]],["percutaneous transluminal coronary angioplasty",["ptca"]],["parathyroid hormone",["pth"]],["post-traumatic stress disorder",["ptsd"]],["peptic ulcer disease",["pud"]],["relative afferent pupillary defect",["rapd"]],["richmond agitation-sedation scale",["rass"]],["red blood cell",["rbc"]],["random blood sugar",["rbs"]],["root cause analysis",["rca"]],["renal cell carcinoma",["rcc"]],["random-donor platelets",["rdp"]],["respiratory distress syndrome",["rds"]],["radiofrequency ablation",["rfa"]],["renal function tests",["rft"]],["rheumatic heart disease",["rhd"]],["retrograde intrarenal surgery",["rirs"]],["refractive lens exchange",["rle"]],["retinopathy of prematurity",["rop"]],["return of spontaneous circulation",["rosc"]],["retained products of conception",["rpoc"]],["rapid sequence intubation",["rsi"]],["reverse transcription polymerase chain reaction",["rt-pcr"]],["renal tubular acidosis",["rta"]],["rapid urease test",["rut"]],["subarachnoid hemorrhage",["sah"]],["arterial oxygen saturation",["sao2"]],["situation background assessment recommendation",["sbar"]],["spontaneous bacterial peritonitis",["sbp"]],["stereotactic body radiotherapy",["sbrt"]],["spinal cord injury",["sci"]],["small-cell lung cancer",["sclc"]],["stem cell transplantation",["sct"]],["subdural hematoma",["sdh"]],["single-donor platelets",["sdp"]],["small for gestational age",["sga"]],["syndrome of inappropriate antidiuretic hormone secretion",["siadh"]],["synchronised intermittent mandatory ventilation",["simv"]],["special newborn care unit",["sncu"]],["serotonin-norepinephrine reuptake inhibitor",["snri"]],["peripheral oxygen saturation",["spo2"]],["surgical site infection",["ssi"]],["subacute sclerosing panencephalitis",["sspe"]],["selective serotonin reuptake inhibitor",["ssri"]],["st-elevation myocardial infarction",["stemi"]],["hydrogen peroxide gas plasma sterilization",["sterrad"]],["substance use disorder",["sud"]],["supraventricular tachycardia",["svt"]],["t-piece resuscitator",["t-piece"]],["type 1 diabetes mellitus",["t1dm"]],["type 2 diabetes mellitus",["t2dm"]],["transcatheter aortic valve implantation",["tavi"]],["transcatheter aortic valve replacement",["tavr"]],["traumatic brain injury",["tbi"]],["tricyclic antidepressant",["tca"]],["transesophageal echocardiography",["tee"]],["thyroid function tests",["tft"]],["total hip arthroplasty",["tha"]],["transient ischemic attack",["tia"]],["transjugular intrahepatic portosystemic shunt",["tips"]],["total knee arthroplasty",["tka"]],["tumor lysis syndrome",["tls"]],["thoracolumbosacral orthosis",["tlso"]],["tumor node metastasis",["tnm"]],["tetralogy of fallot",["tof"]],["trial of labor after cesarean",["tolac"]],["therapeutic plasma exchange",["tpe"]],["total parenteral nutrition",["tpn"]],["thyroid stimulating hormone",["tsh"]],["transthoracic echocardiography",["tte"]],["transient tachypnea of the newborn",["ttn"]],["transurethral resection of bladder tumor",["turbt"]],["transurethral resection of the prostate",["turp"]],["tranexamic acid",["txa"]],["umbilical arterial catheter",["uac"]],["uterine artery embolization",["uae"]],["unfractionated heparin",["ufh"]],["upper gastrointestinal",["ugi"]],["upper gastrointestinal bleeding",["ugib"]],["upper gastrointestinal endoscopy",["ugie"]],["ultrasonography",["usg"]],["urinary tract infection",["uti"]],["umbilical venous catheter",["uvc"]],["vacuum-assisted closure",["vac"]],["ventilator-associated event",["vae"]],["ventilator-associated pneumonia",["vap"]],["vaginal birth after cesarean",["vbac"]],["venous blood gas",["vbg"]],["volume-controlled ventilation",["vcv"]],["vitamin k antagonist",["vka"]],["very low birth weight",["vlbw"]],["vancomycin-resistant enterococcus",["vre"]],["ventricular septal defect",["vsd"]],["venous thromboembolism",["vte"]],["tidal volume indexed to ideal body weight",["vtid"]],["white blood cell",["wbc"]],["world health organization",["who"]],["radiography",["x-ray"]],["extensively drug-resistant tuberculosis",["xdr-tb"]]];
 }
 function cneHybridClinicalVocabulary_() {
-  return [
+  if (cneHybridClinicalVocabulary_._cache) return cneHybridClinicalVocabulary_._cache;
+  return cneHybridClinicalVocabulary_._cache = [
     ['gastritis',['gastric mucosal inflammation']],
     ['diabetic ketoacidosis',['dka']],
     ['intravenous cannulation',['iv cannulation','peripheral iv cannulation','peripheral intravenous cannulation','peripheral intravenous therapy','cannula insertion']],
@@ -14770,7 +14633,8 @@ function cneHybridClinicalAnalyze_(title) {
     return {concepts:[],context:context,requiresClarification:true,notice:'“'+abbr+'” has more than one clinical meaning. Enter the full clinical concept.'};
   }
   var matches=[], covered=[];
-  cneHybridClinicalVocabulary_().forEach(function(entry){
+  var vocabulary = cneHybridClinicalVocabulary_();
+  vocabulary.forEach(function(entry){
     var alternatives=[entry[0]].concat(entry[1]);
     alternatives.forEach(function(v){
       var normal=cneHybridClinicalText_(v);
@@ -14785,7 +14649,7 @@ function cneHybridClinicalAnalyze_(title) {
     // Avoid treating a shorter phrase as a second independent concept when it
     // occurs only within an already recognized longer phrase.
     if(covered.some(function(phrase){return cneHybridClinicalContains_(phrase,m.matched);} ))return;
-    concepts.push({name:m.canonical,variants:[m.canonical].concat(cneHybridClinicalVocabulary_().filter(function(v){return v[0]===m.canonical;}).map(function(v){return v[1];})[0]||[]),kind:'verified'});
+    concepts.push({name:m.canonical,variants:[m.canonical].concat(vocabulary.filter(function(v){return v[0]===m.canonical;}).map(function(v){return v[1];})[0]||[]),kind:'verified'});
     covered.push(m.matched);used[m.canonical]=true;
   });
   if(!concepts.length){
@@ -14951,13 +14815,12 @@ function handleImportCNEReferenceQuestion(params,session) {
   }finally{lock.releaseLock();}
 }
 
-
 /** Return only authoritative ACTIVE AI objective slots tagged with the session token.
  * This is also used to recover after an uncertain spreadsheet response.
  */
 function cneHybridSelectedBankContext_(cneId) {
-  var sheet=getQuestionsSheet(),cols=getQuestionColIndexes(sheet),rows=sheet.getDataRange().getValues(),contexts=[];
-  for(var i=1;i<rows.length&&contexts.length<5;i++) {
+  var sheet=getQuestionsSheet(),cols=getQuestionColIndexes(sheet),rows=cneQuestionRowsByCne_(sheet,cols.cneId,cneId).rows,contexts=[];
+  for(var i=0;i<rows.length&&contexts.length<5;i++) {
     var row=rows[i],id=String(row[cols.qId]||'');
     if(String(row[cols.cneId]||'').toUpperCase()!==cneId.toUpperCase()||
        String(row[cols.status]||'ACTIVE').toUpperCase()!=='ACTIVE'||id.indexOf('q_bank_')!==0)continue;
@@ -14968,8 +14831,8 @@ function cneHybridSelectedBankContext_(cneId) {
 }
 function cneHybridGetSlots_(cneId,token) {
   var sheet=getQuestionsSheet();var cols=getQuestionColIndexes(sheet);
-  var rows=sheet.getDataRange().getValues(), found=[],seen={};
-  for(var i=1;i<rows.length;i++) {
+  var rows=cneQuestionRowsByCne_(sheet,cols.cneId,cneId).rows, found=[],seen={};
+  for(var i=0;i<rows.length;i++) {
     var row=rows[i];
     if(String(row[cols.cneId]||'').trim().toUpperCase()!==String(cneId||'').toUpperCase() ||
        String(row[cols.status]||'ACTIVE').toUpperCase()!=='ACTIVE')continue;
@@ -15013,11 +14876,11 @@ function cneHybridPersistPartial_(cneId,token,questions,session) {
     for(var qi=1;qi<data.length;qi++)if(String(data[qi][0]||'').toUpperCase()===cneId.toUpperCase()){quotaRow=qi+1;break;}
     if(quotaRow<2 || String(data[quotaRow-1][6]||'')!==token)return {success:false,errorCode:'INVALID_RESERVATION'};
     var used=Number(data[quotaRow-1][2]||0)>=1;
-    var sheet=getQuestionsSheet(),cols=getQuestionColIndexes(sheet),rows=sheet.getDataRange().getValues();
-    var owned={},anyExisting={};
-    for(var r=1;r<rows.length;r++){
+    var sheet=getQuestionsSheet(),cols=getQuestionColIndexes(sheet);
+    var snapshot=cneAiQuestionSnapshot_(sheet,cols,cneId),rows=snapshot.selected.rows;
+    var owned={},anyExisting=snapshot.allIds;
+    for(var r=0;r<rows.length;r++){
       var row=rows[r],id=String(row[cols.qId]||'').trim();
-      if(id)anyExisting[id.toLowerCase()]=true;
       if(String(row[cols.cneId]||'').toUpperCase()===cneId.toUpperCase() &&
           String(row[cols.status]||'ACTIVE').toUpperCase()==='ACTIVE' &&
           String(row[cols.createdBy]||'').indexOf('[AI:'+token+']')!==-1) {
@@ -15045,7 +14908,7 @@ function cneHybridPersistPartial_(cneId,token,questions,session) {
          ['A','B','C','D'].indexOf(correct)<0||rationale.length<5||cite.length<3)
         return {success:false,errorCode:'INVALID_VALIDATED_QUESTION'};
       // Reject near duplicates across AI slots and existing Question Bank/manual questions.
-      for(var ri=1;ri<rows.length;ri++)if(String(rows[ri][cols.cneId]||'').toUpperCase()===cneId.toUpperCase() &&
+      for(var ri=0;ri<rows.length;ri++)if(String(rows[ri][cols.cneId]||'').trim().toUpperCase()===cneId.toUpperCase() &&
            String(rows[ri][cols.status]||'ACTIVE').toUpperCase()==='ACTIVE' &&
            cneAiNearDuplicate_(String(rows[ri][cols.question]||''),qText))return {success:false,errorCode:'DUPLICATE_QUESTION'};
       if(prepared.some(function(p){return cneAiNearDuplicate_(p.question,qText);}))return {success:false,errorCode:'DUPLICATE_QUESTION'};
@@ -15053,7 +14916,7 @@ function cneHybridPersistPartial_(cneId,token,questions,session) {
         cneId:cneId,id:id,question:qText,optA:abc[0],optB:abc[1],optC:abc[2],optD:abc[3],
         correctOption:correct,explanation:rationale,isFinalized:'NO',isLocked:'NO',createdAt:new Date().toISOString(),
         createdBy:session.employeeId+' [AI:'+token+']',authoritativeSource:cite,status:'ACTIVE',questionType:'TEXT'
-      },Math.max(15,rows[0].length))});
+      },Math.max(15,sheet.getLastColumn()))});
       owned[objective]={id:id,question:qText};
     }
     if(Object.keys(owned).length>5)return {success:false,errorCode:'TOO_MANY_AI_QUESTIONS'};
@@ -15064,8 +14927,8 @@ function cneHybridPersistPartial_(cneId,token,questions,session) {
       SpreadsheetApp.flush();
     }
     // Reconcile immediately after any ambiguous write and never blindly replay.
-    var latest=sheet.getDataRange().getValues(),confirmed={};
-    for(var k=1;k<latest.length;k++){
+    var latest=cneQuestionRowsByCne_(sheet,cols.cneId,cneId).rows,confirmed={};
+    for(var k=0;k<latest.length;k++){
       var entry=latest[k],key=String(entry[cols.qId]||'');
       if(String(entry[cols.cneId]||'').toUpperCase()!==cneId.toUpperCase()||String(entry[cols.status]||'ACTIVE').toUpperCase()!=='ACTIVE'||
          String(entry[cols.createdBy]||'').indexOf('[AI:'+token+']')<0)continue;
@@ -15326,6 +15189,25 @@ function invalidateCNEQuestionsCache(cneId) {
 }
 
 /**
+ * CNE-scoped question lookup: scan only the CNE_ID column, then fetch bounded
+ * matching rows in physical order. Explicit trim/case normalization preserves
+ * historical sheet behavior even when an imported CNE ID has surrounding spaces.
+ * Return row numbers as well as values for safe in-place question edits.
+ */
+function cneQuestionRowsByCne_(sheet, cneIdColumn, cneId) {
+  var last = sheet.getLastRow();
+  var target = normalizeCneId(cneId);
+  if (!target || last <= 1) return {numbers:[], rows:[]};
+  var idValues = sheet.getRange(2, cneIdColumn + 1, last - 1, 1).getValues();
+  var numbers = [];
+  for (var i = 0; i < idValues.length; i++) {
+    if (normalizeCneId(idValues[i][0]) === target) numbers.push(i + 2);
+  }
+  var records = cneReadSelectedRowsBounded_(sheet, numbers, sheet.getLastColumn(), false);
+  return {numbers:numbers, rows:records.map(function(item){return item.data;})};
+}
+
+/**
  * Read and Cache Sanitized Finalized Post-Test Questions (Short-lived 60s CacheService)
  * STRICT SECURITY:
  * - Cache key: 'cne_questions_' + normalizeCneId(cneId)
@@ -15355,10 +15237,11 @@ function getCachedSanitizedQuestions(cneId) {
   if (!qSheet || qSheet.getLastRow() <= 1) return [];
 
   var cols = getQuestionColIndexes(qSheet);
-  var qData = qSheet.getDataRange().getValues();
+  // Read only this CNE's rows. Do not download unrelated answer keys or rationales.
+  var qData = cneQuestionRowsByCne_(qSheet, cols.cneId, normCneId).rows;
   var sanitized = [];
 
-  for (var r = 1; r < qData.length; r++) {
+  for (var r = 0; r < qData.length; r++) {
     var qCne = String(qData[r][cols.cneId] || '').trim().toUpperCase();
     var isFin = String(qData[r][cols.isFinalized] || 'NO').toUpperCase() === 'YES';
     var qStatus = String(qData[r][cols.status] || 'ACTIVE').trim().toUpperCase();
@@ -15397,21 +15280,10 @@ function getCachedSanitizedQuestions(cneId) {
 }
 
 /**
- * Helper: Ensure Question Sheet has all necessary headers
- */
-function ensureQuestionsSheetHeaders(sheet) {
-  // Historical helper name retained. It validates the existing approved schema
-  // and MUST NEVER append or repair columns outside Admin Verify Sheets.
-  return cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['Post_Test_Questions']);
-}
-
-/**
  * Helper: Resolve existing Post_Test_Questions sheet with canonical headers.
  */
 function getQuestionsSheet() {
-  var sheet = getOrCreateSheet('Post_Test_Questions');
-  cneHeaderLayout_(sheet,CNE_SHEET_HEADERS['Post_Test_Questions']);
-  return sheet;
+  return getOrCreateSheet('Post_Test_Questions');
 }
 
 /**
@@ -15589,19 +15461,9 @@ function cneRecordConfirmedAttendanceBatch_(cneId, people, actor, sheet) {
   return {inserted:inserts.length,updated:updates.length};
 }
 
-
-
 /** A single canonical participant row is the assessment and attendance transaction boundary.
  * Caller holds ScriptLock. One physical row write commits both states together.
  */
-/* Extracted to Extra_Code.gs: cneParticipantFindByIdentity_ */
-
-
-
-
-
-
-
 
 function cneBuildRetrospectiveAttendees_(staff,external,officers) {
   var people=[], ids={}, names={};
@@ -15620,7 +15482,6 @@ function cneBuildRetrospectiveAttendees_(staff,external,officers) {
 function cnePostTestCompleted_(row) {
   return String((row||[])[8]||'').trim().toUpperCase()==='COMPLETED';
 }
-
 
 /**
  * Helper: Resolve QR Tokens Sheet
@@ -15876,19 +15737,27 @@ function handleSaveCNEQuestions(params, session) {
 
     var sheet = getQuestionsSheet();
     var cols = getQuestionColIndexes(sheet);
-    var data = sheet.getDataRange().getValues();
+    // Only fetch rows belonging to this CNE, preserving their physical row numbers.
+    // This avoids loading other CNEs' answer keys while holding ScriptLock.
+    var sheetWidth = sheet.getLastColumn();
+    var selectedQuestionRows = cneQuestionRowsByCne_(sheet, cols.cneId, cneId);
+    var cneRowNumbers = selectedQuestionRows.numbers;
+    var selectedRows = selectedQuestionRows.rows;
     // Persistence is authoritative; no other writer may publish >10 concurrently.
     if (validatedList.filter(function(q){return q.status==='ACTIVE' && q.isFinalized==='YES';}).length > 10)
       return {success:false,errorCode:'POST_TEST_MAXIMUM_EXCEEDED',message:'A maximum of 10 questions may be finalized for a Post-Test.'};
-    var existingRowMap = {}; // qId.toLowerCase() -> rowNumber
+    var existingRowMap = {}; // qId.toLowerCase() -> physical row number
     var existingCneRows = [];
-
-    for (var r = 1; r < data.length; r++) {
-      if (String(data[r][cols.cneId] || '').trim().toUpperCase() === cneId.toUpperCase()) {
-        var existingQId = String(data[r][cols.qId] || '').trim().toLowerCase();
-        existingRowMap[existingQId] = r + 1;
-        existingCneRows.push({ rowNum: r + 1, qId: existingQId });
-      }
+    var rowByNumber = {};
+    for (var r = 0; r < cneRowNumbers.length; r++) {
+      var physicalRow = cneRowNumbers[r];
+      var physicalValues = selectedRows[r];
+      // Recheck the CNE ID after the bounded read; never modify an unrelated CNE row.
+      if (!physicalValues || String(physicalValues[cols.cneId] || '').trim().toUpperCase() !== cneId.toUpperCase()) continue;
+      rowByNumber[physicalRow] = physicalValues;
+      var existingQId = String(physicalValues[cols.qId] || '').trim().toLowerCase();
+      existingRowMap[existingQId] = physicalRow;
+      existingCneRows.push({rowNum: physicalRow, qId: existingQId});
     }
 
     // Image references must come from the server-issued manual upload or the immutable
@@ -15896,12 +15765,12 @@ function handleSaveCNEQuestions(params, session) {
     for(var vi=0;vi<validatedList.length;vi++) {
       var imageQ=validatedList[vi];
       var oldRowNumber=existingRowMap[imageQ.id.toLowerCase()];
-      var old=oldRowNumber?data[oldRowNumber-1]:null;
+      var old=oldRowNumber?rowByNumber[oldRowNumber]:null;
       // A saved Question Bank item's edited __v version retains its immutable
       // source file and [QB:] provenance, but never accepts an invented bank ID.
       var bankBase=imageQ.id.split('__v')[0];
       var originRow=(!old && /^q_bank_/.test(imageQ.id))?existingRowMap[bankBase]:null;
-      var origin=originRow?data[originRow-1]:null;
+      var origin=originRow?rowByNumber[originRow]:null;
       if(!old && /^q_bank_/.test(imageQ.id) && (!origin || String(origin[cols.createdBy]||'').indexOf('[QB:')===-1))
         return {success:false,errorCode:'BANK_IMPORT_REQUIRED',message:'Import Question Bank items through the approved import action.'};
       if(!old && origin)old=origin;
@@ -15921,20 +15790,21 @@ function handleSaveCNEQuestions(params, session) {
       }
     }
 
-    // Preserve history: For existing rows not in validatedList, mark as REPLACED instead of hard deleting
+    // Preserve history by marking removed rows REPLACED; batch disjoint status cells.
+    var replaceCells = [];
     for (var e = 0; e < existingCneRows.length; e++) {
-      var exQId = existingCneRows[e].qId;
-      if (!seenIds[exQId]) {
-        var rowNum = existingCneRows[e].rowNum;
-        sheet.getRange(rowNum, cols.status + 1).setValue('REPLACED');
+      if (!seenIds[existingCneRows[e].qId]) {
+        replaceCells.push(getColumnLetter_(cols.status + 1) + existingCneRows[e].rowNum);
       }
     }
 
-    // Update or append validated questions
+    // Stage edits before writing so contiguous updates and new rows can be batched.
+    var updatedRows = [];
+    var appendedRows = [];
     for (var v = 0; v < validatedList.length; v++) {
       var item = validatedList[v];
       var targetRow = existingRowMap[item.id.toLowerCase()];
-      var existingRowValues = targetRow ? data[targetRow - 1] : null;
+      var existingRowValues = targetRow ? rowByNumber[targetRow] : null;
       var rowValues = buildQuestionRowArray(cols, {
         cneId: cneId,
         id: item.id,
@@ -15954,16 +15824,40 @@ function handleSaveCNEQuestions(params, session) {
         createdBy: existingRowValues && String(existingRowValues[cols.createdBy] || '').trim()
           ? existingRowValues[cols.createdBy]
           : (String(item.id).startsWith('q_bank_') && existingRowMap[String(item.id).split('__v')[0]]
-            ? data[existingRowMap[String(item.id).split('__v')[0]]-1][cols.createdBy] : session.employeeId),
+            ? rowByNumber[existingRowMap[String(item.id).split('__v')[0]]][cols.createdBy] : session.employeeId),
         authoritativeSource: item.authoritativeSource,
         status: item.status,questionType:item.questionType,imageFileId:item.imageFileId
-      }, data[0].length, existingRowValues);
+      }, sheetWidth, existingRowValues);
 
-      if (targetRow) {
-        sheet.getRange(targetRow, 1, 1, rowValues.length).setValues([rowValues]);
-      } else {
-        sheet.appendRow(rowValues);
+      if (targetRow) updatedRows.push({row:targetRow, values:rowValues});
+      else appendedRows.push(rowValues);
+    }
+
+    if (replaceCells.length) {
+      if (typeof sheet.getRangeList === 'function') sheet.getRangeList(replaceCells).setValue('REPLACED');
+      else for (var replaced = 0; replaced < existingCneRows.length; replaced++) {
+        if (!seenIds[existingCneRows[replaced].qId])
+          sheet.getRange(existingCneRows[replaced].rowNum, cols.status + 1).setValue('REPLACED');
       }
+    }
+    updatedRows.sort(function(a,b){return a.row-b.row;});
+    // Group only adjacent physical rows. Never overwrite intervening CNEs' records.
+    for (var u=0;u<updatedRows.length;) {
+      var first=updatedRows[u].row, block=[updatedRows[u].values];u++;
+      while(u<updatedRows.length && updatedRows[u].row===first+block.length) {
+        block.push(updatedRows[u].values);u++;
+      }
+      sheet.getRange(first,1,block.length,sheetWidth).setValues(block);
+    }
+    if (appendedRows.length) {
+      var appendStart=sheet.getLastRow()+1;
+      // A batched append must still work when the sheet has no unused grid rows.
+      if (typeof sheet.getMaxRows==='function' && typeof sheet.insertRowsAfter==='function') {
+        var maxRows=sheet.getMaxRows();
+        if (appendStart+appendedRows.length-1>maxRows)
+          sheet.insertRowsAfter(maxRows,appendStart+appendedRows.length-1-maxRows);
+      }
+      sheet.getRange(appendStart,1,appendedRows.length,sheetWidth).setValues(appendedRows);
     }
 
     logAuditAction('SAVE_QUESTIONS', session.employeeId, 'Saved ' + validatedList.length + ' questions (' + activeCount + ' active, ' + finalizedCount + ' finalized) for CNE: ' + cneId, 'SUCCESS');
@@ -16000,12 +15894,12 @@ function handleGetCNEQuestions(params, session) {
   var isLocked = isCNEQuestionsLocked(cneId);
   var sheet = getQuestionsSheet();
   var cols = getQuestionColIndexes(sheet);
-  var data = sheet.getDataRange().getValues();
+  var data = cneQuestionRowsByCne_(sheet, cols.cneId, cneId).rows;
   var questions = [];
   var finalizedCount = 0;
   var activeCount = 0;
   
-  for (var r = 1; r < data.length; r++) {
+  for (var r = 0; r < data.length; r++) {
     if (String(data[r][cols.cneId] || '').trim().toUpperCase() === cneId.toUpperCase()) {
       var isFin = String(data[r][cols.isFinalized] || 'NO').toUpperCase() === 'YES';
       var authSrc = String(data[r][cols.authoritativeSource] || '').trim();
@@ -16217,8 +16111,6 @@ function buildPostTestOtpPrincipal(cneId, identity) {
   var id = String(identity || '').trim().toUpperCase();
   return cne && id ? (cne + '#' + id) : '';
 }
-
-
 
 function findExistingPostTestSubmission(cneId, participantId) {
   var rows=cneParticipantRows_(cneId),pid=String(participantId||'').trim().toUpperCase();
@@ -16916,8 +16808,10 @@ function handleGetPostTestQuestions(params, session) {
     if(String(sq.questionType||'').toUpperCase()==='IMAGE'){
       if(!imageMetaById){
         imageMetaById={};
-        var imageSheet=getQuestionsSheet(),imageCols=getQuestionColIndexes(imageSheet),imageRows=imageSheet.getDataRange().getValues();
-        for(var ir=1;ir<imageRows.length;ir++)if(String(imageRows[ir][imageCols.cneId]||'').toUpperCase()===cneId.toUpperCase())
+        var imageSheet=getQuestionsSheet(),imageCols=getQuestionColIndexes(imageSheet);
+        // Image provenance is authoritative: refresh from this CNE only, even on a sanitized cache hit.
+        var imageRows=cneQuestionRowsByCne_(imageSheet,imageCols.cneId,cneId).rows;
+        for(var ir=0;ir<imageRows.length;ir++)
           imageMetaById[String(imageRows[ir][imageCols.qId]||'')]=String(imageRows[ir][imageCols.createdBy]||'').indexOf('[QB:')!==-1?'BANK':'MANUAL';
       }
       var imageSource=imageMetaById[sq.id];
@@ -17360,7 +17254,6 @@ function handleAddManualParticipants(params, session) {
  * Note: Average Score is computed EXCLUSIVELY from POST_TEST participants!
  * If no post-test submissions exist, averageScore is null (never 0).
  */
-
 
 /**
  * Finalize CNE Session and Update CNE Schedule Record
@@ -19448,10 +19341,6 @@ function handleGetCneInterestedParticipants(params, session) {
   };
 }
 
-
-
-
-
 /**
  * Reports response optimization: scan only CNE IDs first, then fetch bounded
  * response rows when a short reporting period touches a small fraction of history.
@@ -19731,7 +19620,6 @@ function handleGetCNEQuestionImage(params,session) {
   return {success:true,data:{mimeType:checked.mimeType,base64Data:Utilities.base64Encode(checked.bytes)}};
 }
 
-
 /**
  * CNE Quiz (2026-11) - scored assessments and unsaved practice.
  * Only structurally valid CLINICALLY_APPROVED items of three response formats are eligible.
@@ -19916,22 +19804,50 @@ function handleSaveQuizResponseDetails(params,session){
     var chk=cneQuizValidate_(q,{format:format,scoring:'EXACT_MATCH'});
     if(!chk.valid)return cneQuizResponseError_('INVALID_QUESTION',id+': '+chk.reason);
     cneUpdateHeaderFields_(bank,rowNum,{'Response_Format':format,'Scoring_Method':'EXACT_MATCH'});
-    _executionQuizApprovedPool_=null;cneQuizClearHomeCaches_();
+    _executionQuizApprovedPool_=null;_executionQuizScopedPools_=Object.create(null);
+    // A response-format change affects the cached unit/format counts immediately.
+    try{CacheService.getScriptCache().remove('cne_quiz_unit_summary_v3');}catch(e){}
+    cneQuizClearHomeCaches_();
     logAuditAction('CONFIGURE_QUIZ_FORMAT',fresh.session.employeeId,'Question ID '+id+'; '+format+'; EXACT_MATCH','SUCCESS');
     return {success:true,data:{questionId:id,responseFormat:format,scoringMethod:'EXACT_MATCH',maxPoints:1}};
   }finally{lock.releaseLock();}
 }
 
-function cneQuizApprovedPool_() {
-  if(_executionQuizApprovedPool_)return _executionQuizApprovedPool_;
+/** Read approved Quiz questions from the live Question_Index.
+ * Full mode validates the bank for selection, practice and dashboard counts.
+ * Attempt-scoped mode validates only the IDs in that attempt (up to 50),
+ * while still reading live sheet cells and checking duplicates across ALL rows.
+ * No cross-request answer-key caching: edits invalidate in-progress attempts.
+ */
+function cneQuizApprovedPool_(questionIds) {
+  var scoped=Array.isArray(questionIds);
+  if(!scoped && _executionQuizApprovedPool_)return _executionQuizApprovedPool_;
+  var wanted=null,cacheKey='';
+  if(scoped){
+    wanted=Object.create(null);
+    questionIds.forEach(function(id){id=cneQuizCell_(id);if(id)wanted[id]=true;});
+    cacheKey=questionIds.join('\\u001f');
+    if(_executionQuizScopedPools_[cacheKey])return _executionQuizScopedPools_[cacheKey];
+    // A full validated pool from this exact request also satisfies a scoped lookup.
+    if(_executionQuizApprovedPool_){
+      var subset=_executionQuizApprovedPool_.questions.filter(function(q){return wanted[q.questionId];});
+      return (_executionQuizScopedPools_[cacheKey]={success:true,questions:subset});
+    }
+  }
   var sh=cneHybridQuestionBankSheet_();
   if(!sh || sh.getLastRow()<2)return {success:true,questions:[]};
   var fields=cneHybridBankFields_(sh);
   if(!fields.success)return cneQuizResponseError_('QUIZ_BANK_SCHEMA','Question Bank missing: '+fields.missing.join(', '));
   var rows=sh.getDataRange().getValues(),cols=fields.cols,list=[],counts=Object.create(null),excluded=[];
-  for(var n=1;n<rows.length;n++){var id=cneQuizCell_(rows[n][cols.questionId]);if(id)counts[id]=(counts[id]||0)+1;}
+  // Preserve duplicate-ID rejection even when only a few attempt IDs are needed.
+  for(var n=1;n<rows.length;n++){
+    var id=cneQuizCell_(rows[n][cols.questionId]);
+    if(id && (!scoped||wanted[id]))counts[id]=(counts[id]||0)+1;
+  }
   for(var i=1;i<rows.length;i++){
-    var row=rows[i],q=cneHybridBankCandidate_(row,cols,0),id=q.questionId;
+    var row=rows[i],id=cneQuizCell_(row[cols.questionId]);
+    if(scoped&&!wanted[id])continue; // Do not parse/validate thousands of irrelevant rows.
+    var q=cneHybridBankCandidate_(row,cols,0);
     q.options.E=cols.extraE!==undefined?cneQuizCell_(row[cols.extraE]):'';
     q.options.F=cols.extraF!==undefined?cneQuizCell_(row[cols.extraF]):'';
     if(!cneQuizIsClinicallyApproved_(q))continue;
@@ -19941,8 +19857,10 @@ function cneQuizApprovedPool_() {
     q.responseFormat=chk.format;q.orderedItems=chk.orderedItems;
     list.push(q);
   }
+  var result={success:true,questions:list};
+  if(scoped)return (_executionQuizScopedPools_[cacheKey]=result);
   _cneQuizDiagnostics_=excluded;
-  return (_executionQuizApprovedPool_={success:true,questions:list});
+  return (_executionQuizApprovedPool_=result);
 }
 function cneQuizShuffle_(items) {
   for (var i=items.length-1;i>0;i--) {
@@ -20337,7 +20255,7 @@ function handleGetQuizScoredBatch(params,session){
   if(start<committed || start>committed+CNE_QUIZ_BATCH_SIZE_)
     return cneQuizResponseError_('INVALID_BATCH','Finish the current batch before loading another.');
   var ids=a.ids.slice(start,Math.min(start+CNE_QUIZ_BATCH_SIZE_,a.ids.length));
-  var pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+  var pool=cneQuizApprovedPool_(a.ids);if(!pool.success)return pool;
   var lookup={};pool.questions.forEach(function(q){lookup[q.questionId]=q;});
   if(!cneQuizAttemptKeysValid_(a,lookup))return cneQuizResponseError_('QUESTION_CHANGED','Question keys changed during this quiz. Contact the administrator.');
   var items=[];
@@ -20372,7 +20290,7 @@ function handleSaveQuizScoredBatch(params,session){
       return cneQuizResponseError_('BATCH_LOCKED','This batch is already submitted.');
     }
     if(status!=='IN_PROGRESS'||start!==committed)return cneQuizResponseError_('OUT_OF_ORDER','Finish the earlier batch first.');
-    var pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+    var pool=cneQuizApprovedPool_(a.ids);if(!pool.success)return pool;
     var byId={};pool.questions.forEach(function(q){byId[q.questionId]=q;});
     if(!cneQuizAttemptKeysValid_(a,byId))return cneQuizResponseError_('QUESTION_CHANGED','Question answer keys or options changed during this quiz. Contact administrator.');
     for(var i=0;i<newChoices.length;i++){
@@ -20392,7 +20310,7 @@ function handleCompleteQuizScored(params,session){
     var a=cneQuizFindAttempt_(params.attemptId,session.employeeId);if(!a)return cneQuizResponseError_('NOT_FOUND','Quiz attempt not found.');
     if(cneQuizCell_(a.row[6])==='COMPLETED')return handleGetQuizScoredResult(params,session);
     if(cneQuizCell_(a.row[6])!=='IN_PROGRESS')return cneQuizResponseError_('QUIZ_CLOSED','Attempt not open.');
-    var answers=cneQuizSavedAnswers_(a),pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+    var answers=cneQuizSavedAnswers_(a),pool=cneQuizApprovedPool_(a.ids);if(!pool.success)return pool;
     var byId={};pool.questions.forEach(function(q){byId[q.questionId]=q;});
     if(!cneQuizAttemptKeysValid_(a,byId))return cneQuizResponseError_('QUESTION_CHANGED','Question keys changed during this quiz. Contact administrator.');
     var invalid=a.ids.filter(function(id){return !byId[id]||!cneQuizResponseValid_(byId[id],answers[id]||'');});
@@ -20410,7 +20328,7 @@ function handleGetQuizScoredResult(params,session){
   var a=cneQuizFindAttempt_(params.attemptId,session.employeeId);
   if(!a)return cneQuizResponseError_('NOT_FOUND','Attempt not found.');
   if(cneQuizCell_(a.row[6])!=='COMPLETED')return cneQuizResponseError_('QUIZ_NOT_COMPLETED','Results are available after completion.');
-  var pool=cneQuizApprovedPool_();if(!pool.success)return pool;
+  var pool=cneQuizApprovedPool_(a.ids);if(!pool.success)return pool;
   var byId={};pool.questions.forEach(function(q){byId[q.questionId]=q;});
   var stored=cneQuizParseJson_(a.row[13],{});
   if(stored.keyHash&&!cneQuizAttemptKeysValid_(a,byId))return cneQuizResponseError_('QUESTION_CHANGED','Question Bank has changed since scoring; contact administrator for historical review.');
@@ -20573,7 +20491,6 @@ function handleGetQuizImage(params,session){
   return {success:true,data:{mimeType:checked.mimeType,base64Data:Utilities.base64Encode(checked.bytes)}};
 }
 /** No MailApp call, daily trigger, scheduled job, or dispatch endpoint until admin approval. */
-/* Extracted to Extra_Code.gs: cneQuizMonthlyEmailPlanDisabled_ */
 `;
 
 export const GOOGLE_APPS_SCRIPT_CODE = APPS_SCRIPT_SOURCE_CODE;
