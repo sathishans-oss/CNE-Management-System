@@ -8975,7 +8975,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-cne-read-performance.cjs",
     mode: "commonjs",
     expectedChecks: 40,
-    sha256: "77786aa9e924f0c6b98e14686ad18903e5172b0844eeb6894a74ee17517f9eb9",
+    sha256: "01fa6419efa6a86647c7e9afbfe703fe55b1440f25cadd1dc974c8c91dae5a75",
     source: `/**
  * CNE Read Performance & Bounded Query Regression Verification Suite
  *
@@ -9407,6 +9407,11 @@ function createFreshTestEnvironment() {
       }
     },
     Utilities: {
+      DigestAlgorithm: { SHA_256: 'SHA_256' },
+      Charset: { UTF_8: 'UTF_8' },
+      computeDigest(_algorithm, message) {
+        return Array.from(require('crypto').createHash('sha256').update(String(message),'utf8').digest());
+      },
       formatDate(date, tz, fmt) {
         if (date instanceof Date) {
           try {
@@ -10323,21 +10328,26 @@ runTest('Manual external attendee and verified Post-Test share one confirmed row
   env.sandbox.refreshMutationSession=session=>({success:true,session});
   env.sandbox.logAuditActionsBatch=()=>{};
   assert.strictEqual(env.participantsSheet.grid.filter(row=>row[1]==='CNE-2026-EMPTY').length,0,'No pending participant exists on new CNE');
+  // Both manual attendance and email-OTP verification derive the SAME stable
+  // external participant ID from the normalized email. They never merge by name.
+  const email='visitor.c@example.org';
+  const verifiedId=env.sandbox.makeExternalParticipantId(email);
+  assert.match(verifiedId,/^EXT-[A-F0-9]{24}$/);
   const added=env.sandbox.handleAddManualParticipants({
-    cneId:'CNE-2026-EMPTY',participants:[{name:'Visitor C',designation:'External Participant',department:'Emergency'}]
+    cneId:'CNE-2026-EMPTY',participants:[{name:'Visitor C',email,designation:'External Participant',department:'Emergency'}]
   },admin);
   assert.strictEqual(added.success,true,added.message);
   const before=env.participantsSheet.getLastRow();
   const source=env.participantsSheet.grid.at(-1);
   assert.strictEqual(source[6],'ATTENDED');assert.strictEqual(source[7],'MANUAL');
-  assert.strictEqual(source[2],'','Name-only attendee has no verified email ID yet');
-  const saved=env.sandbox.saveUnifiedPostTest_('CNE-2026-EMPTY','EXT-CCCCCCCCCCCCCCCCCCCCCCCC','EXTERNAL',
+  assert.strictEqual(source[2],verifiedId,'Manual email derives the same CNE-scoped external identity used by verified Post-Test');
+  const saved=env.sandbox.saveUnifiedPostTest_('CNE-2026-EMPTY',verifiedId,'EXTERNAL',
     'Visitor C','External Participant',{Q1:'B'},{answerKeys:[{id:'Q1',correctOption:'B'}]},
     {score:4,total:5,percentage:80,status:'PASSED'},'POST_TEST','2026-10-01T10:00:00Z','PT-C');
   assert.strictEqual(saved.alreadySubmitted,false);
-  assert.strictEqual(env.participantsSheet.getLastRow(),before,'Signed verified Post-Test updates the same attendee, never appends a duplicate');
+  assert.strictEqual(env.participantsSheet.getLastRow(),before,'The same email-derived ID updates existing attendance rather than appending');
   const confirmed=env.participantsSheet.grid.at(-1);
-  assert.strictEqual(confirmed[2],'EXT-CCCCCCCCCCCCCCCCCCCCCCCC');
+  assert.strictEqual(confirmed[2],verifiedId,'Original external ID is preserved');
   assert.strictEqual(confirmed[7],'MANUAL','First valid attendance source stays intact');
   assert.strictEqual(confirmed[8],'COMPLETED');
   const result=env.sandbox.handleGetCNEParticipants({cneId:'CNE-2026-EMPTY'},admin);
@@ -10345,10 +10355,26 @@ runTest('Manual external attendee and verified Post-Test share one confirmed row
   assert.strictEqual(result.data.postTestCount,1);
   const progress=env.sandbox.handleGetCNEActivityProgress({cneId:'CNE-2026-EMPTY',forceFresh:true},admin);
   assert.strictEqual(progress.data.participantsCount,1);
-  const repeated=env.sandbox.saveUnifiedPostTest_('CNE-2026-EMPTY','EXT-CCCCCCCCCCCCCCCCCCCCCCCC','EXTERNAL',
+  const repeated=env.sandbox.saveUnifiedPostTest_('CNE-2026-EMPTY',verifiedId,'EXTERNAL',
     'Visitor C','External Participant',{Q1:'B'},{answerKeys:[{id:'Q1',correctOption:'B'}]},
     {score:4,total:5,percentage:80,status:'PASSED'},'POST_TEST','2026-10-01T10:30:00Z','PT-C-2');
   assert.strictEqual(repeated.alreadySubmitted,true,'Post-Test cannot be submitted twice');
+
+  // Explicit negative check: a name-only manual attendee must NOT be given
+  // a different person's verified-email identity simply because names match.
+  const noEmail=env.sandbox.handleAddManualParticipants({
+    cneId:'CNE-2026-EMPTY',participants:[{name:'Same Name Visitor',designation:'External Participant'}]
+  },admin);
+  assert.strictEqual(noEmail.success,true,noEmail.message);
+  const nameOnlyRow=env.participantsSheet.getLastRow();
+  assert.strictEqual(env.participantsSheet.grid.at(-1)[2],'');
+  const differentEmailId=env.sandbox.makeExternalParticipantId('another.person@example.org');
+  const distinct=env.sandbox.saveUnifiedPostTest_('CNE-2026-EMPTY',differentEmailId,'EXTERNAL',
+    'Same Name Visitor','External Participant',{Q1:'B'},{answerKeys:[{id:'Q1',correctOption:'B'}]},
+    {score:3,total:5,percentage:60,status:'PASSED'},'POST_TEST','2026-10-01T11:00:00Z','PT-D');
+  assert.strictEqual(distinct.alreadySubmitted,false);
+  assert.strictEqual(env.participantsSheet.getLastRow(),nameOnlyRow+1,'Name-only attendee and a different verified email must remain separate');
+  assert.strictEqual(env.participantsSheet.grid.at(-2)[2],'',"Name-only attendee must not be assigned the other person's email-derived ID");
 });
 
 runTest('Manual attendance cannot create duplicate confirmed attendees', () => {

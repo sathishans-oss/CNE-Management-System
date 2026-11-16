@@ -15550,8 +15550,12 @@ function cneRecordConfirmedAttendanceBatch_(cneId, people, actor, sheet) {
     var source=String(person.source||'MANUAL').trim().toUpperCase();
     if(['MANUAL','QR','POST_TEST','RETROSPECTIVE'].indexOf(source)===-1)
       throw new Error('INVALID_ATTENDANCE_SOURCE');
+    // Email-derived external IDs are authoritative when provided. Never attach
+    // a verified-email identity to a name-only attendee based only on name.
     var old=lookup[key];
-    if (!old && t==='EXTERNAL' && eid && name) old=lookup['N:'+name.toLowerCase()];
+    if (old && t==='EXTERNAL' && eid &&
+        String(old.values[3]||'').trim().toLowerCase()!==String(name||'').trim().toLowerCase())
+      throw new Error('EXTERNAL_IDENTITY_NAME_MISMATCH');
     if (old) {
       var row=old.values.slice();
       if (t==='EXTERNAL' && eid && !row[2]) row[2]=eid;
@@ -15631,16 +15635,12 @@ function saveUnifiedPostTest_(cneId, participantId, participantType, name, desig
     var key=cneParticipantIdentity_(values[4],values[2],values[3]);
     if(key===identity) {targetRow=matches[i];existing=values;break;}
   }
-  if(!existing && participantType==='EXTERNAL' && name) {
-    var byName=[];
-    for(var j=0;j<matches.length;j++) {
-      var candidate=cneReadHeaderRows_(sh,layout.names,matches[j],1,layout)[0];
-      if(String(candidate[4]||'')==='EXTERNAL' && !String(candidate[2]||'').trim() &&
-         String(candidate[3]||'').trim().toLowerCase()===String(name).trim().toLowerCase())
-        byName.push({row:matches[j],values:candidate});
-    }
-    if(byName.length===1){targetRow=byName[0].row;existing=byName[0].values;}
-  }
+  // Only an exact CNE-scoped identity match can update an existing assessment.
+  // A manually recorded, name-only external attendee has no verified email ID;
+  // auto-merging by name alone could attach someone's score to another person.
+  if(existing && participantType==='EXTERNAL' &&
+      String(existing[3]||'').trim().toLowerCase()!==String(name||'').trim().toLowerCase())
+    throw new Error('EXTERNAL_IDENTITY_NAME_MISMATCH');
   if(existing && cnePostTestCompleted_(existing)) return {alreadySubmitted:true};
   var now=timestamp || new Date().toISOString();
   var isExternal=participantType==='EXTERNAL';
@@ -16057,7 +16057,8 @@ function handleGetCNEQuestions(params, session) {
  * Post-Test participant verification helpers.
  * Public QR participants are verified server-side before questions/submission.
  * Internal: Employee ID + Date of Joining (DOJ).
- * External: Name + Email, saved as a stable external participant registration.
+ * External: Name + Email verified by OTP, then matched using the stable
+ * email-derived external participant ID. OTP verification never writes attendance.
  */
 function normalizeExternalEmail(email) {
   var value = String(email || '').trim().toLowerCase();
@@ -16189,15 +16190,23 @@ function verifyPostTestParticipantVerificationToken(token, expectedCneId) {
   return { participantType:type, cneId:cneId, participantId:participantId,participantName:verifiedName };
 }
 
-function findExternalRegistration(cneId, participantId) {
-  var rows=cneParticipantRows_(cneId);
+/** Find a confirmed external attendee by exact email-derived ID for one CNE.
+ * No unverified name-based lookup and no pending-registration dependency.
+ */
+function findConfirmedExternalParticipantById_(cneId, participantId) {
   var id=String(participantId||'').trim().toUpperCase();
+  if(!isExternalParticipantId(id)) return null;
+  var rows=cneParticipantRows_(cneId),found=null;
   for(var i=0;i<rows.length;i++) {
-    if(String(rows[i][4]||'').toUpperCase()==='EXTERNAL' && String(rows[i][2]||'').trim().toUpperCase()===id) {
-      return {participantId:id,name:String(rows[i][3]||''),designation:String(rows[i][5]||'External Participant'),department:'',email:''};
-    }
+    if(String(rows[i][4]||'').toUpperCase()!=='EXTERNAL' ||
+       String(rows[i][2]||'').trim().toUpperCase()!==id) continue;
+    if(!cneParticipantHasConfirmedAttendance_(rows[i])) continue;
+    // Ambiguous duplicate identifiers are not safe to authorize for OTP.
+    if(found) throw new Error('DUPLICATE_EXTERNAL_IDENTITY');
+    found={participantId:id,name:String(rows[i][3]||''),
+      designation:String(rows[i][5]||'External Participant')};
   }
-  return null;
+  return found;
 }
 
 var OTP_PURPOSE_POSTTEST_INTERNAL = 'POSTTEST_INTERNAL';
@@ -16658,19 +16667,19 @@ function handleVerifyPostTestOtp(params, session) {
       };
     }
 
-    // Consume the challenge before any registration/token side effect. A partial failure
-    // can require a new OTP, but can never leave a successfully verified OTP replayable.
+    // Before consuming the OTP, ensure this email-derived ID is not already
+    // bound to another person's confirmed attendance for the same CNE.
+    if(participantType==='EXTERNAL') {
+      var prior=findConfirmedExternalParticipantById_(cneId,participantId);
+      if(prior && prior.name && prior.name.trim().toLowerCase()!==externalName.trim().toLowerCase())
+        return {success:false,errorCode:'EXTERNAL_IDENTITY_NAME_MISMATCH',
+          message:'This verified email is linked to a different attendee name for this CNE. Contact the coordinator.'};
+    }
+
+    // Consume the challenge only after all identity checks succeed. OTP
+    // verification proves email ownership but never creates attendance.
     var verifiedAt = new Date().toISOString();
     cneUpdateHeaderFields_(otpSheet, challenge.rowIndex, {'OTP_Hash':'','Verified_At':verifiedAt,'Consumed_At':verifiedAt,'Status':'CONSUMED','Updated_At':verifiedAt});
-
-    // OTP verification proves email ownership, but never creates attendance.
-    // The short-lived signed token binds the external name to this identity.
-    if(participantType==='EXTERNAL') {
-      var prior=findExternalRegistration(cneId,participantId);
-      if(prior && prior.name && prior.name.toLowerCase()!==externalName.toLowerCase())
-        return {success:false,errorCode:'EXTERNAL_EMAIL_ALREADY_REGISTERED',
-          message:'This email is already linked to a different participant name for this CNE.'};
-    }
 
     var verificationToken = generatePostTestParticipantVerificationToken(cneId, participantId, participantType, participantName);
     logAuditAction('POST_TEST_OTP_VERIFIED', participantId, 'CNE: ' + cneId + ', type: ' + participantType, 'SUCCESS');
@@ -17169,7 +17178,8 @@ function handleAddManualParticipants(params, session) {
       name: params.name,
       designation: params.designation,
       department: params.department,
-      remarks: params.remarks
+      remarks: params.remarks,
+      email: params.email || params.externalEmail
     }];
   } else {
     return { success: false, message: 'Employee ID or Participant Name is required.' };
@@ -17186,6 +17196,15 @@ function handleAddManualParticipants(params, session) {
     }
 
     var empId = normalizeEmpId(rawItem.employeeId);
+    var emailInput=String(rawItem.email||rawItem.externalEmail||'').trim();
+    var externalEmail=normalizeExternalEmail(emailInput);
+    if(emailInput && !externalEmail) return {success:false,errorCode:'INVALID_EXTERNAL_EMAIL',
+      message:'Enter a valid external participant email address for participant #'+(i+1)+'.'};
+    if(empId && externalEmail) return {success:false,errorCode:'AMBIGUOUS_PARTICIPANT_IDENTITY',
+      message:'Enter either an employee ID or an external email, not both.'};
+    if(isExternalParticipantId(empId)) return {success:false,errorCode:'EXTERNAL_IDENTITY_MUST_USE_EMAIL',
+      message:'External participant IDs cannot be entered directly. Supply the email address.'};
+    if(externalEmail) empId=makeExternalParticipantId(externalEmail);
     var manualName = sanitizeCellInput(rawItem.name || '');
     var designation = sanitizeCellInput(rawItem.designation || 'Staff Nurse');
     var department = sanitizeCellInput(rawItem.department || record.area);
@@ -17195,7 +17214,7 @@ function handleAddManualParticipants(params, session) {
       return { success: false, message: 'Employee ID or Participant Name is required for participant #' + (i + 1) + '.' };
     }
 
-    if (empId) {
+    if (empId && !externalEmail) {
       var officer = findOfficerById(empId);
       if (!officer) {
         return {
@@ -17216,6 +17235,12 @@ function handleAddManualParticipants(params, session) {
         };
       }
       seenBatchEmpIds[empId] = true;
+    } else if (externalEmail) {
+      if(!manualName) return {success:false,errorCode:'INVALID_EXTERNAL_NAME',
+        message:'An external participant name is required along with the email.'};
+      if(seenBatchEmpIds[empId])return {success:false,errorCode:'DUPLICATE_PARTICIPANT',
+        message:'The same external email appears more than once in the submitted list.'};
+      seenBatchEmpIds[empId]=true;
     } else if (manualName) {
       var lowerName = manualName.toLowerCase();
       if (seenBatchNames[lowerName]) {
@@ -17271,16 +17296,7 @@ function handleAddManualParticipants(params, session) {
       };
     }
 
-    var existingEmpIds = {}, existingNames = {}, registrationByName = {};
-    // Only existing confirmed external attendees are in CNE_Participants.
-    cneParticipantRows_(cneId).forEach(function(pr){
-      if(String(pr[4]||'').toUpperCase()!=='EXTERNAL')return;
-      var id=String(pr[2]||'').trim(),nm=String(pr[3]||'').trim().toLowerCase();
-      if(nm && isExternalParticipantId(id)) {
-        if(!registrationByName[nm])registrationByName[nm]={};
-        registrationByName[nm][id]=true;
-      }
-    });
+    var existingEmpIds = {}, existingNames = {};
     // One CNE-scoped register read of confirmed attendance.
     cneParticipantRows_(cneId).forEach(function(pr) {
       if(!cneParticipantHasConfirmedAttendance_(pr))return;
@@ -17293,24 +17309,15 @@ function handleAddManualParticipants(params, session) {
     for (var v = 0; v < validatedList.length; v++) {
       var vItem = validatedList[v];
       var itemName = vItem.manualName.toLowerCase();
-      if (!vItem.empId && registrationByName[itemName]) {
-        var matchedRegistrations = Object.keys(registrationByName[itemName]);
-        if (matchedRegistrations.length !== 1) {
-          return {
-            success: false,
-            errorCode: 'AMBIGUOUS_EXTERNAL_PARTICIPANT',
-            message: 'Multiple external registrations share the name ' + vItem.manualName + '. Confirm the participant identity before recording attendance.'
-          };
-        }
-        // Reuse the verified registration identity, so a later POST_TEST for
-        // this email and this MANUAL row cannot be counted as two attendees.
-        vItem.empId = matchedRegistrations[0];
-      }
+      // Never infer an external email identity from someone's name. Enter an
+      // optional external email in the manual form to enable exact OTP matching.
       if (vItem.empId && existingEmpIds[vItem.empId]) {
         return {
           success: false,
           errorCode: 'DUPLICATE_PARTICIPANT',
-          message: 'Employee ID ' + vItem.empId + ' is already recorded as a participant for this CNE.'
+          message: isExternalParticipantId(vItem.empId)
+            ? 'This external email is already recorded for this CNE.'
+            : 'Employee ID ' + vItem.empId + ' is already recorded as a participant for this CNE.'
         };
       }
       if (!vItem.empId && existingNames[itemName]) {
@@ -17322,7 +17329,8 @@ function handleAddManualParticipants(params, session) {
       }
     }
 
-    // One append block for new confirmed attendees. No pending rows are created.
+    // One append block for new confirmed attendees. Email values are never
+    // written to CNE_Participants; only the deterministic email-derived ID is.
     var incoming=validatedList.map(function(item){
       return {employeeId:item.empId,name:item.manualName,
         type:item.empId && !isExternalParticipantId(item.empId)?'INTERNAL':'EXTERNAL',
