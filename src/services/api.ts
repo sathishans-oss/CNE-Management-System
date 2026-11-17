@@ -1526,8 +1526,9 @@ export class ApiService {
     return this.executeAction('getCNEAiMaterialStatus', { cneId });
   }
 
-  static async reindexLearningResource(cneId: string): Promise<ApiResponse<{chunksCount?: number}>> {
-    return this.executeAction('reindexLearningResource', { cneId });
+  static async reindexLearningResource(cneId: string, uploaderResponsibilityAccepted: boolean): Promise<ApiResponse<{chunksCount?: number; indexingStatus?: 'SUCCESS'}>> {
+    return this.executeAction('reindexLearningResource', { cneId,
+      uploaderDeclaration: uploaderResponsibilityAccepted ? 'I_ACCEPT_RESPONSIBILITY' : undefined });
   }
 
   static async getCNEAiGenerationProgress(cneId: string): Promise<ApiResponse<{stage: number; message: string; updatedAt?: number}>> {
@@ -1559,7 +1560,7 @@ export class ApiService {
   }
 
   /**
-   * Upload CNE Learning Resource File (PDF only, maximum 3 MB)
+   * Upload CNE Learning Resource File (PDF, DOC, DOCX, PPT or PPTX; maximum 5 MB)
    */
   static async uploadLearningResource(params: {
     cneId: string;
@@ -1570,6 +1571,7 @@ export class ApiService {
     unifiedContent?: string;
     referenceText?: string;
     deferIndexing?: boolean;
+    uploaderDeclaration: 'I_ACCEPT_RESPONSIBILITY';
   }): Promise<ApiResponse<CNELearningResourceMetadata>> {
     return this.executeAction<CNELearningResourceMetadata>('uploadLearningResource', params);
   }

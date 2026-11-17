@@ -50,7 +50,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const [updatedAt, setUpdatedAt] = useState<string | undefined>(undefined);
   const loadRequestRef = useRef(0);
   const [indexingInfo, setIndexingInfo] = useState<{
-    status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'UNKNOWN';
+    status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'NEEDS_REVIEW' | 'UNKNOWN';
     message?: string;
     errorCode?: string;
     chunksCount?: number;
@@ -61,6 +61,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
 
   // Newly Selected File for Upload
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [responsibilityAccepted, setResponsibilityAccepted] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -75,6 +76,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     setUpdatedAt(undefined);
     setExistingResource(null);
     setSelectedFile(null);
+    setResponsibilityAccepted(false);
     setIndexingInfo(null);
     setShowDeleteConfirm(false);
     setLoadError(null);
@@ -122,7 +124,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         } else {
           setIndexingInfo({
             status: 'UNKNOWN',
-            message: 'Indexing metadata was not returned for this previously uploaded PDF.'
+            message: 'Indexing metadata was not returned for this previously uploaded material.'
           });
         }
       } else {
@@ -167,22 +169,23 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
       return;
     }
 
-    const validExtensions = ['.pdf'];
+    const validExtensions = ['.pdf', '.doc', '.docx', '.ppt', '.pptx'];
     const lowerName = file.name.toLowerCase();
     const isValidExt = validExtensions.some((ext) => lowerName.endsWith(ext));
 
     if (!isValidExt) {
-      error('Invalid file format. Only PDF (.pdf) documents are supported.');
+      error('Invalid file format. Only PDF, DOC, DOCX, PPT and PPTX are supported.');
       return;
     }
 
-    const MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024; // 3MB authoritative limit
+    const MAX_CNE_LEARNING_MATERIAL_BYTES = 5 * 1024 * 1024; // 5MB authoritative limit
     if (file.size > MAX_CNE_LEARNING_MATERIAL_BYTES) {
-      error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of 3 MB.`);
+      error(`File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of 5 MB.`);
       return;
     }
 
     setSelectedFile(file);
+    setResponsibilityAccepted(false);
   };
 
   const handleDrag = (e: React.DragEvent) => {
@@ -238,7 +241,11 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     const hasAnyText = unifiedContent.trim().length > 0;
 
     if (!hasAnyFile && !hasAnyText) {
-      error('Please upload a CNE learning resource file (PDF) or enter educational notes.');
+      error('Please upload a supported CNE learning material or enter educational notes.');
+      return false;
+    }
+    if (selectedFile && !responsibilityAccepted) {
+      error('Confirm your responsibility for the accuracy of the uploaded clinical material.');
       return false;
     }
 
@@ -257,12 +264,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
           fileName: selectedFile.name,
           fileType: selectedFile.type || 'application/octet-stream',
           unifiedContent: unifiedContent.trim() || undefined,
-          deferIndexing: true
+          deferIndexing: true,
+          uploaderDeclaration: 'I_ACCEPT_RESPONSIBILITY'
         });
 
         if (!uploadRes.success) {
           setUploadStep('failed');
-          setUploadStepError(uploadRes.message || 'PDF upload failed.');
+          setUploadStepError(uploadRes.message || 'Learning material upload failed.');
           error(uploadRes.message || 'Failed to upload learning resource file to Drive.');
           return false;
         }
@@ -270,24 +278,25 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         setExistingResource(uploadRes.data || null);
         setSelectedFile(null);
         setUploadStep('uploaded');
-        setIndexingInfo({status:'PENDING', message:'PDF uploaded. Beginning OCR/text indexing.', chunksCount:0});
-        // Stage 2: separate authenticated Apps Script execution. The PDF stays
+        setIndexingInfo({status:'PENDING', message:'Learning material uploaded. Beginning text indexing.', chunksCount:0});
+        // Stage 2: separate authenticated Apps Script execution. The file stays
         // saved if indexing fails, so the educator can retry without re-uploading.
         setUploadStep('indexing');
-        const indexRes = await ApiService.reindexLearningResource(cneId);
+        const indexRes = await ApiService.reindexLearningResource(cneId, responsibilityAccepted);
         if (!indexRes.success) {
           setUploadStep('failed');
           const detail = indexRes.message || 'No readable CNE content could be indexed.';
           setUploadStepError(detail);
           setIndexingInfo({status:'FAILED', message:detail, errorCode:indexRes.errorCode, chunksCount:0});
-          warning('PDF uploaded, but indexing failed: ' + detail);
+          warning('Learning material uploaded, but indexing failed: ' + detail);
           if (onUpdated) onUpdated();
           return false;
         }
         const chunkCount = Number(indexRes.data?.chunksCount ?? (indexRes as any).chunksCount ?? 0);
-        setIndexingInfo({status:'SUCCESS', message:indexRes.message || 'Learning material indexed successfully.', chunksCount:chunkCount});
+        setIndexingInfo({status:'SUCCESS',
+          message:indexRes.message || 'Automated text-quality checks passed. Clinical accuracy remains the uploader responsibility.',chunksCount:chunkCount});
         setUploadStep('done');
-        success('CNE PDF uploaded and indexed successfully. '+chunkCount+' validated chunks are ready for AI questions.');
+        success('CNE material indexed: '+chunkCount+' readable chunks. You remain responsible for clinical accuracy.');
       }
 
       // 2. Save unified textual content if entered
@@ -348,11 +357,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
 
 
   const needsQualityReindex = indexingInfo?.status === 'SUCCESS' &&
-    !/\bV3\b|\(V3\)/i.test(indexingInfo.message || '');
+    !(indexingInfo.message || '').startsWith('V3 AUTO_INDEXED | FILE=');
   const indexingLabel = needsQualityReindex
     ? 'Quality reindex required'
     : indexingInfo?.status === 'SUCCESS'
-    ? 'AI-ready clinical index'
+    ? 'AI-ready text index'
+    : indexingInfo?.status === 'NEEDS_REVIEW'
+    ? 'Uploader reindex required'
     : indexingInfo?.status === 'FAILED'
     ? 'Indexing failed'
     : indexingInfo?.status === 'PENDING'
@@ -365,6 +376,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     ? 'bg-amber-100 text-amber-800 border-amber-200'
     : indexingInfo?.status === 'SUCCESS'
     ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+    : indexingInfo?.status === 'NEEDS_REVIEW'
+    ? 'bg-amber-100 text-amber-800 border-amber-200'
     : indexingInfo?.status === 'FAILED'
     ? 'bg-rose-100 text-rose-800 border-rose-200'
     : indexingInfo?.status === 'PENDING'
@@ -398,7 +411,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             <div className="px-6 py-2.5 bg-teal-50/70 border-b border-teal-100/80 flex items-start gap-2.5 text-xs text-teal-900 shrink-0">
               <Info className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
               <div className="leading-relaxed">
-                Upload the authoritative presentation slides or guideline document (PDF up to 3MB).
+                Upload the authoritative slides or guideline (PDF, Word or PowerPoint; up to 5 MB).
                 The AI Question Synthesizer reads the uploaded document as primary grounding to generate 5 standardized clinical MCQs.
               </div>
             </div>
@@ -408,7 +421,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal-700" aria-hidden="true" />
             <div className="min-w-0">
               <p className="text-xs font-semibold text-teal-900">Checking existing CNE material…</p>
-              <p className="text-[11px] text-teal-800">Retrieving uploaded PDF and indexing status</p>
+              <p className="text-[11px] text-teal-800">Retrieving uploaded material and indexing status</p>
             </div>
           </div>}
           {loadError && <div role="alert" className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-b border-rose-200">{loadError} <button type="button" onClick={() => void loadAllReferenceData()} className="ml-2 underline font-bold">Retry</button></div>}
@@ -416,11 +429,11 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             <div className="text-xs font-semibold text-slate-800">CNE Material Upload &amp; Indexing</div>
             <div className="flex items-center gap-2 text-xs">
               {['uploaded','indexing','done'].includes(uploadStep) ? <CheckCircle2 className="w-4 h-4 text-emerald-600"/> : uploadStep==='uploading' ? <Loader2 className="w-4 h-4 text-teal-700 animate-spin"/> : <AlertCircle className="w-4 h-4 text-rose-600"/>}
-              <span>1. Uploading CNE PDF {['uploaded','indexing','done'].includes(uploadStep) ? '— Completed' : uploadStep==='uploading' ? '— In progress' : '— Failed'}</span>
+              <span>1. Uploading CNE material {['uploaded','indexing','done'].includes(uploadStep) ? '— Completed' : uploadStep==='uploading' ? '— In progress' : '— Failed'}</span>
             </div>
             <div className="flex items-center gap-2 text-xs">
               {uploadStep==='done' ? <CheckCircle2 className="w-4 h-4 text-emerald-600"/> : uploadStep==='indexing' ? <Loader2 className="w-4 h-4 animate-spin text-teal-700"/> : uploadStep==='failed' && existingResource?.hasFile ? <AlertCircle className="w-4 h-4 text-rose-600"/> : <span className="w-4 h-4 rounded-full border border-slate-300"/>}
-              <span>2. Indexing PDF content for AI generation {uploadStep==='done' ? '— Completed' : uploadStep==='indexing' ? '— In progress (OCR if needed)' : uploadStep==='failed' && existingResource?.hasFile ? '— Failed' : '— Pending'}</span>
+              <span>2. Indexing document text for AI generation {uploadStep==='done' ? '— Completed' : uploadStep==='indexing' ? '— In progress (OCR for scanned PDFs)' : uploadStep==='failed' && existingResource?.hasFile ? '— Failed' : '— Pending'}</span>
             </div>
             {uploadStepError && <p className="text-xs text-rose-700">{uploadStepError}</p>}
           </div>}
@@ -438,9 +451,9 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                     <Upload className="w-4 h-4 text-teal-600" />
-                    Upload Learning Resource File (PDF only &bull; Maximum 3 MB)
+                    Upload Learning Resource File (PDF/DOC/DOCX/PPT/PPTX &bull; Maximum 5 MB)
                   </label>
-                  <span className="text-[11px] text-slate-400">PDF only &bull; Maximum 3 MB</span>
+                  <span className="text-[11px] text-slate-400">PDF, DOC, DOCX, PPT, PPTX &bull; Maximum 5 MB</span>
                 </div>
 
                 {/* Existing Stored Resource Card */}
@@ -530,7 +543,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                 {existingResource?.hasFile && indexingInfo && (
                   <div className="p-3.5 bg-white border border-slate-200 rounded-xl text-xs space-y-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="font-bold text-slate-700">PDF Indexing Status</div>
+                      <div className="font-bold text-slate-700">Material Indexing Status</div>
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-bold ${indexingBadgeClass}`}>
                         {indexingInfo.status === 'SUCCESS' ? <CheckCircle2 className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
                         {indexingLabel}
@@ -540,19 +553,21 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       <div>Indexed chunks: <strong className="text-slate-800">{typeof indexingInfo.chunksCount === 'number' ? indexingInfo.chunksCount : '—'}</strong></div>
                       {indexingInfo.errorCode && <div>Error code: <strong className="text-rose-700">{indexingInfo.errorCode}</strong></div>}
                     </div>
-                    {canModify && (indexingInfo.status !== 'SUCCESS' || needsQualityReindex) && !isSaving && !loading && <button type="button" onClick={async () => {
+                    {canModify && (['FAILED','PENDING','UNKNOWN','NEEDS_REVIEW'].includes(indexingInfo.status) || needsQualityReindex) && !isSaving && !loading && <button type="button" onClick={async () => {
+                      if(!responsibilityAccepted){warning('Confirm uploader responsibility using the checkbox before reindexing.');return;}
                       setIsSaving(true);setUploadStep('indexing');setUploadStepError('');
-                      try {const res=await ApiService.reindexLearningResource(cneId);
+                      try {const res=await ApiService.reindexLearningResource(cneId, responsibilityAccepted);
                         if(!res.success) {setUploadStep('failed');setUploadStepError(res.message || 'Indexing failed.');setIndexingInfo({status:'FAILED',message:res.message,errorCode:res.errorCode});warning(res.message || 'Indexing failed.');}
-                        else {const count=Number(res.data?.chunksCount ?? (res as any).chunksCount ?? 0);setIndexingInfo({status:'SUCCESS',message:res.message,chunksCount:count});setUploadStep('done');success('CNE PDF successfully indexed ('+count+' valid chunks).');if(onUpdated)onUpdated();}}
+                        else {const count=Number(res.data?.chunksCount ?? (res as any).chunksCount ?? 0);setIndexingInfo({status:'SUCCESS',message:res.message,chunksCount:count});setUploadStep('done');success('CNE material automatically indexed ('+count+' readable chunks). Uploader accepts clinical responsibility.');if(onUpdated)onUpdated();}}
                       catch(err:any){setUploadStep('failed');setUploadStepError(err?.message || 'Indexing error.');error(err?.message || 'Indexing error.');}
                       finally{setIsSaving(false);}
                     }} className="text-teal-700 font-semibold underline text-xs">Retry Indexing</button>}
                     {needsQualityReindex && (
                       <div className="text-[11px] text-amber-800 leading-relaxed bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2" role="status">
-                        This PDF was indexed with an older clinical-text algorithm. Use Retry Indexing to build a section-aware V3 index before Gemini generates questions. The PDF itself will not be replaced.
+                        This material was indexed with an older clinical-text algorithm. Use Retry Indexing to build a section-aware V3 index before Gemini generates questions. The original file will not be replaced.
                       </div>
                     )}
+                    {indexingInfo.status === 'NEEDS_REVIEW' && <p className="text-xs font-medium text-amber-800">This older index requires uploader responsibility confirmation and reindexing. Use the checkbox and Retry Indexing; no administrator review is needed.</p>}
                     {indexingInfo.message && (
                       <div className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-2">
                         {indexingInfo.message}
@@ -565,7 +580,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".pdf,application/pdf"
+                  accept=".pdf,.doc,.docx,.ppt,.pptx"
                   disabled={!canModify}
                   onChange={(e) => {
                     if (e.target.files && e.target.files[0]) {
@@ -599,12 +614,12 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       </span>
                     ) : (
                       <span>
-                        Drag and drop your PDF here, or <span className="text-teal-600 underline">browse</span>
+                        Drag and drop your learning material here, or <span className="text-teal-600 underline">browse</span>
                       </span>
                     )}
                   </p>
                   <p className="text-[11px] text-slate-400">
-                    PDF only &bull; Maximum 3 MB
+                    PDF, DOC, DOCX, PPT, PPTX &bull; Maximum 5 MB
                   </p>
                 </div>
 
@@ -622,6 +637,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {canModify && (selectedFile || existingResource?.hasFile) && (
+                <label className="flex items-start gap-2 rounded-lg border border-teal-200 bg-teal-50 p-3 text-xs leading-relaxed text-teal-900">
+                  <input type="checkbox" className="mt-0.5 shrink-0" checked={responsibilityAccepted} onChange={e => setResponsibilityAccepted(e.target.checked)} />
+                  <span><strong>Uploader responsibility:</strong> I accept responsibility for the clinical accuracy, drug and treatment details, tables, references and permissions in this material. This confirmation is required when uploading or reindexing. Automated checks cannot establish clinical correctness; no administrator review is required.</span>
+                </label>
+              )}
 
               {/* Text Notes / Guidelines Section */}
               <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-2">

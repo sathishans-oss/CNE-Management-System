@@ -274,7 +274,7 @@ export interface CNELearningResourceMetadata {
   updatedAt?: string;
   updatedBy?: string;
   hasFile?: boolean;
-  indexingStatus?: 'SUCCESS' | 'FAILED' | 'PENDING';
+  indexingStatus?: 'SUCCESS' | 'FAILED' | 'PENDING' | 'NEEDS_REVIEW';
   indexingErrorCode?: string;
   indexingMessage?: string;
   chunksCount?: number;

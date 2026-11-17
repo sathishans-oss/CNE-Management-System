@@ -260,7 +260,7 @@ const hybridChecks=[
         'hand hygiene, aseptic technique, phlebitis','SUCCESS','2026-10-29'],
       ['OTHER','OTHER-CNE','PRIVATE','Private File','IV Cannulation','Other',1,passage,'intravenous','SUCCESS','2026-10-29']]);
     const libraryRegistry=spreadsheet([['Resource_ID','Source_Type','Resource_Title','Drive_File_ID','Author_Organization','License','Version','File_Type','Active','Indexed_At','Updated_At'],['REF','LOCAL_REFERENCE_LIB','Nursing Handbook','ACTIVE','','','','PDF','TRUE','','']]);
-    const ref=spreadsheet([['CNE_ID','Drive_File_ID','Indexing_Status','Indexing_Message','Indexed_At'],['CNE-123','MATERIAL','SUCCESS','','2026-11-04']]);
+    const ref=spreadsheet([['CNE_ID','Drive_File_ID','Indexing_Status','Indexing_Message','Indexed_At','Chunks_Count'],['CNE-123','MATERIAL','SUCCESS','V3 AUTO_INDEXED | FILE=MATERIAL | UPLOADER=A1 | 2 chunks passed automated text-quality checks.','2026-11-04',2]]);
     ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='Material_Index'?mat:n==='Material_List'?ref:n==='Library'?libraryRegistry:null});
     ctx.getCNEScheduleRecord=()=>({cneId:'CNE-123',topic:'IV Cannulation'});
     ctx.checkCNEActionAuthorized=()=>null;
@@ -4065,7 +4065,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-pdf-resources-and-indexing.js",
     mode: "module",
     expectedChecks: 17,
-    sha256: "130ec8f228cfb7760d4e62be7e11dc28c78d744dbd7078991515deb747798e11",
+    sha256: "31c1f56b001f1a7fbbce62b05ab0294c097c410335ba7241049a0f4326fbdf53",
     source: `/**
  * PDF Learning Resources, Reference Library & Indexing Verification Suite
  *
@@ -4075,9 +4075,9 @@ console.log('========================================================\\n');
  * - test-phase2-extraction.cjs (PDF signature validation, stream extraction, unsupported format rejection)
  *
  * Enforces the final document policy:
- * - CNE Learning Material: PDF only, maximum 3 MB, %PDF signature validation
+ * - CNE Learning Material: PDF, DOC, DOCX, PPT, PPTX (5 MB) with signature/MIME checks
  * - Nursing Reference Library: PDF only, Admin-only, no 3 MB inheritance, Drive location verification
- * - Unsupported formats rejected: DOC, DOCX, PPT, PPTX, TXT, images, ZIP, executables
+ * - Unsupported formats rejected: TXT, images, arbitrary ZIP, executables
  * - Evidence Retrieval: passesClinicalRelevanceGate, procedural taxonomy, cross-procedural contamination prevention
  */
 
@@ -4110,76 +4110,55 @@ function runTest(name, fn) {
 }
 
 // =============================================================================
-// 1. CNE Learning Material Document Policy & Size Limit (3 MB)
+// 1. CNE Learning Material Document Policy & Size Limit (5 MB)
 // =============================================================================
-runTest('CNE Learning Material enforces PDF-only format in frontend modal', () => {
-  assert.ok(
-    addResourceModalTs.includes('\.pdf$/i.test(candidate.name)'),
-    'Frontend modal must reject anything other than PDF extensions'
-  );
-  assert.ok(
-    addResourceModalTs.includes('Only PDF learning material is supported'),
-    'Frontend modal must inform user that only PDF documents are supported'
-  );
+runTest('CNE Learning Material accepts PDF, DOC, DOCX, PPT and PPTX in frontend modal', () => {
+  assert.ok(addResourceModalTs.includes('(pdf|doc|docx|ppt|pptx)'),
+    'Frontend must validate exactly the five supported extensions');
+  assert.ok(addResourceModalTs.includes('.pdf,.doc,.docx,.ppt,.pptx'),
+    'File picker must offer the five supported formats');
 });
 
-runTest('CNE Learning Material enforces authoritative 3 MB maximum size limit', () => {
+runTest('CNE Learning Material enforces authoritative 5 MB maximum size limit', () => {
   // Frontend modal limit check
   assert.ok(
-    addResourceModalTs.includes('3 * 1024 * 1024') || addResourceModalTs.includes('3MB authoritative limit'),
-    'Frontend modal must check 3 MB limit'
+    addResourceModalTs.includes('5 * 1024 * 1024'),
+    'Frontend modal must check 5 MB limit'
   );
   assert.ok(
-    addResourceModalTs.includes('must not exceed 3 MB'),
-    'Frontend modal must show 3 MB limit warning message'
+    addResourceModalTs.includes('must not exceed 5 MB'),
+    'Frontend modal must show 5 MB limit warning message'
   );
 
   // Simulation test for file size validation
   function validateCneFileSize(sizeBytes) {
-    const MAX_SIZE = 3 * 1024 * 1024;
+    const MAX_SIZE = 5 * 1024 * 1024;
     if (sizeBytes > MAX_SIZE) {
       return { valid: false, error: 'EXCEEDS_SIZE_LIMIT' };
     }
     return { valid: true };
   }
 
-  // Valid sizes <= 3 MB
+  // Valid sizes <= 5 MB
   assert.strictEqual(validateCneFileSize(1024).valid, true);
-  assert.strictEqual(validateCneFileSize(3 * 1024 * 1024).valid, true);
+  assert.strictEqual(validateCneFileSize(5 * 1024 * 1024).valid, true);
 
-  // Invalid sizes > 3 MB
-  assert.strictEqual(validateCneFileSize(3 * 1024 * 1024 + 1).valid, false);
-  assert.strictEqual(validateCneFileSize(5 * 1024 * 1024).valid, false);
+  // Invalid sizes > 5 MB
+  assert.strictEqual(validateCneFileSize(5 * 1024 * 1024 + 1).valid, false);
+  assert.strictEqual(validateCneFileSize(3 * 1024 * 1024 + 1).valid, true);
 });
 
 // =============================================================================
 // 2. Unsupported File Formats Rejected
 // =============================================================================
-runTest('Unsupported formats (DOC, DOCX, PPT, PPTX, TXT, images, ZIP, EXE) are rejected', () => {
-  const rejectedExtensions = [
-    'doc', 'docx', 'ppt', 'pptx', 'txt', 'rtf',
-    'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp',
-    'zip', 'tar', 'gz', 'rar', '7z',
-    'exe', 'sh', 'bat', 'cmd', 'js', 'py'
-  ];
-
-  function validateCneExtension(filename) {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    if (ext !== 'pdf') {
-      return { valid: false, error: 'UNSUPPORTED_FORMAT' };
-    }
-    return { valid: true };
+runTest('CNE material supports five Office/PDF formats, rejects arbitrary archives or executables', () => {
+  const allowed = new Set(['pdf','doc','docx','ppt','pptx']);
+  for (const ext of allowed) assert.strictEqual(allowed.has(ext),true,ext);
+  for (const ext of ['txt','rtf','png','jpg','gif','svg','zip','rar','exe','sh','js']) {
+    assert.strictEqual(allowed.has(ext),false,ext);
   }
-
-  for (const ext of rejectedExtensions) {
-    const res = validateCneExtension(\`test_document.\${ext}\`);
-    assert.strictEqual(res.valid, false, \`Extension .\${ext} must be rejected\`);
-    assert.strictEqual(res.error, 'UNSUPPORTED_FORMAT');
-  }
-
-  // Only .pdf is allowed
-  assert.strictEqual(validateCneExtension('clinical_nursing_guide.pdf').valid, true);
-  assert.strictEqual(validateCneExtension('EMERGENCY_BLS.PDF').valid, true);
+  assert.ok(codeGs.includes('function cneMaterialMimeForExt_('), 'MIME whitelist required');
+  assert.ok(codeGs.includes('function cneMaterialBytesMatchExt_('), 'Binary signature validation required');
 });
 
 // =============================================================================
@@ -4270,7 +4249,7 @@ runTest('Nursing Reference Library is strictly Admin-managed and requires PDF fo
 runTest('Only CNE material can be uploaded and indexed; existing Library PDFs remain readable', () => {
   const learningApi=fs.readFileSync('src/services/api.ts','utf8');
   assert.ok(!addResourceModalTs.includes("resourceType === 'NURSING_REFERENCE_LIB'"), 'Retired library upload mode must not be available');
-  assert.ok(addResourceModalTs.includes('candidate.size > 3 * 1024 * 1024'), 'CNE PDF 3 MB limit must remain');
+  assert.ok(addResourceModalTs.includes('candidate.size > 5 * 1024 * 1024'), 'CNE material 5 MB limit must remain');
   assert.ok(!learningApi.includes('indexNursingReferenceResource(') && !codeGs.includes('function indexReferenceLibraryResource('), 'Reference library indexing must remain retired');
   assert.ok(learningApi.includes('listNursingReferenceResources(') && codeGs.includes('function handleDownloadNursingReferenceResource('), 'Existing reference PDF browse and download must remain available');
   assert.ok(!codeGs.includes('Library_Index'), 'Deleted index must be absent from the backend');
@@ -4363,7 +4342,7 @@ runTest('Educational resources are readable by all authenticated employees witho
     'The current uploaded CNE material must remain reindexable');
 });
 
-runTest('Office extraction functions are completely removed and single shared PDF engine is used', () => {
+runTest('Office conversion uses structured Docs/Slides without unsafe ZIP parsers; PDF OCR remains', () => {
   // Office extraction functions must NOT exist
   assert.ok(!codeGs.includes('function extractTextFromDocx('), 'extractTextFromDocx must be removed from Code.gs');
   assert.ok(!codeGs.includes('function extractTextFromPptx('), 'extractTextFromPptx must be removed from Code.gs');
@@ -4373,8 +4352,12 @@ runTest('Office extraction functions are completely removed and single shared PD
   assert.ok(!codeGs.includes('function validateOfficeOpenXmlStructure('), 'validateOfficeOpenXmlStructure must be removed from Code.gs');
   assert.ok(!codeGs.includes('function getZipArchiveEntryNames('), 'getZipArchiveEntryNames must be removed from Code.gs');
 
-  // Authoritative extractTextFromPdf must exist as the single PDF engine
-  assert.ok(codeGs.includes('function extractTextFromPdf('), 'extractTextFromPdf must exist in Code.gs');
+  assert.ok(codeGs.includes('function cneConvertOfficeMaterial_(') && codeGs.includes('function cneExtractOfficeMaterial_('),
+    'Office conversion and structured text extraction must exist');
+  assert.ok(codeGs.includes('function cneMaterialDocText_(') && codeGs.includes('function cneMaterialSlideText_('),
+    'Office text and table structure must be retained');
+  // The existing PDF extractor remains, including OCR fallback.
+  assert.ok(codeGs.includes('function extractTextFromPdf('), 'PDF engine must still exist');
   assert.ok(codeGs.includes('extractTextFromPdf(blob)'), 'extractTextFromPdf must be called for text extraction');
 
   // Both CNE learning material extraction and Reference Library extraction must use extractTextFromPdf
@@ -4387,7 +4370,7 @@ runTest('Retired library upload and extraction impose no extra indexed-data proc
   assert.ok(!codeGs.includes('function uploadNursingReferenceResource('), 'Library upload handler must be retired');
   assert.ok(!codeGs.includes('function indexReferenceLibraryResource('), 'Library index handler must be retired');
   assert.ok(codeGs.includes('function indexLearningResourceContent('), 'CNE material indexing must continue');
-  assert.ok(codeGs.includes('3 * 1024 * 1024'), 'Existing CNE material file-size safeguard remains');
+  assert.ok(codeGs.includes('var MAX_CNE_LEARNING_MATERIAL_BYTES = 5 * 1024 * 1024'), 'CNE material 5 MB safeguard must be shared by upload and extraction');
 });
 
 runTest('Scanned PDFs use automatic OCR fallback and fail closed if OCR is unavailable', () => {
@@ -4614,7 +4597,7 @@ console.log('========================================================\\n');
     originalFilename: "verify-system-integration.js",
     mode: "module",
     expectedChecks: 27,
-    sha256: "be80bff165d9e6157629ac01373f36469fef4d9686dfe97370dc5e4ba5d420f8",
+    sha256: "3cdaa629e4e20e062ede370d241a7313d29e662a2c8e9bbb496df359114558c0",
     source: `/**
  * Permanent System Integration Verification Suite
  * scripts/verify-system-integration.js
@@ -5132,30 +5115,25 @@ runTest('Gemini architecture (Apps Script caller, Script Properties, no client s
 // -----------------------------------------------------------------------------
 // 7. PDF Resource Policy
 // -----------------------------------------------------------------------------
-runTest('PDF resource policy (CNE 3MB limit vs Reference Library policy)', () => {
-  // CNE Learning Material: PDF only, 3 MB maximum in both frontend and backend
+runTest('CNE multi-format upload and Reference Library PDF-only policy', () => {
+  // CNE Learning Material: five formats, 5 MB maximum in both frontend and backend
   assert.ok(
-    addResourceModalTs.includes("3 * 1024 * 1024"),
-    "AddResourceModal must enforce 3 MB limit for CNE learning material"
+    addResourceModalTs.includes("5 * 1024 * 1024"),
+    "AddResourceModal must enforce 5 MB limit for CNE learning material"
   );
   assert.ok(
-    codeGs.includes("fileSize > 3 * 1024 * 1024"),
-    "Code.gs uploadLearningResource must enforce 3 MB limit"
+    codeGs.includes("fileSize > MAX_CNE_LEARNING_MATERIAL_BYTES") && codeGs.includes("var MAX_CNE_LEARNING_MATERIAL_BYTES = 5 * 1024 * 1024"),
+    "Code.gs uploadLearningResource must enforce 5 MB limit"
   );
   const uploadLearningResourceSection = codeGs.substring(
     codeGs.indexOf('function handleUploadLearningResource'),
     codeGs.indexOf('function handleDeleteLearningResource')
   );
-  assert.ok(
-    (uploadLearningResourceSection.includes("ext === 'pdf'") ||
-      (uploadLearningResourceSection.includes("var ALLOWED_EXTS = ['pdf']") &&
-        uploadLearningResourceSection.includes('ALLOWED_EXTS.indexOf(ext) === -1'))) &&
-      uploadLearningResourceSection.includes('0x25') &&
-      uploadLearningResourceSection.includes('0x50') &&
-      uploadLearningResourceSection.includes('0x44') &&
-      uploadLearningResourceSection.includes('0x46'),
-    "Code.gs uploadLearningResource must enforce PDF extension and %PDF binary signature"
-  );
+  assert.ok(uploadLearningResourceSection.includes('cneMaterialMimeForExt_(ext)') &&
+    uploadLearningResourceSection.includes('cneMaterialBytesMatchExt_(decoded,ext)'),
+    "CNE upload must validate supported extensions, MIME and actual document signatures");
+  assert.ok(codeGs.includes('function cneMaterialSlideText_(') && codeGs.includes('function cneMaterialDocText_('),
+    'Structured Office extraction must remain available');
 
   // Reference Library: PDF only, Admin-only management
   assert.ok(
@@ -11104,7 +11082,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if(!gas.includes("case 'reindexLearningResource':") || !gas.includes('function handleReindexLearningResource('))throw Error('Material indexing retry backend missing');
     if(!libraryApi.includes('static async reindexLearningResource('))throw Error('Material reindex API missing');
     const materialModal=readFileSync(join(ROOT_DIR,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
-    if(!materialModal.includes('ApiService.reindexLearningResource(cneId)'))throw Error('Material retry button not connected to Material page');
+    if(!materialModal.includes('ApiService.reindexLearningResource(cneId, responsibilityAccepted)'))throw Error('Material retry button not connected to the uploader declaration.');
   });
   focusCheck('Library consent and generation flags are prohibited everywhere',()=>{
     for(const x of [gas,ui,libraryApi])if(x.includes('allowLibraryOnly')||x.includes('LIBRARY_CONSENT_REQUIRED'))throw Error('Library generation flag restored');
@@ -15072,9 +15050,9 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     }; },
     getDataRange() { return { getValues() { return rows; } }; }
   });
-  const refHeaders = ['CNE_ID', 'Drive_File_ID', 'Indexing_Status', 'Indexing_Message', 'Indexed_At'];
+  const refHeaders = ['CNE_ID', 'Drive_File_ID', 'Indexing_Status', 'Indexing_Message', 'Indexed_At','Chunks_Count'];
   const idxHeaders = ['Index_ID', 'CNE_ID', 'Drive_File_ID', 'Resource_Title', 'Topic', 'Section_Heading', 'Chunk_Index', 'Chunk_Text', 'Clinical_Keywords', 'Extraction_Status', 'Updated_At'];
-  const ref = makeSheet('Material_List', [refHeaders, ['CNE-1', 'FILE-A', 'SUCCESS', '', '2026-11-04T08:00:00Z']]);
+  const ref = makeSheet('Material_List', [refHeaders, ['CNE-1', 'FILE-A', 'SUCCESS', 'V3 AUTO_INDEXED | FILE=FILE-A | UPLOADER=USER-1 | Technical text checks passed.', '2026-11-04T08:00:00Z',2]]);
   const index = makeSheet('Material_Index', [idxHeaders,
     ['IDX_CNE-1_FILE-OLD_V3_1234ABCD_C1', 'CNE-1', 'FILE-OLD', 'Old material', 'Sepsis', 'Clinical', '1', ('Old reference to nursing care of a patient with sepsis and assessment. ').repeat(10), 'sepsis', 'SUCCESS', 'now'],
     ['IDX_CNE-1_FILE-A_V3_1234ABCD_C1', 'CNE-1', 'FILE-A', 'Current material', 'Sepsis', 'Assessment', '1', ('Sepsis nursing management requires monitoring vital signs, recognizing deterioration, and documenting observations. ').repeat(9), 'sepsis, vital signs', 'SUCCESS', 'now'],
@@ -15094,6 +15072,14 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   const checks = [
     ['Current successfully indexed material is ready', () => {
       assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial, true);
+    }],
+    ['Legacy SUCCESS without uploader responsibility cannot bypass indexing guard', () => {
+      const approved=ref.rows[1][3];ref.rows[1][3]='Clinical material indexed (V3)';
+      try {const state=ctx.cneAiMaterialReadiness_('CNE-1');
+        assert.equal(state.hasOwnMaterial,false);
+        assert.equal(state.status,'NEEDS_REVIEW');
+        assert.equal(state.errorCode,'UPLOADER_REINDEX_REQUIRED');
+      } finally {ref.rows[1][3]=approved;}
     }],
     ['Evidence excludes a different Drive file even for the same CNE', () => {
       const result = ctx.retrieveCNETopicEvidence('CNE-1', 'Sepsis', session);
@@ -15143,8 +15129,8 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     ['Upload and OCR are explicit, separate material stages', () => {
       const material = readFileSync(join(ROOT_DIR,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
       const additional = readFileSync(join(ROOT_DIR,'src/components/cne/AddResourceModal.tsx'),'utf8');
-      assert(material.includes('deferIndexing: true') && material.includes('ApiService.reindexLearningResource(cneId)'));
-      assert(additional.includes('deferIndexing:true') && additional.includes('ApiService.reindexLearningResource(selectedCneId)'));
+      assert(material.includes('deferIndexing: true') && material.includes('ApiService.reindexLearningResource(cneId, responsibilityAccepted)'));
+      assert(additional.includes('deferIndexing:true') && additional.includes('ApiService.reindexLearningResource(selectedCneId, responsibilityAccepted)'));
       assert(code.includes('cneExtractPdfWithDriveOcr_') && code.includes('ocrLanguage=en'));
       assert(code.includes('forIndex:true') && code.includes('DOCUMENT_TOO_LONG'));
     }],
@@ -16778,6 +16764,317 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     assert(result.concepts.some(x=>x.name==='acute kidney injury'));
     assert.equal(result.requiresClarification,false);
   });
+}
+
+// CNE multi-format upload and content extraction: independent behavioral checks.
+// The original seven checksum-protected suites remain unchanged in scope/count.
+if (selected.some(item => item.id === 'pdf') && passed === selected.length) {
+  const gas = readFileSync(join(ROOT_DIR, 'Code.gs'), 'utf8');
+  const addModal = readFileSync(join(ROOT_DIR, 'src/components/cne/AddResourceModal.tsx'), 'utf8');
+  const cneModal = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEReferenceModal.tsx'), 'utf8');
+  const learningPage = readFileSync(join(ROOT_DIR, 'src/components/cne/LearningResourcesPage.tsx'), 'utf8');
+  const check=(name,fn)=>{
+    focusedChecks.push({name,test:fn});
+    try { fn();focusedPassed++;console.log('✓ '+name); }
+    catch(e){console.error('✗ '+name+': '+e.message);}
+  };
+  const ctx={console,Date,Map,Set};vm.createContext(ctx);vm.runInContext(gas,ctx,{timeout:16000});
+  const mime={pdf:'application/pdf',doc:'application/msword',
+    docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ppt:'application/vnd.ms-powerpoint',
+    pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation'};
+  const bytes=buffer=>Array.from(buffer);
+  const zipped=(entry)=>bytes(Buffer.concat([Buffer.from('PK\x03\x04'),Buffer.alloc(50),Buffer.from(entry)]));
+  check('Five CNE format MIME mappings are exact and reject any other extension',()=>{
+    for(const [ext,type] of Object.entries(mime))assert.equal(ctx.cneMaterialMimeForExt_(ext),type);
+    for(const invalid of ['txt','xls','xlsx','zip','png','exe',''])assert.equal(ctx.cneMaterialMimeForExt_(invalid),'');
+  });
+  check('CNE material binary signatures reject disguised PDFs, ZIPs and mismatched Office formats',()=>{
+    assert(ctx.cneMaterialBytesMatchExt_(bytes(Buffer.from('%PDF-1.7\nclinical text')), 'pdf'));
+    assert(!ctx.cneMaterialBytesMatchExt_(bytes(Buffer.from('PDF but not real')), 'pdf'));
+    assert(ctx.cneMaterialBytesMatchExt_(bytes(Buffer.from([0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1,0,0])), 'doc'));
+    assert(ctx.cneMaterialBytesMatchExt_(bytes(Buffer.from([0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1,0,0])), 'ppt'));
+    assert(ctx.cneMaterialBytesMatchExt_(zipped('word/document.xml'), 'docx'));
+    assert(ctx.cneMaterialBytesMatchExt_(zipped('ppt/presentation.xml'), 'pptx'));
+    assert(!ctx.cneMaterialBytesMatchExt_(zipped('xl/workbook.xml'), 'docx'));
+    assert(!ctx.cneMaterialBytesMatchExt_(zipped('word/document.xml'), 'pptx'));
+    assert(!ctx.cneMaterialBytesMatchExt_(bytes(Buffer.from('image')), 'ppt'));
+  });
+  check('Word table extraction preserves drug-to-property pairing and explicit headings',()=>{
+    const paragraph=(value,heading='NORMAL')=>({getType:()=> 'PARAGRAPH',getText:()=>value,getHeading:()=>heading});
+    const table={getType:()=> 'TABLE',getNumRows:()=>3,getRow:r=>({getNumCells:()=>2,getCell:c=>({getText:()=>[
+      ['Drug','Effect'],['Mafenide acetate','May cause metabolic acidosis'],['Bacitracin','Topical antimicrobial']][r][c]})})};
+    ctx.DocumentApp={openById:()=>({getBody:()=>({getNumChildren:()=>3,getChild:i=>[
+      paragraph('Management of Burn Wounds','HEADING1'),table,
+      paragraph('Nursing care includes regular reassessment, observation of wound depth, monitoring vital signs and protecting the patient from infection. This is clinically relevant educational teaching material and supports appropriate nursing interventions.')][i]})})};
+    const text=ctx.cneMaterialDocText_('D1');
+    assert(text.includes('MANAGEMENT OF BURN WOUNDS'));
+    assert(text.includes('Drug: Mafenide acetate | Effect: May cause metabolic acidosis'));
+    assert(text.includes('Drug: Bacitracin | Effect: Topical antimicrobial'));
+    assert(text.indexOf('Mafenide acetate')<text.indexOf('Bacitracin'));
+  });
+  check('Source data rows are retained when a clinical Word/PPT table has no header',()=>{
+    const output=ctx.cneMaterialTableText_([
+      ['Mafenide acetate','May cause metabolic acidosis'],
+      ['Bacitracin','Topical antimicrobial']]);
+    assert(output.includes('Mafenide acetate | May cause metabolic acidosis'));
+    assert(output.includes('Bacitracin | Topical antimicrobial'));
+  });
+  check('PowerPoint extraction preserves slide order, tables and named treatments',()=>{
+    const shape=t=>({getPageElementType:()=> 'SHAPE',asShape:()=>({getText:()=>({asString:()=>t})})});
+    const table={getPageElementType:()=> 'TABLE',asTable:()=>({getNumRows:()=>2,getNumColumns:()=>2,
+      getCell:(r,c)=>({getText:()=>({asString:()=>[['Product','Action'],['Biobrane','Temporary synthetic burn dressing']][r][c]})})})};
+    ctx.SlidesApp={openById:()=>({getSlides:()=>[
+      {getPageElements:()=>[shape('Clinical burn wound management requires patient assessment, burn depth evaluation, protection of the airway and circulation, and patient monitoring throughout the treatment.'),table]},
+      {getPageElements:()=>[shape('Burn wound management also requires aseptic technique, thermal protection, appropriate dressing changes and ongoing assessment of clinical healing outcomes for patient safety.')]}]})};
+    const result=ctx.cneMaterialSlideText_('S1');
+    assert.equal(result.success,true);
+    assert(result.text.includes('Slide 1')&&result.text.includes('Slide 2'));
+    assert(result.text.includes('Product: Biobrane | Action: Temporary synthetic burn dressing'));
+  });
+  check('Significant image-only slides fail closed instead of creating misleading clinical evidence',()=>{
+    const img=()=>({getPageElementType:()=> 'IMAGE'});
+    const shape=t=>({getPageElementType:()=> 'SHAPE',asShape:()=>({getText:()=>({asString:()=>t})})});
+    ctx.SlidesApp={openById:()=>({getSlides:()=>[
+      {getPageElements:()=>[img()]},{getPageElements:()=>[img()]},
+      {getPageElements:()=>[shape('Clinical burn assessment and resuscitation procedures require ongoing patient observation, monitoring and careful documentation throughout management.')]}]})};
+    const result=ctx.cneMaterialSlideText_('S2');
+    assert.equal(result.errorCode,'VISUAL_SLIDES_REQUIRE_REVIEW');
+    assert.equal(result.success,false);
+  });
+  check('Temporary Google Docs conversion is trashed after successful extraction and after errors',()=>{
+    let trashed=[],uploads=[];
+    ctx.Utilities={getUuid:()=> 'U-123',newBlob:content=>({getBytes:()=>typeof content==='string'?bytes(Buffer.from(content)):content}),sleep:()=>{}};
+    ctx.ScriptApp={getOAuthToken:()=> 'TEST-OAUTH'};
+    ctx.UrlFetchApp={fetch:(url,options)=>{uploads.push({url,options});return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({id:'TEMP-CNE'})};}};
+    ctx.DriveApp={getFileById:id=>({setTrashed:()=>trashed.push(id)})};
+    ctx.DocumentApp={openById:()=>({getBody:()=>({getNumChildren:()=>1,getChild:()=>({getType:()=> 'PARAGRAPH',getText:()=>
+      'Burn management includes repeated wound assessments, protection from infection, maintaining appropriate temperature, careful pain control and monitoring for systemic complications in every patient under clinical care.'})})})};
+    const blob={getBytes:()=>bytes(Buffer.from('Office binary test bytes'))};
+    const ok=ctx.cneExtractOfficeMaterial_(blob,'docx');
+    assert.equal(ok.success,true,JSON.stringify(ok));assert.equal(ok.method,'GOOGLE_DOCS_STRUCTURED');
+    assert.deepEqual(trashed,['TEMP-CNE']);assert.equal(uploads.length,1);
+    assert(uploads[0].options.headers.Authorization==='Bearer TEST-OAUTH');
+    assert(uploads[0].options.contentType.includes('multipart/related'));
+    ctx.DocumentApp.openById=()=>{throw Error('permission denied');};
+    const failed=ctx.cneExtractOfficeMaterial_(blob,'doc');
+    assert.equal(failed.errorCode,'OFFICE_CONVERSION_FAILED');
+    assert.deepEqual(trashed,['TEMP-CNE','TEMP-CNE']);
+  });
+  check('Frontend shows all five types; Nursing Reference Library remains strictly PDF',()=>{
+    for(const source of [addModal,cneModal]) assert(source.includes('.pdf,.doc,.docx,.ppt,.pptx'));
+    assert(learningPage.includes('known = [\'pdf\', \'doc\', \'docx\', \'ppt\', \'pptx\']'));
+    const library=gas.slice(gas.indexOf('function listNursingReferenceResources('),gas.indexOf('function handleReindexLearningResource('));
+    assert(library.includes("var ALLOWED_EXTS = ['pdf']"),'Library PDF-only restriction missing');
+    assert(!gas.includes('Library_Index'),'Retired Library_Index must remain absent');
+    assert(gas.includes("'Material_Index':"),'Material_Index schema must remain');
+  });
+}
+
+
+// Uploader ownership replaces ADMIN review of extracted source passages.
+// Clinical accuracy remains the authenticated uploader's responsibility; technical
+// indexing success is never represented as an independent clinical approval.
+if (selected.some(item=>item.id==='performance') && passed===selected.length) {
+  const gas=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const add=readFileSync(join(ROOT_DIR,'src/components/cne/AddResourceModal.tsx'),'utf8');
+  const reference=readFileSync(join(ROOT_DIR,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
+  const learning=readFileSync(join(ROOT_DIR,'src/components/cne/LearningResourcesPage.tsx'),'utf8');
+  const apis=readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+  const check=(name,fn)=>{
+    focusedChecks.push({name,test:fn});
+    try{fn();focusedPassed++;console.log('✓ '+name);}catch(e){console.error('✗ '+name+': '+(e.stack||e.message));}
+  };
+  function scene(){
+    const ctx={console,Date,Math,Array,Number,String,Map,Set};
+    vm.createContext(ctx);vm.runInContext(gas,ctx,{timeout:16000});
+    const materialHeaders=ctx.CNE_SHEET_HEADERS['Material_List'];
+    const indexHeaders=ctx.CNE_SHEET_HEADERS['Material_Index'];
+    const makeRow=(headers,values)=>headers.map(h=>values[h]??'');
+    const teaching1=('Burn wound care requires regular nursing assessment, skin examination, infection prevention, patient temperature monitoring, wound protection, pain management and clinical documentation. ').repeat(5);
+    const teaching2=('Thermal injury assessment includes burn depth, body surface area estimation, fluid balance monitoring, hemodynamic status and timely escalation when circulation is compromised. ').repeat(5);
+    const approvedMessage='V3 AUTO_INDEXED | FILE=DRIVE_A | UPLOADER=EMP-1 | 2 chunks passed automated text-quality checks; clinical accuracy is uploader responsibility.';
+    const material={CNE_ID:'CNE-1',Drive_File_ID:'DRIVE_A',Indexing_Status:'SUCCESS',Indexing_Message:approvedMessage,Indexing_Error_Code:'',Chunks_Count:2,Indexed_At:'now'};
+    const rows=[indexHeaders,
+      makeRow(indexHeaders,{Index_ID:'IDX_CNE-1_DRIVE_A_V3_AABBCCDD_C1',CNE_ID:'CNE-1',Drive_File_ID:'DRIVE_A',Section_Heading:'Burn Assessment',Chunk_Index:1,Chunk_Text:teaching1,Clinical_Keywords:'wound care, assessment',Extraction_Status:'SUCCESS'}),
+      makeRow(indexHeaders,{Index_ID:'IDX_CNE-1_DRIVE_A_V3_AABBCCDD_C2',CNE_ID:'CNE-1',Drive_File_ID:'DRIVE_A',Section_Heading:'Burn Complications',Chunk_Index:2,Chunk_Text:teaching2,Clinical_Keywords:'fluid balance, monitoring',Extraction_Status:'SUCCESS'}),
+      makeRow(indexHeaders,{Index_ID:'IDX_CNE-OTHER_DRIVE_A_V3_AABBCCDD_C1',CNE_ID:'CNE-OTHER',Drive_File_ID:'DRIVE_A',Section_Heading:'Unrelated',Chunk_Index:1,Chunk_Text:teaching1,Clinical_Keywords:'care',Extraction_Status:'SUCCESS'})];
+    const sheet=rows=>({rows,
+      getLastRow(){return rows.length;},getLastColumn(){return rows[0].length;},
+      getRange(r,c,n=1,w=1){return {
+        getValues(){return Array.from({length:n},(_,i)=>Array.from({length:w},(_,j)=>rows[r-1+i]?.[c-1+j]??''));},
+        getValue(){return rows[r-1]?.[c-1]??'';},
+        setValues(values){values.forEach((row,i)=>row.forEach((v,j)=>{rows[r-1+i][c-1+j]=v;}));return this;}
+      };}
+    });
+    const mat=sheet([materialHeaders,makeRow(materialHeaders,material)]),idx=sheet(rows);
+    const ss={getSheetByName:n=>n==='Material_List'?mat:n==='Material_Index'?idx:null};
+    ctx.getSpreadsheet=()=>ss;
+    ctx.getHeaderMap=sh=>Object.fromEntries(sh.rows[0].map((head,i)=>[String(head).toLowerCase().replace(/[^a-z0-9]/g,''),i]));
+    ctx.cneRequireIndexHeaders_=()=>{};ctx.cneRequireMutationHeaders_=()=>{};ctx.cneHeaderLayout_=()=>{};
+    ctx.findExactRowInColumn_=(sh,c,id)=>{const i=sh.rows.findIndex((r,i)=>i>0&&String(r[c]||'').toUpperCase()===String(id).toUpperCase());return i<0?-1:i+1;};
+    ctx.getCNEScheduleRecord=id=>id==='CNE-1'?{cneId:id,status:'Scheduled',topic:'Burn Wound Care'}:null;
+    ctx.sanitizeCellInput=value=>String(value||'').trim();
+    ctx.checkQuestionManagementAuthorized=()=>null;
+    ctx.checkCNEActionAuthorized=()=>null;
+    ctx.LockService={getScriptLock:()=>({waitLock:()=>{},releaseLock:()=>{}})};
+    ctx.SpreadsheetApp={flush:()=>{}};ctx.logAuditAction=()=>{};
+    const admin={role:'ADMIN',employeeId:'ADMIN-1'},employee={role:'EMPLOYEE',employeeId:'EMP-1'};
+    return {ctx,mat,idx,materialHeaders,indexHeaders,approvedMessage,admin,employee};
+  }
+  check('CNE material remains 5 MiB and all five formats remain available',()=>{
+    assert(add.includes('candidate.size > 5 * 1024 * 1024')&&reference.includes('5 * 1024 * 1024'));
+    assert(gas.includes('rawBase64.length > Math.ceil(MAX_CNE_LEARNING_MATERIAL_BYTES / 3) * 4'));
+    assert(gas.includes('fileSize > MAX_CNE_LEARNING_MATERIAL_BYTES'));
+    assert(apis.includes('maximum 5 MB')&&gas.includes('file.getSize() > MAX_CNE_LEARNING_MATERIAL_BYTES'));
+    assert(gas.includes('3*1024*1024'),'Separate question-image policy must remain');
+  });
+  check('5 MiB boundary and explicit uploader declaration enforced by backend',()=>{
+    const {ctx,admin}=scene();
+    ctx.getCNEScheduleRecord=()=>({cneId:'CNE-1',topic:'Burn Wound Care',status:'Scheduled'});
+    ctx.cneMaterialBytesMatchExt_=()=>true;
+    ctx.getOrCreateLearningResourcesFolder=()=>({success:false,errorCode:'PASSED_SIZE_VALIDATION'});
+    let decodedBytes=0;
+    ctx.Utilities={base64Decode:()=>({length:decodedBytes})};
+    const input={cneId:'CNE-1',fileName:'lecture.pdf',fileType:'application/pdf',base64Data:'QUJD'};
+    assert.equal(ctx.handleUploadLearningResource(input,admin).errorCode,'UPLOADER_DECLARATION_REQUIRED');
+    const accepted={...input,uploaderDeclaration:'I_ACCEPT_RESPONSIBILITY'};
+    decodedBytes=3*1024*1024+1;
+    assert.equal(ctx.handleUploadLearningResource(accepted,admin).errorCode,'PASSED_SIZE_VALIDATION');
+    decodedBytes=5*1024*1024;
+    assert.equal(ctx.handleUploadLearningResource(accepted,admin).errorCode,'PASSED_SIZE_VALIDATION');
+    decodedBytes=5*1024*1024+1;
+    assert.equal(ctx.handleUploadLearningResource(accepted,admin).errorCode,'FILE_TOO_LARGE');
+    assert.equal(ctx.handleUploadLearningResource({...accepted,base64Data:'A'.repeat(Math.ceil((5*1024*1024)/3)*4+4)},admin).errorCode,'FILE_TOO_LARGE');
+  });
+  check('No administrator review workflow, endpoint or frontend dependency remains',()=>{
+    assert(!gas.includes('function handleApproveLearningResourceIndex('));
+    assert(!gas.includes('function handleGetLearningResourceIndexReview('));
+    assert(!gas.includes("case 'approveLearningResourceIndex':"));
+    assert(!gas.includes("case 'getLearningResourceIndexReview':"));
+    assert(!apis.includes('approveLearningResourceIndex(')&&!apis.includes('getLearningResourceIndexReview('));
+    assert(!learning.includes('Review index')&&!reference.includes('reviewVisitedPages'));
+    assert(add.includes('responsibilityAccepted')&&reference.includes('responsibilityAccepted'));
+    assert(add.includes('uploaderDeclaration:')&&reference.includes('uploaderDeclaration:'));
+    assert(add.includes('ApiService.reindexLearningResource(selectedCneId, responsibilityAccepted)'));
+    assert(reference.includes('ApiService.reindexLearningResource(cneId, responsibilityAccepted)'));
+  });
+  check('AI evidence is available after technically successful indexing and uploader attribution',()=>{
+    const {ctx}=scene();const ready=ctx.cneAiMaterialReadiness_('CNE-1');
+    assert(ready.hasOwnMaterial&&ready.status==='READY',JSON.stringify(ready));
+    assert.equal(ready.indexCount,2);
+  });
+  check('Earlier administrator reviewed and unattributed SUCCESS metadata cannot bypass uploader responsibility',()=>{
+    const {ctx,mat,materialHeaders,approvedMessage}=scene();const col=materialHeaders.indexOf('Indexing_Message');
+    for(const message of ['V3 clinical source reviewed against indexed passages by ADMIN A1.','Unattributed success','']){
+      mat.rows[1][col]=message;
+      const ready=ctx.cneAiMaterialReadiness_('CNE-1');
+      assert.equal(ready.status,'NEEDS_REVIEW');assert.equal(ready.errorCode,'UPLOADER_REINDEX_REQUIRED');
+      assert.equal(ready.hasOwnMaterial,false);
+    }
+    mat.rows[1][col]=approvedMessage;
+  });
+  check('Responsibility marker binds exact current source and authenticated employee identity',()=>{
+    const {ctx,mat,materialHeaders,approvedMessage}=scene();
+    const idx=materialHeaders.indexOf('Drive_File_ID');
+    assert(ctx.cneMaterialUploaderAttestedMessage_(approvedMessage,'DRIVE_A'));
+    assert(!ctx.cneMaterialUploaderAttestedMessage_(approvedMessage,'DRIVE_OTHER'));
+    assert(!ctx.cneMaterialUploaderAttestedMessage_('V3 AUTO_INDEXED | FILE=DRIVE_A | UPLOADER= | technical','DRIVE_A'));
+    mat.rows[1][idx]='DRIVE_OTHER';
+    const ready=ctx.cneAiMaterialReadiness_('CNE-1');
+    assert.equal(ready.status,'NEEDS_REVIEW');assert.equal(ready.hasOwnMaterial,false);
+  });
+  check('Reindex requires authorization and uploader confirmation before reading or writing Sheets',()=>{
+    const {ctx,employee}=scene();
+    ctx.checkQuestionManagementAuthorized=()=>({success:false,errorCode:'FORBIDDEN'});
+    assert.equal(ctx.handleReindexLearningResource({cneId:'CNE-1'},employee).errorCode,'FORBIDDEN');
+    ctx.checkQuestionManagementAuthorized=()=>null;
+    assert.equal(ctx.handleReindexLearningResource({cneId:'CNE-1'},employee).errorCode,'UPLOADER_DECLARATION_REQUIRED');
+    assert.equal(ctx.handleReindexLearningResource({cneId:'CNE-1',uploaderDeclaration:'I_REVIEWED_SOURCE_AND_INDEX'},employee).errorCode,'UPLOADER_DECLARATION_REQUIRED');
+    assert(!('reviewFingerprint' in {uploaderDeclaration:'I_ACCEPT_RESPONSIBILITY'}));
+  });
+  check('Closed CNE cannot be reindexed even with uploader declaration',()=>{
+    const {ctx,employee}=scene();
+    ctx.getCNEScheduleRecord=()=>({cneId:'CNE-1',status:'Completed'});
+    assert.equal(ctx.handleReindexLearningResource({cneId:'CNE-1',uploaderDeclaration:'I_ACCEPT_RESPONSIBILITY'},employee).errorCode,'CNE_CLOSED');
+    ctx.getCNEScheduleRecord=()=>({cneId:'CNE-1',status:'Canceled'});
+    assert.equal(ctx.handleReindexLearningResource({cneId:'CNE-1',uploaderDeclaration:'I_ACCEPT_RESPONSIBILITY'},employee).errorCode,'CNE_CLOSED');
+  });
+  check('Fail closed when any same-file chunk is unapproved, legacy, or unreadable',()=>{
+    const {ctx,idx,indexHeaders}=scene();const statusCol=indexHeaders.indexOf('Extraction_Status');
+    const idCol=indexHeaders.indexOf('Index_ID'),textCol=indexHeaders.indexOf('Chunk_Text');
+    idx.rows[2][statusCol]='NEEDS_REVIEW';
+    assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial,false);
+    idx.rows[2][statusCol]='SUCCESS';idx.rows[2][idCol]='IDX-LEGACY';
+    assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').errorCode,'INDEX_UPGRADE_REQUIRED');
+    idx.rows[2][idCol]='IDX_CNE-1_DRIVE_A_V3_AABBCCDD_C2';idx.rows[2][textCol]='...';
+    assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial,false);
+  });
+  check('Duplicate chunk IDs, conflicting fingerprints and incorrect counts disable AI evidence',()=>{
+    const {ctx,idx,mat,indexHeaders,materialHeaders}=scene();
+    const idCol=indexHeaders.indexOf('Index_ID'), countCol=materialHeaders.indexOf('Chunks_Count');
+    const currentId=idx.rows[2][idCol];
+    idx.rows[2][idCol]=idx.rows[1][idCol];
+    assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').errorCode,'INDEX_CONSISTENCY_FAILED');
+    idx.rows[2][idCol]=currentId.replace('AABBCCDD','FFFFFFFF');
+    assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').errorCode,'INDEX_CONSISTENCY_FAILED');
+    idx.rows[2][idCol]=currentId;
+    mat.rows[1][countCol]=3;
+    assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').errorCode,'INDEX_CONSISTENCY_FAILED');
+  });
+  check('Auto indexing writes successful chunk status, source-bound attribution and preserves slide table pairs',()=>{
+    const {ctx}=scene();
+    const indexSource=gas.slice(gas.indexOf('function indexLearningResourceContent('),gas.indexOf('function cneReferenceChunkReadable_('));
+    assert(indexSource.includes("'SUCCESS', nowIso"));
+    assert(indexSource.includes('V3 AUTO_INDEXED | FILE='));
+    assert(indexSource.includes('INDEX_REPLACEMENT_INCOMPLETE'));
+    assert(!indexSource.includes('LEARNING_RESOURCE_INDEX_AWAITING_REVIEW'));
+    const slideText='Slide 1\nBURN DEPTH\n'+('Burn depth determines wound management and assessment. ').repeat(12)+'\nSlide 2\nANTIMICROBIAL SALVES\n'+('Drug: Mafenide | Effect: Metabolic acidosis\n').repeat(12);
+    const chunks=ctx.chunkExtractedContent(slideText,'PPTX','Burn Wound Care');
+    assert(chunks.some(x=>x.heading.includes('Slide 1'))&&chunks.some(x=>x.heading.includes('Slide 2')));
+    assert(chunks.some(x=>x.text.includes('Drug: Mafenide | Effect: Metabolic acidosis')));
+  });
+  check('Real index commit writes SUCCESS chunks and uploader provenance without admin action',()=>{
+    const {ctx,idx,mat,indexHeaders,materialHeaders,employee}=scene();
+    ctx.getOrCreateSheet=n=>n==='Material_Index'?idx:n==='Material_List'?mat:null;
+    ctx.cneWriteHeaderRows_=(sh,headers,rows,at)=>rows.forEach((r,i)=>{
+      sh.rows[at-1+i]=sh.rows[0].map(h=>r[headers.indexOf(h)]??'');
+    });
+    ctx.deleteSheetRowsByIndices=(sh,indices)=>indices.slice().sort((a,b)=>b-a).forEach(r=>sh.rows.splice(r-1,1));
+    const paragraph='Nursing assessment requires regular examination, fluid monitoring, wound care, infection prevention and accurate documentation of deterioration. ';
+    const teaching='Definition\nBurn injuries require nursing assessment and emergency stabilization. '+paragraph.repeat(7)+
+      '\nRisk factors\nThermal, electrical and chemical injuries require different assessments. '+paragraph.repeat(7)+
+      '\nWound care\nBurn dressing selection depends on wound depth and infection risk. '+paragraph.repeat(7)+
+      '\nComplications\nMonitor fluid balance, infection, pain and tissue perfusion closely. '+paragraph.repeat(7);
+    ctx.extractLearningResourceContentCore=()=>({success:true,data:{extractedText:teaching}});
+    const originalUnrelated=idx.rows[3].slice();
+    const result=ctx.indexLearningResourceContent('CNE-1','DRIVE_A','Burns.pptx','PPTX','Burn Wound Care',employee,false);
+    assert(result.success,JSON.stringify(result));
+    assert.equal(result.indexingStatus,'SUCCESS');
+    assert.equal(result.reviewRequired,false);
+    const message=mat.rows[1][materialHeaders.indexOf('Indexing_Message')];
+    assert(ctx.cneMaterialUploaderAttestedMessage_(message,'DRIVE_A'));
+    assert(message.includes('UPLOADER=EMP-1'));
+    assert(idx.rows.some(r=>r[indexHeaders.indexOf('CNE_ID')]==='CNE-OTHER'&&r[indexHeaders.indexOf('Index_ID')]===originalUnrelated[indexHeaders.indexOf('Index_ID')]));
+    const current=idx.rows.slice(1).filter(r=>r[indexHeaders.indexOf('CNE_ID')]==='CNE-1');
+    assert(current.length>=2&&current.every(r=>r[indexHeaders.indexOf('Extraction_Status')]==='SUCCESS'));
+    assert(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial);
+  });
+  check('Index extraction failure never becomes AI ready and preserves prior rows',()=>{
+    const {ctx,idx,mat,materialHeaders,employee}=scene();
+    ctx.getOrCreateSheet=n=>n==='Material_Index'?idx:n==='Material_List'?mat:null;
+    ctx.cneWriteHeaderRows_=(sh,headers,rows,at)=>rows.forEach((r,i)=>{
+      sh.rows[at-1+i]=sh.rows[0].map(h=>r[headers.indexOf(h)]??'');
+    });
+    ctx.extractLearningResourceContentCore=()=>({success:false,errorCode:'OCR_INSUFFICIENT',message:'Scanned source has no reliable clinical text.'});
+    const originals=idx.rows.length;
+    const failed=ctx.indexLearningResourceContent('CNE-1','DRIVE_A','Burns.pdf','PDF','Burn Wound Care',employee,false);
+    assert.equal(failed.success,false);
+    assert.equal(idx.rows.length,originals+1,'Previously indexed data should not be lost on extraction failure');
+    assert.equal(mat.rows[1][materialHeaders.indexOf('Indexing_Status')],'FAILED');
+    assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial,false);
+  });
+
 }
 
 if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);

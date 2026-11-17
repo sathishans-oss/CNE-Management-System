@@ -51,7 +51,7 @@ export interface UnifiedResourceItem {
   version?: string;
   active?: boolean;
   chunksCount?: number;
-  indexingStatus?: 'SUCCESS' | 'FAILED' | 'PENDING';
+  indexingStatus?: 'SUCCESS' | 'FAILED' | 'PENDING' | 'NEEDS_REVIEW';
   indexingErrorCode?: string;
   indexingMessage?: string;
 }
@@ -185,11 +185,20 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
   };
 
   const getFileTypeBadge = (fileType?: string, fileName?: string) => {
-    const ft = (fileType || '').toLowerCase();
+    const name = (fileName || '').toLowerCase();
+    const known = ['pdf', 'doc', 'docx', 'ppt', 'pptx'];
+    const fromName = name.split('.').pop() || '';
+    const raw = (fileType || '').toLowerCase();
+    const ext = known.includes(fromName) ? fromName : known.includes(raw) ? raw :
+      raw.includes('presentation') || raw.includes('powerpoint') ? 'pptx' :
+      raw.includes('wordprocessingml') ? 'docx' : raw.includes('msword') ? 'doc' : 'pdf';
+    const presentation = ext === 'ppt' || ext === 'pptx';
+    const word = ext === 'doc' || ext === 'docx';
     return {
-      label: 'PDF',
-      bg: 'bg-rose-50 text-rose-700 border-rose-200',
-      iconColor: 'text-rose-600'
+      label: ext.toUpperCase(),
+      bg: presentation ? 'bg-orange-50 text-orange-700 border-orange-200' :
+        word ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-rose-50 text-rose-700 border-rose-200',
+      iconColor: presentation ? 'text-orange-600' : word ? 'text-blue-600' : 'text-rose-600'
     };
   };
 
@@ -201,21 +210,25 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
       return {
         label: item.chunksCount !== undefined ? `Indexed • ${item.chunksCount} chunks` : 'Indexed',
         className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-        title: item.indexingMessage || 'PDF text indexing completed successfully.'
+        title: item.indexingMessage || 'Document text indexing completed successfully.'
       };
+    }
+    if (status === 'NEEDS_REVIEW') {
+      return {label:'Uploader reindex required',className:'bg-amber-50 text-amber-700 border-amber-200',
+        title:'An authorized uploader must confirm responsibility and reindex this older learning material; no administrator source review is required.'};
     }
     if (status === 'FAILED') {
       return {
         label: 'Indexing failed',
         className: 'bg-rose-50 text-rose-700 border-rose-200',
-        title: [item.indexingErrorCode, item.indexingMessage].filter(Boolean).join(' • ') || 'PDF text indexing failed.'
+        title: [item.indexingErrorCode, item.indexingMessage].filter(Boolean).join(' • ') || 'Document text indexing failed.'
       };
     }
     if (status === 'PENDING') {
       return {
         label: 'Indexing pending',
         className: 'bg-amber-50 text-amber-700 border-amber-200',
-        title: item.indexingMessage || 'PDF text indexing is pending.'
+        title: item.indexingMessage || 'Document indexing is pending.'
       };
     }
     return {

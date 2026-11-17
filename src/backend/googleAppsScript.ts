@@ -8769,10 +8769,41 @@ function getFileExtension(fileName) {
   return name.substring(dotIndex + 1).trim().toLowerCase();
 }
 
+/** CNE learning materials only. The Nursing Reference Library remains PDF-only. */
+function cneMaterialMimeForExt_(ext) {
+  var types = {
+    pdf:'application/pdf',
+    doc:'application/msword',
+    docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ppt:'application/vnd.ms-powerpoint',
+    pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  };
+  return types[String(ext||'').toLowerCase()] || '';
+}
+/** A file extension alone is never sufficient to trust an uploaded binary. */
+function cneMaterialBytesMatchExt_(bytes,ext) {
+  var b=bytes||[],e=String(ext||'').toLowerCase();
+  if(e==='pdf')return b.length>=5 && b[0]===37 && b[1]===80 && b[2]===68 && b[3]===70 && b[4]===45;
+  if(e==='doc'||e==='ppt')return b.length>=8 &&
+    [208,207,17,224,161,177,26,225].every(function(v,i){return (b[i]&255)===v;});
+  if(e!=='docx'&&e!=='pptx')return false;
+  if(b.length<40||b[0]!==80||b[1]!==75||b[2]!==3||b[3]!==4)return false;
+  // OOXML package entries remain identifiable by their uncompressed ZIP filename bytes.
+  var name=e==='docx'?'word/document.xml':'ppt/presentation.xml';
+  var needle=[];for(var k=0;k<name.length;k++)needle.push(name.charCodeAt(k));
+  for(var i=0;i<=b.length-needle.length;i++){
+    if(b[i]!==needle[0])continue;
+    var match=true;
+    for(var j=1;j<needle.length;j++)if(b[i+j]!==needle[j]){match=false;break;}
+    if(match)return true;
+  }
+  return false;
+}
+
 /**
  * Upload and Store CNE Learning Resource File
- * Document Policy: Strictly PDF only (.pdf)
- * Maximum Size: 3 MB (MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024)
+ * Document Policy: PDF, DOC, DOCX, PPT or PPTX
+ * Maximum Size: 5 MiB (MAX_CNE_LEARNING_MATERIAL_BYTES = 5 * 1024 * 1024)
  * Authoritative storage: configured root -> CNE Class Material direct child
  * Access: Completely PRIVATE (No ANYONE_WITH_LINK)
  * Metadata: Appended non-destructively to CNE_Reference
@@ -8788,6 +8819,9 @@ function handleUploadLearningResource(params, session) {
   if (normalizeCNEStatus(record.status) === 'Completed') return { success: false, errorCode: 'CNE_ALREADY_FINALIZED', message: 'This CNE has already been finalized. Learning materials cannot be modified.' };
   var materialStatus = normalizeCNEStatus(record.status);
   if (materialStatus === 'Canceled' || materialStatus === 'Cancelled') return { success: false, errorCode: 'CNE_CANCELED', message: 'This CNE has been canceled. Learning materials cannot be modified.' };
+  // Explicit responsibility is required for EVERY learning-material upload, including direct API requests.
+  if (!params || params.uploaderDeclaration !== 'I_ACCEPT_RESPONSIBILITY')
+    return {success:false,errorCode:'UPLOADER_DECLARATION_REQUIRED',message:'The authenticated uploader must accept responsibility for source accuracy, clinical content and teaching tables before uploading.'};
 
   var base64Data = params.base64Data || params.fileData || params.fileBase64;
   if (!base64Data) return { success: false, errorCode: 'MISSING_FILE', message: 'File data is required.' };
@@ -8802,19 +8836,21 @@ function handleUploadLearningResource(params, session) {
     contentType = String(params.fileType || params.mimeType).toLowerCase().trim();
   }
 
-  var MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024;
-  if (rawBase64.length > 4.5 * 1024 * 1024) return { success: false, errorCode: 'FILE_TOO_LARGE', message: 'File exceeds maximum allowed size of 3 MB.' };
+  var MAX_CNE_LEARNING_MATERIAL_BYTES = 5 * 1024 * 1024;
+  // 4 base64 characters encode at most 3 bytes; reject oversized requests before decoding.
+  if (rawBase64.length > Math.ceil(MAX_CNE_LEARNING_MATERIAL_BYTES / 3) * 4)
+    return { success: false, errorCode: 'FILE_TOO_LARGE', message: 'File exceeds maximum allowed size of 5 MB.' };
 
   var ext = '';
   if (clientFileName && clientFileName.lastIndexOf('.') !== -1) ext = clientFileName.substring(clientFileName.lastIndexOf('.') + 1).toLowerCase().trim();
   else if (params.extension) ext = String(params.extension).toLowerCase().replace(/^\\./, '').trim();
-  var ALLOWED_EXTS = ['pdf'];
-  if (!ext || ALLOWED_EXTS.indexOf(ext) === -1) return { success: false, errorCode: 'INVALID_FILE_TYPE', message: 'Invalid file format. Only PDF (.pdf) documents are permitted.' };
+  var expectedMime = cneMaterialMimeForExt_(ext);
+  if (!expectedMime) return { success: false, errorCode: 'INVALID_FILE_TYPE', message: 'Only PDF, DOC, DOCX, PPT and PPTX learning materials are supported.' };
 
-  var SPECIFIC_MIMES_BY_EXT = { 'pdf': ['application/pdf', 'application/x-pdf'] };
+  var SPECIFIC_MIMES_BY_EXT = { pdf:['application/pdf','application/x-pdf'] };
   var GENERIC_MIMES = ['application/octet-stream', 'binary/octet-stream'];
   if (contentType) {
-    var isSpecific = SPECIFIC_MIMES_BY_EXT[ext] && SPECIFIC_MIMES_BY_EXT[ext].indexOf(contentType) !== -1;
+    var isSpecific = contentType === expectedMime || Boolean(SPECIFIC_MIMES_BY_EXT[ext] && SPECIFIC_MIMES_BY_EXT[ext].indexOf(contentType) !== -1);
     var isGeneric = GENERIC_MIMES.indexOf(contentType) !== -1;
     if (!isSpecific && !isGeneric) return { success: false, errorCode: 'INVALID_MIME_TYPE', message: 'Declared MIME type (' + contentType + ') is not permitted for .' + ext.toUpperCase() + ' documents.' };
   }
@@ -8824,11 +8860,11 @@ function handleUploadLearningResource(params, session) {
   catch (decodeErr) { return { success: false, errorCode: 'INVALID_FILE_ENCODING', message: 'Failed to decode base64 file data.' }; }
   var fileSize = decoded.length;
   if (fileSize <= 0) return { success: false, errorCode: 'EMPTY_FILE', message: 'Uploaded file is empty (0 bytes).' };
-  if (fileSize > MAX_CNE_LEARNING_MATERIAL_BYTES || fileSize > 3 * 1024 * 1024) {
-    return { success: false, errorCode: 'FILE_TOO_LARGE', message: 'File exceeds maximum allowed size of 3 MB (Actual: ' + (Math.round(fileSize / (1024 * 1024) * 10) / 10) + ' MB).' };
+  if (fileSize > MAX_CNE_LEARNING_MATERIAL_BYTES) {
+    return { success: false, errorCode: 'FILE_TOO_LARGE', message: 'File exceeds maximum allowed size of 5 MB (Actual: ' + (Math.round(fileSize / (1024 * 1024) * 10) / 10) + ' MB).' };
   }
-  if (decoded.length < 4 || (decoded[0] & 0xFF) !== 0x25 || (decoded[1] & 0xFF) !== 0x50 || (decoded[2] & 0xFF) !== 0x44 || (decoded[3] & 0xFF) !== 0x46) {
-    return { success: false, errorCode: 'INVALID_FILE_CONTENT', message: 'File content does not match standard PDF document structure (%PDF header missing).' };
+  if (!cneMaterialBytesMatchExt_(decoded,ext)) {
+    return { success: false, errorCode: 'INVALID_FILE_CONTENT', message: 'File content does not match a valid .' + ext.toUpperCase() + ' document structure.' };
   }
 
   var folderRes = getOrCreateLearningResourcesFolder();
@@ -8891,7 +8927,7 @@ function handleUploadLearningResource(params, session) {
   var newlyCreatedDriveFile = null;
   var newDriveFileId = null;
   try {
-    var blob = Utilities.newBlob(decoded, 'application/pdf', finalFileName);
+    var blob = Utilities.newBlob(decoded, expectedMime, finalFileName);
     newlyCreatedDriveFile = targetFolder.createFile(blob);
     newDriveFileId = newlyCreatedDriveFile.getId();
   } catch (driveErr) {
@@ -8945,7 +8981,7 @@ function handleUploadLearningResource(params, session) {
               Drive_File_ID:newDriveFileId, File_Name:finalFileName,
               File_Type:ext.toUpperCase(), Resource_Person_Name:authoritativeRpName,
               File_Size:fileSize, Indexing_Status:'PENDING',
-              Indexing_Error_Code:'', Indexing_Message:'Indexing is in progress.',
+              Indexing_Error_Code:'', Indexing_Message:'Uploader responsibility accepted by '+session.employeeId+' for file '+newDriveFileId+'. Indexing is in progress.',
               Chunks_Count:0, Indexed_At:''
             };
             Object.keys(uploadFields).forEach(function(header){
@@ -8972,18 +9008,18 @@ function handleUploadLearningResource(params, session) {
     return { success: false, errorCode: 'METADATA_PERSIST_FAILED_CLEANUP_FAILED', message: 'Metadata persistence failed and uploaded-file cleanup could not be completed. Administrative reconciliation may be required.' };
   }
 
-  logAuditAction('UPLOAD_LEARNING_RESOURCE', session.employeeId, 'Uploaded learning resource for CNE ' + cneId + ': ' + finalFileName + ' (' + fileSize + ' bytes)', 'SUCCESS');
+  logAuditAction('UPLOAD_LEARNING_RESOURCE', session.employeeId, 'Uploader accepted clinical-content responsibility for CNE ' + cneId + ': ' + finalFileName + ' (' + fileSize + ' bytes)', 'SUCCESS');
 
   // Two-step upload mode: the Drive file and PENDING metadata are committed here.
   // The frontend calls the existing authorized reindexLearningResource endpoint next.
   // Existing callers that omit deferIndexing retain their original combined behavior.
   if (params && params.deferIndexing === true) {
     return {success:true, data:{cneId:cneId, driveFileId:newDriveFileId,
-      fileName:finalFileName, fileType:'PDF', fileSize:fileSize,
+      fileName:finalFileName, fileType:ext.toUpperCase(), fileSize:fileSize,
       topic:record.topic, resourcePersonName:authoritativeRpName, hasFile:true,
-      updatedAt:updatedAt, indexingStatus:'PENDING', indexingMessage:'PDF uploaded. Awaiting content indexing.',
+      updatedAt:updatedAt, indexingStatus:'PENDING', indexingMessage:'Learning material uploaded. Awaiting content indexing.',
       indexingErrorCode:'', chunksCount:0},
-      message:'CNE PDF uploaded to Drive. Content indexing is the next step.'};
+      message:'CNE learning material uploaded to Drive. Content indexing is the next step.'};
   }
 
   // Index with NO caller-held ScriptLock. Extraction happens concurrently; only final shared-sheet commit is serialized.
@@ -9330,6 +9366,7 @@ function getLearningResourceIndexingInfoFromIndex(cneId, driveFileId) {
     var targetCne = String(cneId).trim().toUpperCase();
     var targetDrive = String(driveFileId).trim();
     var successCount = 0;
+    var reviewCount = 0;
     var failedMessage = '';
     var failedErrorCode = '';
     var latestIndexedAt = '';
@@ -9347,6 +9384,8 @@ function getLearningResourceIndexingInfoFromIndex(cneId, driveFileId) {
 
       if (rowStatus === 'SUCCESS') {
         successCount++;
+      } else if (rowStatus === 'NEEDS_REVIEW') {
+        reviewCount++;
       } else if (rowStatus === 'FAILED' && !failedMessage) {
         var rawFailure = String(indexData[i][chunkTextCol] || '').trim();
         var colonPos = rawFailure.indexOf(':');
@@ -9359,6 +9398,10 @@ function getLearningResourceIndexingInfoFromIndex(cneId, driveFileId) {
       }
     }
 
+    if (reviewCount > 0) {
+      return { indexingStatus:'NEEDS_REVIEW', indexingErrorCode:'UPLOADER_REINDEX_REQUIRED',
+        indexingMessage:'Previously indexed material needs uploader responsibility confirmation and reindexing. No administrator review is required.',chunksCount:reviewCount,indexedAt:latestIndexedAt };
+    }
     if (successCount > 0) {
       return {
         indexingStatus: 'SUCCESS',
@@ -9609,6 +9652,10 @@ function handleListLearningResources(params, session) {
     var indexingStatus = indexingStatusCol !== undefined ? String(data[r][indexingStatusCol] || '').trim().toUpperCase() : '';
     var indexingErrorCode = indexingErrorCodeCol !== undefined ? String(data[r][indexingErrorCodeCol] || '').trim() : '';
     var indexingMessage = indexingMessageCol !== undefined ? String(data[r][indexingMessageCol] || '').trim() : '';
+    if(indexingStatus==='SUCCESS'&&!cneMaterialUploaderAttestedMessage_(indexingMessage,driveFileId)){
+      indexingStatus='NEEDS_REVIEW';indexingErrorCode='UPLOADER_REINDEX_REQUIRED';
+      indexingMessage='Existing material needs uploader responsibility confirmation and reindexing before AI evidence use.';
+    }
     var chunksCount = chunksCountCol !== undefined ? (Number(data[r][chunksCountCol]) || 0) : 0;
     var indexedAt = indexedAtCol !== undefined ? String(data[r][indexedAtCol] || '').trim() : '';
 
@@ -9760,7 +9807,7 @@ function handleDownloadLearningResource(params, session) {
  * PHASE 2: CNE LEARNING RESOURCES CONTENT EXTRACTION SERVICE
  * ============================================================================
  * Extracts readable textual content from stored Google Drive learning resource
- * files (PDF only, maximum 3 MB) for AI MCQ generation grounding.
+ * files (PDF/DOC/DOCX/PPT/PPTX, maximum 5 MB) for AI MCQ generation grounding.
  * Authoritative source of truth remains the Drive file stored in the configured
  * Learning Resources directory.
  */
@@ -9871,7 +9918,7 @@ function extractLearningResourceContentCore(cneId, session, options) {
     };
   }
 
-  // 6. Validate supported format (PDF only)
+  // 6. Validate the authoritative file extension and Drive MIME type.
   var nameForExt = file.getName() || storedFileName;
   var ext = '';
   var dotIdx = nameForExt.lastIndexOf('.');
@@ -9882,22 +9929,22 @@ function extractLearningResourceContentCore(cneId, session, options) {
     ext = storedFileType.toLowerCase().trim();
   }
 
-  var ALLOWED_EXTS = ['pdf'];
-  if (ALLOWED_EXTS.indexOf(ext) === -1) {
-    return {
-      success: false,
-      errorCode: 'UNSUPPORTED_FILE_TYPE',
-      message: 'Unsupported file type. Only PDF (.pdf) documents are permitted.'
-    };
+  var expectedMime = cneMaterialMimeForExt_(ext);
+  if (!expectedMime) {
+    return {success:false,errorCode:'UNSUPPORTED_FILE_TYPE',message:'Only PDF, DOC, DOCX, PPT and PPTX learning materials are supported.'};
+  }
+  var driveMime=String(file.getMimeType()||'').toLowerCase();
+  if (driveMime!==expectedMime && !(ext==='pdf'&&driveMime==='application/x-pdf')) {
+    return {success:false,errorCode:'FILE_MIME_MISMATCH',message:'The stored learning material MIME type does not match its extension.'};
   }
 
-  // 7. Validate size (Max 3 MB for CNE learning materials)
-  var MAX_CNE_LEARNING_MATERIAL_BYTES = 3 * 1024 * 1024;
+  // 7. Match the upload limit on reindex; do not apply the separate image limits.
+  var MAX_CNE_LEARNING_MATERIAL_BYTES = 5 * 1024 * 1024;
   if (file.getSize() > MAX_CNE_LEARNING_MATERIAL_BYTES) {
     return {
       success: false,
       errorCode: 'CONTENT_TOO_LARGE',
-      message: 'Learning resource exceeds maximum allowed size of 3 MB.'
+      message: 'Learning resource exceeds maximum allowed size of 5 MB.'
     };
   }
 
@@ -9925,7 +9972,7 @@ function extractLearningResourceContentCore(cneId, session, options) {
             resourcePersonName: storedRpName,
             driveFileId: driveFileId,
             fileName: file.getName(),
-            fileType: 'PDF',
+            fileType: ext.toUpperCase(),
             extractedText: parsedCache.extractedText,
             charCount: parsedCache.extractedText.length,
             isTruncated: Boolean(parsedCache.isTruncated),
@@ -9939,21 +9986,28 @@ function extractLearningResourceContentCore(cneId, session, options) {
     // Cache failure must never cause functional failure
   }
 
-  // 9. Extract embedded PDF text first; if it is absent or corrupt, use Drive OCR.
-  // This is especially important for image-only slide PDFs. The raw PDF parser
-  // MUST NEVER produce SUCCESS for control characters or font-map garbage.
+  // 9. Use the authoritative extractor for each format. OCR only applies to PDF.
+  // Never index binary bytes as text, and never treat an image-only slide as text.
   var rawExtracted='';
   var blob=file.getBlob();
+  if(!cneMaterialBytesMatchExt_(blob.getBytes(),ext)) {
+    return {success:false,errorCode:'INVALID_STORED_FILE_CONTENT',message:'Stored document content does not match its declared format.'};
+  }
   var extractionMethod='EMBEDDED_TEXT';
-  try {rawExtracted=extractTextFromPdf(blob);}catch(extractErr){rawExtracted='';}
-  if(!cneMaterialTextReadable_(rawExtracted,16)) {
-    var ocr=cneExtractPdfWithDriveOcr_(blob);
-    if(!ocr.success){return {success:false,errorCode:ocr.errorCode,message:ocr.message};}
-    rawExtracted=ocr.text;
-    extractionMethod=ocr.method;
+  if(ext==='pdf'){
+    try {rawExtracted=extractTextFromPdf(blob);}catch(extractErr){rawExtracted='';}
+    if(!cneMaterialTextReadable_(rawExtracted,16)) {
+      var ocr=cneExtractPdfWithDriveOcr_(blob);
+      if(!ocr.success)return {success:false,errorCode:ocr.errorCode,message:ocr.message};
+      rawExtracted=ocr.text;extractionMethod=ocr.method;
+    }
+  }else{
+    var office=cneExtractOfficeMaterial_(blob,ext);
+    if(!office.success)return {success:false,errorCode:office.errorCode,message:office.message};
+    rawExtracted=office.text;extractionMethod=office.method;
   }
   if(!cneMaterialTextReadable_(rawExtracted,18)) {
-    return {success:false,errorCode:'UNREADABLE_PDF_TEXT',message:'Extracted PDF content is unreadable or too sparse for safe AI question generation.'};
+    return {success:false,errorCode:'UNREADABLE_DOCUMENT_TEXT',message:'Extracted content is unreadable or too sparse for safe AI question generation.'};
   }
   var cleanText=rawExtracted.trim();
   var originalCharCount=cleanText.length;
@@ -9962,7 +10016,7 @@ function extractLearningResourceContentCore(cneId, session, options) {
   // Index the FULL document, not just head/tail excerpts. If it is excessively
   // long, fail explicitly; never silently discard its middle sections.
   if(forIndex && cleanText.length>250000) {
-    return {success:false,errorCode:'DOCUMENT_TOO_LONG',message:'This PDF exceeds the supported 250,000-character indexing limit. Split the teaching material into smaller PDFs.'};
+    return {success:false,errorCode:'DOCUMENT_TOO_LONG',message:'This document exceeds the supported 250,000-character indexing limit. Split it into smaller learning materials.'};
   }
   var finalText=cleanText;
   if(!forIndex && isTruncated){
@@ -9994,7 +10048,7 @@ function extractLearningResourceContentCore(cneId, session, options) {
       resourcePersonName: storedRpName,
       driveFileId: driveFileId,
       fileName: file.getName(),
-      fileType: 'PDF',
+      fileType: ext.toUpperCase(),
       extractedText: finalText,
       extractionMethod: extractionMethod,
       charCount: finalText.length,
@@ -10067,6 +10121,137 @@ function cneExtractPdfWithDriveOcr_(pdfBlob) {
   }
 }
 
+/** Convert a Word/PowerPoint blob to a temporary Google Doc/Slides file. */
+function cneConvertOfficeMaterial_(blob,sourceMime,targetMime) {
+  var boundary='cneOffice'+Utilities.getUuid().replace(/-/g,'');
+  var metadata=JSON.stringify({name:'TEMP_CNE_MATERIAL_'+Utilities.getUuid(),mimeType:targetMime});
+  var prefix='--'+boundary+'\\r\\nContent-Type: application/json; charset=UTF-8\\r\\n\\r\\n'+metadata+
+    '\\r\\n--'+boundary+'\\r\\nContent-Type: '+sourceMime+'\\r\\n\\r\\n';
+  var suffix='\\r\\n--'+boundary+'--\\r\\n';
+  var bytes=Utilities.newBlob(prefix).getBytes().concat(blob.getBytes(),Utilities.newBlob(suffix).getBytes());
+  var response=UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',{
+    method:'post',contentType:'multipart/related; boundary='+boundary,
+    headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},payload:bytes,muteHttpExceptions:true
+  });
+  var status=response.getResponseCode();
+  if(status<200||status>=300){
+    var detail='';try{detail=String(JSON.parse(response.getContentText()).error.message||'').slice(0,240);}catch(ignore){}
+    throw new Error('Office conversion failed (HTTP '+status+'). '+detail);
+  }
+  var id=String(JSON.parse(response.getContentText()).id||'');
+  if(!id)throw new Error('Drive conversion returned no temporary file ID.');
+  return id;
+}
+/** Render an actual Doc table row with its column relationships intact. */
+function cneMaterialTableText_(rows) {
+  if(!rows.length)return '';
+  var header=rows[0],hasHeaders=rows.length>1&&header.length>1&&
+    header.some(function(x){return /^(?:drug|agent|medicine|name|product|type|category|effect|description|indication|dose|material|dressing|property|characteristic|intervention)$/i.test(String(x||'').trim());});
+  var out=[];
+  if(hasHeaders)out.push(header.map(function(x){return String(x||'').trim();}).join(' | '));
+  for(var r=hasHeaders?1:0;r<rows.length;r++){
+    var cells=rows[r]||[];
+    var parts=[];
+    for(var c=0;c<cells.length;c++){
+      var value=String(cells[c]||'').replace(/\\s+/g,' ').trim();
+      if(!value)continue;
+      var key=hasHeaders?String(header[c]||'').trim():'';
+      parts.push(key?key+': '+value:value);
+    }
+    if(parts.length)out.push(parts.join(' | '));
+  }
+  return out.join('\\n');
+}
+function cneMaterialDocText_(docId) {
+  var body=null;
+  for(var attempt=0;attempt<3;attempt++){
+    try{body=DocumentApp.openById(docId).getBody();break;}
+    catch(err){if(attempt===2)throw err;Utilities.sleep(700);}
+  }
+  var lines=[];
+  for(var i=0;i<body.getNumChildren();i++){
+    var el=body.getChild(i),kind=String(el.getType());
+    if(kind==='TABLE'){
+      var rows=[];
+      for(var r=0;r<el.getNumRows();r++){
+        var row=el.getRow(r),cells=[];
+        for(var c=0;c<row.getNumCells();c++)cells.push(row.getCell(c).getText());
+        rows.push(cells);
+      }
+      var tableText=cneMaterialTableText_(rows);
+      if(tableText)lines.push(tableText);
+    }else if(typeof el.getText==='function'){
+      var content=String(el.getText()||'').trim();
+      if(!content)continue;
+      // Keep source author headings, rather than guessing from plain OCR lines.
+      var heading=kind==='PARAGRAPH'&&typeof el.getHeading==='function'?String(el.getHeading()):'';
+      lines.push(/^HEADING|^TITLE|^SUBTITLE/.test(heading)?content.toUpperCase():content);
+    }
+  }
+  return lines.join('\\n');
+}
+function cneMaterialSlideText_(presentationId) {
+  var deck=null;
+  for(var attempt=0;attempt<3;attempt++){
+    try{deck=SlidesApp.openById(presentationId);break;}
+    catch(err){if(attempt===2)throw err;Utilities.sleep(700);}
+  }
+  var slides=deck.getSlides(),contents=[],visualOnlySlides=0;
+  function collect(elements,out,state){
+    for(var i=0;i<elements.length;i++){
+      var item=elements[i],kind=String(item.getPageElementType());
+      if(kind==='SHAPE'){
+        var t=String(item.asShape().getText().asString()||'').trim();
+        if(t)out.push(t);
+      }else if(kind==='TABLE'){
+        var table=item.asTable(),rows=[];
+        for(var r=0;r<table.getNumRows();r++){
+          var cells=[];
+          for(var c=0;c<table.getNumColumns();c++){
+            var value='';try{value=table.getCell(r,c).getText().asString();}catch(merged){}
+            cells.push(value);
+          }
+          rows.push(cells);
+        }
+        var tabText=cneMaterialTableText_(rows);
+        if(tabText)out.push(tabText);
+      }else if(kind==='GROUP'){
+        collect(item.asGroup().getChildren(),out,state);
+      }else if(kind==='IMAGE'||kind==='SHEETS_CHART')state.visuals++;
+    }
+  }
+  for(var s=0;s<slides.length;s++){
+    var pieces=[],state={visuals:0};collect(slides[s].getPageElements(),pieces,state);
+    if(state.visuals && !pieces.join(' ').trim())visualOnlySlides++;
+    if(pieces.length)contents.push('Slide '+(s+1)+'\\n'+pieces.join('\\n'));
+  }
+  if(visualOnlySlides>=Math.max(2,Math.ceil(slides.length*0.25))){
+    return {success:false,errorCode:'VISUAL_SLIDES_REQUIRE_REVIEW',message:visualOnlySlides+' slides contain non-extractable images/charts without readable text. Provide an editable text-based presentation or an educator-reviewed text version.'};
+  }
+  return {success:true,text:contents.join('\\n\\n'),method:'GOOGLE_SLIDES_STRUCTURED'};
+}
+/** Never persist temporary Workspace copies; the uploaded original remains untouched. */
+function cneExtractOfficeMaterial_(blob,ext) {
+  var temporaryId='';
+  try{
+    var mime=cneMaterialMimeForExt_(ext),target=(ext==='doc'||ext==='docx')?
+      'application/vnd.google-apps.document':'application/vnd.google-apps.presentation';
+    temporaryId=cneConvertOfficeMaterial_(blob,mime,target);
+    var textResult=target==='application/vnd.google-apps.document'?
+      {success:true,text:cneMaterialDocText_(temporaryId),method:'GOOGLE_DOCS_STRUCTURED'}:
+      cneMaterialSlideText_(temporaryId);
+    if(!textResult.success)return textResult;
+    if(!cneMaterialTextReadable_(textResult.text,18)){
+      return {success:false,errorCode:'OFFICE_INSUFFICIENT_TEXT',message:'The Word/PowerPoint file contains insufficient extractable teaching text. Images or embedded screenshots require a text-based source.'};
+    }
+    return textResult;
+  }catch(err){
+    return {success:false,errorCode:'OFFICE_CONVERSION_FAILED',message:'Unable to extract Word/PowerPoint content: '+(err&&err.message?err.message:String(err))};
+  }finally{
+    if(temporaryId){try{DriveApp.getFileById(temporaryId).setTrashed(true);}catch(cleanup){console.warn('Temporary CNE Office conversion cleanup needed: '+temporaryId);}}
+  }
+}
+
 /**
  * ============================================================================
  * PHASE 4A: UPLOAD-TIME CNE MATERIAL EXTRACTION & PERSISTENT INDEXING
@@ -10076,14 +10261,14 @@ function cneExtractPdfWithDriveOcr_(pdfBlob) {
 /**
  * Deterministic chunking of extracted document content.
  * Target chunk size: ~1,200 characters (allowed range: 1,000 - 1,500 chars).
- * Preserves section headings for PDF.
+ * Preserves section headings for supported teaching documents.
  * Stable, deterministic chunk ordering without AI or external dependencies.
  */
 /**
  * Index version V3: section-aware, source-preserving clinical evidence.
- * A heading is taken from the uploaded PDF/OCR text, never invented by Gemini.
+ * A heading is taken from source text (including Office slides), never invented by Gemini.
  * Non-teaching slide furniture and reference lists are excluded from AI evidence.
- * The original PDF remains intact in the authenticated Drive folder.
+ * The original learning material remains intact in the authenticated Drive folder.
  */
 var CNE_MATERIAL_INDEX_VERSION_ = 'V3';
 function cneMaterialNonTeachingLine_(value) {
@@ -10127,15 +10312,18 @@ function cneMaterialCleanLine_(raw) {
 function chunkExtractedContent(text, fileType, topic) {
   var clean=String(text||'').replace(/\\r\\n?/g,'\\n').replace(/\\f/g,'\\n\\n').trim();
   if(clean.length<15)return [];
-  var lines=clean.split(/\\n+/),sections=[],heading='Clinical Teaching Content',paragraphs=[],skipping=false;
+  var lines=clean.split(/\\n+/),sections=[],heading='Clinical Teaching Content',paragraphs=[],skipping=false,sourceSlide='';
   function flush() {
     var content=paragraphs.join('\\n').trim();
-    if(content && cneMaterialTextReadable_(content,8))sections.push({heading:heading,text:content});
+    if(content && cneMaterialTextReadable_(content,8))sections.push({heading:sourceSlide ? sourceSlide+' — '+heading : heading,text:content});
     paragraphs=[];
   }
   for(var i=0;i<lines.length;i++){
     var line=cneMaterialCleanLine_(lines[i]);
-    if(!line||cneMaterialNonTeachingLine_(line))continue;
+    if(!line)continue;
+    var slideMatch=line.match(/^Slide ([1-9]\\d{0,4})$/i);
+    if(slideMatch){flush();sourceSlide='Slide '+slideMatch[1];heading='Clinical Teaching Content';skipping=false;continue;}
+    if(cneMaterialNonTeachingLine_(line))continue;
     var detected=cneMaterialDetectedHeading_(line,topic);
     if(detected && detected.repeat)continue;
     if(detected && detected.skip){flush();skipping=true;continue;}
@@ -10319,7 +10507,7 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
     var validLength=rowsToInsert.reduce(function(sum,row){return sum+String(row[7]||'').length;},0);
     if(isSuccess && (!rowsToInsert.length || validLength<600)) {
       rowsToInsert=[];isSuccess=false;
-      extResult={success:false,errorCode:'INSUFFICIENT_READABLE_MATERIAL',message:'The PDF did not provide at least 500 characters of validated readable teaching content. OCR or a clearer document is required.'};
+      extResult={success:false,errorCode:'INSUFFICIENT_READABLE_MATERIAL',message:'The document did not provide enough validated readable teaching content. A clearer or editable source is required.'};
     }
   }
 
@@ -10412,8 +10600,12 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
       var rowWidth = refSheet.getLastColumn();
       var refRowValues = refSheet.getRange(refRow, 1, 1, rowWidth).getValues()[0];
       var indexingStatus = isSuccess ? 'SUCCESS' : 'FAILED';
-      var indexingErrorCode = (!isSuccess && extResult && extResult.errorCode) ? extResult.errorCode : '';
-      var indexingMessage = (isSuccess ? 'Clinical material indexed (V3): ' + rowsToInsert.length + ' source-grounded chunks, ' + quality.sectionCount + ' sections, ' + quality.keywordCount + ' distinct keywords. References and non-teaching slides excluded.' : ((extResult&&extResult.message)||'Unable to extract readable text from uploaded material.'));
+      var indexingErrorCode = isSuccess ? '' : ((extResult && extResult.errorCode) ? extResult.errorCode : '');
+      // Bind technical success to the exact source file and authenticated uploader.
+      // This is NOT an assertion that the content was clinically validated by AI.
+      var indexingMessage = isSuccess
+        ? 'V3 AUTO_INDEXED | FILE='+driveFileId+' | UPLOADER='+String(session&&session.employeeId||'')+' | '+rowsToInsert.length+' chunks passed automated text-quality checks; the uploader is responsible for clinical accuracy.'
+        : ((extResult&&extResult.message)||'Unable to extract readable text from uploaded material.');
       var chunksCount = isSuccess ? rowsToInsert.length : 0;
       if (refMap['indexingstatus'] !== undefined) refRowValues[refMap['indexingstatus']] = indexingStatus;
       if (refMap['indexingerrorcode'] !== undefined) refRowValues[refMap['indexingerrorcode']] = indexingErrorCode;
@@ -10427,16 +10619,23 @@ function indexLearningResourceContent(cneId, driveFileId, fileName, fileType, to
   }
 
   if (isSuccess) {
-    logAuditAction('LEARNING_RESOURCE_CONTENT_INDEXED', session ? session.employeeId : 'SYSTEM', 'Successfully indexed ' + rowsToInsert.length + ' chunks for CNE ' + cneId + ' (' + fileName + ')', 'SUCCESS');
-    return { success: true, chunksCount: rowsToInsert.length, sectionCount:quality.sectionCount, keywordCount:quality.keywordCount, indexVersion:CNE_MATERIAL_INDEX_VERSION_, message:'Clinical material indexed (V3): '+rowsToInsert.length+' chunks across '+quality.sectionCount+' sections; '+quality.keywordCount+' keywords. Non-teaching content excluded.' };
+    logAuditAction('LEARNING_RESOURCE_AUTO_INDEXED', session ? session.employeeId : 'SYSTEM', 'Uploader accepted responsibility; automated text-quality checks passed for '+rowsToInsert.length+' chunks in CNE '+cneId+' ('+fileName+'). No administrator review.', 'SUCCESS');
+    return { success: true, reviewRequired:false, indexingStatus:'SUCCESS', chunksCount: rowsToInsert.length, sectionCount:quality.sectionCount, keywordCount:quality.keywordCount, indexVersion:CNE_MATERIAL_INDEX_VERSION_, message:'V3 automated indexing completed ('+rowsToInsert.length+' readable chunks). Uploader is responsible for content accuracy; no administrator review required.' };
   }
 
   logAuditAction('LEARNING_RESOURCE_CONTENT_INDEX_FAILED', session ? session.employeeId : 'SYSTEM', 'Content indexing failed for CNE ' + cneId + ' (' + fileName + '): ' + (extResult ? extResult.errorCode : 'FAILED'), 'FAILED');
   return {
     success: false,
     errorCode: (extResult && extResult.errorCode) ? extResult.errorCode : 'CONTENT_EXTRACTION_FAILED',
-    message: (extResult && extResult.message) ? extResult.message : 'Unable to extract readable text from the uploaded material. The PDF has been saved; retry indexing.'
+    message: (extResult && extResult.message) ? extResult.message : 'Unable to extract readable text from the uploaded material. The original file has been saved; retry indexing.'
   };
+}
+
+
+/** A SUCCESS status is trusted only if tied to the current source file and a verified uploader. */
+function cneMaterialUploaderAttestedMessage_(message, driveFileId) {
+  var match=/^V3 AUTO_INDEXED \\| FILE=([a-zA-Z0-9_-]+) \\| UPLOADER=([a-zA-Z0-9_-]+) \\| /.exec(String(message||'').trim());
+  return !!match && match[1]===String(driveFileId||'').trim() && !!match[2];
 }
 
 /**
@@ -10603,8 +10802,17 @@ function cneMaterialSemanticWindows_(text) {
       while((match=sentence.exec(fragment))!==null)end=floor+match.index+match[0].length;
     }
     if(end<0){var space=fragment.lastIndexOf(' ');if(space>=0)end=floor+space+1;}
+    // For structured Doc/Slide tables, never cut inside a single source row.
+    // A table row that exceeds one window must instead be reviewed by an educator.
+    var tableWindow=raw.substring(pos,ceiling).indexOf(' | ')>=0;
+    if(tableWindow){
+      var lineEnd=raw.lastIndexOf('\\n',ceiling);
+      if(lineEnd>pos+120)end=lineEnd+1;
+      else {var nextLine=raw.indexOf('\\n',ceiling);end=nextLine>=0?nextLine+1:raw.length;}
+    }
     if(end<=pos)end=Math.min(pos+target,raw.length);
     var part=raw.substring(pos,end).trim();if(part)output.push(part);
+    if(tableWindow){pos=end;continue;} // No overlap inside tabular treatment rows.
     var next=end-overlap;
     // Aim to begin the next window at a sentence or paragraph boundary. A
     // duplicate complete sentence is safer than a fragment of a drug dose.
@@ -10795,6 +11003,11 @@ function handleReindexLearningResource(params, session) {
   if (!record) return { success: false, errorCode: 'CNE_NOT_FOUND', message: 'CNE record not found for ID: ' + cneId };
   var authErr = checkQuestionManagementAuthorized(session, record);
   if (authErr) return authErr;
+  // Reindex replaces authoritative evidence and is not permitted after CNE closure.
+  if (normalizeCNEStatus(record.status) !== 'Scheduled')
+    return {success:false,errorCode:'CNE_CLOSED',message:'Learning material cannot be reindexed after CNE completion or cancellation.'};
+  if (!params || params.uploaderDeclaration !== 'I_ACCEPT_RESPONSIBILITY')
+    return {success:false,errorCode:'UPLOADER_DECLARATION_REQUIRED',message:'The authenticated uploader must accept responsibility for the clinical content before reindexing.'};
 
   var refSheet = getSpreadsheet('CNE').getSheetByName('Material_List');
   if (!refSheet || refSheet.getLastRow() < 2) {
@@ -14004,23 +14217,33 @@ function cneAiMaterialReadiness_(cneId) {
     result.status='FAILED';result.message=refMessage||'Material indexing failed. Retry indexing.';
     result.errorCode='MATERIAL_INDEX_FAILED';return result;
   }
+  if(refStatus==='NEEDS_REVIEW'){
+    result.status='NEEDS_REVIEW';result.message='The material needs an authorized uploader to accept responsibility and reindex it. Administrator review is not required.';
+    result.errorCode='UPLOADER_REINDEX_REQUIRED';return result;
+  }
+  if(refStatus==='SUCCESS' && !cneMaterialUploaderAttestedMessage_(refMessage,drive)){
+    result.status='NEEDS_REVIEW';result.errorCode='UPLOADER_REINDEX_REQUIRED';
+    result.message='This index predates uploader responsibility confirmation or belongs to a different source file. Ask an authorized uploader to reindex with the responsibility checkbox.';
+    return result;
+  }
   if(refStatus!=='SUCCESS'){
-    result.status='INDEXING';result.message=refMessage||'The CNE PDF is not indexed yet. Retry Indexing if this operation stopped.';
+    result.status='INDEXING';result.message=refMessage||'CNE material has not been indexed yet. Retry indexing if interrupted.';
     return result;
   }
   var sheet=ss.getSheetByName('Material_Index');
   if(!sheet || sheet.getLastRow()<2){result.status='FAILED';result.errorCode='MATERIAL_INDEX_MISSING';
-    result.message='The index is missing. Retry Indexing of the current PDF.';return result;}
+    result.message='The index is missing. Retry indexing the current learning material.';return result;}
   var m=getHeaderMap(sheet),cid=m['cneid'],fid=m['drivefileid'],st=m['extractionstatus'],txt=m['chunktext'],
-    ix=m['indexid'],sect=m['sectionheading'],kw=m['clinicalkeywords'];
-  if([cid,fid,st,txt,ix,sect,kw].some(function(x){return x===undefined;})){
+    ix=m['indexid'],sect=m['sectionheading'],kw=m['clinicalkeywords'],chunkCol=m['chunkindex'];
+  if([cid,fid,st,txt,ix,sect,kw,chunkCol].some(function(x){return x===undefined;})){
     result.status='FAILED';result.errorCode='INDEX_SCHEMA_MISMATCH';
     result.message='Material index headers are incomplete. Run Verify Sheets Admin.';return result;
   }
   var n=sheet.getLastRow()-1,ids=sheet.getRange(2,cid+1,n,1).getValues(),matching=[];
   var target=String(cneId).trim().toUpperCase();
   for(var i=0;i<n;i++)if(String(ids[i][0]||'').trim().toUpperCase()===target)matching.push(i+2);
-  var chunks=[],legacy=0;
+  var chunks=[],legacy=0,unapprovedRows=0,inconsistentRows=0,seenIds={},seenChunkNumbers={},sourceFingerprint='';
+  var expectedPrefix=('IDX_'+String(cneId).trim()+'_'+drive.substring(0,8)+'_').toUpperCase();
   // Group adjacent matches to avoid dozens of per-cell Apps Script calls.
   var groups=[];
   matching.forEach(function(at){var last=groups.length?groups[groups.length-1]:null;
@@ -14029,15 +14252,35 @@ function cneAiMaterialReadiness_(cneId) {
   groups.forEach(function(group){
     var rows=sheet.getRange(group.start,1,group.end-group.start+1,sheet.getLastColumn()).getValues();
     rows.forEach(function(r){
-      if(String(r[cid]||'').trim().toUpperCase()!==target || String(r[fid]||'').trim()!==drive ||
-        String(r[st]||'').trim().toUpperCase()!=='SUCCESS')return;
-      if(!cneMaterialCurrentIndexId_(r[ix])){legacy++;return;}
+      if(String(r[cid]||'').trim().toUpperCase()!==target || String(r[fid]||'').trim()!==drive)return;
+      // A previously approved file must never become AI-ready when *any* of its
+      // current-source rows is no longer approved. Do not just skip bad rows.
+      if(String(r[st]||'').trim().toUpperCase()!=='SUCCESS'){unapprovedRows++;return;}
+      var indexId=String(r[ix]||'').trim();
+      if(!cneMaterialCurrentIndexId_(indexId)){legacy++;return;}
+      var match=/_V3_([0-9A-F]{8})_C(\\d+)$/i.exec(indexId),number=Number(r[chunkCol]);
+      if(!match||indexId.toUpperCase().indexOf(expectedPrefix)!==0 ||
+         !Number.isInteger(number)||number<1||number!==Number(match[2])||
+         seenIds[indexId]||seenChunkNumbers[number]||
+         (sourceFingerprint&&sourceFingerprint!==match[1].toUpperCase())){inconsistentRows++;return;}
+      seenIds[indexId]=true;seenChunkNumbers[number]=true;sourceFingerprint=match[1].toUpperCase();
       chunks.push({text:String(r[txt]||''),heading:String(r[sect]||''),clinicalKeywords:String(r[kw]||'')});
     });
   });
-  if(!chunks.length && legacy){
+  if(unapprovedRows){
+    result.status='NEEDS_REVIEW';result.errorCode='INDEX_CHUNKS_NOT_READY';
+    result.message='One or more current-source chunks failed or have not passed automated indexing. Reindex or replace the document; AI evidence remains blocked.';
+    return result;
+  }
+  if(legacy){
     result.status='FAILED';result.errorCode='INDEX_UPGRADE_REQUIRED';
-    result.message='The PDF has a legacy index. Reindex to create clinically structured V3 evidence before generating AI questions.';
+    result.message='The learning material has a legacy index. Reindex to create source-grounded evidence before AI generation.';
+    return result;
+  }
+  var expectedCount=cols['chunkscount']===undefined?0:Number(values[cols['chunkscount']]||0);
+  if(inconsistentRows||!chunks.length||expectedCount!==chunks.length){
+    result.status='FAILED';result.errorCode='INDEX_CONSISTENCY_FAILED';
+    result.message='Indexed chunks have mismatched source IDs, duplicate numbers or an incorrect count. Reindex the material before AI generation.';
     return result;
   }
   var quality=cneMaterialEvidenceQuality_(chunks);
@@ -14045,12 +14288,12 @@ function cneAiMaterialReadiness_(cneId) {
   result.keywordCount=quality.keywordCount;
   if(!quality.success){
     result.status='FAILED';result.errorCode='INDEX_QUALITY_FAILED';
-    result.message='This PDF index does not contain enough distinct clinical teaching evidence. '+quality.message+' Retry Indexing or upload a clearer PDF.';
+    result.message='This material index lacks sufficient clinical teaching evidence. '+quality.message+' Reindex or upload a clearer document.';
     return result;
   }
   result.hasOwnMaterial=true;result.status='READY';
-  result.message='AI-ready clinical index: '+quality.validChunks+' chunks, '+quality.sectionCount+
-    ' sections and '+quality.keywordCount+' evidence-backed keywords.';
+  result.message='AI-ready technical index: '+quality.validChunks+' readable chunks, '+quality.sectionCount+
+    ' sections and '+quality.keywordCount+" keywords. Clinical accuracy remains the uploader's responsibility.";
   return result;
 }
 
