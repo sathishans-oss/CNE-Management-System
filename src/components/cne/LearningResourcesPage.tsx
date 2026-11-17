@@ -21,6 +21,7 @@ import {
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { AddResourceModal } from './AddResourceModal';
+import { MaterialIndexWarnings } from './MaterialIndexWarnings';
 import { FilterBarShell } from '../common/FilterBarShell';
 import { formatCneDateDisplay } from '../../utils';
 
@@ -210,7 +211,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
       return {
         label: item.chunksCount !== undefined ? `Indexed • ${item.chunksCount} chunks` : 'Indexed',
         className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-        title: 'Document text indexing completed. Extraction warnings are shown in Upload and AI Question Generation.'
+        title: 'Document text indexing completed. Expand the warnings below to inspect excluded material chunks.'
       };
     }
     if (status === 'NEEDS_REVIEW') {
@@ -566,6 +567,12 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
                               >
                                 {indexingDisplay.label}
                               </span>
+                              {item.indexingStatus === 'SUCCESS' && /FIDELITY_WARNINGS=\d+/.test(item.indexingMessage || '') && (
+                                <details className="max-w-[320px] rounded-lg border border-amber-200 bg-amber-50 p-2">
+                                  <summary className="cursor-pointer text-[11px] font-semibold text-amber-900">View indexing warnings ({Number((/FIDELITY_WARNINGS=(\d+)/.exec(item.indexingMessage || '')||[])[1]||0)})</summary>
+                                  <div className="mt-2"><MaterialIndexWarnings warningText={item.indexingMessage} warningCount={Number((/FIDELITY_WARNINGS=(\d+)/.exec(item.indexingMessage || '')||[])[1]||0)} excludedCount={Number((/EXCLUDED_CHUNKS=(\d+)/.exec(item.indexingMessage || '')||[])[1]||0)}/></div>
+                                </details>
+                              )}
                               {item.indexingStatus === 'FAILED' && item.indexingMessage && (
                                 <p className="text-[10px] text-rose-600 max-w-[220px] line-clamp-2 break-words [overflow-wrap:anywhere]" title={item.indexingMessage}>
                                   {item.indexingMessage}

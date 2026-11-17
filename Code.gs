@@ -13759,6 +13759,20 @@ function cneAiGeminiStructured_(endpoint, prompt, schema, attempts, audit) {
   var total = Math.max(1, Math.min(4, parseInt(attempts, 10) || 1));
   var lastCode = 0, failureCode = 'AI_GENERATION_FAILED', errorText = '';
   var stage = audit && audit.stage ? String(audit.stage) : 'GENERATION';
+  // Never log endpoint URLs: they may carry the API key in a query string.
+  var modelMatch = /\/models\/([^/?#:]+):generateContent/.exec(String(endpoint||''));
+  var safeModel = modelMatch ? modelMatch[1] : 'configured-model';
+  // Explicit, optional fallback: never silently change models or call a second
+  // provider. The administrator controls this in Script Properties. Only a
+  // Flash text-capable model is permitted; never log keys or full endpoint URLs.
+  var fallbackModel = '';
+  if (modelMatch && (stage==='BLUEPRINT' || stage==='MCQ_GENERATION')) {
+    try {
+      var candidate=String(PropertiesService.getScriptProperties().getProperty('GEMINI_FALLBACK_MODEL')||'').trim();
+      if (/^gemini-\d+(?:\.\d+)?-flash(?:-lite)?$/i.test(candidate) && candidate!==safeModel) fallbackModel=candidate;
+    } catch (ignored) {}
+  }
+  var fallbackActive = false;
   function record(action, detail, severity) {
     if (!audit || !audit.cneId || !audit.employeeId) return;
     try {logAuditAction(action, audit.employeeId, 'CNE '+audit.cneId+' stage '+stage+': '+detail, severity);} catch (ignored) {}
@@ -13768,9 +13782,19 @@ function cneAiGeminiStructured_(endpoint, prompt, schema, attempts, audit) {
       failureCode='AI_GENERATION_DEADLINE'; break;
     }
     var retryAfter = 0;
+    var attemptStartedAt = Date.now();
+    // After two primary-model 503s, use the explicitly configured fallback for
+    // the remaining attempts, still within the same retry count and deadline.
+    if (!fallbackActive && fallbackModel && n>=2 && lastCode===503 && failureCode==='AI_TEMPORARILY_UNAVAILABLE') {
+      fallbackActive=true;
+      record('AI_QUESTION_GEMINI_FALLBACK','model='+safeModel+' remains unavailable; trying configured model='+fallbackModel,'WARNING');
+    }
+    var effectiveEndpoint=fallbackActive ? String(endpoint).replace(/\/models\/[^/?#:]+(:generateContent)/, '/models/'+encodeURIComponent(fallbackModel)+'$1') : endpoint;
+    var activeModel=fallbackActive?fallbackModel:safeModel;
     try {
-      var res = UrlFetchApp.fetch(endpoint, {
-        method:'post', contentType:'application/json', muteHttpExceptions:true,
+      var networkSeconds = audit && audit.deadlineMs ? Math.min(stage==='BLUEPRINT'?60:105, Math.max(5,Math.floor((audit.deadlineMs-Date.now()-3000)/1000))) : 90;
+      var res = UrlFetchApp.fetch(effectiveEndpoint, {
+        method:'post', contentType:'application/json', muteHttpExceptions:true, timeoutSeconds:networkSeconds,
         payload:JSON.stringify({contents:[{parts:[{text:prompt}].concat((audit&&audit.images||[]).map(function(img){return {inlineData:{mimeType:img.mimeType,data:Utilities.base64Encode(img.bytes)}};}))}],
           generationConfig:{responseMimeType:'application/json',responseSchema:schema}})
       });
@@ -13793,16 +13817,25 @@ function cneAiGeminiStructured_(endpoint, prompt, schema, attempts, audit) {
       failureCode = 'AI_NETWORK_ERROR';
       errorText = String(err && err.message || err);
     }
+    var elapsedMs = Date.now()-attemptStartedAt;
     var retryable = failureCode === 'AI_RATE_LIMITED' || failureCode === 'AI_TEMPORARILY_UNAVAILABLE' ||
       failureCode === 'AI_NETWORK_ERROR' || failureCode === 'AI_INVALID_RESPONSE';
     if (!retryable || n + 1 >= total) break;
-    var waitMs = Math.max(retryAfter, Math.min(8000, 1000 * Math.pow(2, n)));
+    // Equal-jitter exponential backoff reduces synchronized overload retries.
+    // Retry-After is honored when present, within this phase's remaining budget.
+    var windowMs = Math.min(10000, 1500 * Math.pow(2,n));
+    var jitteredMs = Math.floor(windowMs/2) + Math.floor(Math.random()*(windowMs/2+1));
+    var waitMs = Math.max(retryAfter,jitteredMs);
     // Keep the request inside the existing generation time budget.
     if (audit && audit.deadlineMs && Date.now() + waitMs + 1000 >= audit.deadlineMs) break;
-    record('AI_QUESTION_GEMINI_RETRY','HTTP '+lastCode+', reason '+failureCode+', attempt '+(n+1)+'/'+total+', waiting '+waitMs+'ms','WARNING');
+    record('AI_QUESTION_GEMINI_RETRY','model='+activeModel+', HTTP '+lastCode+', reason '+failureCode+', attempt '+(n+1)+'/'+total+', durationMs='+elapsedMs+', waiting '+waitMs+'ms','WARNING');
+    if(audit&&audit.cneId&&audit.employeeId)updateCNEAiProgress_(audit.cneId,{employeeId:audit.employeeId},stage==='BLUEPRINT'?4:stage==='MCQ_GENERATION'?4:5,
+      'Gemini '+stage+' temporarily unavailable (HTTP '+lastCode+'); retrying attempt '+(n+2)+' of '+total+'.');
     Utilities.sleep(waitMs);
   }
-  record('AI_QUESTION_GEMINI_FAILED','HTTP '+lastCode+', reason '+failureCode+', attempts up to '+total,'FAILED');
+  record('AI_QUESTION_GEMINI_FAILED','model='+(fallbackActive?fallbackModel:safeModel)+', HTTP '+lastCode+', reason '+failureCode+', attempts up to '+total,'FAILED');
+  if(audit&&audit.cneId&&audit.employeeId)updateCNEAiProgress_(audit.cneId,{employeeId:audit.employeeId},stage==='BLUEPRINT'?4:stage==='MCQ_GENERATION'?4:5,
+    'Gemini '+stage+' failed: '+failureCode+'. The server will verify the saved job and quota.');
   return {success:false,errorCode:failureCode, httpStatus:lastCode,
     message:cneAiGeminiUserMessage_(failureCode)};
 }
@@ -14141,6 +14174,7 @@ var configuredModel = (props.getProperty('GEMINI_MODEL') || 'gemini-3.8-flash').
     'SELECTED VISUALS (optional; image bytes follow this text): '+JSON.stringify(selectedVisuals.images.map(function(i){return {imageKey:i.imageKey,sourcePage:i.sourcePage,imageKind:i.imageKind};}))+'\n'+
     'Set optional imageKey ONLY when a supplied image is essential to interpreting a question AND the exact text evidence independently supports the clinical answer. Otherwise omit imageKey. Never invent an image ID.\n' +
     'APPROVED OBJECTIVES AND THEIR VERIFIED EVIDENCE:\n'+objectiveEvidence;
+  updateCNEAiProgress_(cneId,session,4,'Generating five clinical MCQs from the verified blueprint and selected evidence.');
   if(Date.now()+15000>=startedAt+MAX_NETWORK_MS) return {success:false,errorCode:'AI_GENERATION_DEADLINE',message:cneAiGeminiUserMessage_('AI_GENERATION_DEADLINE')};
   var firstResponse = cneAiGeminiStructured_(endpoint,mainPrompt,cneAiQuestionSchema_(false),4, {cneId:cneId,employeeId:session.employeeId,stage:'MCQ_GENERATION',deadlineMs:startedAt+MAX_NETWORK_MS,images:selectedVisuals.images});
   if (!firstResponse.success) return firstResponse;
@@ -14467,7 +14501,7 @@ function handleGetCNEAiJobStatus(params,session) {
       state='PARTIAL_SUCCESS';cneAiWriteJob_(cneId,session,{state:state,message:'Verified Drafts recovered. Resume missing objectives.'});
     } else state='STALE';
   }
-  return {success:true,data:{state:state,updatedAt:job.updatedAt||0,message:job.message||'',canResume:state==='PLANNED'||state==='PARTIAL_SUCCESS'}};
+  return {success:true,data:{state:state,updatedAt:job.updatedAt||0,message:job.message||'',lastErrorCode:job.lastErrorCode||'',canResume:state==='PLANNED'||state==='PARTIAL_SUCCESS'}};
 }
 
 function updateCNEAiProgress_(cneId, session, stage, message) {
@@ -15370,9 +15404,9 @@ function handleGenerateCNEQuestions(params, session) {
   var savedJob=phase?cneAiReadJob_(cneId,session):null;
   var selectedImageIds=phase==='FINISH'?(savedJob&&savedJob.selectedMaterialImageIds||[]):
     (Array.isArray(params.selectedMaterialImageIds)?params.selectedMaterialImageIds:[]);
-  var imageConsent=phase==='FINISH'?(savedJob&&savedJob.visualPrivacyConfirmed===true):params.visualPrivacyConfirmed===true;
-  if(selectedImageIds.length && !imageConsent)return {success:false,errorCode:'IMAGE_PRIVACY_CONFIRMATION_REQUIRED',
-    message:'Confirm that selected teaching images contain no identifiable patient information and are authorized for educational AI use.'};
+  // Choosing image IDs is the explicit user request; server always verifies
+  // the authenticated CNE, current-source manifest, mime type and private bytes.
+  // Uploader educational-use responsibility was confirmed at material upload.
   var checkedSelection=cneAiSelectedMaterialImages_(cneId,selectedImageIds);
   if(!checkedSelection.success)return {success:false,errorCode:checkedSelection.errorCode,message:'Selected teaching images are unavailable or are not from the current CNE material. Refresh image selection.'};
   if(phase==='FINISH' && (!savedJob || savedJob.materialDriveFileId!==readiness.driveFileId || savedJob.materialIndexedAt!==readiness.indexedAt))return {success:false,errorCode:'MATERIAL_CHANGED',message:'Uploaded material has changed since AI planning. Start generation again.'};
@@ -15412,7 +15446,7 @@ function handleGenerateCNEQuestions(params, session) {
   }
 
   if (phase==='PLAN') {
-    try { cneAiWriteJob_(cneId,session,{state:'PLANNING',reservationToken:reservationToken,objectives:[],materialDriveFileId:readiness.driveFileId,materialIndexedAt:readiness.indexedAt,selectedMaterialImageIds:selectedImageIds,visualPrivacyConfirmed:imageConsent,message:'Planning clinical learning objectives.'}); }
+    try { cneAiWriteJob_(cneId,session,{state:'PLANNING',reservationToken:reservationToken,objectives:[],materialDriveFileId:readiness.driveFileId,materialIndexedAt:readiness.indexedAt,selectedMaterialImageIds:selectedImageIds,message:'Planning clinical learning objectives.'}); }
     catch (jobError) {
       try {handleReleaseAiQuota({cneId:cneId,reservationToken:reservationToken},session);} catch(ignore) {}
       return {success:false,errorCode:'JOB_STATE_UNAVAILABLE',message:'Unable to store recoverable generation state. No Gemini request was made.'};
@@ -15473,7 +15507,7 @@ function handleGenerateCNEQuestions(params, session) {
     return {success:false,errorCode:'MATERIAL_CHANGED',message:'Uploaded CNE learning material changed during AI generation. No questions were saved. Start again.'};
   }
   if (phase==='PLAN' && genRes && genRes.success && genRes.planned && genRes.data && Array.isArray(genRes.data.objectives)) {
-    try { cneAiWriteJob_(cneId,session,{state:'PLANNED',objectives:genRes.data.objectives,message:'Five clinical learning objectives are ready.'}); }
+    try { cneAiWriteJob_(cneId,session,{state:'PLANNED',lastErrorCode:'',objectives:genRes.data.objectives,message:'Five clinical learning objectives are ready.'}); }
     catch (jobError) {
       try {handleReleaseAiQuota({cneId:cneId,reservationToken:reservationToken},session);} catch(ignore) {}
       return {success:false,errorCode:'JOB_STATE_UNAVAILABLE',message:'The verified blueprint could not be saved for resumption. Generation was not committed.'};
@@ -15482,8 +15516,8 @@ function handleGenerateCNEQuestions(params, session) {
   }
   if (!genRes || !genRes.success || !Array.isArray(genRes.data) || genRes.data.length === 0) {
     if(phase)try{cneAiWriteJob_(cneId,session,existingAiSlots.length?
-      {state:'PARTIAL_SUCCESS',message:genRes&&genRes.message||'No additional verified questions. Upload supplementary material and resume.'}:
-      {state:'FAILED',objectives:[],message:genRes&&genRes.message||'Generation did not complete.'});}catch(ignore){}
+      {state:'PARTIAL_SUCCESS',lastErrorCode:genRes&&genRes.errorCode||'',message:genRes&&genRes.message||'No additional verified questions. Upload supplementary material and resume.'}:
+      {state:'FAILED',objectives:[],lastErrorCode:genRes&&genRes.errorCode||'',message:genRes&&genRes.message||'Generation did not complete.'});}catch(ignore){}
     // Release quota reservation so the user does not forfeit allowance upon failure
     try {
       if(!existingAiSlots.length) handleReleaseAiQuota({ cneId: cneId, reservationToken: reservationToken }, session);
@@ -15522,7 +15556,7 @@ function handleGenerateCNEQuestions(params, session) {
   var savedBatch=(saved.data||[]).filter(function(q){return validatedQuestions.some(function(g){return cneAiCanonicalQuestion_(g.question)===cneAiCanonicalQuestion_(q.question);});});
   var complete=Boolean(commitRes.data&&commitRes.data.completed);
   if(!commitRes.data)complete=existingAiSlots.length+validatedQuestions.length>=5;
-  if(phase)cneAiWriteJob_(cneId,session,{state:complete?'SAVED':'PARTIAL_SUCCESS',objectives:complete?[]:savedJob.objectives,message:complete?'Five verified AI Drafts saved; allowance used.':'Verified Drafts saved. Upload more material or resume missing questions.'});
+  if(phase)cneAiWriteJob_(cneId,session,{state:complete?'SAVED':'PARTIAL_SUCCESS',lastErrorCode:'',objectives:complete?[]:savedJob.objectives,message:complete?'Five verified AI Drafts saved; allowance used.':'Verified Drafts saved. Upload more material or resume missing questions.'});
   updateCNEAiProgress_(cneId,session,7,complete?'Five verified AI Drafts ready.':'Partial verified AI Drafts ready.');
 
   logAuditAction(complete?'AI_QUESTION_GENERATION_SUCCESS':'AI_QUESTION_GENERATION_PARTIAL',session.employeeId,'Verified AI Drafts saved for CNE '+cneId+'; completed='+complete,'SUCCESS');

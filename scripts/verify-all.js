@@ -10942,15 +10942,15 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   focusCheck('Reference reindex verifies replacement and refuses false SUCCESS', () => {
     if (!gas.includes('INDEX_REPLACEMENT_INCOMPLETE') || !gas.includes('verifiedCount !== rowsToInsert.length')) throw Error('Index replacement does not verify counts');
   });
-  focusCheck('Popup prefetches Question Bank and validates material only on Generate', () => {
+  focusCheck('Popup prefetches Question Bank and opens AI evidence setup on Generate', () => {
     const init=ui.slice(ui.indexOf('  useEffect(() => {'),ui.indexOf('  const loadQuestions = async'));
     if (init.includes('loadMaterialStatus(') || !init.includes('searchCNEReferenceQuestions(cneId') || !init.includes('void loadQuestions(') || !init.includes('void loadQuota('))
       throw Error('Popup must prefetch bank questions without requesting material status');
-    if (ui.includes("setMaterialChoice('confirm')") || !ui.includes('void handleGenerateAi();'))
-      throw Error('Direct on-demand generation or no-confirmation rule is missing');
+    if (ui.includes("setMaterialChoice('confirm')") || !ui.includes('void openAiGenerationSetup();'))
+      throw Error('AI setup must be on-demand and must not trigger PLAN from the question header');
   });
-  // Run the real Generate click handler in an isolated sandbox. Backend APIs are
-  // stubbed; this verifies frontend requests, consent and failure behavior only.
+  // Run the real Generate click handler in an isolated sandbox. Opening the
+  // AI evidence dialog is distinct from sending the quota-protected PLAN request.
   function exerciseMaterialClick(scenario) {
     const begin = ui.indexOf('  const requestAiGeneration = async () => {');
     const end = ui.indexOf('\n  const handleGenerateAi = async', begin);
@@ -10974,7 +10974,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
         loadMaterialStatus: async () => {events.check += 1; return scenario.serverMaterial;},
         searchBank: async () => {},
         setMaterialChoice: (choice) => {events.popup.push(choice);},
-        handleGenerateAi: async (allowed) => {events.generate.push(allowed);}
+        handleGenerateAi: async (allowed) => {events.generate.push(allowed);},
+        openAiGenerationSetup: async () => {events.popup.push('ai-evidence-setup');}
       };
       (async () => {
         const fn = vm.runInNewContext(${JSON.stringify(handler + '\nrequestAiGeneration')}, ctx);
@@ -10986,33 +10987,33 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       cwd: ROOT_DIR, encoding: 'utf8', timeout: 10000
     }));
   }
-  focusCheck('Generate click invokes direct backend flow without confirmation or extra status API', () => {
+  focusCheck('Generate click opens evidence setup, not a background PLAN or hidden material check', () => {
     const events=exerciseMaterialClick({serverMaterial:true});
-    if (events.check!==0 || events.generate.length!==1 || events.popup.length)
-      throw Error('Generate must start the backend PLAN directly');
+    if (events.check!==0 || events.generate.length!==0 || events.popup.join(',')!=='ai-evidence-setup')
+      throw Error('AI Generate button must open the evidence setup without consuming quota');
   });
-  focusCheck('Material not indexed is rejected by authoritative backend during PLAN', () => {
+  focusCheck('Material check inside AI setup does not replace authoritative PLAN validation', () => {
     const events=exerciseMaterialClick({serverMaterial:false});
-    if(events.check || events.generate.length!==1 || events.popup.length)throw Error('Client assumed it could determine indexing state');
+    if(events.check || events.generate.length!==0 || events.popup.length!==1)throw Error('AI setup bypassed or auto-started generation');
     if(!ui.includes('MATERIAL_NOT_INDEXED')||!gas.includes('cneAiMaterialReadiness_('))throw Error('Backend missing indexing enforcement');
   });
   focusCheck('Cached material state cannot bypass server readiness after Continue', () => {
     for (const cachedMaterial of [true,false]) {
       const events=exerciseMaterialClick({cachedMaterial,serverMaterial:null});
-      if(events.check || events.generate.length!==1 || events.popup.length)
-        throw Error('Client assumed cached material ready');
+      if(events.check || events.generate.length!==0 || events.popup.length!==1)
+        throw Error('Cached material state bypassed AI evidence setup');
     }
     if(!gas.includes('afterGeminiReadiness.driveFileId !== readiness.driveFileId')) throw Error('Material replacement must invalidate generation');
   });
   focusCheck('Unknown material status still uses the backend and never assumes library permission', () => {
     const events=exerciseMaterialClick({serverMaterial:null});
-    if(events.check || events.generate.length!==1 || events.popup.length)throw Error('Unknown status bypassed the backend');
+    if(events.check || events.generate.length!==0 || events.popup.length!==1)throw Error('Unknown status bypassed evidence setup');
     if(ui.includes('allowLibraryOnly')||gas.includes('allowLibraryOnly'))throw Error('Library-only fallback returned');
   });
   focusCheck('Repeated Generation click is blocked during busy state and for exhausted quota', () => {
     for (const scenario of [{checking:true},{canInteract:false},{used:true},{unavailable:true}]) {
       const events=exerciseMaterialClick({...scenario,serverMaterial:true});
-      if (events.check || events.generate.length || events.popup.length) throw Error('Generation proceeded during a guarded state '+JSON.stringify(scenario));
+      if (events.check || events.generate.length || events.popup.length) throw Error('AI setup opened during a guarded state '+JSON.stringify(scenario));
     }
   });
   focusCheck('Old material cache and initial material warning UI are removed', () => {
@@ -11387,7 +11388,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     const run=mockGeminiTransport([{status:503,body:{error:{message:'Model overloaded'}}},
       {status:503,body:{error:{message:'Model overloaded'}}},{data:{ok:true}}]);
     const result=run.send();
-    if(!result.success||run.requests.length!==3||run.waits.join(',')!=='1000,2000') throw Error('503 retry sequencing failed '+JSON.stringify(result));
+    if(!result.success||run.requests.length!==3||run.waits.length!==2 || run.waits[0]<750 || run.waits[0]>1500 || run.waits[1]<1500 || run.waits[1]>3000) throw Error('503 jittered backoff failed '+JSON.stringify({result,waits:run.waits}));
     if(run.log.filter(x=>x.action==='AI_QUESTION_GEMINI_RETRY').length!==2) throw Error('Retry audit missing');
     if(run.log.some(x=>x.detail.includes('mock:gemini'))) throw Error('Endpoint logged');
   });
@@ -11404,7 +11405,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
   focusCheck('Persistent 503 failure stops after four attempts with a clear overload code',()=>{
     const run=mockGeminiTransport([{status:503,body:{error:{message:'Model currently overloaded'}}}]);
     const result=run.send();
-    if(result.success||result.errorCode!=='AI_TEMPORARILY_UNAVAILABLE'||run.requests.length!==4||run.waits.join(',')!=='1000,2000,4000') throw Error('503 exhaustion not bounded');
+    if(result.success||result.errorCode!=='AI_TEMPORARILY_UNAVAILABLE'||run.requests.length!==4||run.waits.length!==3||run.waits.some((ms,i)=>ms<750*Math.pow(2,i)||ms>1500*Math.pow(2,i))) throw Error('503 exhaustion not bounded');
     if(run.log.filter(x=>x.action==='AI_QUESTION_GEMINI_FAILED').length!==1) throw Error('Final overload audit missing');
   });
   focusCheck('Invalid Gemini API request fails immediately; network interruption can recover',()=>{
@@ -14856,12 +14857,13 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(questions.includes('window.confirm(`Review the answer and rationale?'));
       assert(questions.includes('.slice(0, 20)'));
     }],
-    ['AI generation starts directly and validates material on server', () => {
+    ['AI setup is on demand and PLAN keeps authoritative material validation', () => {
       const open = questions.slice(questions.indexOf('useEffect(() => {'),questions.indexOf('const editableQuestionFingerprint'));
       assert(!open.includes('void loadMaterialStatus('));
       assert(!questions.includes("setMaterialChoice('confirm')"));
       assert(!questions.includes('Have you uploaded the learning material'));
       assert(!questions.includes('allowLibraryOnly'));
+      assert(questions.includes('void openAiGenerationSetup();'));
       assert(questions.includes('void handleGenerateAi();'));
     }],
     ['CNE question popup uses phone viewport and scrollable content', () => {
@@ -17192,7 +17194,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   });
   check('Fidelity status visible to resource person, no administrator review dependency',()=>{
     const {ctx}=scene();
-    assert(!learning.includes('Indexed with warnings')&&!learning.includes('item.indexingMessage?.includes("FIDELITY_WARNINGS=")'));
+    assert(learning.includes('View indexing warnings')&&learning.includes('MaterialIndexWarnings'));
     const questions=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
     assert(questions.includes('materialExcludedCount')&&questions.includes('materialWarningText'));
     assert(reference.includes('hasFidelityWarnings')&&reference.includes('Flagged passages are excluded'));
@@ -17276,11 +17278,13 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     const fail=ctx.cneAiPromoteMaterialImages_('CNE-1',[{materialImageKey:'SOURCE_IMAGE_123456789012345678'}]);
     assert.equal(fail.errorCode,'AI_IMAGE_PROMOTION_FAILED');assert.deepEqual(trashed,['QUESTION_IMAGE']);
   });
-  check('Visual privacy requires direct client acknowledgment and backend refuses selected images without it',()=>{
-    assert(gas.includes("errorCode:'IMAGE_PRIVACY_CONFIRMATION_REQUIRED'"));
+  check('Selected images retain source authorization without a second consent checkbox',()=>{
     const page=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
-    assert(page.includes('visualPrivacyConfirmed')&&page.includes('de-identified'));
-    assert(apis.includes('visualPrivacyConfirmed'));
+    assert(!page.includes('visualPrivacyConfirmed')&&!apis.includes('visualPrivacyConfirmed'));
+    assert(!gas.includes('IMAGE_PRIVACY_CONFIRMATION_REQUIRED'));
+    assert(gas.includes('cneAiSelectedMaterialImages_(cneId,selectedImageIds)'));
+    assert(gas.includes('UPLOADER_DECLARATION_REQUIRED'));
+    assert(page.includes('chosenMaterialImageIds'));
   });
   check('Uploader-facing warnings and AI generation image preview replace Learning Resources warnings',()=>{
     const questions=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
@@ -17288,9 +17292,77 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     assert(questions.includes('getCNEAiMaterialImages')&&questions.includes('getCNEAiMaterialImage'));
     assert(questions.includes('chosenMaterialImageIds')&&questions.includes('select up to 3'));
     assert(add.includes('indexSummary.warnings')&&add.includes('extractCNEMaterialImages'));
-    assert(!learning.includes('Affected passages excluded from AI evidence.'));
+    assert(learning.includes('MaterialIndexWarnings')&&!questions.includes('CNE material evidence and selected images')); 
   });
 
+}
+
+// Finalized AI setup, accessible per-chunk warnings and bounded Gemini reliability.
+{
+  const page=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+  const learning=readFileSync(join(ROOT_DIR,'src/components/cne/LearningResourcesPage.tsx'),'utf8');
+  const parser=readFileSync(join(ROOT_DIR,'src/components/cne/MaterialIndexWarnings.tsx'),'utf8');
+  const gas=readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+  const api=readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+  const check=(name,fn)=>{focusedChecks.push({name,test:fn});try{fn();focusedPassed++;console.log('✓ '+name);}catch(e){console.error('✗ '+name+': '+(e.stack||e.message));}};
+  check('Main My Questions toolbar contains no always-visible evidence panel',()=>{
+    const header=page.slice(page.indexOf('{/* Compact mobile header;'),page.indexOf('{/* Question List Content'));
+    assert(!header.includes('AI learning material:')&&!header.includes('materialWarningText'));
+    assert(page.includes('showAiSetup && !isGenerating'));
+  });
+  check('Material page warnings are collapsed and grouped by chunk',()=>{
+    assert(learning.includes('<details className=') && learning.includes('<MaterialIndexWarnings'));
+    assert(readFileSync(join(ROOT_DIR,'src/components/cne/CNEReferenceModal.tsx'),'utf8').includes('View per-chunk indexing warnings'));
+    assert(readFileSync(join(ROOT_DIR,'src/components/cne/AddResourceModal.tsx'),'utf8').includes('<MaterialIndexWarnings'));
+    assert(parser.includes('parseMaterialIndexWarnings')&&parser.includes('grouped.set(key'));
+    assert(parser.includes('row.descriptions.map('));
+  });
+  check('AI setup warnings collapse and do not modify manual question workflow',()=>{
+    assert(page.includes('aria-expanded={aiWarningExpanded}')&&page.includes('MaterialIndexWarnings compact'));
+    assert(page.includes("setChosenMaterialImageIds([])"));
+    assert(page.includes('handleAddManualQuestion'));
+  });
+  check('Separate image consent removed; current-source image scope retained',()=>{
+    assert(!page.includes('visualPrivacyConfirmed')&&!api.includes('visualPrivacyConfirmed'));
+    assert(!gas.includes('IMAGE_PRIVACY_CONFIRMATION_REQUIRED'));
+    assert(gas.includes('cneAiSelectedMaterialImages_(cneId,selectedImageIds)'));
+    assert(page.includes('chosenMaterialImageIds.length>=3'));
+  });
+  check('Gemini request has a bounded per-call timeout and sanitized diagnostic model',()=>{
+    assert(gas.includes('timeoutSeconds:networkSeconds')&&gas.includes('safeModel'));
+    assert(gas.includes('Math.random()')&&gas.includes('retryAfter'));
+    assert(!gas.includes("record('AI_QUESTION_GEMINI_FAILED',endpoint"));
+  });
+  check('Backend job status exposes terminal error without exposing API credentials',()=>{
+    assert(gas.includes('lastErrorCode:job.lastErrorCode'));
+    assert(gas.includes("{state:'FAILED',objectives:[],lastErrorCode:"));
+    assert(api.includes('lastErrorCode?:string'));
+  });
+  check('Optional explicit fallback changes model only after two overloads and never increases attempts',()=>{
+    const ctx={console,Date,Math};
+    vm.createContext(ctx);vm.runInContext(gas,ctx,{timeout:16000});
+    const called=[],events=[];
+    ctx.PropertiesService={getScriptProperties:()=>({getProperty:k=>k==='GEMINI_FALLBACK_MODEL'?'gemini-3.6-flash':''})};
+    ctx.logAuditAction=(action,employee,detail)=>events.push({action,detail});
+    ctx.Utilities={sleep:()=>{}};
+    let i=0;
+    ctx.UrlFetchApp={fetch:(url,req)=>{
+      called.push(url);
+      const status=i++<2?503:200;
+      return {getResponseCode:()=>status,getContentText:()=>JSON.stringify(status===503?{error:{message:'overloaded'}}:{candidates:[{content:{parts:[{text:'{\"ok\":true}'}]}}]}),getAllHeaders:()=>({})};
+    }};
+    const result=ctx.cneAiGeminiStructured_('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=PRIVATE','test',{type:'OBJECT',properties:{ok:{type:'BOOLEAN'}}},4,{cneId:'CNE-1',employeeId:'EMP-1',stage:'BLUEPRINT',deadlineMs:Date.now()+100000});
+    assert(result.success);
+    assert.equal(called.length,3);
+    assert(called[0].includes('/gemini-3.8-flash:')&&called[1].includes('/gemini-3.8-flash:')&&called[2].includes('/gemini-3.6-flash:'));
+    assert.equal(events.filter(e=>e.action==='AI_QUESTION_GEMINI_FALLBACK').length,1);
+    assert(!events.some(e=>e.detail.includes('PRIVATE')));
+  });
+  check('Backend progress reports blueprint retries and actual MCQ generation stage',()=>{
+    assert(gas.includes('retrying attempt '));
+    assert(gas.includes("stage==='BLUEPRINT'?4"));
+    assert(gas.includes('Generating five clinical MCQs from the verified blueprint'));
+  });
 }
 
 if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);

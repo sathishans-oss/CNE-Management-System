@@ -4,6 +4,7 @@ import { CNERecord } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { formatCneDateTimeDisplay } from '../../utils';
+import { MaterialIndexWarnings } from './MaterialIndexWarnings';
 
 interface AddResourceModalProps {
   isOpen: boolean;
@@ -150,7 +151,10 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
             {stageError && <p className="text-rose-700">{stageError}</p>}
             {indexSummary && <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900">
               <p className="font-bold">Indexing finished: {indexSummary.safe} usable text chunks, {indexSummary.excluded} excluded, {indexSummary.imageCount} images stored.</p>
-              {indexSummary.warnings.map((w,i)=><p key={i} className="mt-1 break-words">{w}</p>)}
+              {indexSummary.warnings.length>0 && <MaterialIndexWarnings
+                warningText={indexSummary.warnings.join('; ')}
+                warningCount={indexSummary.warnings.length}
+                excludedCount={indexSummary.excluded}/>}
               {indexSummary.imageNotes.map((w,i)=><p key={'image'+i} className="mt-1 break-words">{w}</p>)}
               <p className="mt-1">The AI question generation page will show warnings and image choices before generation.</p>
             </div>}

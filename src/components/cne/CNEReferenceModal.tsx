@@ -17,6 +17,7 @@ import { CNERecord, CNELearningResourceMetadata } from '../../types';
 import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { formatCneDateTimeDisplay } from '../../utils';
+import { MaterialIndexWarnings } from './MaterialIndexWarnings';
 
 interface CNEReferenceModalProps {
   cne: CNERecord;
@@ -590,12 +591,17 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     )}
                     {indexingInfo.status === 'NEEDS_REVIEW' && <p className="text-xs font-medium text-amber-800">This older index requires uploader responsibility confirmation and reindexing. Use the checkbox and Retry Indexing; no administrator review is needed.</p>}
                     {hasFidelityWarnings && (
-                      <p role="status" className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
-                        Some source content could not be indexed faithfully. Flagged passages are excluded from AI question evidence.
-                        Upload a clearer editable PPTX/DOCX if these concepts are needed. No administrator review is required.
-                      </p>
+                      <details className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                        <summary className="cursor-pointer text-[11px] font-semibold text-amber-900">View per-chunk indexing warnings ({Number((/FIDELITY_WARNINGS=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)})</summary>
+                        <div className="mt-2">
+                          <MaterialIndexWarnings warningText={indexingInfo.message||''}
+                            warningCount={Number((/FIDELITY_WARNINGS=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)}
+                            excludedCount={Number((/EXCLUDED_CHUNKS=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)}/>
+                          <p className="mt-2 text-[11px] text-amber-800">Flagged passages are excluded from AI evidence. Upload a clearer editable source if needed; no administrator review is required.</p>
+                        </div>
+                      </details>
                     )}
-                    {indexingInfo.message && (
+                    {indexingInfo.message && !hasFidelityWarnings && (
                       <div className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-2">
                         {indexingInfo.message}
                       </div>

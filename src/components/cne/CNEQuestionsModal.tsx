@@ -24,6 +24,7 @@ import { useToast } from '../Toast';
 import { CNEQuestionImage } from './CNEQuestionImage';
 import { useAccessibleDialog } from '../common/useAccessibleDialog';
 import { CNEQuestionHeaderStatusTag } from './CNEQuestionHeaderStatusTag';
+import { MaterialIndexWarnings } from './MaterialIndexWarnings';
 
 interface CNEQuestionsModalProps {
   cne: CNERecord;
@@ -134,7 +135,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [materialWarningText,setMaterialWarningText] = useState('');
   const [materialImages,setMaterialImages] = useState<{imageFileId:string;sourcePage:number;imageKind:string;caption:string;mimeType:string;size:number}[]>([]);
   const [chosenMaterialImageIds,setChosenMaterialImageIds] = useState<string[]>([]);
-  const [visualPrivacyConfirmed,setVisualPrivacyConfirmed] = useState(false);
+  const [showAiSetup,setShowAiSetup] = useState(false);
+  const [aiWarningExpanded,setAiWarningExpanded] = useState(false);
   const [materialImagePreview,setMaterialImagePreview] = useState<Record<string,string>>({});
   const [visualLoading,setVisualLoading] = useState(false);
   const [reindexingMaterial, setReindexingMaterial] = useState(false);
@@ -150,7 +152,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     'Verifying CNE and permissions',
     'Reading indexed CNE learning material',
     'Checking topic-relevant evidence',
-    'Generating five clinical MCQs',
+    'Planning and generating five clinical MCQs',
     'Validating questions and sources',
     'Saving five unique Draft questions',
     'Questions ready for educator review'
@@ -187,7 +189,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setMaterialStatusCode('NOT_UPLOADED');
     setMaterialStatusMessage('Upload CNE learning material to enable AI question generation.');
     setMaterialWarningCount(0);setMaterialExcludedCount(0);setMaterialWarningText('');
-    setMaterialImages([]);setChosenMaterialImageIds([]);setVisualPrivacyConfirmed(false);setMaterialImagePreview({});
+    setMaterialImages([]);setChosenMaterialImageIds([]);setShowAiSetup(false);setAiWarningExpanded(false);setMaterialImagePreview({});
     setReindexingMaterial(false);
     setCheckingMaterial(false);
     setGenerationElapsedSeconds(0);
@@ -345,22 +347,25 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     }
   };
 
-  // Load once per CNE. Image thumbnails are fetched only when the uploader requests a preview.
-  useEffect(() => {
-    if(!isAuthorized) return;
-    let live=true;
-    void ApiService.getCNEAiMaterialStatus(cneId).then(res=>{
-      if(!live||!res.success||!res.data)return;
-      setMaterialStatusCode(res.data.status);setMaterialStatusMessage(res.data.message);
-      setMaterialWarningCount(Number(res.data.warningCount||0));
-      setMaterialExcludedCount(Number(res.data.excludedCount||0));
-      setMaterialWarningText(String(res.data.fidelityWarnings||''));
-    }).catch(()=>{});
-    void ApiService.getCNEAiMaterialImages(cneId).then(res=>{
-      if(live&&res.success&&res.data){setMaterialImages(res.data.images||[]);}
-    }).catch(()=>{});
-    return ()=>{live=false;};
-  },[cneId,isAuthorized]);
+  // Material and images are fetched only when the AI setup dialog is opened.
+  // Manual questions and the Question Bank should never display extraction alerts.
+  const openAiGenerationSetup = async () => {
+    setShowAiSetup(true);
+    setAiWarningExpanded(false);
+    setChosenMaterialImageIds([]);
+    setMaterialImages([]);
+    setMaterialStatusCode('CHECKING');
+    setMaterialStatusMessage('Checking indexed CNE learning material…');
+    const requestId = ++materialRequestRef.current;
+    const targetCneId = cneId;
+    void loadMaterialStatus(requestId,targetCneId);
+    try {
+      const images = await ApiService.getCNEAiMaterialImages(targetCneId);
+      if (requestId === materialRequestRef.current && targetCneId === currentCneIdRef.current && images.success && images.data) {
+        setMaterialImages(images.data.images || []);
+      }
+    } catch { /* Image previews are optional; text-only generation remains available. */ }
+  };
 
   const previewMaterialImage = async (id:string) => {
     if(materialImagePreview[id])return;
@@ -465,10 +470,10 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
   const requestAiGeneration = async () => {
     if (!canInteractWithQuestionTools || materialCheckRef.current || isAiGenerationUsed || isAiGenerationUnavailable) return;
-    // Direct user action. The PLAN call checks the authoritative material index
-    // before any Gemini request; there is no confirmation or extra status call.
+    // Open on-demand source evidence setup. The PLAN endpoint still revalidates
+    // material, authorization, quota and image provenance before Gemini.
     setFailureDialog(null);
-    void handleGenerateAi();
+    void openAiGenerationSetup();
   };
 
   const handleGenerateAi = async (resumePlanned = false) => {
@@ -481,7 +486,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       return;
     }
 
-    if(chosenMaterialImageIds.length && !visualPrivacyConfirmed){warning('Confirm privacy and educational-use authorization before generating questions from images.');return;}
     // One successful AI generation is allowed per CNE. Failed generation does not consume the allowance.
     if (isAiGenerationUsed) {
       error('AI question generation has already been completed for this CNE.');
@@ -518,7 +522,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     try {
       let res;
       if (!resumePlanned) {
-        const planned = await ApiService.planCNEAiGeneration(requestCneId,chosenMaterialImageIds,visualPrivacyConfirmed);
+        const planned = await ApiService.planCNEAiGeneration(requestCneId,chosenMaterialImageIds);
         if (!isCurrent()) return;
         if (!planned.success) {
           res = planned;
@@ -970,33 +974,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             </div>
           )}
           </div>
-          {canModify && activeView === 'questions' && !isAiGenerationUsed && (
-            <section aria-label="CNE material evidence and selected images" className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
-              <p className="font-semibold text-slate-800">AI learning material: {materialStatusCode === 'READY' ? 'Ready' : materialStatusCode}</p>
-              <p className="text-slate-600">{materialStatusMessage}</p>
-              {materialWarningCount>0 && <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-amber-900">
-                <p className="font-bold">{materialWarningCount} extraction warning(s); {materialExcludedCount} passage(s) excluded from AI evidence</p>
-                <p className="mt-1 break-words">{materialWarningText || 'Upload a clearer editable document if important clinical information is missing.'}</p>
-              </div>}
-              <p className="font-semibold text-slate-800">Optional clinical images ({materialImages.length} available; select up to 3)</p>
-              {materialImages.length>0 && <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {materialImages.map(img=><div key={img.imageFileId} className="min-w-0 rounded-lg border bg-white p-2">
-                  <label className="flex items-center gap-1.5 text-xs">
-                    <input type="checkbox" checked={chosenMaterialImageIds.includes(img.imageFileId)} disabled={isGenerating || (!!pendingGenerationJob) || (!chosenMaterialImageIds.includes(img.imageFileId)&&chosenMaterialImageIds.length>=3)}
-                      onChange={e=>setChosenMaterialImageIds(ids=>e.target.checked?[...ids,img.imageFileId]:ids.filter(id=>id!==img.imageFileId))}/>
-                    <span className="truncate">{img.imageKind} · {img.sourcePage}</span>
-                  </label>
-                  {materialImagePreview[img.imageFileId] ? <img src={materialImagePreview[img.imageFileId]} alt={img.caption} className="mt-2 max-h-40 w-full object-contain"/> :
-                    <button type="button" disabled={visualLoading} onClick={()=>void previewMaterialImage(img.imageFileId)} className="mt-2 rounded border px-2 py-1 text-purple-800">Preview</button>}
-                </div>)}
-              </div>}
-              <label className="flex items-start gap-2 text-xs text-slate-700">
-                <input type="checkbox" checked={visualPrivacyConfirmed} onChange={e=>setVisualPrivacyConfirmed(e.target.checked)} disabled={isGenerating}/>
-                <span>I confirm that any selected images are de-identified, contain no identifiable patient information, and are authorized for educational AI use.</span>
-              </label>
-              <p className="text-slate-500">Gemini receives selected image bytes with approved text evidence; its choice to use an image is optional. Saved IMAGE questions remain in the private question-image folder.</p>
-            </section>
-          )}
           {canModify && activeView === 'questions' && (pendingGenerationJob || (activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && !activeQuestions.some((q) => String(q.id || '').startsWith('q_ai_') && !q.isFinalized))) && (
             <div className="mt-2 grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
               {pendingGenerationJob && !isAiGenerationUsed && (
@@ -1431,6 +1408,50 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           )}
         </div>
           </>
+        )}
+
+        {showAiSetup && !isGenerating && (
+          <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/60 p-3 sm:p-6" role="presentation">
+            <div role="dialog" aria-modal="true" aria-labelledby="cne-ai-setup-heading" className="flex max-h-[90dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+              <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                <h3 id="cne-ai-setup-heading" className="flex items-center gap-2 text-base font-bold text-slate-900"><Sparkles className="h-5 w-5 text-purple-700"/> AI Generate MCQs</h3>
+                <button type="button" aria-label="Close AI setup" onClick={()=>setShowAiSetup(false)} className="rounded-lg p-1 text-slate-600 hover:bg-slate-100"><X className="h-5 w-5"/></button>
+              </header>
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 text-xs">
+                <section className="space-y-2 rounded-xl border border-slate-200 p-3" aria-label="AI learning material status">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold text-slate-900">Learning material evidence</p>
+                    <span className={`rounded-full px-2 py-1 font-semibold ${materialStatusCode==='READY'?'bg-emerald-100 text-emerald-800':'bg-amber-100 text-amber-900'}`}>{checkingMaterial || materialStatusCode==='CHECKING'?'Checking…':materialStatusCode==='READY'?'Ready':materialStatusCode.replace(/_/g,' ')}</span>
+                  </div>
+                  <p className="text-slate-600">{materialStatusMessage}</p>
+                  {materialWarningCount>0 && <div className="rounded-lg border border-amber-200 bg-amber-50 p-2">
+                    <button type="button" aria-expanded={aiWarningExpanded} onClick={()=>setAiWarningExpanded(v=>!v)} className="flex w-full items-center justify-between gap-2 text-left font-semibold text-amber-900">
+                      <span className="flex items-center gap-2"><AlertTriangle className="h-4 w-4"/>{materialWarningCount} warning(s) · {materialExcludedCount} excluded passage(s)</span>
+                      {aiWarningExpanded?<ChevronUp className="h-4 w-4 shrink-0"/>:<ChevronDown className="h-4 w-4 shrink-0"/>}
+                    </button>
+                    {aiWarningExpanded && <div className="mt-2"><MaterialIndexWarnings compact warningText={materialWarningText} warningCount={materialWarningCount} excludedCount={materialExcludedCount}/></div>}
+                  </div>}
+                </section>
+                <section className="space-y-2" aria-label="Optional visual evidence">
+                  <p className="font-semibold text-slate-900">Source images ({materialImages.length} available; select up to 3)</p>
+                  <p className="text-slate-600">Optional: choose only images appropriate for educational use. No images are selected by default.</p>
+                  {materialImages.length===0 ? <p className="rounded-lg bg-slate-50 p-3 text-slate-600">No extracted images available. Text-only generation is supported.</p> :
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{materialImages.map(img=><div key={img.imageFileId} className="min-w-0 rounded-lg border border-slate-200 p-2">
+                      <label className="flex items-start gap-1.5">
+                        <input type="checkbox" checked={chosenMaterialImageIds.includes(img.imageFileId)} disabled={!!pendingGenerationJob || (!chosenMaterialImageIds.includes(img.imageFileId)&&chosenMaterialImageIds.length>=3)} onChange={e=>setChosenMaterialImageIds(ids=>e.target.checked?[...ids,img.imageFileId]:ids.filter(id=>id!==img.imageFileId))}/>
+                        <span className="break-words">{img.imageKind} · {img.sourcePage}</span>
+                      </label>
+                      {materialImagePreview[img.imageFileId] ? <img src={materialImagePreview[img.imageFileId]} alt={img.caption||'Extracted teaching image'} className="mt-2 max-h-32 w-full object-contain"/> :
+                        <button type="button" disabled={visualLoading} onClick={()=>void previewMaterialImage(img.imageFileId)} className="mt-2 rounded border border-purple-300 px-2 py-1 text-purple-800">Preview</button>}
+                    </div>)}</div>}
+                </section>
+              </div>
+              <footer className="flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-white px-4 py-3">
+                <button type="button" onClick={()=>setShowAiSetup(false)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold">Cancel</button>
+                <button type="button" disabled={checkingMaterial || materialStatusCode!=='READY' || isGenerating || !canModify} onClick={()=>{setShowAiSetup(false);void handleGenerateAi();}} className="rounded-lg bg-purple-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">Generate 5 Questions</button>
+              </footer>
+            </div>
+          </div>
         )}
 
         {failureDialog && (

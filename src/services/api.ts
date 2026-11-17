@@ -1510,15 +1510,15 @@ export class ApiService {
   // Planning and final generation are deliberately separate network requests.
   // The server holds the reservation/blueprint; the client never supplies evidence,
   // answer keys, or the quota reservation token for a resumed job.
-  static async planCNEAiGeneration(cneId: string, selectedMaterialImageIds: string[] = [], visualPrivacyConfirmed = false): Promise<ApiResponse<{phase: string}>> {
-    return this.executeAction<{phase: string}>('generateCNEQuestions', {cneId, phase: 'PLAN', selectedMaterialImageIds, visualPrivacyConfirmed});
+  static async planCNEAiGeneration(cneId: string, selectedMaterialImageIds: string[] = []): Promise<ApiResponse<{phase: string}>> {
+    return this.executeAction<{phase: string}>('generateCNEQuestions', {cneId, phase: 'PLAN', selectedMaterialImageIds});
   }
 
   static async finishCNEAiGeneration(cneId: string): Promise<ApiResponse<CNEQuestion[]>> {
     return this.executeAction<CNEQuestion[]>('generateCNEQuestions', {cneId, phase: 'FINISH'});
   }
 
-  static async getCNEAiJobStatus(cneId: string): Promise<ApiResponse<{state:string; updatedAt?:number; message?:string; canResume?:boolean}>> {
+  static async getCNEAiJobStatus(cneId: string): Promise<ApiResponse<{state:string; updatedAt?:number; message?:string; canResume?:boolean; lastErrorCode?:string}>> {
     return this.executeAction('getCNEAiJobStatus', {cneId});
   }
 
