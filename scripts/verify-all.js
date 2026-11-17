@@ -17075,6 +17075,222 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial,false);
   });
 
+  // CNE material extraction fidelity: conservative, source-derived layout signals.
+  // No Gemini calls or human-admin review are required; unreadable relationships
+  // are removed before they can enter the AI evidence pool.
+  check('Burn teaching OCR: orphan Rule of Nines numeric diagram is blocked',()=>{
+    const {ctx}=scene();
+    const text='Causes of burns and depth evaluation are important.\nESTIMATION OF BURN AREA BY RULE OF NINE\n4.5\n4.5\n18%\nFront 18%\n9%\n14%';
+    assert(ctx.cneMaterialFidelityIssues_(text,'Causes').some(x=>x.includes('body-area diagram')));
+  });
+  check('Burn teaching OCR: drug, soak and dressing tables with detached descriptions are blocked',()=>{
+    const {ctx}=scene();
+    const examples=[
+      ['ANTIMICROBIAL SALVES','Silver sulfadiazine (Silvadene)\nMafenide acetate (Sulfamylon)\nBacitracin\nNeomycin\nBroad-spectrum antimicrobial; painless and easy to use\nBroad-spectrum antimicrobial; penetrates eschar\nEase of application; painless\nEffective in inhibiting microbial growth'],
+      ['ANTIMICROBIAL SOAKS','0.5% Silver nitrate\n5% Mafenide acetate\n0.025% Sodium hypochlorite\n0.25% Acetic acid\nEffective against all microorganisms\nWide antibacterial coverage\nEffective against gram-positive organisms\nEffective against gram-negative organisms'],
+      ['BIOLOGICAL COVERINGS','Xenograft (pig skin)\nProvides a moisture barrier and decreased wound pain\nProvides a wound barrier associated with decreased pain\nProvides a wound barrier and accelerated healing\nProvides complete wound closure\nCompletely closes the wound']
+    ];
+    for(const [heading,text] of examples)
+      assert(ctx.cneMaterialFidelityIssues_(text,heading).some(x=>x.includes('disconnected')),heading);
+  });
+  check('Burn teaching OCR: unpaired graft illustration ratios are blocked',()=>{
+    const {ctx}=scene();
+    const text='Autografting can be used following excision of severe wounds.\nExcised wound bed\n4:1 meshed autograft\n2:1 meshed allograft';
+    assert(ctx.cneMaterialFidelityIssues_(text,'Burn Wound Coverage').some(x=>x.includes('illustration')));
+  });
+  check('Valid editable DOCX/PPTX row-to-property pairs remain safe',()=>{
+    const {ctx}=scene();
+    const text='Drug | Effect\nDrug: Mafenide acetate | Effect: May cause metabolic acidosis\nDrug: Bacitracin | Effect: Topical antimicrobial\nProduct: Biobrane | Action: Temporary synthetic dressing';
+    assert.equal(ctx.cneMaterialFidelityIssues_(text,'ANTIMICROBIAL SALVES').length,0);
+    const rowText=ctx.cneMaterialTableText_([['Drug','Effect'],['Mafenide','Metabolic acidosis'],['Bacitracin','Topical agent']]);
+    assert.equal(ctx.cneMaterialFidelityIssues_(rowText,'ANTIMICROBIAL SALVES').length,0);
+  });
+  check('Screen removes only suspect chunks and reports bounded uploader warnings',()=>{
+    const {ctx}=scene();
+    const safe='Nursing care requires repeated clinical assessment and monitoring of circulation, wound depth, infection risk, patient comfort and accurate documentation. '.repeat(5);
+    const index=ctx.cneMaterialFidelityScreen_([
+      {heading:'Assessment',text:safe},
+      {heading:'Rule of Nines',text:'ESTIMATION OF BURN AREA BY RULE OF NINE\n18%\n9%\n14%\n4.5'},
+      {heading:'Prehospital Care',text:safe}
+    ]);
+    assert.equal(index.excludedCount,1);
+    assert.equal(index.safeChunks.length,2);
+    assert(index.warnings[0].includes('Rule of Nines'));
+    assert(ctx.cneMaterialWarningSummary_(index.warnings).length<300);
+  });
+  check('PowerPoint partial image/chart content creates uploader warnings without fabricated OCR',()=>{
+    const {ctx}=scene();
+    const shape=t=>({getPageElementType:()=> 'SHAPE',asShape:()=>({getText:()=>({asString:()=>t})})});
+    const picture=()=>({getPageElementType:()=> 'IMAGE'});
+    const paragraph='Clinical burn care includes airway examination, appropriate fluid status monitoring, sterile wound dressing and infection prevention in patients with severe injuries.';
+    ctx.SlidesApp={openById:()=>({getSlides:()=>[
+      {getPageElements:()=>[shape(paragraph)]},
+      {getPageElements:()=>[picture(),shape(paragraph)]},
+      {getPageElements:()=>[picture()]},
+      {getPageElements:()=>[shape(paragraph)]},
+      {getPageElements:()=>[shape(paragraph)]}
+    ]})};
+    const res=ctx.cneMaterialSlideText_('SLIDE-WARN');
+    assert(res.success,JSON.stringify(res));
+    assert.equal(res.warnings.length,2);
+    assert(res.warnings.some(x=>x.includes('Slide 3')&&x.includes('no extractable text')));
+    assert(res.warnings.some(x=>x.includes('Slide 2')&&x.includes('not included')));
+    assert(!res.text.includes('Slide 3'));
+  });
+  check('Current SUCCESS index with legacy OCR table ambiguity becomes non-AI-ready',()=>{
+    const {ctx,idx,indexHeaders}=scene();
+    idx.rows[1][indexHeaders.indexOf('Chunk_Text')]=
+      'Mafenide acetate\nBacitracin\nSilver sulfadiazine\nBroad-spectrum antimicrobial; painless\nEase of application\nEffective against infection';
+    idx.rows[1][indexHeaders.indexOf('Section_Heading')]='ANTIMICROBIAL SALVES';
+    const ready=ctx.cneAiMaterialReadiness_('CNE-1');
+    assert.equal(ready.hasOwnMaterial,false);
+    assert.equal(ready.errorCode,'INDEX_FIDELITY_REINDEX_REQUIRED');
+  });
+  check('Reindex excludes ambiguous chunks, preserves other CNE rows and sends warning to uploader',()=>{
+    const {ctx,idx,mat,indexHeaders,materialHeaders,employee}=scene();
+    ctx.getOrCreateSheet=n=>n==='Material_Index'?idx:n==='Material_List'?mat:null;
+    ctx.cneWriteHeaderRows_=(sh,headers,rows,at)=>rows.forEach((r,i)=>{
+      sh.rows[at-1+i]=sh.rows[0].map(h=>r[headers.indexOf(h)]??'');
+    });
+    ctx.deleteSheetRowsByIndices=(sh,indices)=>indices.slice().sort((a,b)=>b-a).forEach(r=>sh.rows.splice(r-1,1));
+    const lesson='Nursing assessment requires ongoing skin checks, fluid monitoring, pain control, wound protection, safe documentation, infection precautions and multidisciplinary escalation. '.repeat(8);
+    ctx.extractLearningResourceContentCore=()=>({success:true,data:{
+      extractedText:lesson.repeat(4),extractionMethod:'DRIVE_OCR',
+      extractionWarnings:['Scanned PDF OCR cannot verify diagram relationships.']}});
+    ctx.chunkExtractedContent=()=>[
+      {heading:'Burn Assessment',text:lesson+' Maintain comfort and timely pain assessment.'},
+      {heading:'Rule of Nines',text:'ESTIMATION OF BURN AREA BY RULE OF NINE\n18%\n9%\n14%\n4.5'},
+      {heading:'Prehospital Care',text:lesson+' Cover exposed wounds to prevent environmental harm.'},
+      {heading:'Infection Prevention',text:lesson+' Maintain aseptic dressings and observe for sepsis.'},
+    ];
+    const unrelated=idx.rows[3][indexHeaders.indexOf('Index_ID')];
+    const res=ctx.indexLearningResourceContent('CNE-1','DRIVE_A','Burns.pdf','PDF','Burn Wound Care',employee,false);
+    assert(res.success,JSON.stringify(res));
+    assert.equal(res.excludedCount,1);
+    assert.equal(res.warningCount,2);
+    assert.equal(res.chunksCount,3);
+    const message=mat.rows[1][materialHeaders.indexOf('Indexing_Message')];
+    assert(message.includes('FIDELITY_WARNINGS=2'));
+    assert(ctx.cneMaterialUploaderAttestedMessage_(message,'DRIVE_A'));
+    assert(idx.rows.some(row=>row[indexHeaders.indexOf('Index_ID')]===unrelated));
+    const same=idx.rows.slice(1).filter(row=>row[indexHeaders.indexOf('CNE_ID')]==='CNE-1');
+    assert.equal(same.length,3);
+    assert(same.every(row=>!row[indexHeaders.indexOf('Chunk_Text')].includes('ESTIMATION OF BURN AREA')));
+    const ready=ctx.cneAiMaterialReadiness_('CNE-1');
+    assert(ready.hasOwnMaterial);
+    assert.equal(ready.warningCount,2);
+  });
+  check('Long flattened tables remain excluded after semantic-window splitting',()=>{
+    const {ctx}=scene();
+    const prose='Ongoing nursing teaching includes clinical assessment, infection monitoring and wound protection. ';
+    const flat='ANTIMICROBIAL SALVES\nMafenide acetate\nBacitracin\nSilver sulfadiazine\n'+prose.repeat(16)+
+      '\nBroad-spectrum antimicrobial; penetrates eschar\nEase of application\nEffective against microbial growth\n';
+    const chunks=ctx.chunkExtractedContent(flat,'PDF','Burn Wound Care');
+    const screened=ctx.cneMaterialFidelityScreen_(chunks);
+    assert(chunks.length>=1);
+    assert.equal(screened.safeChunks.length,0,'Section-wide risk must not disappear at chunk boundaries');
+  });
+  check('Fidelity status visible to resource person, no administrator review dependency',()=>{
+    const {ctx}=scene();
+    assert(!learning.includes('Indexed with warnings')&&!learning.includes('item.indexingMessage?.includes("FIDELITY_WARNINGS=")'));
+    const questions=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+    assert(questions.includes('materialExcludedCount')&&questions.includes('materialWarningText'));
+    assert(reference.includes('hasFidelityWarnings')&&reference.includes('Flagged passages are excluded'));
+    assert(add.includes('indexSummary.warnings')&&apis.includes('fidelityWarnings?: string[]'));
+    assert(!reference.includes('approveLearningResourceIndex'));
+    assert.equal(ctx.CNE_SHEET_HEADERS.Material_Index.length,11);
+  });
+
+
+  check('Image folders use existing CNE Material Images root and source IDs remain metadata only',()=>{
+    assert(gas.includes("getFoldersByName('CNE Material Images')"));
+    assert(gas.includes("name='CNE_'+id")&&gas.includes('sourceDriveFileId:readiness.driveFileId'));
+    assert(!gas.includes("getFoldersByName(readiness.driveFileId)"));
+    assert.equal(scene().ctx.CNE_SHEET_HEADERS.Material_Index.length,11);
+  });
+  check('Image selection is bounded and empty selection keeps existing text-only generation',()=>{
+    const {ctx}=scene();
+    assert(ctx.cneAiSelectedMaterialImages_('CNE-1',[]).success);
+    assert.equal(ctx.cneAiSelectedMaterialImages_('CNE-1',['a','b','c','d']).errorCode,'INVALID_IMAGE_SELECTION');
+    assert.equal(ctx.cneAiSelectedMaterialImages_('CNE-1',['same','same']).errorCode,'INVALID_IMAGE_SELECTION'===
+      ctx.cneAiSelectedMaterialImages_('CNE-1',['same','same']).errorCode ? 'INVALID_IMAGE_SELECTION':'bad');
+  });
+  check('Manifest-scoped visual selection requires actual matching file bytes',()=>{
+    const {ctx}=scene();
+    ctx.cneMaterialImageList_=()=>({readiness:{hasOwnMaterial:true,driveFileId:'FILE-A'},images:[]});
+    ctx.cneMaterialImageById_=(_c,source,id)=>id==='VISUAL_ID_AAAAAAAA1234567890123456' && source==='FILE-A'?
+      {bytes:[137,80,78,71],mimeType:'image/png',metadata:{sourcePage:6,imageKind:'PPT_SLIDE'}}:null;
+    const selected=ctx.cneAiSelectedMaterialImages_('CNE-1',['VISUAL_ID_AAAAAAAA1234567890123456']);
+    assert(selected.success&&selected.images.length===1);
+    assert.equal(ctx.cneAiSelectedMaterialImages_('CNE-1',['VISUAL_ID_BBBBBBBB1234567890123456']).errorCode,'IMAGE_SOURCE_MISMATCH');
+    assert.equal(ctx.cneAiSelectedMaterialImages_('CNE-1',['VISUAL_ID_AAAAAAAA1234567890123456','VISUAL_ID_AAAAAAAA1234567890123456']).errorCode,'INVALID_IMAGE_SELECTION');
+  });
+  check('Structured Gemini request includes image bytes only for explicitly provided selected images',()=>{
+    const {ctx}=scene();let payload=null;
+    ctx.Utilities={base64Encode:bytes=>Buffer.from(bytes).toString('base64')};
+    ctx.UrlFetchApp={fetch:(_url,opts)=>{payload=JSON.parse(opts.payload);return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({candidates:[{content:{parts:[{text:'{"questions":[]}' }]}}]})};}};
+    const spec={type:'OBJECT',properties:{questions:{type:'ARRAY',items:{type:'OBJECT'}}},required:['questions']};
+    const noImage=ctx.cneAiGeminiStructured_('https://unit.test','test',spec,1,{});
+    assert(noImage.success);assert.equal(payload.contents[0].parts.length,1);
+    const hasImage=ctx.cneAiGeminiStructured_('https://unit.test','test',spec,1,{images:[{bytes:[137,80,78,71],mimeType:'image/png'}]});
+    assert(hasImage.success);assert.equal(payload.contents[0].parts.length,2);
+    assert.equal(payload.contents[0].parts[1].inlineData.data,'iVBORw==');
+  });
+  check('AI image questions remain source-constrained and satisfy existing private image authorization',()=>{
+    assert(gas.includes('if(imageKey && !selectedVisuals.images.some('));
+    assert(gas.includes("cneQuestionImageCheck_(qObj.imageFileId,'MANUAL',cneId)"));
+    assert(gas.includes("cneQuestionImageCheck_(q.imageFileId,'MANUAL',cneId)"));
+    assert(gas.includes('cneAiPromoteMaterialImages_(cneId,validatedQuestions)'));
+    assert(gas.includes('selectedMaterialImageIds:selectedImageIds'));
+    const questionSchema=scene().ctx.cneAiQuestionSchema_(true);
+    assert(questionSchema.properties.imageKey&&questionSchema.required.indexOf('imageKey')===-1);
+  });
+  check('Image extraction demands authenticated uploader responsibility and open CNE',()=>{
+    const {ctx,employee}=scene();
+    assert.equal(ctx.handleExtractCNEMaterialImages({cneId:'CNE-1'},employee).errorCode,'UPLOADER_DECLARATION_REQUIRED');
+    ctx.getCNEScheduleRecord=()=>({cneId:'CNE-1',status:'Completed'});
+    assert.equal(ctx.handleExtractCNEMaterialImages({cneId:'CNE-1',uploaderDeclaration:'I_ACCEPT_RESPONSIBILITY'},employee).errorCode,'CNE_CLOSED');
+  });
+  check('CNE image preview denies unauthorized sessions and unknown source images',()=>{
+    const {ctx,employee}=scene();
+    ctx.checkQuestionManagementAuthorized=()=>({success:false,errorCode:'FORBIDDEN'});
+    assert.equal(ctx.handleGetCNEAiMaterialImage({cneId:'CNE-1',imageFileId:'ARBITRARY_IMAGE_ID_ABCDEF123456789'},employee).errorCode,'FORBIDDEN');
+    ctx.checkQuestionManagementAuthorized=()=>null;
+    ctx.cneMaterialImageList_=()=>({readiness:{hasOwnMaterial:true,driveFileId:'LIVE_SOURCE'},images:[]});
+    ctx.cneMaterialImageById_=()=>null;
+    assert.equal(ctx.handleGetCNEAiMaterialImage({cneId:'CNE-1',imageFileId:'ARBITRARY_IMAGE_ID_ABCDEF123456789'},employee).errorCode,'IMAGE_NOT_AUTHORIZED');
+  });
+  check('Validated selected material image is copied privately, and copy failure trashes the orphan',()=>{
+    const {ctx}=scene();let saved=[],trashed=[];
+    ctx.cneAiMaterialReadiness_=()=>({hasOwnMaterial:true,driveFileId:'SOURCE-ID'});
+    ctx.cneMaterialImageById_=()=>({bytes:[137,80,78,71,13,10,26,10],mimeType:'image/png'});
+    const output={getId:()=> 'QUESTION_IMAGE_123456789012345678',setSharing:()=>{},setTrashed:()=>trashed.push('QUESTION_IMAGE')};
+    ctx.cneQuestionImageFolder_=()=>({getFoldersByName:()=>({hasNext:()=>true,next:()=>({createFile:blob=>{saved.push(blob);return output;}})})});
+    ctx.Utilities={newBlob:(bytes,mime,name)=>({bytes,mime,name}),getUuid:()=> 'ID'};
+    ctx.DriveApp={Access:{PRIVATE:'PRIVATE'},Permission:{NONE:'NONE'}};
+    const q={materialImageKey:'SOURCE_IMAGE_123456789012345678'};
+    const promoted=ctx.cneAiPromoteMaterialImages_('CNE-1',[q]);
+    assert(promoted.success);assert.equal(q.questionType,'IMAGE');assert.equal(q.imageFileId,'QUESTION_IMAGE_123456789012345678');
+    assert.equal(saved.length,1);
+    output.setSharing=()=>{throw Error('Policy denies');};
+    const fail=ctx.cneAiPromoteMaterialImages_('CNE-1',[{materialImageKey:'SOURCE_IMAGE_123456789012345678'}]);
+    assert.equal(fail.errorCode,'AI_IMAGE_PROMOTION_FAILED');assert.deepEqual(trashed,['QUESTION_IMAGE']);
+  });
+  check('Visual privacy requires direct client acknowledgment and backend refuses selected images without it',()=>{
+    assert(gas.includes("errorCode:'IMAGE_PRIVACY_CONFIRMATION_REQUIRED'"));
+    const page=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+    assert(page.includes('visualPrivacyConfirmed')&&page.includes('de-identified'));
+    assert(apis.includes('visualPrivacyConfirmed'));
+  });
+  check('Uploader-facing warnings and AI generation image preview replace Learning Resources warnings',()=>{
+    const questions=readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+    assert(questions.includes('materialWarningCount')&&questions.includes('materialExcludedCount'));
+    assert(questions.includes('getCNEAiMaterialImages')&&questions.includes('getCNEAiMaterialImage'));
+    assert(questions.includes('chosenMaterialImageIds')&&questions.includes('select up to 3'));
+    assert(add.includes('indexSummary.warnings')&&add.includes('extractCNEMaterialImages'));
+    assert(!learning.includes('Affected passages excluded from AI evidence.'));
+  });
+
 }
 
 if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);

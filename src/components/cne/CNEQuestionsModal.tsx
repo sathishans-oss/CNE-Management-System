@@ -129,6 +129,14 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [generationStep, setGenerationStep] = useState(0);
   const [materialStatusCode, setMaterialStatusCode] = useState('NOT_UPLOADED');
   const [materialStatusMessage, setMaterialStatusMessage] = useState('Upload CNE learning material to enable AI question generation.');
+  const [materialWarningCount,setMaterialWarningCount] = useState(0);
+  const [materialExcludedCount,setMaterialExcludedCount] = useState(0);
+  const [materialWarningText,setMaterialWarningText] = useState('');
+  const [materialImages,setMaterialImages] = useState<{imageFileId:string;sourcePage:number;imageKind:string;caption:string;mimeType:string;size:number}[]>([]);
+  const [chosenMaterialImageIds,setChosenMaterialImageIds] = useState<string[]>([]);
+  const [visualPrivacyConfirmed,setVisualPrivacyConfirmed] = useState(false);
+  const [materialImagePreview,setMaterialImagePreview] = useState<Record<string,string>>({});
+  const [visualLoading,setVisualLoading] = useState(false);
   const [reindexingMaterial, setReindexingMaterial] = useState(false);
   const [checkingMaterial, setCheckingMaterial] = useState(false);
   const materialRequestRef = useRef(0);
@@ -178,6 +186,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setGenerationStep(0);
     setMaterialStatusCode('NOT_UPLOADED');
     setMaterialStatusMessage('Upload CNE learning material to enable AI question generation.');
+    setMaterialWarningCount(0);setMaterialExcludedCount(0);setMaterialWarningText('');
+    setMaterialImages([]);setChosenMaterialImageIds([]);setVisualPrivacyConfirmed(false);setMaterialImagePreview({});
     setReindexingMaterial(false);
     setCheckingMaterial(false);
     setGenerationElapsedSeconds(0);
@@ -312,6 +322,9 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       }
       setMaterialStatusCode(status.data.status || 'NOT_UPLOADED');
       setMaterialStatusMessage(status.data.message || 'Material indexing is required.');
+      setMaterialWarningCount(Number(status.data.warningCount||0));
+      setMaterialExcludedCount(Number(status.data.excludedCount||0));
+      setMaterialWarningText(String(status.data.fidelityWarnings||''));
       return Boolean(status.data.hasOwnMaterial);
     } catch (e: any) {
       if (requestId === materialRequestRef.current && targetCneId === currentCneIdRef.current) {
@@ -330,6 +343,33 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         materialCheckRef.current = false;
       }
     }
+  };
+
+  // Load once per CNE. Image thumbnails are fetched only when the uploader requests a preview.
+  useEffect(() => {
+    if(!isAuthorized) return;
+    let live=true;
+    void ApiService.getCNEAiMaterialStatus(cneId).then(res=>{
+      if(!live||!res.success||!res.data)return;
+      setMaterialStatusCode(res.data.status);setMaterialStatusMessage(res.data.message);
+      setMaterialWarningCount(Number(res.data.warningCount||0));
+      setMaterialExcludedCount(Number(res.data.excludedCount||0));
+      setMaterialWarningText(String(res.data.fidelityWarnings||''));
+    }).catch(()=>{});
+    void ApiService.getCNEAiMaterialImages(cneId).then(res=>{
+      if(live&&res.success&&res.data){setMaterialImages(res.data.images||[]);}
+    }).catch(()=>{});
+    return ()=>{live=false;};
+  },[cneId,isAuthorized]);
+
+  const previewMaterialImage = async (id:string) => {
+    if(materialImagePreview[id])return;
+    setVisualLoading(true);
+    try {const res=await ApiService.getCNEAiMaterialImage(cneId,id);
+      if(res.success&&res.data)setMaterialImagePreview(x=>({...x,[id]:`data:${res.data!.mimeType};base64,${res.data!.base64Data}`}));
+      else warning(res.message||'Image preview is not available.');
+    }catch(e:any){warning(e?.message||'Unable to load image preview.');}
+    finally{setVisualLoading(false);}
   };
 
   // A lost response is not proof of failure: look for a committed batch and quota.
@@ -441,6 +481,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       return;
     }
 
+    if(chosenMaterialImageIds.length && !visualPrivacyConfirmed){warning('Confirm privacy and educational-use authorization before generating questions from images.');return;}
     // One successful AI generation is allowed per CNE. Failed generation does not consume the allowance.
     if (isAiGenerationUsed) {
       error('AI question generation has already been completed for this CNE.');
@@ -477,7 +518,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     try {
       let res;
       if (!resumePlanned) {
-        const planned = await ApiService.planCNEAiGeneration(requestCneId);
+        const planned = await ApiService.planCNEAiGeneration(requestCneId,chosenMaterialImageIds,visualPrivacyConfirmed);
         if (!isCurrent()) return;
         if (!planned.success) {
           res = planned;
@@ -929,6 +970,33 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
             </div>
           )}
           </div>
+          {canModify && activeView === 'questions' && !isAiGenerationUsed && (
+            <section aria-label="CNE material evidence and selected images" className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+              <p className="font-semibold text-slate-800">AI learning material: {materialStatusCode === 'READY' ? 'Ready' : materialStatusCode}</p>
+              <p className="text-slate-600">{materialStatusMessage}</p>
+              {materialWarningCount>0 && <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-amber-900">
+                <p className="font-bold">{materialWarningCount} extraction warning(s); {materialExcludedCount} passage(s) excluded from AI evidence</p>
+                <p className="mt-1 break-words">{materialWarningText || 'Upload a clearer editable document if important clinical information is missing.'}</p>
+              </div>}
+              <p className="font-semibold text-slate-800">Optional clinical images ({materialImages.length} available; select up to 3)</p>
+              {materialImages.length>0 && <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {materialImages.map(img=><div key={img.imageFileId} className="min-w-0 rounded-lg border bg-white p-2">
+                  <label className="flex items-center gap-1.5 text-xs">
+                    <input type="checkbox" checked={chosenMaterialImageIds.includes(img.imageFileId)} disabled={isGenerating || (!!pendingGenerationJob) || (!chosenMaterialImageIds.includes(img.imageFileId)&&chosenMaterialImageIds.length>=3)}
+                      onChange={e=>setChosenMaterialImageIds(ids=>e.target.checked?[...ids,img.imageFileId]:ids.filter(id=>id!==img.imageFileId))}/>
+                    <span className="truncate">{img.imageKind} · {img.sourcePage}</span>
+                  </label>
+                  {materialImagePreview[img.imageFileId] ? <img src={materialImagePreview[img.imageFileId]} alt={img.caption} className="mt-2 max-h-40 w-full object-contain"/> :
+                    <button type="button" disabled={visualLoading} onClick={()=>void previewMaterialImage(img.imageFileId)} className="mt-2 rounded border px-2 py-1 text-purple-800">Preview</button>}
+                </div>)}
+              </div>}
+              <label className="flex items-start gap-2 text-xs text-slate-700">
+                <input type="checkbox" checked={visualPrivacyConfirmed} onChange={e=>setVisualPrivacyConfirmed(e.target.checked)} disabled={isGenerating}/>
+                <span>I confirm that any selected images are de-identified, contain no identifiable patient information, and are authorized for educational AI use.</span>
+              </label>
+              <p className="text-slate-500">Gemini receives selected image bytes with approved text evidence; its choice to use an image is optional. Saved IMAGE questions remain in the private question-image folder.</p>
+            </section>
+          )}
           {canModify && activeView === 'questions' && (pendingGenerationJob || (activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && !activeQuestions.some((q) => String(q.id || '').startsWith('q_ai_') && !q.isFinalized))) && (
             <div className="mt-2 grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
               {pendingGenerationJob && !isAiGenerationUsed && (

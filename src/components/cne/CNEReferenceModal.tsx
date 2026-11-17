@@ -293,10 +293,19 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
           return false;
         }
         const chunkCount = Number(indexRes.data?.chunksCount ?? (indexRes as any).chunksCount ?? 0);
+        const warnings = Number(indexRes.data?.warningCount ?? (indexRes as any).warningCount ?? 0);
+        const excluded = Number(indexRes.data?.excludedCount ?? (indexRes as any).excludedCount ?? 0);
         setIndexingInfo({status:'SUCCESS',
           message:indexRes.message || 'Automated text-quality checks passed. Clinical accuracy remains the uploader responsibility.',chunksCount:chunkCount});
         setUploadStep('done');
-        success('CNE material indexed: '+chunkCount+' readable chunks. You remain responsible for clinical accuracy.');
+        if(warnings) warning('Indexed '+chunkCount+' eligible chunks with '+warnings+' warnings; '+excluded+' ambiguous chunks excluded from AI. Warnings are shown here and on AI Question Generation.');
+        else success('CNE material indexed: '+chunkCount+' readable chunks. You remain responsible for clinical accuracy.');
+        try {const images=await ApiService.extractCNEMaterialImages(cneId);
+          if(images.success && images.data){
+            if(images.data.imageCount) success(images.data.imageCount+' teaching image(s) stored privately for AI generation.');
+            if(images.data.warnings?.length)warning(images.data.warnings.join(' '));
+          } else warning(images.message||'Image extraction unavailable; the text index remains saved.');
+        }catch(e:any){warning(e?.message||'Image extraction could not complete; the text index remains saved.');}
       }
 
       // 2. Save unified textual content if entered
@@ -356,9 +365,11 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const wordCount = unifiedContent.trim() ? unifiedContent.trim().split(/\s+/).length : 0;
 
 
-  const needsQualityReindex = indexingInfo?.status === 'SUCCESS' &&
+  const needsQualityReindex = uploadStep !== 'done' && indexingInfo?.status === 'SUCCESS' &&
     !(indexingInfo.message || '').startsWith('V3 AUTO_INDEXED | FILE=');
-  const indexingLabel = needsQualityReindex
+  const hasFidelityWarnings = indexingInfo?.status === 'SUCCESS' &&
+    (/FIDELITY_WARNINGS=[1-9][0-9]*/.test(indexingInfo.message || '') || (indexingInfo.message || '').includes('WARNING:'));
+  const indexingLabel = hasFidelityWarnings && !needsQualityReindex ? 'Indexed with extraction warnings' : needsQualityReindex
     ? 'Quality reindex required'
     : indexingInfo?.status === 'SUCCESS'
     ? 'AI-ready text index'
@@ -372,7 +383,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     ? 'Index status not reported'
     : '';
 
-  const indexingBadgeClass = needsQualityReindex
+  const indexingBadgeClass = hasFidelityWarnings || needsQualityReindex
     ? 'bg-amber-100 text-amber-800 border-amber-200'
     : indexingInfo?.status === 'SUCCESS'
     ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
@@ -553,12 +564,22 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       <div>Indexed chunks: <strong className="text-slate-800">{typeof indexingInfo.chunksCount === 'number' ? indexingInfo.chunksCount : '—'}</strong></div>
                       {indexingInfo.errorCode && <div>Error code: <strong className="text-rose-700">{indexingInfo.errorCode}</strong></div>}
                     </div>
-                    {canModify && (['FAILED','PENDING','UNKNOWN','NEEDS_REVIEW'].includes(indexingInfo.status) || needsQualityReindex) && !isSaving && !loading && <button type="button" onClick={async () => {
+                    {canModify && (['FAILED','PENDING','UNKNOWN','NEEDS_REVIEW'].includes(indexingInfo.status) || needsQualityReindex || hasFidelityWarnings) && !isSaving && !loading && <button type="button" onClick={async () => {
                       if(!responsibilityAccepted){warning('Confirm uploader responsibility using the checkbox before reindexing.');return;}
                       setIsSaving(true);setUploadStep('indexing');setUploadStepError('');
                       try {const res=await ApiService.reindexLearningResource(cneId, responsibilityAccepted);
                         if(!res.success) {setUploadStep('failed');setUploadStepError(res.message || 'Indexing failed.');setIndexingInfo({status:'FAILED',message:res.message,errorCode:res.errorCode});warning(res.message || 'Indexing failed.');}
-                        else {const count=Number(res.data?.chunksCount ?? (res as any).chunksCount ?? 0);setIndexingInfo({status:'SUCCESS',message:res.message,chunksCount:count});setUploadStep('done');success('CNE material automatically indexed ('+count+' readable chunks). Uploader accepts clinical responsibility.');if(onUpdated)onUpdated();}}
+                        else {const count=Number(res.data?.chunksCount ?? (res as any).chunksCount ?? 0);
+                          const cautions=Number(res.data?.warningCount ?? (res as any).warningCount ?? 0);
+                          setIndexingInfo({status:'SUCCESS',message:res.message,chunksCount:count});setUploadStep('done');
+                          if(cautions) warning('Indexed '+count+' safe chunks with '+cautions+' extraction warnings. Review the warnings below or upload a clearer source.');
+                          else success('CNE material automatically indexed ('+count+' readable chunks). Uploader accepts clinical responsibility.');
+                          try{const visuals=await ApiService.extractCNEMaterialImages(cneId);
+                            if(visuals.success&&visuals.data){if(visuals.data.imageCount)success(visuals.data.imageCount+' teaching image(s) extracted.');
+                              if(visuals.data.warnings?.length)warning(visuals.data.warnings.join(' '));}
+                            else warning(visuals.message||'Image extraction unavailable.');}
+                          catch(e:any){warning(e?.message||'Image extraction unavailable.');}
+                          if(onUpdated)onUpdated();}}
                       catch(err:any){setUploadStep('failed');setUploadStepError(err?.message || 'Indexing error.');error(err?.message || 'Indexing error.');}
                       finally{setIsSaving(false);}
                     }} className="text-teal-700 font-semibold underline text-xs">Retry Indexing</button>}
@@ -568,6 +589,12 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       </div>
                     )}
                     {indexingInfo.status === 'NEEDS_REVIEW' && <p className="text-xs font-medium text-amber-800">This older index requires uploader responsibility confirmation and reindexing. Use the checkbox and Retry Indexing; no administrator review is needed.</p>}
+                    {hasFidelityWarnings && (
+                      <p role="status" className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+                        Some source content could not be indexed faithfully. Flagged passages are excluded from AI question evidence.
+                        Upload a clearer editable PPTX/DOCX if these concepts are needed. No administrator review is required.
+                      </p>
+                    )}
                     {indexingInfo.message && (
                       <div className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-2">
                         {indexingInfo.message}

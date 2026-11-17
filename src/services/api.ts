@@ -1510,8 +1510,8 @@ export class ApiService {
   // Planning and final generation are deliberately separate network requests.
   // The server holds the reservation/blueprint; the client never supplies evidence,
   // answer keys, or the quota reservation token for a resumed job.
-  static async planCNEAiGeneration(cneId: string): Promise<ApiResponse<{phase: string}>> {
-    return this.executeAction<{phase: string}>('generateCNEQuestions', {cneId, phase: 'PLAN'});
+  static async planCNEAiGeneration(cneId: string, selectedMaterialImageIds: string[] = [], visualPrivacyConfirmed = false): Promise<ApiResponse<{phase: string}>> {
+    return this.executeAction<{phase: string}>('generateCNEQuestions', {cneId, phase: 'PLAN', selectedMaterialImageIds, visualPrivacyConfirmed});
   }
 
   static async finishCNEAiGeneration(cneId: string): Promise<ApiResponse<CNEQuestion[]>> {
@@ -1522,11 +1522,23 @@ export class ApiService {
     return this.executeAction('getCNEAiJobStatus', {cneId});
   }
 
-  static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{cneId: string; hasOwnMaterial: boolean; status: string; message: string; indexCount: number}>> {
+  static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{cneId: string; hasOwnMaterial: boolean; status: string; message: string; indexCount: number; warningCount?:number; excludedCount?:number; fidelityWarnings?:string}>> {
     return this.executeAction('getCNEAiMaterialStatus', { cneId });
   }
 
-  static async reindexLearningResource(cneId: string, uploaderResponsibilityAccepted: boolean): Promise<ApiResponse<{chunksCount?: number; indexingStatus?: 'SUCCESS'}>> {
+  static async extractCNEMaterialImages(cneId: string): Promise<ApiResponse<{imageCount:number;warnings:string[];sourceDriveFileId:string}>> {
+    return this.executeAction('extractCNEMaterialImages', {cneId,uploaderDeclaration:'I_ACCEPT_RESPONSIBILITY'});
+  }
+
+  static async getCNEAiMaterialImages(cneId: string): Promise<ApiResponse<{images:{imageFileId:string;sourcePage:number;imageKind:string;caption:string;mimeType:string;size:number}[];sourceDriveFileId:string;materialReady:boolean}>> {
+    return this.executeAction('getCNEAiMaterialImages',{cneId});
+  }
+
+  static async getCNEAiMaterialImage(cneId: string,imageFileId:string): Promise<ApiResponse<{mimeType:string;base64Data:string}>> {
+    return this.executeAction('getCNEAiMaterialImage',{cneId,imageFileId});
+  }
+
+  static async reindexLearningResource(cneId: string, uploaderResponsibilityAccepted: boolean): Promise<ApiResponse<{chunksCount?: number; indexingStatus?: 'SUCCESS'; warningCount?: number; excludedCount?: number; fidelityWarnings?: string[]}>> {
     return this.executeAction('reindexLearningResource', { cneId,
       uploaderDeclaration: uploaderResponsibilityAccepted ? 'I_ACCEPT_RESPONSIBILITY' : undefined });
   }

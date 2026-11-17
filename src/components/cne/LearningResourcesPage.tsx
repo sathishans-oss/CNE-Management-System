@@ -210,7 +210,7 @@ export const LearningResourcesPage: React.FC<LearningResourcesPageProps> = ({
       return {
         label: item.chunksCount !== undefined ? `Indexed • ${item.chunksCount} chunks` : 'Indexed',
         className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-        title: item.indexingMessage || 'Document text indexing completed successfully.'
+        title: 'Document text indexing completed. Extraction warnings are shown in Upload and AI Question Generation.'
       };
     }
     if (status === 'NEEDS_REVIEW') {
