@@ -27,6 +27,128 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 
+
+// Integrated Gemini material-indexing and six-model retry regression checks.
+function runGeminiMaterialReviewChecks() {
+  const fs = { readFileSync };
+  /** Behavioral smoke tests for automatic Gemini CNE Material_Index review. */
+  const gas=fs.readFileSync(new URL('../Code.gs',import.meta.url),'utf8');
+  const fragment=gas.slice(gas.indexOf('/**\n * Automatic source review, NEVER'),gas.indexOf('function handleListNursingReferenceResources('));
+  assert(fragment.includes('function handleGeminiMaterialTextBatch('),'AI review handlers missing');
+  const headers={
+    Material_List:['CNE_ID','Topic','Drive_File_ID','Indexing_Status','Indexing_Message','Chunks_Count','Indexing_Error_Code','Indexed_At'],
+    Material_Index:['Index_ID','CNE_ID','Drive_File_ID','Resource_Title','Topic','Section_Heading','Chunk_Index','Chunk_Text','Clinical_Keywords','Extraction_Status','Updated_At']
+  };
+  function sheet(name,rows){return {
+    name,rows,
+    getLastRow(){return this.rows.length;},getLastColumn(){return this.rows[0].length;},
+    getDataRange(){return {getValues:()=>this.rows.map(r=>r.slice())};},
+    getRange(r,c,h=1,w=1){
+      const target=this;return {
+        getValues(){return Array.from({length:h},(_,i)=>Array.from({length:w},(_,j)=>target.rows[r-1+i][c-1+j]));},
+        setValue(value){target.rows[r-1][c-1]=value;},
+        setValues(values){values.forEach((row,i)=>row.forEach((value,j)=>{target.rows[r-1+i][c-1+j]=value;}));},
+        getValue(){return target.rows[r-1][c-1];}
+      };
+    }
+  };}
+  const original='V3 AUTO_INDEXED | FILE=FILE_ABC | UPLOADER=EMP1 | 2 chunks passed automated text-quality checks.';
+  const material=sheet('Material_List',[headers.Material_List,['CNE-ABC','Wound care','FILE_ABC','SUCCESS',original,2,'','2026-11-17']]);
+  const index=sheet('Material_Index',[headers.Material_Index,
+    ['IDX_CNE-ABC_FILE_ABC_V3_AABBCCDD_C1','CNE-ABC','FILE_ABC','Clinical.pdf','Wound care','Assessment',1,'Nursing assessment requires monitoring wound redness, temperature and drainage. Assess for deterioration and escalate care.','wound, assessment','SUCCESS',''],
+    ['IDX_CNE-ABC_FILE_ABC_V3_AABBCCDD_C2','CNE-ABC','FILE_ABC','Clinical.pdf','Wound care','Infection prevention',2,'Use infection prevention measures according to the clinical guidance, and document observations.','infection, nursing','SUCCESS','']
+  ]);
+  const records={Material_List:material,Material_Index:index};
+  let count=0, invalid=false, uncertain=false;
+  const context={console,Date,Math,JSON,
+    getSpreadsheet:()=>({getSheetByName:n=>records[n]}),cneMaterialIndexSheet_:()=>index,
+    getHeaderMap:sh=>Object.fromEntries(sh.rows[0].map((h,i)=>[h.toLowerCase().replace(/[^a-z0-9]/g,''),i])),
+    cneRequireMappedColumn_:(m,key)=>{let n=key.toLowerCase().replace(/[^a-z0-9]/g,'');assert(n in m);return m[n]},
+    findExactRowInColumn_:(sh,col,id)=>{let i=sh.rows.findIndex((r,n)=>n>0&&r[col]===id);return i<0?-1:i+1},
+    cneMaterialCurrentIndexId_:id=>/_V3_[0-9A-F]{8}_C\d+$/i.test(id),
+    cneMaterialUploaderAttestedMessage_:(msg,fid)=>msg.includes('FILE='+fid+' | UPLOADER='),
+    getCNEScheduleRecord:()=>({status:'Scheduled'}),checkQuestionManagementAuthorized:()=>null,
+    normalizeCNEStatus:x=>x, sanitizeCellInput:x=>String(x||''),
+    LockService:{getScriptLock:()=>({waitLock(){},releaseLock(){}})},
+    PropertiesService:{getScriptProperties:()=>({getProperty:k=>k==='GEMINI_API_KEY'?'PRIVATE':k==='CNE_AI_INDEX_MODEL'?'gemini-3.5-flash-lite':''})},
+    cneAiMaterialReviewSchema_:()=>({type:'OBJECT'}),
+    cneAiGeminiStructured_:(endpoint,prompt)=>{
+      count++;
+      assert(!prompt.includes('data:application/pdf'),'Original file payload must not be sent');
+      assert(!prompt.includes('base64'),'No original file bytes in text prompt');
+      assert(endpoint.includes('gemini-3.5-flash-lite'));
+      if(invalid)return {success:true,data:{reviews:[{indexId:'WRONG',assessment:'USABLE',keywords:[],riskNote:''}]}};
+      const refs=JSON.parse(prompt.slice(prompt.lastIndexOf('Source chunks (JSON):\n')+'Source chunks (JSON):\n'.length));
+      return {success:true,data:{reviews:refs.map(x=>({indexId:x.indexId,assessment:uncertain?'UNCERTAIN':'USABLE',keywords:['Nursing','fake hallucination'],riskNote:''}))}};
+    }
+  };
+  vm.createContext(context);vm.runInContext(fragment,context);
+  const started=context.cneAiBeginMaterialReview_('CNE-ABC','FILE_ABC',{employeeId:'EMP1'},{chunksCount:2});
+  assert(started.success);assert.equal(material.rows[1][3],'PENDING');
+  invalid=true;
+  let bad=context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC'},{employeeId:'EMP1'});
+  assert(!bad.success);assert.equal(bad.errorCode,'AI_INDEX_INVALID_RESPONSE');
+  assert(index.rows.slice(1).every(r=>r[9]==='SUCCESS'),'Invalid review must not save progress');
+  invalid=false;
+  const done=context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC'},{employeeId:'EMP1'});
+  assert(done.success&&done.data.done&&done.data.reviewedCount===2);
+  assert.equal(material.rows[1][3],'SUCCESS');
+  assert(material.rows[1][4].includes('GEMINI_REVIEW=COMPLETE'));
+  assert(index.rows.slice(1).every(r=>r[9]==='SUCCESS'));
+  assert(!index.rows[1][8].includes('fake hallucination'),'Unsupported keyword was added');
+  const redundant=context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC'},{employeeId:'EMP1'});
+  assert(redundant.success&&redundant.data.done);
+  assert.equal(count,2,'Already-complete review should make no new Gemini call');
+  // No source tampering, no edit of clinical text and no extra index rows.
+  assert.equal(index.rows.length,3);
+  assert(index.rows[1][7].includes('redness, temperature'));
+  // Source review limitation: a flagged chunk never makes the material ready.
+  material.rows[1][3]='SUCCESS';material.rows[1][4]=original;
+  index.rows.slice(1).forEach(r=>r[9]='SUCCESS');
+  assert(context.cneAiBeginMaterialReview_('CNE-ABC','FILE_ABC',{employeeId:'EMP1'},{chunksCount:2}).success);
+  uncertain=true;
+  const flagged=context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC'},{employeeId:'EMP1'});
+  assert(flagged.success&&flagged.data.done);
+  assert.equal(flagged.data.status,'NEEDS_REVIEW');
+  assert.equal(material.rows[1][3],'NEEDS_REVIEW');
+  assert(index.rows.slice(1).every(r=>r[9]==='AI_FLAGGED'));
+  console.log('Gemini material review behavioral smoke checks: 15/15 passed');
+}
+
+function runGeminiModelRotationChecks() {
+  const fs = { readFileSync };
+  /** Six free-model retry rotation smoke test; no live Google API calls. */
+  const code=fs.readFileSync(new URL('../Code.gs',import.meta.url),'utf8');
+  const text=code.slice(code.indexOf('function cneAiReadJsonResponse_('),code.indexOf('/** Exact server-owned quote spans.'));
+  const models=['gemini-3.8-flash','gemini-3.6-flash','gemini-3-flash','gemini-2.5-flash','gemini-3.5-flash-lite','gemini-3.1-flash-lite'];
+  const props=Object.fromEntries(models.map((x,i)=>['GEMINI_MODEL_'+(i+1),x]));
+  props.GEMINI_MAX_ATTEMPTS='6';
+  let calls=[],reported=[];
+  const ctx={JSON,Date,Math,console,
+    PropertiesService:{getScriptProperties:()=>({getProperty:k=>props[k]||''})},
+    UrlFetchApp:{fetch:(url,opts)=>{
+      const model=/\/models\/([^/:]+):generateContent/.exec(url)?.[1];calls.push({model,opts});
+      if(calls.length<6)return {getResponseCode:()=>503,getContentText:()=>JSON.stringify({error:{message:'temporarily overloaded'}}),getAllHeaders:()=>({})};
+      return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify({ok:true})}]}}]})};
+    }},
+    Utilities:{sleep:()=>{}},
+    logAuditAction:(...args)=>reported.push(args),
+    updateCNEAiProgress_:()=>{}
+  };
+  vm.createContext(ctx);vm.runInContext(text,ctx);
+  const result=ctx.cneAiGeminiStructured_('https://generativelanguage.googleapis.com/v1beta/models/'+models[0]+':generateContent?key=SECRET',
+    'NCLEX policy + verified evidence',{type:'OBJECT',properties:{ok:{type:'BOOLEAN'}}},4,
+    {stage:'BLUEPRINT',cneId:'CNE-123',employeeId:'EMP1',deadlineMs:Date.now()+120000});
+  assert(result.success);assert.equal(calls.length,6);
+  assert.deepEqual(calls.map(c=>c.model),models);
+  assert(calls.every(c=>c.opts.payload.includes('NCLEX policy + verified evidence')));
+  assert(calls.every(c=>c.opts.payload.includes('responseSchema')));
+  assert(reported.every(c=>!JSON.stringify(c).includes('SECRET')));
+  assert(reported.filter(c=>c[0]==='AI_QUESTION_GEMINI_RETRY').length===5);
+  console.log('Gemini six-model retry smoke checks: 6/6 passed');
+}
+
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(SCRIPT_DIR, '..');
 const SCRIPT_URL = pathToFileURL(join(SCRIPT_DIR, 'verify-all.js')).href;
@@ -10758,6 +10880,14 @@ if (process.argv.includes('--tz-run') || specialSuiteName === 'timezone') {
   runTimezoneVerification();
   process.exit(0);
 }
+if (specialSuiteName === 'material-ai') {
+  runGeminiMaterialReviewChecks();
+  process.exit(0);
+}
+if (specialSuiteName === 'gemini-rotation') {
+  runGeminiModelRotationChecks();
+  process.exit(0);
+}
 if (specialSuiteName === 'smart-hybrid') {
   runFocusedOnly('Smart Hybrid', createHybridChecks());
   process.exit(process.exitCode || 0);
@@ -11764,6 +11894,63 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if(ctx.cneAiReadJob_('CNE_123',first).state!=='PLANNED') throw Error('Owner cannot resume plan');
     if(ctx.cneAiReadJob_('CNE_123',{employeeId:'EDUCATOR_2'})) throw Error('Another user accessed generation plan');
   });
+  test('Completed AI job property is removed; saved status remains briefly available in cache',()=>{
+    const fresh=vm.createContext({console});vm.runInContext(gas,fresh,{timeout:12000});
+    const props={},cache={};
+    fresh.cneAiProgressKey_=(cneId,employeeId)=>'cne_ai_prog_'+cneId+'_'+employeeId;
+    fresh.PropertiesService={getScriptProperties:()=>({
+      getProperty:key=>props[key]||null,
+      setProperty:(key,value)=>{props[key]=value;},
+      deleteProperty:key=>{delete props[key];},
+      getProperties:()=>({...props})
+    })};
+    fresh.CacheService={getScriptCache:()=>({
+      put:(key,value)=>{cache[key]=value;},get:key=>cache[key]||null
+    })};
+    fresh.sanitizeCellInput=v=>String(v||'');
+    fresh.getCNEScheduleRecord=id=>({cneId:id,status:'Scheduled'});
+    fresh.checkQuestionManagementAuthorized=()=>null;
+    const owner={employeeId:'EDUCATOR_1'}, other={employeeId:'EDUCATOR_2'};
+    const key=fresh.cneAiJobKey_('CNE_123',owner.employeeId);
+    fresh.cneAiWriteJob_('CNE_123',owner,{state:'PLANNED',reservationToken:'TOKEN_1',objectives:[{objectiveId:'OBJ_1'}]});
+    if(fresh.cneAiDeleteCompletedJob_('CNE_123',owner,'TOKEN_1'))throw Error('Incomplete blueprint deleted');
+    fresh.cneAiWriteJob_('CNE_123',owner,{state:'PARTIAL_SUCCESS'});
+    if(fresh.cneAiDeleteCompletedJob_('CNE_123',owner,'TOKEN_1'))throw Error('Partial draft deleted');
+    fresh.cneAiWriteJob_('CNE_123',owner,{state:'UNCERTAIN'});
+    if(fresh.cneAiDeleteCompletedJob_('CNE_123',owner,'TOKEN_1'))throw Error('Uncertain commit deleted');
+    fresh.cneAiWriteJob_('CNE_123',owner,{state:'SAVED',objectives:[]});
+    if(fresh.cneAiDeleteCompletedJob_('CNE_123',owner,'WRONG_TOKEN'))throw Error('Wrong reservation deleted');
+    if(fresh.cneAiDeleteCompletedJob_('CNE_123',other,'TOKEN_1'))throw Error('Other owner deleted job');
+    if(!props[key])throw Error('Valid job missing before cleanup');
+    if(!fresh.cneAiDeleteCompletedJob_('CNE_123',owner,'TOKEN_1'))throw Error('Completed job not removed');
+    if(props[key])throw Error('Script Property survived completed cleanup');
+    if(fresh.cneAiDeleteCompletedJob_('CNE_123',owner,'TOKEN_1'))throw Error('Cleanup not idempotent');
+    const status=fresh.handleGetCNEAiJobStatus({cneId:'CNE_123'},owner);
+    if(!status.success||status.data.state!=='SAVED'||status.data.canResume!==false)throw Error('Completion cache missing');
+    if(fresh.handleGetCNEAiJobStatus({cneId:'CNE_123'},other).data.state!=='NONE')throw Error('Completion disclosed to another employee');
+    delete cache[fresh.cneAiCompletedJobCacheKey_('CNE_123',owner.employeeId)];
+    if(fresh.handleGetCNEAiJobStatus({cneId:'CNE_123'},owner).data.state!=='NONE')throw Error('Expired cache not empty');
+  });
+  test('Legacy cleanup removes only SAVED owner-matching job properties',()=>{
+    const fresh=vm.createContext({console});vm.runInContext(gas,fresh,{timeout:12000});
+    const store={GEMINI_API_KEY:'never-touch'};
+    fresh.cneAiProgressKey_=(cneId,employeeId)=>'cne_ai_prog_'+cneId+'_'+employeeId;
+    fresh.PropertiesService={getScriptProperties:()=>({
+      getProperty:key=>store[key]||null,
+      setProperty:(key,value)=>{store[key]=value;},
+      deleteProperty:key=>{delete store[key];},
+      getProperties:()=>({...store})
+    })};
+    const owner={employeeId:'EDU'};
+    fresh.cneAiWriteJob_('CNE1',owner,{state:'SAVED',reservationToken:'T1',objectives:[]});
+    fresh.cneAiWriteJob_('CNE2',owner,{state:'PARTIAL_SUCCESS',reservationToken:'T2'});
+    fresh.cneAiWriteJob_('CNE3',owner,{state:'UNCERTAIN',reservationToken:'T3'});
+    store['cne_ai_job_corrupt']='not-json';
+    const cleanup=fresh.cleanupCompletedCneAiJobs();
+    if(cleanup.removed!==1||cleanup.retained!==3)throw Error('Unexpected cleanup result');
+    if(fresh.cneAiReadJob_('CNE1',owner)||!fresh.cneAiReadJob_('CNE2',owner)||!fresh.cneAiReadJob_('CNE3',owner))throw Error('Incomplete job removed or complete job retained');
+    if(store.GEMINI_API_KEY!=='never-touch'||!store['cne_ai_job_corrupt'])throw Error('Unrelated properties modified');
+  });
   test('Two-stage quota reservation commits once, even after a resume or second finish',()=>{
     const fresh=vm.createContext({console});vm.runInContext(gas,fresh,{timeout:12000});
     const store={};let reservations=0,commits=0,releases=0;
@@ -11775,7 +11962,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     fresh.cneAiMaterialReadiness_=()=>({hasOwnMaterial:true,driveFileId:'CURRENT-FILE',indexedAt:'V1',status:'READY'});
     fresh.cneAiProgressKey_=(id,employee)=>id+'-'+employee;
     fresh.updateCNEAiProgress_=()=>{};
-    fresh.PropertiesService={getScriptProperties:()=>({getProperty:key=>store[key],setProperty:(key,val)=>{store[key]=val;}})};
+    fresh.PropertiesService={getScriptProperties:()=>({getProperty:key=>store[key],setProperty:(key,val)=>{store[key]=val;},deleteProperty:key=>{delete store[key];}})};
     fresh.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
     fresh.handleReserveAiQuota=()=>{reservations++;return{success:true,data:{reservationToken:'only-one-token'}};};
     fresh.handleReleaseAiQuota=()=>{releases++;return{success:true};};
@@ -11795,6 +11982,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     if(fresh.handleGetCNEAiJobStatus({cneId:'CNE_123'},other).data.state!=='NONE')throw Error('Cross-user job disclosure');
     const finished=fresh.handleGenerateCNEQuestions({cneId:'CNE_123',phase:'FINISH'},owner);
     if(!finished.success||finished.data.length!==5)throw Error('Finish did not save five questions');
+    if(store[fresh.cneAiJobKey_('CNE_123',owner.employeeId)])throw Error('Completed generation left a Script Property');
     if(fresh.handleGenerateCNEQuestions({cneId:'CNE_123',phase:'FINISH'},owner).success)throw Error('Second commit allowed');
     if(reservations!==1||commits!==1||releases!==0)throw Error('Quota safety regression');
   });
@@ -15193,7 +15381,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(display.includes('Loader2') && display.includes('animate-spin'));
       assert(display.includes('Checking existing CNE material'));
       assert(!display.includes('h-1.5 rounded-full') && !display.includes('animate-pulse'));
-      assert(material.includes("uploadStep==='indexing'"), 'Two-stage upload/indexing indicator must remain');
+      assert(material.includes('MaterialIndexStages') && material.includes("setMaterialStage('ai')"), 'Automatic extracted-text review steps must remain visible');
     }],
     ['Desktop question toolbar aligns tabs left and creation actions right, preserving mobile grid', () => {
       const header = modal.slice(modal.indexOf('Wide screens: view tabs'), modal.indexOf('</header>'));
@@ -17366,6 +17554,11 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
 }
 
 if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPassed}/${focusedChecks.length} passed`);
+if (passed === selected.length && focusedPassed === focusedChecks.length && !wantedSuite) {
+  runGeminiMaterialReviewChecks();
+  runGeminiModelRotationChecks();
+}
+
 if (passed !== selected.length || focusedPassed !== focusedChecks.length) process.exit(1);
 if (process.argv.includes('--with-timezone')) runTimezoneVerification();
 

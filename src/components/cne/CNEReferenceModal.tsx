@@ -18,6 +18,7 @@ import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { formatCneDateTimeDisplay } from '../../utils';
 import { MaterialIndexWarnings } from './MaterialIndexWarnings';
+import { MaterialIndexStages, MaterialIndexStage } from './MaterialIndexStages';
 
 interface CNEReferenceModalProps {
   cne: CNERecord;
@@ -44,6 +45,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [uploadStep, setUploadStep] = useState<'idle'|'uploading'|'uploaded'|'indexing'|'done'|'failed'>('idle');
   const [uploadStepError, setUploadStepError] = useState('');
+  const [materialStage,setMaterialStage]=useState<MaterialIndexStage>('idle');
+  const [reviewProgress,setReviewProgress]=useState({done:0,total:0});
   const savingRef = useRef(false);
 
   // Learning material content
@@ -81,7 +84,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     setIndexingInfo(null);
     setShowDeleteConfirm(false);
     setLoadError(null);
-    setUploadStep('idle');
+    setUploadStep('idle');setMaterialStage('idle');setReviewProgress({done:0,total:0});
     setUploadStepError('');
     loadAllReferenceData();
     return () => {
@@ -253,7 +256,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     savingRef.current = true;
     setIsSaving(true);
     setUploadStepError('');
-    setUploadStep(selectedFile ? 'uploading' : 'idle');
+    setUploadStep(selectedFile ? 'uploading' : 'idle');setMaterialStage(selectedFile?'upload':'idle');
 
     try {
       // 1. Upload newly selected file if provided
@@ -282,10 +285,10 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         setIndexingInfo({status:'PENDING', message:'Learning material uploaded. Beginning text indexing.', chunksCount:0});
         // Stage 2: separate authenticated Apps Script execution. The file stays
         // saved if indexing fails, so the educator can retry without re-uploading.
-        setUploadStep('indexing');
+        setUploadStep('indexing');setMaterialStage('extract');
         const indexRes = await ApiService.reindexLearningResource(cneId, responsibilityAccepted);
         if (!indexRes.success) {
-          setUploadStep('failed');
+          setUploadStep('failed');setMaterialStage('failed');
           const detail = indexRes.message || 'No readable CNE content could be indexed.';
           setUploadStepError(detail);
           setIndexingInfo({status:'FAILED', message:detail, errorCode:indexRes.errorCode, chunksCount:0});
@@ -296,17 +299,30 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         const chunkCount = Number(indexRes.data?.chunksCount ?? (indexRes as any).chunksCount ?? 0);
         const warnings = Number(indexRes.data?.warningCount ?? (indexRes as any).warningCount ?? 0);
         const excluded = Number(indexRes.data?.excludedCount ?? (indexRes as any).excludedCount ?? 0);
-        setIndexingInfo({status:'SUCCESS',
-          message:indexRes.message || 'Automated text-quality checks passed. Clinical accuracy remains the uploader responsibility.',chunksCount:chunkCount});
-        setUploadStep('done');
-        if(warnings) warning('Indexed '+chunkCount+' eligible chunks with '+warnings+' warnings; '+excluded+' ambiguous chunks excluded from AI. Warnings are shown here and on AI Question Generation.');
-        else success('CNE material indexed: '+chunkCount+' readable chunks. You remain responsible for clinical accuracy.');
+        setMaterialStage('ai');
+        setIndexingInfo({status:'PENDING',message:'Gemini is reviewing the extracted source text.',chunksCount:chunkCount});
+        const reviewed=await ApiService.completeCNEMaterialTextReview(cneId,(done,total)=>setReviewProgress({done,total}));
+        if(!reviewed.success){
+          setUploadStep('failed');setMaterialStage('failed');
+          const detail=reviewed.message||'Gemini text review was interrupted; resume from Material Indexing Status.';
+          setUploadStepError(detail);
+          setIndexingInfo({status:'PENDING',message:detail,errorCode:reviewed.errorCode,chunksCount:chunkCount});
+          warning('Material saved; Gemini review not complete: '+detail);
+          if(onUpdated)onUpdated();
+          return false;
+        }
+        setMaterialStage('verify');
+        setIndexingInfo({status:'SUCCESS',message:reviewed.message||'All indexed source chunks reviewed by Gemini; educator review remains necessary.',chunksCount:chunkCount});
+        if(warnings) warning('Indexed '+chunkCount+' eligible chunks with '+warnings+' extraction warnings and '+excluded+' excluded ambiguous chunks.');
+        else success('All '+chunkCount+' eligible material chunks received Gemini review. This is not clinical approval.');
+        setMaterialStage('images');
         try {const images=await ApiService.extractCNEMaterialImages(cneId);
           if(images.success && images.data){
             if(images.data.imageCount) success(images.data.imageCount+' teaching image(s) stored privately for AI generation.');
             if(images.data.warnings?.length)warning(images.data.warnings.join(' '));
-          } else warning(images.message||'Image extraction unavailable; the text index remains saved.');
-        }catch(e:any){warning(e?.message||'Image extraction could not complete; the text index remains saved.');}
+          } else warning(images.message||'Image extraction unavailable; verified text index remains saved.');
+        }catch(e:any){warning(e?.message||'Image extraction could not complete; verified text index remains saved.');}
+        setMaterialStage('done');setUploadStep('done');
       }
 
       // 2. Save unified textual content if entered
@@ -437,17 +453,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             </div>
           </div>}
           {loadError && <div role="alert" className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-b border-rose-200">{loadError} <button type="button" onClick={() => void loadAllReferenceData()} className="ml-2 underline font-bold">Retry</button></div>}
-          {uploadStep !== 'idle' && <div role="status" aria-live="polite" className="px-4 sm:px-6 py-3 bg-white border-b border-teal-100 space-y-2">
-            <div className="text-xs font-semibold text-slate-800">CNE Material Upload &amp; Indexing</div>
-            <div className="flex items-center gap-2 text-xs">
-              {['uploaded','indexing','done'].includes(uploadStep) ? <CheckCircle2 className="w-4 h-4 text-emerald-600"/> : uploadStep==='uploading' ? <Loader2 className="w-4 h-4 text-teal-700 animate-spin"/> : <AlertCircle className="w-4 h-4 text-rose-600"/>}
-              <span>1. Uploading CNE material {['uploaded','indexing','done'].includes(uploadStep) ? '— Completed' : uploadStep==='uploading' ? '— In progress' : '— Failed'}</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              {uploadStep==='done' ? <CheckCircle2 className="w-4 h-4 text-emerald-600"/> : uploadStep==='indexing' ? <Loader2 className="w-4 h-4 animate-spin text-teal-700"/> : uploadStep==='failed' && existingResource?.hasFile ? <AlertCircle className="w-4 h-4 text-rose-600"/> : <span className="w-4 h-4 rounded-full border border-slate-300"/>}
-              <span>2. Indexing document text for AI generation {uploadStep==='done' ? '— Completed' : uploadStep==='indexing' ? '— In progress (OCR for scanned PDFs)' : uploadStep==='failed' && existingResource?.hasFile ? '— Failed' : '— Pending'}</span>
-            </div>
-            {uploadStepError && <p className="text-xs text-rose-700">{uploadStepError}</p>}
+          {uploadStep !== 'idle' && <div className="px-4 sm:px-6 py-3 border-b border-teal-100 bg-white max-h-[36dvh] overflow-y-auto">
+            <MaterialIndexStages stage={materialStage} reviewedCount={reviewProgress.done} totalChunks={reviewProgress.total} error={uploadStepError} uploadAlreadyDone={!!existingResource?.hasFile}/>
           </div>}
             {isClosed && (
               <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 text-xs text-slate-700 shrink-0">
@@ -565,25 +572,51 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       <div>Indexed chunks: <strong className="text-slate-800">{typeof indexingInfo.chunksCount === 'number' ? indexingInfo.chunksCount : '—'}</strong></div>
                       {indexingInfo.errorCode && <div>Error code: <strong className="text-rose-700">{indexingInfo.errorCode}</strong></div>}
                     </div>
+                    {uploadStep === 'idle' && <MaterialIndexStages
+                      stage={indexingInfo.status==='SUCCESS' && /GEMINI_REVIEW=COMPLETE/.test(indexingInfo.message||'') ? 'done' :
+                        indexingInfo.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'') ? 'ai' :
+                        indexingInfo.status==='SUCCESS' ? 'extract' : 'failed'}
+                      reviewedCount={Number((/REVIEWED=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)}
+                      totalChunks={Number((/TOTAL=(\d+)/.exec(indexingInfo.message||'')||[])[1]||indexingInfo.chunksCount||0)}
+                      uploadAlreadyDone
+                    />}
                     {canModify && (['FAILED','PENDING','UNKNOWN','NEEDS_REVIEW'].includes(indexingInfo.status) || needsQualityReindex || hasFidelityWarnings) && !isSaving && !loading && <button type="button" onClick={async () => {
                       if(!responsibilityAccepted){warning('Confirm uploader responsibility using the checkbox before reindexing.');return;}
-                      setIsSaving(true);setUploadStep('indexing');setUploadStepError('');
-                      try {const res=await ApiService.reindexLearningResource(cneId, responsibilityAccepted);
-                        if(!res.success) {setUploadStep('failed');setUploadStepError(res.message || 'Indexing failed.');setIndexingInfo({status:'FAILED',message:res.message,errorCode:res.errorCode});warning(res.message || 'Indexing failed.');}
-                        else {const count=Number(res.data?.chunksCount ?? (res as any).chunksCount ?? 0);
-                          const cautions=Number(res.data?.warningCount ?? (res as any).warningCount ?? 0);
-                          setIndexingInfo({status:'SUCCESS',message:res.message,chunksCount:count});setUploadStep('done');
-                          if(cautions) warning('Indexed '+count+' safe chunks with '+cautions+' extraction warnings. Review the warnings below or upload a clearer source.');
-                          else success('CNE material automatically indexed ('+count+' readable chunks). Uploader accepts clinical responsibility.');
-                          try{const visuals=await ApiService.extractCNEMaterialImages(cneId);
-                            if(visuals.success&&visuals.data){if(visuals.data.imageCount)success(visuals.data.imageCount+' teaching image(s) extracted.');
-                              if(visuals.data.warnings?.length)warning(visuals.data.warnings.join(' '));}
-                            else warning(visuals.message||'Image extraction unavailable.');}
-                          catch(e:any){warning(e?.message||'Image extraction unavailable.');}
-                          if(onUpdated)onUpdated();}}
-                      catch(err:any){setUploadStep('failed');setUploadStepError(err?.message || 'Indexing error.');error(err?.message || 'Indexing error.');}
+                      setIsSaving(true);setUploadStep('indexing');setUploadStepError('');setMaterialStage('extract');
+                      try {
+                        const resume=indexingInfo?.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'');
+                        let count=Number(indexingInfo?.chunksCount||0);
+                        if(!resume){
+                          const res=await ApiService.reindexLearningResource(cneId, responsibilityAccepted);
+                          if(!res.success){
+                            setUploadStep('failed');setMaterialStage('failed');setUploadStepError(res.message||'Indexing failed.');
+                            setIndexingInfo({status:'FAILED',message:res.message,errorCode:res.errorCode});
+                            warning(res.message||'Indexing failed.');return;
+                          }
+                          count=Number(res.data?.chunksCount ?? (res as any).chunksCount ?? 0);
+                        }
+                        setMaterialStage('ai');
+                        setIndexingInfo({status:'PENDING',message:'Gemini is reviewing extracted text chunks.',chunksCount:count});
+                        const reviewed=await ApiService.completeCNEMaterialTextReview(cneId,(done,total)=>setReviewProgress({done,total}));
+                        if(!reviewed.success){
+                          setUploadStep('failed');setMaterialStage('failed');setUploadStepError(reviewed.message||'Gemini review interrupted.');
+                          setIndexingInfo({status:'PENDING',message:reviewed.message,errorCode:reviewed.errorCode,chunksCount:count});
+                          warning(reviewed.message||'Gemini review interrupted. Resume using this button.');return;
+                        }
+                        setMaterialStage('verify');setIndexingInfo({status:'SUCCESS',message:reviewed.message,chunksCount:count});
+                        setMaterialStage('images');
+                        try {const visuals=await ApiService.extractCNEMaterialImages(cneId);
+                          if(visuals.success&&visuals.data){if(visuals.data.imageCount)success(visuals.data.imageCount+' teaching image(s) extracted.');
+                            if(visuals.data.warnings?.length)warning(visuals.data.warnings.join(' '));}
+                          else warning(visuals.message||'Image extraction unavailable.');}
+                        catch(e:any){warning(e?.message||'Image extraction unavailable.');}
+                        setUploadStep('done');setMaterialStage('done');
+                        success('All '+count+' indexed source chunks received Gemini review.');
+                        if(onUpdated)onUpdated();
+                        await loadAllReferenceData();
+                      }catch(err:any){setUploadStep('failed');setMaterialStage('failed');setUploadStepError(err?.message||'Indexing error.');error(err?.message||'Indexing error.');}
                       finally{setIsSaving(false);}
-                    }} className="text-teal-700 font-semibold underline text-xs">Retry Indexing</button>}
+                    }} className="text-teal-700 font-semibold underline text-xs">{indexingInfo.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'')?'Resume Gemini Review':'Retry Indexing'}</button>}
                     {needsQualityReindex && (
                       <div className="text-[11px] text-amber-800 leading-relaxed bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2" role="status">
                         This material was indexed with an older clinical-text algorithm. Use Retry Indexing to build a section-aware V3 index before Gemini generates questions. The original file will not be replaced.
@@ -674,12 +707,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
               {canModify && (selectedFile || existingResource?.hasFile) && (
                 <label className="flex items-start gap-2 rounded-lg border border-teal-200 bg-teal-50 p-3 text-xs leading-relaxed text-teal-900">
                   <input type="checkbox" className="mt-0.5 shrink-0" checked={responsibilityAccepted} onChange={e => setResponsibilityAccepted(e.target.checked)} />
-                  <span><strong>Uploader responsibility:</strong> I accept responsibility for the clinical accuracy, drug and treatment details, tables, references and permissions in this material. This confirmation is required when uploading or reindexing. Automated checks cannot establish clinical correctness; no administrator review is required.</span>
+                  <span><strong>Uploader responsibility:</strong> I accept responsibility for the clinical accuracy, drug and treatment details, tables, references and permissions in this material. This confirmation is required when uploading or reindexing. I confirm Gemini may review eligible extracted teaching text under institutional policy, and that no identifiable patient information is present. AI review is not clinical approval.</span>
                 </label>
               )}
 
               {/* Text Notes / Guidelines Section */}
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-2">
+              <details className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-2">
+                <summary className="cursor-pointer text-xs font-semibold text-slate-700">Supplementary clinical notes (optional; not used for material indexing)</summary>
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                     <FileText className="w-4 h-4 text-teal-600" />
@@ -707,7 +741,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     Last updated: <strong className="text-slate-700">{formatCneDateTimeDisplay(updatedAt)}</strong>
                   </div>
                 )}
-              </div>
+              </details>
             </div>
 
             {/* Modal Footer with Save and Save & Next */}

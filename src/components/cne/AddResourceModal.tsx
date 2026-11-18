@@ -5,6 +5,7 @@ import { ApiService } from '../../services/api';
 import { useToast } from '../Toast';
 import { formatCneDateTimeDisplay } from '../../utils';
 import { MaterialIndexWarnings } from './MaterialIndexWarnings';
+import { MaterialIndexStages, MaterialIndexStage } from './MaterialIndexStages';
 
 interface AddResourceModalProps {
   isOpen: boolean;
@@ -24,11 +25,12 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
   const [loadingClasses, setLoadingClasses] = useState(false);
   const [selectedCneId, setSelectedCneId] = useState('');
   const [file, setFile] = useState<File | null>(null);
-  const [notes, setNotes] = useState('');
   const [responsibilityAccepted, setResponsibilityAccepted] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [uploadStage, setUploadStage] = useState<'idle'|'upload'|'index'|'done'|'failed'>('idle');
+  const [materialStage,setMaterialStage]=useState<MaterialIndexStage>('idle');
+  const [reviewProgress,setReviewProgress]=useState({done:0,total:0});
   const [stageError, setStageError] = useState('');
   const [indexSummary,setIndexSummary] = useState<{safe:number;excluded:number;warnings:string[];imageCount:number;imageNotes:string[]}|null>(null);
   const [loadError, setLoadError] = useState('');
@@ -40,7 +42,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
   useEffect(() => {
     if (!isOpen) return;
     const request = ++requestRef.current;
-    setSelectedCneId(''); setFile(null); setNotes(''); setResponsibilityAccepted(false); setLoadError('');setIndexSummary(null);
+    setSelectedCneId(''); setFile(null); setMaterialStage('idle');setReviewProgress({done:0,total:0}); setResponsibilityAccepted(false); setLoadError('');setIndexSummary(null);
     setLoadingClasses(true);
     void ApiService.getCNERecords().then(response => {
       if (request !== requestRef.current) return;
@@ -58,7 +60,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
     if (!/\.(pdf|doc|docx|ppt|pptx)$/i.test(candidate.name)) { error('Only PDF, DOC, DOCX, PPT or PPTX learning materials are supported.'); return; }
     if (candidate.size > 5 * 1024 * 1024) { error('CNE learning material must not exceed 5 MB.'); return; }
     setFile(candidate);
-    setResponsibilityAccepted(false);setIndexSummary(null);setUploadStage('idle');
+    setResponsibilityAccepted(false);setIndexSummary(null);setUploadStage('idle');setMaterialStage('idle');
   };
 
   const upload = async (event: React.FormEvent) => {
@@ -68,7 +70,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
     if (!responsibilityAccepted) { error('Confirm your responsibility for the accuracy of the uploaded clinical content.'); return; }
     const selected = classes.find(record => record.cneId === selectedCneId);
     if (!selected) { error('The selected CNE is no longer available. Refresh the page.'); return; }
-    submitRef.current = true; setSubmitting(true);setUploadStage('upload');setStageError('');
+    submitRef.current = true; setSubmitting(true);setUploadStage('upload');setMaterialStage('upload');setStageError('');
     try {
       const base64Data = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -78,28 +80,31 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
       });
       const result = await ApiService.uploadLearningResource({
         cneId: selectedCneId, base64Data, fileName: file.name,
-        fileType: file.type || 'application/octet-stream', unifiedContent: notes.trim() || undefined, deferIndexing:true,
+        fileType: file.type || 'application/octet-stream', deferIndexing:true,
         uploaderDeclaration:'I_ACCEPT_RESPONSIBILITY'
       });
       if (!result.success) throw new Error(result.message || 'Could not upload CNE material.');
-      setUploadStage('index');
+      setUploadStage('index');setMaterialStage('extract');
       const indexed=await ApiService.reindexLearningResource(selectedCneId, responsibilityAccepted);
       if(!indexed.success){setUploadStage('failed');setStageError(indexed.message||'Document indexing failed.');warning('Learning material saved, but indexing failed: '+(indexed.message||'Retry from the CNE Material page.'));onSuccess();return;}
-      setUploadStage('done');
+      setMaterialStage('ai');
+      const review=await ApiService.completeCNEMaterialTextReview(selectedCneId,(done,total)=>setReviewProgress({done,total}));
+      if(!review.success){setUploadStage('failed');setMaterialStage('failed');setStageError(review.message||'Gemini review was interrupted. You can resume from the CNE material page.');warning('The file is saved but Gemini review is incomplete: '+(review.message||''));onSuccess();return;}
+      setMaterialStage('verify');
       const safeCount = Number(indexed.data?.chunksCount ?? (indexed as any).chunksCount ?? 0);
       const excludedCount = Number(indexed.data?.excludedCount ?? (indexed as any).excludedCount ?? 0);
       const warningCount = Number(indexed.data?.warningCount ?? (indexed as any).warningCount ?? 0);
-      let imageCount=0, imageNotes:string[]=[];
+      let imageCount=0, imageNotes:string[]=[];setMaterialStage('images');
       try{const extraction=await ApiService.extractCNEMaterialImages(selectedCneId);
         if(extraction.success&&extraction.data){imageCount=Number(extraction.data.imageCount||0);imageNotes=extraction.data.warnings||[];}
         else imageNotes=[extraction.message||'Image extraction was unavailable. Text indexing remains saved.'];
       }catch(e:any){imageNotes=[e?.message||'Image extraction could not complete.'];}
-      setIndexSummary({safe:safeCount,excluded:excludedCount,warnings:indexed.data?.fidelityWarnings||[],imageCount,imageNotes});
+      setIndexSummary({safe:safeCount,excluded:excludedCount,warnings:indexed.data?.fidelityWarnings||[],imageCount,imageNotes});setMaterialStage('done');setUploadStage('done');
       if (warningCount > 0) warning('Indexed '+safeCount+' safe text chunks with '+warningCount+' extraction warnings. Details are shown in this upload window.');
       else success('CNE learning material indexed: '+safeCount+' readable chunks. You remain responsible for clinical accuracy.');
       onSuccess();
     } catch (err: any) {
-      setUploadStage('failed');setStageError(err?.message || 'Could not upload CNE learning material.');error(err?.message || 'Could not upload CNE learning material.');
+      setUploadStage('failed');setMaterialStage('failed');setStageError(err?.message || 'Could not upload CNE learning material.');error(err?.message || 'Could not upload CNE learning material.');
     } finally { submitRef.current = false; setSubmitting(false); }
   };
 
@@ -139,24 +144,16 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
             </div>
             <label className="flex items-start gap-2 rounded-lg border border-teal-200 bg-teal-50 p-3 text-xs leading-relaxed text-teal-900">
               <input type="checkbox" className="mt-0.5 shrink-0" checked={responsibilityAccepted} onChange={e => setResponsibilityAccepted(e.target.checked)} required />
-              <span><strong>Uploader responsibility (required):</strong> I confirm this teaching material is appropriate for the selected CNE and accept responsibility for its clinical accuracy, tables, drug information, references and permissions. Automated indexing verifies text readability, not clinical correctness. No administrator review is required.</span>
+              <span><strong>Uploader responsibility (required):</strong> I confirm this teaching material is appropriate for the selected CNE and accept responsibility for its clinical accuracy, tables, drug information, references and permissions. I confirm external Gemini processing is permitted for eligible extracted educational text and that no identifiable patient information is present. Gemini review does not establish clinical correctness or replace educator judgment.</span>
             </label>
-            <label className="block font-bold text-slate-700">Notes (optional)
-              <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} className="mt-1 block w-full rounded-lg border border-slate-300 p-3 text-xs font-normal"/>
-            </label>
+            <p className="rounded-lg bg-slate-50 p-3 text-[11px] text-slate-600">No manual indexing text is required. The application extracts teaching text from the uploaded file, then Gemini reviews every eligible chunk before the index is marked ready.</p>
           </div>
-          {uploadStage!=='idle' && <div role="status" className="shrink-0 px-4 py-2 border-t text-xs text-slate-700 space-y-1.5">
-            <p className="flex items-center gap-2">{['index','done'].includes(uploadStage)?<span className="text-emerald-600">✓</span>:uploadStage==='upload'?<Loader2 className="h-3.5 w-3.5 animate-spin"/>:<span>○</span>} 1. Uploading CNE material</p>
-            <p className="flex items-center gap-2">{uploadStage==='done'?<span className="text-emerald-600">✓</span>:uploadStage==='index'?<Loader2 className="h-3.5 w-3.5 animate-spin"/>:<span>○</span>} 2. Indexing document text for AI generation</p>
-            {stageError && <p className="text-rose-700">{stageError}</p>}
-            {indexSummary && <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900">
-              <p className="font-bold">Indexing finished: {indexSummary.safe} usable text chunks, {indexSummary.excluded} excluded, {indexSummary.imageCount} images stored.</p>
-              {indexSummary.warnings.length>0 && <MaterialIndexWarnings
-                warningText={indexSummary.warnings.join('; ')}
-                warningCount={indexSummary.warnings.length}
-                excludedCount={indexSummary.excluded}/>}
-              {indexSummary.imageNotes.map((w,i)=><p key={'image'+i} className="mt-1 break-words">{w}</p>)}
-              <p className="mt-1">The AI question generation page will show warnings and image choices before generation.</p>
+          {uploadStage!=='idle' && <div className="shrink-0 border-t px-4 py-2 space-y-2 overflow-y-auto max-h-[38dvh]">
+            <MaterialIndexStages stage={materialStage} reviewedCount={reviewProgress.done} totalChunks={reviewProgress.total} error={stageError}/>
+            {indexSummary && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              <p className="font-bold">Indexed: {indexSummary.safe} source chunks; {indexSummary.excluded} ambiguous chunks excluded; {indexSummary.imageCount} images stored.</p>
+              {indexSummary.warnings.length > 0 && <MaterialIndexWarnings warningText={indexSummary.warnings.join('; ')} warningCount={indexSummary.warnings.length} excludedCount={indexSummary.excluded}/>} 
+              {indexSummary.imageNotes.map((w,i) => <p key={i} className="mt-1 break-words">{w}</p>)}
             </div>}
           </div>}
           <div className="shrink-0 flex justify-end gap-2 border-t bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">

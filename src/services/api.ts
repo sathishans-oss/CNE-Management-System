@@ -1538,9 +1538,30 @@ export class ApiService {
     return this.executeAction('getCNEAiMaterialImage',{cneId,imageFileId});
   }
 
-  static async reindexLearningResource(cneId: string, uploaderResponsibilityAccepted: boolean): Promise<ApiResponse<{chunksCount?: number; indexingStatus?: 'SUCCESS'; warningCount?: number; excludedCount?: number; fidelityWarnings?: string[]}>> {
-    return this.executeAction('reindexLearningResource', { cneId,
+  static async reindexLearningResource(cneId: string, uploaderResponsibilityAccepted: boolean): Promise<ApiResponse<{chunksCount?: number; indexingStatus?: 'SUCCESS'|'PENDING'; reviewedCount?:number; totalChunks?:number; warningCount?: number; excludedCount?: number; fidelityWarnings?: string[]}>> {
+    return this.executeAction('reindexLearningResource', { cneId, requireGeminiReview:true,
       uploaderDeclaration: uploaderResponsibilityAccepted ? 'I_ACCEPT_RESPONSIBILITY' : undefined });
+  }
+
+  static async runGeminiMaterialReviewBatch(cneId:string): Promise<ApiResponse<{done:boolean;status:'PENDING'|'SUCCESS'|'NEEDS_REVIEW';reviewedCount:number;totalChunks:number;flaggedCount?:number}>> {
+    return this.executeAction('runGeminiMaterialReviewBatch',{cneId});
+  }
+
+  /** Review every extracted teaching-text chunk in resumable Gemini batches. */
+  static async completeCNEMaterialTextReview(cneId:string,onProgress?:(done:number,total:number)=>void): Promise<ApiResponse<{done:boolean;status:'PENDING'|'SUCCESS'|'NEEDS_REVIEW';reviewedCount:number;totalChunks:number;flaggedCount?:number}>> {
+    // Each request is a separate Apps Script execution and can be resumed.
+    for(let n=0;n<250;n++){
+      const result=await this.runGeminiMaterialReviewBatch(cneId);
+      if(!result.success)return result;
+      const info=result.data;
+      if(!info)return {success:false,errorCode:'AI_INDEX_INVALID_RESPONSE',message:'Material review returned no progress information.'};
+      onProgress?.(info.reviewedCount,info.totalChunks);
+      if(info.done){
+        if(info.status!=='SUCCESS')return {success:false,errorCode:'GEMINI_CLINICAL_CONTENT_UNCERTAIN',message:result.message||'Gemini found uncertain material. Please upload a clearer file.',data:info};
+        return result;
+      }
+    }
+    return {success:false,errorCode:'AI_INDEX_BATCH_LIMIT',message:'Material review requires more batches than expected. The saved progress is preserved.'};
   }
 
   static async getCNEAiGenerationProgress(cneId: string): Promise<ApiResponse<{stage: number; message: string; updatedAt?: number}>> {

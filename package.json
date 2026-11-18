@@ -27,7 +27,9 @@
     "verify:timezone": "node scripts/verify-all.js --suite timezone",
     "verify:dropdown-retry": "node scripts/verify-all.js --suite dropdown-retry",
     "verify:complete": "node scripts/verify-all.js --with-timezone",
-    "verify:formats": "node scripts/verify-all.js --suite formats"
+    "verify:formats": "node scripts/verify-all.js --suite formats",
+    "verify:material-ai": "node scripts/verify-all.js --suite material-ai",
+    "verify:gemini-rotation": "node scripts/verify-all.js --suite gemini-rotation"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
