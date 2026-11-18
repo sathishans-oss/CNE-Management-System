@@ -25,6 +25,7 @@ import { CNEQuestionImage } from './CNEQuestionImage';
 import { useAccessibleDialog } from '../common/useAccessibleDialog';
 import { CNEQuestionHeaderStatusTag } from './CNEQuestionHeaderStatusTag';
 import { MaterialIndexWarnings } from './MaterialIndexWarnings';
+import { MaterialReviewFlags } from './MaterialReviewFlags';
 
 interface CNEQuestionsModalProps {
   cne: CNERecord;
@@ -133,6 +134,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [materialWarningCount,setMaterialWarningCount] = useState(0);
   const [materialExcludedCount,setMaterialExcludedCount] = useState(0);
   const [materialWarningText,setMaterialWarningText] = useState('');
+  const [materialFlagMessage,setMaterialFlagMessage] = useState('');
   const [materialImages,setMaterialImages] = useState<{imageFileId:string;sourcePage:number;imageKind:string;caption:string;mimeType:string;size:number}[]>([]);
   const [chosenMaterialImageIds,setChosenMaterialImageIds] = useState<string[]>([]);
   const [showAiSetup,setShowAiSetup] = useState(false);
@@ -188,7 +190,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setGenerationStep(0);
     setMaterialStatusCode('NOT_UPLOADED');
     setMaterialStatusMessage('Upload CNE learning material to enable AI question generation.');
-    setMaterialWarningCount(0);setMaterialExcludedCount(0);setMaterialWarningText('');
+    setMaterialWarningCount(0);setMaterialExcludedCount(0);setMaterialWarningText('');setMaterialFlagMessage('');
     setMaterialImages([]);setChosenMaterialImageIds([]);setShowAiSetup(false);setAiWarningExpanded(false);setMaterialImagePreview({});
     setReindexingMaterial(false);
     setCheckingMaterial(false);
@@ -327,6 +329,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       setMaterialWarningCount(Number(status.data.warningCount||0));
       setMaterialExcludedCount(Number(status.data.excludedCount||0));
       setMaterialWarningText(String(status.data.fidelityWarnings||''));
+      setMaterialFlagMessage(String(status.data.reviewFlagDetails||''));
       return Boolean(status.data.hasOwnMaterial);
     } catch (e: any) {
       if (requestId === materialRequestRef.current && targetCneId === currentCneIdRef.current) {
@@ -1421,9 +1424,10 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 <section className="space-y-2 rounded-xl border border-slate-200 p-3" aria-label="AI learning material status">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-semibold text-slate-900">Learning material evidence</p>
-                    <span className={`rounded-full px-2 py-1 font-semibold ${materialStatusCode==='READY'?'bg-emerald-100 text-emerald-800':'bg-amber-100 text-amber-900'}`}>{checkingMaterial || materialStatusCode==='CHECKING'?'Checking…':materialStatusCode==='READY'?'Ready':materialStatusCode.replace(/_/g,' ')}</span>
+                    <span className={`rounded-full px-2 py-1 font-semibold ${materialStatusCode==='READY'?'bg-emerald-100 text-emerald-800':'bg-amber-100 text-amber-900'}`}>{checkingMaterial || materialStatusCode==='CHECKING'?'Checking…':materialStatusCode==='READY'?'Ready':materialStatusCode==='INDEXING'?'Review pending':materialStatusCode==='NEEDS_REVIEW'?'Source needs clarification':materialStatusCode.replace(/_/g,' ')}</span>
                   </div>
-                  <p className="text-slate-600">{materialStatusMessage}</p>
+                  <p className="leading-relaxed text-slate-600">{materialStatusMessage}</p>
+                  <MaterialReviewFlags message={materialFlagMessage}/>
                   {materialWarningCount>0 && <div className="rounded-lg border border-amber-200 bg-amber-50 p-2">
                     <button type="button" aria-expanded={aiWarningExpanded} onClick={()=>setAiWarningExpanded(v=>!v)} className="flex w-full items-center justify-between gap-2 text-left font-semibold text-amber-900">
                       <span className="flex items-center gap-2"><AlertTriangle className="h-4 w-4"/>{materialWarningCount} warning(s) · {materialExcludedCount} excluded passage(s)</span>
@@ -1441,7 +1445,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                         <input type="checkbox" checked={chosenMaterialImageIds.includes(img.imageFileId)} disabled={!!pendingGenerationJob || (!chosenMaterialImageIds.includes(img.imageFileId)&&chosenMaterialImageIds.length>=3)} onChange={e=>setChosenMaterialImageIds(ids=>e.target.checked?[...ids,img.imageFileId]:ids.filter(id=>id!==img.imageFileId))}/>
                         <span className="break-words">{img.imageKind} · {img.sourcePage}</span>
                       </label>
-                      {materialImagePreview[img.imageFileId] ? <img src={materialImagePreview[img.imageFileId]} alt={img.caption||'Extracted teaching image'} className="mt-2 max-h-32 w-full object-contain"/> :
+                      {materialImagePreview[img.imageFileId] ? <img src={materialImagePreview[img.imageFileId]} alt="Selected source image preview" className="mt-2 max-h-32 w-full object-contain"/> :
                         <button type="button" disabled={visualLoading} onClick={()=>void previewMaterialImage(img.imageFileId)} className="mt-2 rounded border border-purple-300 px-2 py-1 text-purple-800">Preview</button>}
                     </div>)}</div>}
                 </section>

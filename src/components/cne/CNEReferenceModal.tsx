@@ -19,6 +19,7 @@ import { useToast } from '../Toast';
 import { formatCneDateTimeDisplay } from '../../utils';
 import { MaterialIndexWarnings } from './MaterialIndexWarnings';
 import { MaterialIndexStages, MaterialIndexStage } from './MaterialIndexStages';
+import { MaterialReviewFlags } from './MaterialReviewFlags';
 
 interface CNEReferenceModalProps {
   cne: CNERecord;
@@ -306,7 +307,15 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
           setUploadStep('failed');setMaterialStage('failed');
           const detail=reviewed.message||'Gemini text review was interrupted; resume from Material Indexing Status.';
           setUploadStepError(detail);
-          setIndexingInfo({status:'PENDING',message:detail,errorCode:reviewed.errorCode,chunksCount:chunkCount});
+          // The final batch may have persisted NEEDS_REVIEW with detailed flagged
+          // chunks. Do not mislabel it PENDING based only on the wrapper failure.
+          const fresh=await ApiService.getLearningResource(cneId);
+          if(fresh.success&&fresh.data){
+            setExistingResource(fresh.data);
+            setIndexingInfo({status:fresh.data.indexingStatus||'PENDING',message:fresh.data.indexingMessage||detail,
+              errorCode:fresh.data.indexingErrorCode||reviewed.errorCode,chunksCount:fresh.data.chunksCount??chunkCount});
+          }else setIndexingInfo({status:reviewed.data?.status==='NEEDS_REVIEW'?'NEEDS_REVIEW':'PENDING',
+            message:detail,errorCode:reviewed.errorCode,chunksCount:chunkCount});
           warning('Material saved; Gemini review not complete: '+detail);
           if(onUpdated)onUpdated();
           return false;
@@ -384,14 +393,14 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
 
   const needsQualityReindex = uploadStep !== 'done' && indexingInfo?.status === 'SUCCESS' &&
     !(indexingInfo.message || '').startsWith('V3 AUTO_INDEXED | FILE=');
-  const hasFidelityWarnings = indexingInfo?.status === 'SUCCESS' &&
+  const hasFidelityWarnings = !!indexingInfo &&
     (/FIDELITY_WARNINGS=[1-9][0-9]*/.test(indexingInfo.message || '') || (indexingInfo.message || '').includes('WARNING:'));
-  const indexingLabel = hasFidelityWarnings && !needsQualityReindex ? 'Indexed with extraction warnings' : needsQualityReindex
+  const indexingLabel = indexingInfo?.status === 'NEEDS_REVIEW' ? 'Source clarification required' : hasFidelityWarnings && !needsQualityReindex ? 'Indexed with extraction warnings' : needsQualityReindex
     ? 'Quality reindex required'
     : indexingInfo?.status === 'SUCCESS'
     ? 'AI-ready text index'
     : indexingInfo?.status === 'NEEDS_REVIEW'
-    ? 'Uploader reindex required'
+    ? 'Source clarification required'
     : indexingInfo?.status === 'FAILED'
     ? 'Indexing failed'
     : indexingInfo?.status === 'PENDING'
@@ -413,10 +422,10 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     : 'bg-slate-100 text-slate-700 border-slate-200';
 
   return (
-    <div id="cne-material-modal" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-white rounded-2xl w-[94vw] max-w-[1280px] max-h-[90vh] shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
+    <div id="cne-material-modal" className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-stretch sm:items-center justify-center p-0 sm:p-5">
+      <div className="bg-white rounded-none sm:rounded-2xl w-full sm:w-[94vw] max-w-[1280px] h-[100dvh] sm:h-auto sm:max-h-[90dvh] shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
         {/* Modal Header */}
-        <div className="px-6 py-3.5 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/80">
+        <div className="px-4 sm:px-6 py-3 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/80 pt-[max(0.75rem,env(safe-area-inset-top))]">
           <div className="flex items-center gap-3 min-w-0 pr-4">
             <div className="w-9 h-9 rounded-xl bg-teal-100 text-teal-800 flex items-center justify-center shrink-0">
               <BookOpen className="w-5 h-5" />
@@ -435,15 +444,6 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
           </button>
         </div>
 
-            {/* Guidance Banner */}
-            <div className="px-6 py-2.5 bg-teal-50/70 border-b border-teal-100/80 flex items-start gap-2.5 text-xs text-teal-900 shrink-0">
-              <Info className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
-              <div className="leading-relaxed">
-                Upload the authoritative slides or guideline (PDF, Word or PowerPoint; up to 5 MB).
-                The AI Question Synthesizer reads the uploaded document as primary grounding to generate 5 standardized clinical MCQs.
-              </div>
-            </div>
-
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
           {loading && <div role="status" aria-live="polite" className="flex items-center gap-2.5 border-b border-teal-100 bg-teal-50 px-4 py-2.5 sm:px-6">
             <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal-700" aria-hidden="true" />
@@ -453,9 +453,6 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             </div>
           </div>}
           {loadError && <div role="alert" className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-b border-rose-200">{loadError} <button type="button" onClick={() => void loadAllReferenceData()} className="ml-2 underline font-bold">Retry</button></div>}
-          {uploadStep !== 'idle' && <div className="px-4 sm:px-6 py-3 border-b border-teal-100 bg-white max-h-[36dvh] overflow-y-auto">
-            <MaterialIndexStages stage={materialStage} reviewedCount={reviewProgress.done} totalChunks={reviewProgress.total} error={uploadStepError} uploadAlreadyDone={!!existingResource?.hasFile}/>
-          </div>}
             {isClosed && (
               <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 text-xs text-slate-700 shrink-0">
                 <Lock className="w-4 h-4 text-slate-600 shrink-0" />
@@ -464,30 +461,47 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             )}
 
             {/* Scrollable Form Body */}
-            <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-5 bg-slate-50/40">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6 flex flex-col gap-4 bg-slate-50/40">
+              <div className="rounded-lg border border-teal-100 bg-teal-50/60 px-3 py-2.5 text-xs leading-relaxed text-teal-950">
+                <div className="flex items-start gap-2"><Info className="mt-0.5 h-4 w-4 shrink-0 text-teal-700"/>
+                  <p><strong>5 source-grounded CNE Post-Test questions.</strong> Upload a PDF, Word or PowerPoint (up to 5 MB). The index prepares evidence for NCLEX V2.1-style A–D single-best-answer questions; educator review is still required.</p>
+                </div>
+                <details className="mt-1.5 pl-6"><summary className="cursor-pointer text-[11px] font-semibold text-teal-800">How source indexing works</summary>
+                  <p className="mt-1 text-[11px]">Only approved extracted text, not the original document, is sent to Gemini. Ambiguous text is held, and the current file must pass all evidence-readiness checks before AI question generation.</p>
+                </details>
+              </div>
+              {(uploadStep !== 'idle' || indexingInfo) && <MaterialIndexStages
+                stage={uploadStep !== 'idle' ? materialStage :
+                  indexingInfo?.status==='SUCCESS' && /GEMINI_REVIEW=COMPLETE/.test(indexingInfo.message||'') ? 'done' :
+                  indexingInfo?.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'') ? 'ai' :
+                  indexingInfo?.status==='SUCCESS' ? 'extract' : 'failed'}
+                reviewedCount={uploadStep !== 'idle' ? reviewProgress.done : Number((/REVIEWED=(\d+)/.exec(indexingInfo?.message||'')||[])[1]||0)}
+                totalChunks={uploadStep !== 'idle' ? (reviewProgress.total||indexingInfo?.chunksCount||0) : Number((/TOTAL=(\d+)/.exec(indexingInfo?.message||'')||[])[1]||indexingInfo?.chunksCount||0)}
+                error={uploadStep !== 'idle' ? uploadStepError : ''}
+                uploadAlreadyDone={!!existingResource?.hasFile}/>}
               {/* Upload Learning Resource File Section */}
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-3">
-                <div className="flex items-center justify-between">
+              <div className="min-w-0 bg-white p-3 sm:p-5 rounded-xl border border-slate-200 shadow-2xs space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                     <Upload className="w-4 h-4 text-teal-600" />
-                    Upload Learning Resource File (PDF/DOC/DOCX/PPT/PPTX &bull; Maximum 5 MB)
+                    Learning resource file
                   </label>
-                  <span className="text-[11px] text-slate-400">PDF, DOC, DOCX, PPT, PPTX &bull; Maximum 5 MB</span>
+                  <span className="text-[11px] text-slate-500">PDF, DOC, DOCX, PPT, PPTX · maximum 5 MB</span>
                 </div>
 
                 {/* Existing Stored Resource Card */}
                 {existingResource && existingResource.hasFile && (
                   <div className="p-3.5 bg-teal-50/50 border border-teal-200 rounded-xl flex flex-col gap-2.5 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                      <div className="flex items-start sm:items-center gap-2.5 min-w-0 w-full">
                         <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-700 flex items-center justify-center shrink-0 font-bold text-[10px]">
                           {(existingResource.fileType || 'FILE').toUpperCase().slice(0, 4)}
                         </div>
                         <div className="min-w-0">
-                          <div className="font-bold text-slate-800 truncate" title={existingResource.fileName}>
+                          <div className="font-bold text-slate-800 break-words [overflow-wrap:anywhere]" title={existingResource.fileName}>
                             {existingResource.fileName}
                           </div>
-                          <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
+                          <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1 mt-0.5">
                             <span>Size: <strong>{formatFileSize(existingResource.fileSize)}</strong></span>
                             {existingResource.updatedAt && (
                               <>
@@ -499,7 +513,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex items-center justify-end sm:justify-start gap-2 shrink-0">
                         <span className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-800 bg-teal-100 px-2 py-0.5 rounded-full">
                           <CheckCircle2 className="w-3 h-3" />
                           Attached
@@ -572,19 +586,11 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       <div>Indexed chunks: <strong className="text-slate-800">{typeof indexingInfo.chunksCount === 'number' ? indexingInfo.chunksCount : '—'}</strong></div>
                       {indexingInfo.errorCode && <div>Error code: <strong className="text-rose-700">{indexingInfo.errorCode}</strong></div>}
                     </div>
-                    {uploadStep === 'idle' && <MaterialIndexStages
-                      stage={indexingInfo.status==='SUCCESS' && /GEMINI_REVIEW=COMPLETE/.test(indexingInfo.message||'') ? 'done' :
-                        indexingInfo.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'') ? 'ai' :
-                        indexingInfo.status==='SUCCESS' ? 'extract' : 'failed'}
-                      reviewedCount={Number((/REVIEWED=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)}
-                      totalChunks={Number((/TOTAL=(\d+)/.exec(indexingInfo.message||'')||[])[1]||indexingInfo.chunksCount||0)}
-                      uploadAlreadyDone
-                    />}
                     {canModify && (['FAILED','PENDING','UNKNOWN','NEEDS_REVIEW'].includes(indexingInfo.status) || needsQualityReindex || hasFidelityWarnings) && !isSaving && !loading && <button type="button" onClick={async () => {
-                      if(!responsibilityAccepted){warning('Confirm uploader responsibility using the checkbox before reindexing.');return;}
-                      setIsSaving(true);setUploadStep('indexing');setUploadStepError('');setMaterialStage('extract');
+                      const resume=indexingInfo?.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'');
+                      if(!resume&&!responsibilityAccepted){warning('Confirm uploader responsibility using the checkbox before re-extracting.');return;}
+                      setIsSaving(true);setUploadStep('indexing');setUploadStepError('');setMaterialStage(resume?'ai':'extract');
                       try {
-                        const resume=indexingInfo?.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'');
                         let count=Number(indexingInfo?.chunksCount||0);
                         if(!resume){
                           const res=await ApiService.reindexLearningResource(cneId, responsibilityAccepted);
@@ -600,8 +606,14 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                         const reviewed=await ApiService.completeCNEMaterialTextReview(cneId,(done,total)=>setReviewProgress({done,total}));
                         if(!reviewed.success){
                           setUploadStep('failed');setMaterialStage('failed');setUploadStepError(reviewed.message||'Gemini review interrupted.');
-                          setIndexingInfo({status:'PENDING',message:reviewed.message,errorCode:reviewed.errorCode,chunksCount:count});
-                          warning(reviewed.message||'Gemini review interrupted. Resume using this button.');return;
+                          const fresh=await ApiService.getLearningResource(cneId);
+                          if(fresh.success&&fresh.data){
+                            setExistingResource(fresh.data);
+                            setIndexingInfo({status:fresh.data.indexingStatus||'PENDING',message:fresh.data.indexingMessage||reviewed.message,
+                              errorCode:fresh.data.indexingErrorCode||reviewed.errorCode,chunksCount:fresh.data.chunksCount??count});
+                          }else setIndexingInfo({status:reviewed.data?.status==='NEEDS_REVIEW'?'NEEDS_REVIEW':'PENDING',
+                            message:reviewed.message,errorCode:reviewed.errorCode,chunksCount:count});
+                          warning(reviewed.message||'Gemini review interrupted. Retry from this screen.');return;
                         }
                         setMaterialStage('verify');setIndexingInfo({status:'SUCCESS',message:reviewed.message,chunksCount:count});
                         setMaterialStage('images');
@@ -616,13 +628,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                         await loadAllReferenceData();
                       }catch(err:any){setUploadStep('failed');setMaterialStage('failed');setUploadStepError(err?.message||'Indexing error.');error(err?.message||'Indexing error.');}
                       finally{setIsSaving(false);}
-                    }} className="text-teal-700 font-semibold underline text-xs">{indexingInfo.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'')?'Resume Gemini Review':'Retry Indexing'}</button>}
+                    }} className="text-teal-700 font-semibold underline text-xs">{indexingInfo.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'')?'Resume Gemini Review':'Re-extract Current File'}</button>}
                     {needsQualityReindex && (
                       <div className="text-[11px] text-amber-800 leading-relaxed bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2" role="status">
                         This material was indexed with an older clinical-text algorithm. Use Retry Indexing to build a section-aware V3 index before Gemini generates questions. The original file will not be replaced.
                       </div>
                     )}
-                    {indexingInfo.status === 'NEEDS_REVIEW' && <p className="text-xs font-medium text-amber-800">This older index requires uploader responsibility confirmation and reindexing. Use the checkbox and Retry Indexing; no administrator review is needed.</p>}
+                    {indexingInfo.status === 'NEEDS_REVIEW' && <p className="text-xs font-medium text-amber-800">This material needs a clearer extract or educator clarification. Review the flagged sections, replace the file if needed, then re-extract with uploader responsibility confirmation.</p>}
                     {hasFidelityWarnings && (
                       <details className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                         <summary className="cursor-pointer text-[11px] font-semibold text-amber-900">View per-chunk indexing warnings ({Number((/FIDELITY_WARNINGS=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)})</summary>
@@ -634,11 +646,18 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                         </div>
                       </details>
                     )}
-                    {indexingInfo.message && !hasFidelityWarnings && (
-                      <div className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-2">
-                        {indexingInfo.message}
-                      </div>
+                    <MaterialReviewFlags message={indexingInfo.message}/>
+                    {indexingInfo.message && indexingInfo.status !== 'SUCCESS' && !hasFidelityWarnings && (
+                      <p className="rounded-lg bg-slate-50 p-2.5 text-[11px] leading-relaxed text-slate-600">
+                        {indexingInfo.errorCode === 'AI_TEMPORARILY_UNAVAILABLE' ? 'Gemini was temporarily unavailable. Your file and completed reviews remain saved. Use Resume Gemini Review.' :
+                          indexingInfo.status === 'NEEDS_REVIEW' ? 'Some extracted sections need clarification before this source can be used for the five-question AI Post-Test. See the flagged chunks above.' :
+                          indexingInfo.status === 'PENDING' ? 'Review is unfinished. You can resume without uploading the document again.' : 'Check the source file and retry indexing.'}
+                      </p>
                     )}
+                    <details className="text-[11px] text-slate-600"><summary className="cursor-pointer font-semibold text-slate-700">Technical indexing details</summary>
+                      {indexingInfo.errorCode && <p className="mt-1 break-words">Error: {indexingInfo.errorCode}</p>}
+                      <p className="mt-1 break-words">{(indexingInfo.message||'').replace(/\s\|\sGEMINI_FLAGS=[^|]*/g,'').slice(0,1500)}</p>
+                    </details>
                   </div>
                 )}
 
@@ -745,8 +764,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             </div>
 
             {/* Modal Footer with Save and Save & Next */}
-            <div className="px-6 py-3.5 border-t border-slate-200 bg-white flex items-center justify-between gap-3 shrink-0">
-              <div className="text-xs text-slate-500">
+            <div className="px-4 sm:px-6 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 shrink-0">
+              <div className="hidden sm:block min-w-0 max-w-[55%] truncate text-xs text-slate-500">
                 {isClosed ? (
                   <span className="inline-flex items-center gap-1.5 text-slate-600 font-medium">
                     <Lock className="w-3.5 h-3.5" /> Material modifications are locked
@@ -767,13 +786,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
               </div>
 
               {canModify && (
-                <div className="flex items-center gap-2.5">
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2.5">
                   {/* Button 1: Save (stays on Material) */}
                   <button
                     type="button"
                     onClick={handleSaveOnly}
                     disabled={isSaving || loading}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold text-xs cursor-pointer transition-colors disabled:opacity-50"
+                    className="flex min-h-11 items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold text-xs cursor-pointer transition-colors disabled:opacity-50"
                   >
                     {isSaving ? (
                       <>
@@ -793,7 +812,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     type="button"
                     onClick={handleSaveAndNext}
                     disabled={isSaving || loading}
-                    className="flex items-center gap-1.5 px-5 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors disabled:opacity-50"
+                    className="flex min-h-11 items-center justify-center gap-1.5 px-3 sm:px-5 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors disabled:opacity-50"
                   >
                     {isSaving ? (
                       <>

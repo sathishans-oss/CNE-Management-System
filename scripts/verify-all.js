@@ -76,10 +76,13 @@ function runGeminiMaterialReviewChecks() {
       count++;
       assert(!prompt.includes('data:application/pdf'),'Original file payload must not be sent');
       assert(!prompt.includes('base64'),'No original file bytes in text prompt');
+      assert(prompt.includes('NCLEX V2.1 CLINICAL EVIDENCE INTAKE'));
+      assert(prompt.includes('five original, source-grounded, A-D single-best-answer'));
+      assert(prompt.includes('not clinical truth')===false); // model never permitted to approve a passage as clinically correct
       assert(endpoint.includes('gemini-3.5-flash-lite'));
       if(invalid)return {success:true,data:{reviews:[{indexId:'WRONG',assessment:'USABLE',keywords:[],riskNote:''}]}};
       const refs=JSON.parse(prompt.slice(prompt.lastIndexOf('Source chunks (JSON):\n')+'Source chunks (JSON):\n'.length));
-      return {success:true,data:{reviews:refs.map(x=>({indexId:x.indexId,assessment:uncertain?'UNCERTAIN':'USABLE',keywords:['Nursing','fake hallucination'],riskNote:''}))}};
+      return {success:true,data:{reviews:refs.map(x=>({indexId:x.indexId,assessment:uncertain?'UNCERTAIN':'USABLE',keywords:['Nursing','fake hallucination'],riskNote:uncertain?'The extracted treatment table lacks clear unit and intervention pairing.':''}))}};
     }
   };
   vm.createContext(context);vm.runInContext(fragment,context);
@@ -112,42 +115,91 @@ function runGeminiMaterialReviewChecks() {
   assert.equal(flagged.data.status,'NEEDS_REVIEW');
   assert.equal(material.rows[1][3],'NEEDS_REVIEW');
   assert(index.rows.slice(1).every(r=>r[9]==='AI_FLAGGED'));
-  console.log('Gemini material review behavioral smoke checks: 15/15 passed');
+  const reasons=context.cneAiMaterialFlagNotes_(material.rows[1][4]);
+  assert.equal(reasons.length,2);
+  assert.deepEqual(reasons.map(r=>r.chunk).sort(),[1,2]);
+  assert(reasons.every(r=>r.reason.includes('table lacks clear unit')));
+  assert(!material.rows[1][4].includes('API_KEY'),'Only bounded diagnostic messages are persisted');
+  const config=Object.fromEntries(['gemini-3.8-flash','gemini-3.6-flash','gemini-3-flash','gemini-2.5-flash','gemini-3.5-flash-lite','gemini-3.1-flash-lite'].map((m,i)=>['GEMINI_MODEL_'+(i+1),m]));
+  config.GEMINI_MAX_ATTEMPTS='6';
+  const modelFor=(values)=>context.cneAiMaterialReviewModel_({getProperty:k=>values[k]||''});
+  assert.equal(modelFor(config),'gemini-3.8-flash','A complete config uses the shared first Gemini model');
+  assert.equal(modelFor({CNE_AI_INDEX_MODEL:'gemini-3.1-flash-lite'}),'gemini-3.1-flash-lite','Standalone model remains supported');
+  const incomplete={...config,GEMINI_MODEL_6:'gemini-3-flash',CNE_AI_INDEX_MODEL:'gemini-3.5-flash-lite'};
+  assert.equal(modelFor(incomplete),'gemini-3.5-flash-lite','An invalid rotation must fall back to the configured indexing model');
+  console.log('Gemini material review: source-policy, flagged reasons, no original bytes, and model configuration smoke checks passed');
 }
 
 function runGeminiModelRotationChecks() {
-  const fs = { readFileSync };
-  /** Six free-model retry rotation smoke test; no live Google API calls. */
-  const code=fs.readFileSync(new URL('../Code.gs',import.meta.url),'utf8');
-  const text=code.slice(code.indexOf('function cneAiReadJsonResponse_('),code.indexOf('/** Exact server-owned quote spans.'));
+  /** Behavioral tests for each CNE generation stage, under the six-model free-tier
+   * opt-in configuration. All requests are mocks; no Gemini calls are made.
+   */
+  const code=readFileSync(new URL('../Code.gs',import.meta.url),'utf8');
+  const fragment=code.slice(code.indexOf('function cneAiReadJsonResponse_('),code.indexOf('/** Exact server-owned quote spans.'));
   const models=['gemini-3.8-flash','gemini-3.6-flash','gemini-3-flash','gemini-2.5-flash','gemini-3.5-flash-lite','gemini-3.1-flash-lite'];
-  const props=Object.fromEntries(models.map((x,i)=>['GEMINI_MODEL_'+(i+1),x]));
+  const props=Object.fromEntries(models.map((name,i)=>['GEMINI_MODEL_'+(i+1),name]));
   props.GEMINI_MAX_ATTEMPTS='6';
-  let calls=[],reported=[];
-  const ctx={JSON,Date,Math,console,
-    PropertiesService:{getScriptProperties:()=>({getProperty:k=>props[k]||''})},
-    UrlFetchApp:{fetch:(url,opts)=>{
-      const model=/\/models\/([^/:]+):generateContent/.exec(url)?.[1];calls.push({model,opts});
-      if(calls.length<6)return {getResponseCode:()=>503,getContentText:()=>JSON.stringify({error:{message:'temporarily overloaded'}}),getAllHeaders:()=>({})};
-      return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify({ok:true})}]}}]})};
-    }},
-    Utilities:{sleep:()=>{}},
-    logAuditAction:(...args)=>reported.push(args),
-    updateCNEAiProgress_:()=>{}
-  };
-  vm.createContext(ctx);vm.runInContext(text,ctx);
-  const result=ctx.cneAiGeminiStructured_('https://generativelanguage.googleapis.com/v1beta/models/'+models[0]+':generateContent?key=SECRET',
-    'NCLEX policy + verified evidence',{type:'OBJECT',properties:{ok:{type:'BOOLEAN'}}},4,
-    {stage:'BLUEPRINT',cneId:'CNE-123',employeeId:'EMP1',deadlineMs:Date.now()+120000});
-  assert(result.success);assert.equal(calls.length,6);
-  assert.deepEqual(calls.map(c=>c.model),models);
-  assert(calls.every(c=>c.opts.payload.includes('NCLEX policy + verified evidence')));
-  assert(calls.every(c=>c.opts.payload.includes('responseSchema')));
-  assert(reported.every(c=>!JSON.stringify(c).includes('SECRET')));
-  assert(reported.filter(c=>c[0]==='AI_QUESTION_GEMINI_RETRY').length===5);
-  console.log('Gemini six-model retry smoke checks: 6/6 passed');
+  function exercise(stage,configured,failStatus=503){
+    const calls=[],audit=[];
+    const ctx={JSON,Date,Math,console,
+      PropertiesService:{getScriptProperties:()=>({getProperty:key=>configured[key]||''})},
+      UrlFetchApp:{fetch:(url,options)=>{
+        calls.push({model:/\/models\/([^/:]+):generateContent/.exec(url)?.[1],options});
+        const status=failStatus===400?400:(calls.length<6?failStatus:200);
+        return {getResponseCode:()=>status,
+          getContentText:()=>JSON.stringify(status===200?{candidates:[{content:{parts:[{text:'{"ok":true}'}]}}]}:{error:{message:status===400?'Invalid input':'temporarily overloaded'}}),
+          getAllHeaders:()=>({})};
+      }},Utilities:{sleep:()=>{}},logAuditAction:(...args)=>audit.push(args),updateCNEAiProgress_:()=>{}};
+    vm.createContext(ctx);vm.runInContext(fragment,ctx);
+    const result=ctx.cneAiGeminiStructured_('https://generativelanguage.googleapis.com/v1beta/models/'+models[0]+':generateContent?key=SECRET',
+      'NCLEX V2.1 CNE POST-TEST + verified source',{type:'OBJECT',properties:{ok:{type:'BOOLEAN'}}},stage==='QUESTION_REPAIR'||stage==='ANSWER_KEY_REPAIR'?2:4,
+      {stage,cneId:'CNE-123',employeeId:'EMP1',deadlineMs:Date.now()+120000});
+    return {calls,audit,result};
+  }
+  for(const stage of ['BLUEPRINT','MCQ_GENERATION','QUESTION_REPAIR','ANSWER_KEY_REPAIR','MATERIAL_REVIEW']){
+    const r=exercise(stage,props);
+    assert(r.result.success,stage+' must succeed on the sixth free model');
+    assert.equal(r.calls.length,6,stage+' should have six different tries');
+    assert.deepEqual(r.calls.map(c=>c.model),models);
+    assert(r.calls.every(c=>c.options.payload.includes('NCLEX V2.1 CNE POST-TEST + verified source')));
+    assert(r.calls.every(c=>c.options.payload.includes('responseSchema')));
+    const auditPrefix=stage==='MATERIAL_REVIEW'?'AI_MATERIAL_':'AI_QUESTION_';
+    assert(r.audit.some(e=>e[0]===auditPrefix+'GEMINI_SUCCESS'&&e[2].includes('model='+models[5])));
+    assert.equal(r.audit.filter(e=>e[0]===auditPrefix+'GEMINI_RETRY').length,5);
+    assert(r.audit.every(e=>!JSON.stringify(e).includes('SECRET')));
+  }
+  const legacy=exercise('QUESTION_REPAIR',{});
+  assert(!legacy.result.success&&legacy.calls.length===2,'Legacy repair stage should retain two tries when rotation not configured');
+  const hard=exercise('ANSWER_KEY_REPAIR',props,400);
+  assert(!hard.result.success&&hard.calls.length===1,'HTTP 400 should terminate rather than rotate');
+  console.log('Gemini model rotation: all five stages including material indexing, legacy fallback, HTTP 400, audit privacy passed');
 }
 
+function runCnePostTestV21Checks() {
+  const code=readFileSync(new URL('../Code.gs',import.meta.url),'utf8');
+  const ctx={console,Date,Math,JSON};vm.createContext(ctx);vm.runInContext(code,ctx,{timeout:20000});
+  const full=ctx.cneAiSharedClinicalPolicy_(),plan=ctx.cneAiSharedClinicalPolicy_('BLUEPRINT'),key=ctx.cneAiSharedClinicalPolicy_(true);
+  assert(full.includes('V2.1')&&full.includes('SINGLE_SELECT')&&full.includes('A:, B:, C:, D:'));
+  assert(full.includes('diagnostic answers')&&full.includes('ECG calibration'));
+  assert(!full.includes('exactly 23')&&!full.includes('MULTI_SELECT'));
+  assert(plan.includes('BLUEPRINT ONLY')&&!plan.includes('separately labelled A:'));
+  assert(key.includes('ANSWER KEY REPAIR ONLY')&&!key.includes('separately labelled A:'));
+  const rp=ctx.cneAiAnswerKeyRepairPrompt_('IV access','IV access',
+    {questionText:'Which option?',optionA:'Assess',optionB:'Avoid',optionC:'Document',optionD:'Observe',explanation:'A: assess'},
+    'Verified source','Clinical evidence about access');
+  assert(rp.includes('V2.1')&&rp.includes('Verified source text')&&rp.includes('NOT rewrite'));
+  assert(ctx.cneAiOptionRationaleDiagnostic_('A: Assess the clinical symptoms from the cited source. B: Does not address the clinical priority. C: Not supported by the observed patient cues. D: Requires action that is not indicated here.').supported);
+  assert(!ctx.cneAiOptionRationaleDiagnostic_('A: yes B: no C: no D: no').supported);
+  assert(!ctx.cneAiOptionRationaleDiagnostic_('A: indicated, but no explanation of other options.').supported);
+  assert.equal(ctx.cneAiClinicalQuantityDiagnostic_('Administer morphine 2 mg slowly.', 'Give morphine 3 mg.', '').code,'NUMERIC_VALUE_UNSUPPORTED');
+  assert.equal(ctx.cneAiClinicalQuantityDiagnostic_('Administer morphine 2 mg slowly.', 'Give morphine 2 g.', '').code,'NUMERIC_UNIT_MISMATCH');
+  assert.equal(ctx.cneAiClinicalQuantityDiagnostic_('Administer morphine 2 mg slowly.', 'Give fentanyl 2 mg.', '').code,'NUMERIC_CONTEXT_MISMATCH');
+  assert(ctx.cneAiClinicalQuantityDiagnostic_('Administer morphine 2 mg slowly.', 'Administer morphine 2 mg.', '').supported);
+  assert(code.includes('AI_QUESTION_GENERATION_PARTIAL_VALIDATED')&&code.includes("complete?'SUCCESS':'WARNING'"));
+  assert(code.includes('images:keyOnly?[]:selectedVisuals.images'),'Full question repair must retain the selected authorized image evidence');
+  assert(code.includes('cneAiSharedClinicalPolicy_()')&&code.includes("cneAiSharedClinicalPolicy_('BLUEPRINT')"));
+  console.log('NCLEX V2.1 CNE Post-Test clinical and diagnostic contract smoke tests passed');
+}
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(SCRIPT_DIR, '..');
@@ -382,7 +434,7 @@ const hybridChecks=[
         'hand hygiene, aseptic technique, phlebitis','SUCCESS','2026-10-29'],
       ['OTHER','OTHER-CNE','PRIVATE','Private File','IV Cannulation','Other',1,passage,'intravenous','SUCCESS','2026-10-29']]);
     const libraryRegistry=spreadsheet([['Resource_ID','Source_Type','Resource_Title','Drive_File_ID','Author_Organization','License','Version','File_Type','Active','Indexed_At','Updated_At'],['REF','LOCAL_REFERENCE_LIB','Nursing Handbook','ACTIVE','','','','PDF','TRUE','','']]);
-    const ref=spreadsheet([['CNE_ID','Drive_File_ID','Indexing_Status','Indexing_Message','Indexed_At','Chunks_Count'],['CNE-123','MATERIAL','SUCCESS','V3 AUTO_INDEXED | FILE=MATERIAL | UPLOADER=A1 | 2 chunks passed automated text-quality checks.','2026-11-04',2]]);
+    const ref=spreadsheet([['CNE_ID','Drive_File_ID','Indexing_Status','Indexing_Message','Indexed_At','Chunks_Count'],['CNE-123','MATERIAL','SUCCESS','V3 AUTO_INDEXED | FILE=MATERIAL | UPLOADER=A1 | 2 chunks passed automated text-quality checks. | GEMINI_REVIEW=COMPLETE | REVIEWED=2 | TOTAL=2','2026-11-04',2]]);
     ctx.getSpreadsheet=()=>({getSheetByName:n=>n==='Material_Index'?mat:n==='Material_List'?ref:n==='Library'?libraryRegistry:null});
     ctx.getCNEScheduleRecord=()=>({cneId:'CNE-123',topic:'IV Cannulation'});
     ctx.checkCNEActionAuthorized=()=>null;
@@ -11309,7 +11361,8 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     const question=(i,overrides={})=>({
       objectiveId:'OBJ_'+(i+1),questionText:stems[i],optionA:answers[i],
       optionB:'Ignore the intended clinical precautions',optionC:'Do not assess the site',optionD:'Choose an unrelated nursing action',
-      correctOption:'A',explanation:chunks[i],
+      // Source-grounded V2.1 fixture: four explicit option explanations.
+      correctOption:'A',explanation:'A: '+chunks[i]+' B: The cited evidence supports option A rather than B. C: The cited evidence supports option A rather than C. D: The cited evidence supports option A rather than D.',
       authoritativeSource:'OpenRN Nursing Advanced Skills - IV Care '+(i+1),
       evidenceQuote:chunks[i],evidenceId:evidence[i].indexId,...overrides
     });
@@ -15242,7 +15295,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   });
   const refHeaders = ['CNE_ID', 'Drive_File_ID', 'Indexing_Status', 'Indexing_Message', 'Indexed_At','Chunks_Count'];
   const idxHeaders = ['Index_ID', 'CNE_ID', 'Drive_File_ID', 'Resource_Title', 'Topic', 'Section_Heading', 'Chunk_Index', 'Chunk_Text', 'Clinical_Keywords', 'Extraction_Status', 'Updated_At'];
-  const ref = makeSheet('Material_List', [refHeaders, ['CNE-1', 'FILE-A', 'SUCCESS', 'V3 AUTO_INDEXED | FILE=FILE-A | UPLOADER=USER-1 | Technical text checks passed.', '2026-11-04T08:00:00Z',2]]);
+  const ref = makeSheet('Material_List', [refHeaders, ['CNE-1', 'FILE-A', 'SUCCESS', 'V3 AUTO_INDEXED | FILE=FILE-A | UPLOADER=USER-1 | Technical text checks passed. | GEMINI_REVIEW=COMPLETE | REVIEWED=2 | TOTAL=2', '2026-11-04T08:00:00Z',2]]);
   const index = makeSheet('Material_Index', [idxHeaders,
     ['IDX_CNE-1_FILE-OLD_V3_1234ABCD_C1', 'CNE-1', 'FILE-OLD', 'Old material', 'Sepsis', 'Clinical', '1', ('Old reference to nursing care of a patient with sepsis and assessment. ').repeat(10), 'sepsis', 'SUCCESS', 'now'],
     ['IDX_CNE-1_FILE-A_V3_1234ABCD_C1', 'CNE-1', 'FILE-A', 'Current material', 'Sepsis', 'Assessment', '1', ('Sepsis nursing management requires monitoring vital signs, recognizing deterioration, and documenting observations. ').repeat(9), 'sepsis, vital signs', 'SUCCESS', 'now'],
@@ -15313,6 +15366,15 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
         assert.equal(state.status,'FAILED');
       } finally { row[7] = previous; }
     }],
+    ['Extraction success without completed Gemini review cannot ground Post-Test questions', () => {
+      const original=ref.rows[1][3];
+      ref.rows[1][3]=original.replace(/ \| GEMINI_REVIEW=COMPLETE[^|]*/, '').replace(/ \| REVIEWED=\d+/, '').replace(/ \| TOTAL=\d+/, '');
+      try {
+        const notReady=ctx.cneAiMaterialReadiness_('CNE-1');
+        assert.equal(notReady.hasOwnMaterial,false);
+        assert.equal(notReady.errorCode,'GEMINI_REVIEW_REQUIRED');
+      } finally {ref.rows[1][3]=original;}
+    }],
     ['Valid indexed passages remain usable after screening', () => {
       assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial,true);
     }],
@@ -15373,6 +15435,24 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
   const cneImage = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEQuestionImage.tsx'), 'utf8');
   const quiz = readFileSync(join(ROOT_DIR, 'src/components/QuizPage.tsx'), 'utf8');
   const checks = [
+    ['Material evidence mobile UI uses a single scroll area and diagnoses stay private', () => {
+      const mobile = readFileSync(join(ROOT_DIR,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
+      const stages = readFileSync(join(ROOT_DIR,'src/components/cne/MaterialIndexStages.tsx'),'utf8');
+      const flags = readFileSync(join(ROOT_DIR,'src/components/cne/MaterialReviewFlags.tsx'),'utf8');
+      const questions = readFileSync(join(ROOT_DIR,'src/components/cne/CNEQuestionsModal.tsx'),'utf8');
+      const api = readFileSync(join(ROOT_DIR,'src/services/api.ts'),'utf8');
+      const gas = readFileSync(join(ROOT_DIR,'Code.gs'),'utf8');
+      assert.equal((mobile.match(/<MaterialIndexStages/g)||[]).length,1,'Only one visible progress panel');
+      assert(mobile.includes('h-[100dvh]')&&mobile.includes('overscroll-contain'));
+      assert(!mobile.includes('max-h-[36dvh]'),'Never create a competing 36dvh progress scrollbar');
+      assert(stages.includes('Review extracted text for NCLEX V2.1 CNE Post-Test evidence'));
+      assert(stages.includes('aria-valuenow')&&stages.includes('aria-expanded'));
+      assert(flags.includes('decodeURIComponent')&&flags.includes('source chunk(s) need clarification'));
+      assert(questions.includes('<MaterialReviewFlags message={materialFlagMessage}/>'));
+      assert(questions.includes('alt="Selected source image preview"'),'Source captions may contain the answer');
+      assert(api.includes("action === 'runGeminiMaterialReviewBatch'"),'Mobile network timeout must exceed 95-second indexing budget');
+      assert(gas.includes("result.errorCode='GEMINI_REVIEW_REQUIRED'"),'Unreviewed source must never be AI-ready');
+    }],
     ['Material metadata loading uses one spinner, not a duplicate progress bar', () => {
       const start = material.indexOf('{loading && <div role="status"');
       const end = material.indexOf('{loadError &&', start);
@@ -17083,7 +17163,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     const makeRow=(headers,values)=>headers.map(h=>values[h]??'');
     const teaching1=('Burn wound care requires regular nursing assessment, skin examination, infection prevention, patient temperature monitoring, wound protection, pain management and clinical documentation. ').repeat(5);
     const teaching2=('Thermal injury assessment includes burn depth, body surface area estimation, fluid balance monitoring, hemodynamic status and timely escalation when circulation is compromised. ').repeat(5);
-    const approvedMessage='V3 AUTO_INDEXED | FILE=DRIVE_A | UPLOADER=EMP-1 | 2 chunks passed automated text-quality checks; clinical accuracy is uploader responsibility.';
+    const approvedMessage='V3 AUTO_INDEXED | FILE=DRIVE_A | UPLOADER=EMP-1 | 2 chunks passed automated text-quality checks; clinical accuracy is uploader responsibility. | GEMINI_REVIEW=COMPLETE | REVIEWED=2 | TOTAL=2';
     const material={CNE_ID:'CNE-1',Drive_File_ID:'DRIVE_A',Indexing_Status:'SUCCESS',Indexing_Message:approvedMessage,Indexing_Error_Code:'',Chunks_Count:2,Indexed_At:'now'};
     const rows=[indexHeaders,
       makeRow(indexHeaders,{Index_ID:'IDX_CNE-1_DRIVE_A_V3_AABBCCDD_C1',CNE_ID:'CNE-1',Drive_File_ID:'DRIVE_A',Section_Heading:'Burn Assessment',Chunk_Index:1,Chunk_Text:teaching1,Clinical_Keywords:'wound care, assessment',Extraction_Status:'SUCCESS'}),
@@ -17248,7 +17328,8 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     assert(idx.rows.some(r=>r[indexHeaders.indexOf('CNE_ID')]==='CNE-OTHER'&&r[indexHeaders.indexOf('Index_ID')]===originalUnrelated[indexHeaders.indexOf('Index_ID')]));
     const current=idx.rows.slice(1).filter(r=>r[indexHeaders.indexOf('CNE_ID')]==='CNE-1');
     assert(current.length>=2&&current.every(r=>r[indexHeaders.indexOf('Extraction_Status')]==='SUCCESS'));
-    assert(ctx.cneAiMaterialReadiness_('CNE-1').hasOwnMaterial);
+    assert.equal(ctx.cneAiMaterialReadiness_('CNE-1').errorCode,'GEMINI_REVIEW_REQUIRED',
+      'Fresh extraction is not Post-Test-ready until every chunk passes Gemini review');
   });
   check('Index extraction failure never becomes AI ready and preserves prior rows',()=>{
     const {ctx,idx,mat,materialHeaders,employee}=scene();
@@ -17367,8 +17448,9 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
     assert.equal(same.length,3);
     assert(same.every(row=>!row[indexHeaders.indexOf('Chunk_Text')].includes('ESTIMATION OF BURN AREA')));
     const ready=ctx.cneAiMaterialReadiness_('CNE-1');
-    assert(ready.hasOwnMaterial);
-    assert.equal(ready.warningCount,2);
+    assert.equal(ready.errorCode,'GEMINI_REVIEW_REQUIRED');
+    assert.equal(ready.hasOwnMaterial,false);
+    assert.equal(res.warningCount,2);
   });
   check('Long flattened tables remain excluded after semantic-window splitting',()=>{
     const {ctx}=scene();
@@ -17557,6 +17639,7 @@ if (focusedChecks.length) console.log(`Focused regression checks: ${focusedPasse
 if (passed === selected.length && focusedPassed === focusedChecks.length && !wantedSuite) {
   runGeminiMaterialReviewChecks();
   runGeminiModelRotationChecks();
+  runCnePostTestV21Checks();
 }
 
 if (passed !== selected.length || focusedPassed !== focusedChecks.length) process.exit(1);

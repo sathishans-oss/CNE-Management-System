@@ -12,7 +12,8 @@ export interface MaterialIndexWarning {
  * currently expose a bounded textual summary rather than a warning-row table.
  */
 export function parseMaterialIndexWarnings(raw: string): MaterialIndexWarning[] {
-  const value = String(raw || '').split(/FIDELITY_WARNINGS=\d+;\s*EXCLUDED_CHUNKS=\d+;\s*/).pop() || '';
+  const beforeReview = String(raw || '').split(/ \| GEMINI_REVIEW=/)[0];
+  const value = beforeReview.split(/FIDELITY_WARNINGS=\d+;\s*EXCLUDED_CHUNKS=\d+;\s*/).pop() || '';
   const clean = value.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
   if (!clean || !/\b(?:Chunk|Slide|Page)\s+\d+\b/i.test(clean)) return [];
   const marker = /\b(Chunk|Slide|Page)\s+(\d+)(?:\s*\(([^)]{1,100})\))?\s*:/gi;

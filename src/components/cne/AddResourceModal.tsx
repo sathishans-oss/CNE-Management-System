@@ -147,8 +147,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
               <span><strong>Uploader responsibility (required):</strong> I confirm this teaching material is appropriate for the selected CNE and accept responsibility for its clinical accuracy, tables, drug information, references and permissions. I confirm external Gemini processing is permitted for eligible extracted educational text and that no identifiable patient information is present. Gemini review does not establish clinical correctness or replace educator judgment.</span>
             </label>
             <p className="rounded-lg bg-slate-50 p-3 text-[11px] text-slate-600">No manual indexing text is required. The application extracts teaching text from the uploaded file, then Gemini reviews every eligible chunk before the index is marked ready.</p>
-          </div>
-          {uploadStage!=='idle' && <div className="shrink-0 border-t px-4 py-2 space-y-2 overflow-y-auto max-h-[38dvh]">
+          {uploadStage!=='idle' && <div className="space-y-2">
             <MaterialIndexStages stage={materialStage} reviewedCount={reviewProgress.done} totalChunks={reviewProgress.total} error={stageError}/>
             {indexSummary && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
               <p className="font-bold">Indexed: {indexSummary.safe} source chunks; {indexSummary.excluded} ambiguous chunks excluded; {indexSummary.imageCount} images stored.</p>
@@ -156,6 +155,8 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
               {indexSummary.imageNotes.map((w,i) => <p key={i} className="mt-1 break-words">{w}</p>)}
             </div>}
           </div>}
+
+          </div>
           <div className="shrink-0 flex justify-end gap-2 border-t bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
             <button type="button" onClick={onClose} disabled={submitting} className="rounded-lg border px-4 py-2 text-xs font-bold">{uploadStage==='done'?'Done':'Cancel'}</button>
             <button type="submit" disabled={uploadStage==='done' || submitting || loadingClasses || !file || !selectedCneId || !responsibilityAccepted} className="inline-flex items-center gap-2 rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">

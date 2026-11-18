@@ -670,7 +670,8 @@ export class ApiService {
           action === 'uploadLearningResource' ||
           action === 'uploadNursingReferenceResource' ||
           action === 'indexNursingReferenceResource'
-        ) ? 120000 : action === 'reindexLearningResource'
+        ) ? 120000 : action === 'runGeminiMaterialReviewBatch'
+          ? 120000 : action === 'reindexLearningResource'
           ? 180000 : action === 'generateCNEQuestions'
           ? (params?.phase === 'PLAN' ? 150000 : 305000) : 45000;
         timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -1522,7 +1523,7 @@ export class ApiService {
     return this.executeAction('getCNEAiJobStatus', {cneId});
   }
 
-  static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{cneId: string; hasOwnMaterial: boolean; status: string; message: string; indexCount: number; warningCount?:number; excludedCount?:number; fidelityWarnings?:string}>> {
+  static async getCNEAiMaterialStatus(cneId: string): Promise<ApiResponse<{cneId: string; hasOwnMaterial: boolean; status: string; message: string; indexCount: number; warningCount?:number; excludedCount?:number; fidelityWarnings?:string;reviewedCount?:number;totalChunks?:number;flaggedCount?:number;reviewFlagDetails?:string}>> {
     return this.executeAction('getCNEAiMaterialStatus', { cneId });
   }
 
