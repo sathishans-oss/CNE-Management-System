@@ -11299,7 +11299,8 @@ function handleGeminiMaterialTextBatch(params,session) {
     evaluation=cneAiGeminiStructured_(endpoint,prompt,cneAiMaterialReviewSchema_(),1,
       {cneId:cneId,employeeId:session.employeeId,stage:'MATERIAL_REVIEW',deadlineMs:Date.now()+95000});
     if(!evaluation.success)return {success:false,errorCode:evaluation.errorCode||'AI_TEMPORARILY_UNAVAILABLE',
-      retryable:true,message:'Gemini text review could not complete this batch. The material and earlier reviewed chunks are preserved. '+(evaluation.message||'')};
+      retryable:!['AI_MODEL_NOT_FOUND','AI_CONFIGURATION_ERROR','AI_REQUEST_REJECTED'].includes(evaluation.errorCode),
+      message:'Gemini text review could not complete this batch. The material and earlier reviewed chunks are preserved. '+(evaluation.message||'')};
     var reviews=evaluation.data&&evaluation.data.reviews;
     if(!Array.isArray(reviews)||reviews.length!==batch.length)
       return {success:false,errorCode:'AI_INDEX_INVALID_RESPONSE',retryable:true,message:'Gemini review did not cover every requested chunk; no progress was saved for this batch.'};
@@ -13991,7 +13992,7 @@ function cneAiGeminiUserMessage_(code) {
     AI_QUOTA_LIMITED:'The configured Gemini API project may have exhausted its daily or allocated quota. Ask the administrator to check Gemini API usage and limits before retrying.',
     AI_TEMPORARILY_UNAVAILABLE:'Gemini is temporarily overloaded or unavailable. The automatic retries did not succeed. Please try again later.',
     AI_CONFIGURATION_ERROR:'Gemini authorization failed. Ask the administrator to check the configured API key and access permissions.',
-    AI_MODEL_NOT_FOUND:'The configured Gemini model could not be found. Ask the administrator to check GEMINI_MODEL.',
+    AI_MODEL_NOT_FOUND:'The selected Gemini model is unavailable for this API version/project or does not support generateContent. Check GEMINI_MODEL_1 through GEMINI_MODEL_6 and CNE_AI_INDEX_MODEL, then confirm access using the Gemini models list.',
     AI_REQUEST_REJECTED:'Gemini rejected the structured request. Ask the administrator to inspect the server-side diagnostics.',
     AI_INVALID_RESPONSE:'Gemini returned an incomplete or malformed structured answer. Please try again later.',
     AI_GENERATION_DEADLINE:'AI processing reached its per-stage time limit. Your generation status remains protected; check it before retrying.',
@@ -14095,12 +14096,19 @@ function cneAiGeminiStructured_(endpoint, prompt, schema, attempts, audit) {
     var retryable = failureCode === 'AI_RATE_LIMITED' || failureCode === 'AI_TEMPORARILY_UNAVAILABLE' ||
       failureCode === 'AI_NETWORK_ERROR' || failureCode === 'AI_INVALID_RESPONSE';
     if(rotationModels.length && failureCode==='AI_QUOTA_LIMITED')retryable=true; // per-model daily allocation
+    // A 404 is model-specific. For MATERIAL_REVIEW only, a fully configured
+    // six-model rotation may try the next approved model without changing the
+    // clinical prompt or treating source evidence as valid. Never retry HTTP
+    // 400, authentication failures, or a lone invalid indexing model.
+    if(rotationModels.length && stage==='MATERIAL_REVIEW' && failureCode==='AI_MODEL_NOT_FOUND')retryable=true;
     if (!retryable || n + 1 >= total) break;
     // Equal-jitter exponential backoff reduces synchronized overload retries.
     // Retry-After is honored when present, within this phase's remaining budget.
     var windowMs = Math.min(10000, 1500 * Math.pow(2,n));
     var jitteredMs = Math.floor(windowMs/2) + Math.floor(Math.random()*(windowMs/2+1));
-    var waitMs = Math.max(retryAfter,jitteredMs);
+    // A missing model cannot recover through waiting; skip promptly to the next
+    // configured model while preserving the request's execution deadline.
+    var waitMs = failureCode==='AI_MODEL_NOT_FOUND'?0:Math.max(retryAfter,jitteredMs);
     // Keep the request inside the existing generation time budget.
     if (audit && audit.deadlineMs && Date.now() + waitMs + 1000 >= audit.deadlineMs) break;
     record('AI_QUESTION_GEMINI_RETRY','model='+activeModel+', HTTP '+lastCode+', reason '+failureCode+', attempt '+(n+1)+'/'+total+', durationMs='+elapsedMs+', waiting '+waitMs+'ms','WARNING');

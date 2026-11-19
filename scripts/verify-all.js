@@ -145,7 +145,7 @@ function runGeminiModelRotationChecks() {
       PropertiesService:{getScriptProperties:()=>({getProperty:key=>configured[key]||''})},
       UrlFetchApp:{fetch:(url,options)=>{
         calls.push({model:/\/models\/([^/:]+):generateContent/.exec(url)?.[1],options});
-        const status=failStatus===400?400:(calls.length<6?failStatus:200);
+        const status=(failStatus===400||failStatus===404&&stage!=='MATERIAL_REVIEW')?failStatus:(calls.length<6?failStatus:200);
         return {getResponseCode:()=>status,
           getContentText:()=>JSON.stringify(status===200?{candidates:[{content:{parts:[{text:'{"ok":true}'}]}}]}:{error:{message:status===400?'Invalid input':'temporarily overloaded'}}),
           getAllHeaders:()=>({})};
@@ -172,7 +172,16 @@ function runGeminiModelRotationChecks() {
   assert(!legacy.result.success&&legacy.calls.length===2,'Legacy repair stage should retain two tries when rotation not configured');
   const hard=exercise('ANSWER_KEY_REPAIR',props,400);
   assert(!hard.result.success&&hard.calls.length===1,'HTTP 400 should terminate rather than rotate');
-  console.log('Gemini model rotation: all five stages including material indexing, legacy fallback, HTTP 400, audit privacy passed');
+  const missingModel=exercise('MATERIAL_REVIEW',props,404);
+  assert(missingModel.result.success,'Material indexing must skip unavailable models when six-model rotation is enabled');
+  assert.deepEqual(missingModel.calls.map(c=>c.model),models,'404 rotation must reach all six configured models in order');
+  assert.equal(missingModel.audit.filter(e=>e[0]==='AI_MATERIAL_GEMINI_RETRY').length,5);
+  const no404Rotation=exercise('BLUEPRINT',props,404);
+  assert(!no404Rotation.result.success&&no404Rotation.calls.length===1,'Do not change existing blueprint handling of 404');
+  const noConfig404=exercise('MATERIAL_REVIEW',{},404);
+  assert(!noConfig404.result.success&&noConfig404.calls.length===1,'Do not retry an unconfigured model on 404');
+  assert(noConfig404.result.errorCode==='AI_MODEL_NOT_FOUND','Return specific model-not-found diagnostics');
+  console.log('Gemini model rotation: all five stages, indexing 404 fallback, invalid-model diagnostics, HTTP 400 stop, audit privacy passed');
 }
 
 function runCnePostTestV21Checks() {

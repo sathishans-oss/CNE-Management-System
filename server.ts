@@ -113,12 +113,23 @@ async function startServer() {
       }
     });
   } else {
-    // Vite middleware setup for development and preview
-    const vite = await createViteServer({
+    // Initialize Vite asynchronously so port 3000 and health checks bind immediately
+    const vitePromise = createViteServer({
       server: { middlewareMode: true, host: '0.0.0.0', port: PORT, hmr: false },
       appType: 'spa'
     });
-    app.use(vite.middlewares);
+    vitePromise.catch((err) => {
+      console.error('Failed to initialize Vite middleware:', err);
+      process.exit(1);
+    });
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await vitePromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {
