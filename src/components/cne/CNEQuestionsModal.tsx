@@ -26,6 +26,7 @@ import { useAccessibleDialog } from '../common/useAccessibleDialog';
 import { CNEQuestionHeaderStatusTag } from './CNEQuestionHeaderStatusTag';
 import { MaterialIndexWarnings } from './MaterialIndexWarnings';
 import { MaterialReviewFlags } from './MaterialReviewFlags';
+import { ProcessingSteps, ProcessingProgress, useProcessingClock, formatProcessingTime } from './ProcessingSteps';
 
 interface CNEQuestionsModalProps {
   cne: CNERecord;
@@ -127,7 +128,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const versionSequenceRef = useRef(0);
 
   // Real-time stage progress state for AI generation
-  const [generationStage, setGenerationStage] = useState<{ title: string; subtitle: string } | null>(null);
+  const [generationProgress, setGenerationProgress] = useState<ProcessingProgress|null>(null);
   const [generationStep, setGenerationStep] = useState(0);
   const [materialStatusCode, setMaterialStatusCode] = useState('NOT_UPLOADED');
   const [materialStatusMessage, setMaterialStatusMessage] = useState('Upload CNE learning material to enable AI question generation.');
@@ -148,7 +149,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [failureDialog, setFailureDialog] = useState<{
     title: string; message: string; type: 'material' | 'validation' | 'technical'; retrySafe: boolean; retryAction?: 'material-check' | 'generation';
   } | null>(null);
-  const [generationElapsedSeconds, setGenerationElapsedSeconds] = useState(0);
+  const [generationStartedAt,setGenerationStartedAt]=useState(0);
+  const generationNow=useProcessingClock(isGenerating);
   const progressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const generationSteps = [
     'Verifying CNE and permissions',
@@ -186,7 +188,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setIsLocked(false);
     setEditingIndex(null);
     setShowHistory(false);
-    setGenerationStage(null);
+    setGenerationProgress(null);
     setGenerationStep(0);
     setMaterialStatusCode('NOT_UPLOADED');
     setMaterialStatusMessage('Upload CNE learning material to enable AI question generation.');
@@ -194,7 +196,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setMaterialImages([]);setChosenMaterialImageIds([]);setShowAiSetup(false);setAiWarningExpanded(false);setMaterialImagePreview({});
     setReindexingMaterial(false);
     setCheckingMaterial(false);
-    setGenerationElapsedSeconds(0);
+    setGenerationStartedAt(0);
     setIsGenerating(false);
     setPendingGenerationJob(false);
     setIsSaving(false);
@@ -504,23 +506,22 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setIsGenerating(true);
     setGenerationStep(1);
     const startedAt = Date.now();
-    setGenerationElapsedSeconds(0);
+    setGenerationStartedAt(startedAt);setGenerationProgress(null);
     stopProgressPolling();
     // Every stage comes from the authorized backend progress endpoint, never a fake timer.
+    let newest=0,polling=false;
     progressPollRef.current = setInterval(() => {
-      if (isCurrent()) setGenerationElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+      if(!isCurrent()||!generatingRef.current||polling)return;polling=true;
       void ApiService.getCNEAiGenerationProgress(requestCneId).then((progress) => {
         if (isCurrent() && progress.success && progress.data && progress.data.stage >= 1 && progress.data.stage <= 7 &&
-            Number(progress.data.updatedAt || 0) >= startedAt) {
-          setGenerationStep((prev) => Math.max(prev, progress.data!.stage));
-          setGenerationStage({title: generationSteps[progress.data.stage - 1], subtitle: progress.data.message});
+            Number(progress.data.updatedAt || 0) >= startedAt && Number(progress.data.updatedAt||0)>=newest && generatingRef.current) {
+          newest=Number(progress.data.updatedAt||0);
+          setGenerationStep(progress.data.stage);
+          setGenerationProgress(progress.data);
         }
-      }).catch(() => { /* polling is advisory; server execution is authoritative */ });
+      }).catch(() => { /* polling is advisory; server execution is authoritative */ }).finally(()=>{polling=false;});
     }, 4500);
-    setGenerationStage({
-      title: 'Generating MCQs',
-      subtitle: 'Analyzing the saved CNE learning material and creating 5 clinical MCQs…'
-    });
+    setGenerationProgress({stage:1,message:'Checking the current CNE generation request.',steps:{'1':{message:'Checking the current CNE generation request.'}}});
 
     try {
       let res;
@@ -545,7 +546,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         await loadQuestions(++questionsRequestRef.current, requestCneId);
         setPartialAiCount(partial ? Number(res.savedCount || res.data.length) : 0);
         setGenerationStep(7);
-        setGenerationStage({title:partial?'Partial AI Questions Saved':'Questions Saved',subtitle:partial?'Verified Drafts saved; upload more CNE material and resume only missing objectives.':'Five Draft questions saved for educator review.'});
+        setGenerationProgress(null);
         success(partial ? `Saved ${res.data.length} verified AI Draft question(s). Quota not deducted; resume missing objectives.` : 'Five AI Draft questions saved. Review before finalizing.');
         await loadQuota(++quotaRequestRef.current,requestCneId);
         if(onUpdated)onUpdated();
@@ -613,7 +614,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         stopProgressPolling();
         generatingRef.current = false;
         setIsGenerating(false);
-        setGenerationStage(null);
+        setGenerationProgress(null);
       }
     }
   };
@@ -965,7 +966,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 disabled={!isPageReady || isGenerating || checkingMaterial || materialCheckRef.current || generatingRef.current || isSaving || !canModify || isAiGenerationUsed || isAiGenerationUnavailable || !!pendingGenerationJob}
                 title={!isPageReady ? 'Please wait while questions load' : isAiGenerationUsed ? 'AI generation already used for this CNE' : isAiGenerationUnavailable ? 'AI generation unavailable for this CNE' : 'Generate MCQs only from indexed CNE material'}
                 className={`flex min-w-0 items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold shadow-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:px-4 sm:py-2.5 sm:text-xs ${isAiGenerationUsed ? 'border border-slate-300 bg-slate-200 text-slate-600' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
-                {isGenerating || checkingMaterial ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : isAiGenerationUsed ? <Lock className="h-3.5 w-3.5 shrink-0" /> : <Sparkles className="h-3.5 w-3.5 shrink-0" />}
+                {checkingMaterial && !isGenerating ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : isAiGenerationUsed ? <Lock className="h-3.5 w-3.5 shrink-0" /> : <Sparkles className="h-3.5 w-3.5 shrink-0" />}
                 <span className="min-w-0">{checkingMaterial ? 'Checking material…' : isGenerating ? 'Generating MCQs…' : isAiGenerationUsed ? 'AI Used' : 'AI Generate MCQs'}</span>
               </button>
               <button type="button" onClick={handleAddManualQuestion}
@@ -1088,18 +1089,11 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
           {/* Prominent Single-Stage Processing Status in Main Content Area */}
           {isGenerating ? (
             <div role="status" aria-live="polite" className="mx-auto my-auto max-w-lg w-full rounded-2xl border border-purple-200 bg-purple-50 p-5 space-y-4">
-              <div className="flex items-center gap-3"><Loader2 className="w-6 h-6 animate-spin text-purple-700" />
-                <div><h3 className="text-sm font-bold text-purple-950">Generating 5 Topic-Specific Questions</h3>
-                  <p className="text-xs text-purple-700">{generationStage?.subtitle || 'The server is processing your CNE topic. This may take some time.'}</p>
-                </div>
+              <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-bold text-purple-950">Generating 5 Topic-Specific Questions</h3>
+                <span className="text-xs tabular-nums text-purple-700">{formatProcessingTime(generationStartedAt?(generationNow-generationStartedAt)/1000:0)}</span>
               </div>
-              <ol className="space-y-2">{generationSteps.map((name, index) => (
-                <li key={name} className={`flex items-start gap-2 text-xs ${generationStep > index + 1 ? 'text-emerald-700' : generationStep === index + 1 ? 'font-semibold text-purple-950' : 'text-slate-500'}`}>
-                  {generationStep > index + 1 ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : generationStep === index + 1 ? <Loader2 className="w-4 h-4 shrink-0 animate-spin" /> : <span className="w-4 h-4 shrink-0 text-center">○</span>}
-                  {name}
-                </li>
-              ))}</ol>
-              <p className="text-xs text-slate-500">Elapsed: {generationElapsedSeconds}s. Stages reflect server updates; no estimated percentage.</p>
+              <ProcessingSteps labels={generationSteps} active={generationStep||1} running now={generationNow} details={generationProgress?.steps}/>
+              <p className="text-[11px] text-slate-500">Stages reflect server updates; no estimated percentage. AI drafts require educator review.</p>
             </div>
           ) : loading ? (
             <div className="my-auto py-20 flex flex-col items-center justify-center gap-2 text-slate-500">

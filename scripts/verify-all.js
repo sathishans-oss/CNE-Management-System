@@ -59,7 +59,8 @@ function runGeminiMaterialReviewChecks() {
     ['IDX_CNE-ABC_FILE_ABC_V3_AABBCCDD_C2','CNE-ABC','FILE_ABC','Clinical.pdf','Wound care','Infection prevention',2,'Use infection prevention measures according to the clinical guidance, and document observations.','infection, nursing','SUCCESS','']
   ]);
   const records={Material_List:material,Material_Index:index};
-  let count=0, invalid=false, uncertain=false;
+  let count=0, invalid=false, uncertain=false, providerFailure="", currentConfig={};
+  const savedProps=new Map(), attemptsSeen=[];
   const context={console,Date,Math,JSON,
     getSpreadsheet:()=>({getSheetByName:n=>records[n]}),cneMaterialIndexSheet_:()=>index,
     getHeaderMap:sh=>Object.fromEntries(sh.rows[0].map((h,i)=>[h.toLowerCase().replace(/[^a-z0-9]/g,''),i])),
@@ -70,16 +71,18 @@ function runGeminiMaterialReviewChecks() {
     getCNEScheduleRecord:()=>({status:'Scheduled'}),checkQuestionManagementAuthorized:()=>null,
     normalizeCNEStatus:x=>x, sanitizeCellInput:x=>String(x||''),
     LockService:{getScriptLock:()=>({waitLock(){},releaseLock(){}})},
-    PropertiesService:{getScriptProperties:()=>({getProperty:k=>k==='GEMINI_API_KEY'?'PRIVATE':k==='CNE_AI_INDEX_MODEL'?'gemini-3.5-flash-lite':''})},
+    PropertiesService:{getScriptProperties:()=>({getProperty:k=>savedProps.get(k)||currentConfig[k]||(k==='GEMINI_API_KEY'?'PRIVATE':k==='CNE_AI_INDEX_MODEL'?'gemini-3.5-flash-lite':''),setProperty:(k,v)=>savedProps.set(k,v),deleteProperty:k=>savedProps.delete(k)})},
     cneAiMaterialReviewSchema_:()=>({type:'OBJECT'}),
-    cneAiGeminiStructured_:(endpoint,prompt)=>{
+    cneAiGeminiStructured_:(endpoint,prompt,schema,attempts,audit)=>{
       count++;
       assert(!prompt.includes('data:application/pdf'),'Original file payload must not be sent');
       assert(!prompt.includes('base64'),'No original file bytes in text prompt');
       assert(prompt.includes('NCLEX V2.1 CLINICAL EVIDENCE INTAKE'));
       assert(prompt.includes('five original, source-grounded, A-D single-best-answer'));
       assert(prompt.includes('not clinical truth')===false); // model never permitted to approve a passage as clinically correct
-      assert(endpoint.includes('gemini-3.5-flash-lite'));
+      attemptsSeen.push({model:/models\/([^:]+):/.exec(endpoint)[1],attempt:audit.materialAttempt,total:audit.materialTotal});
+      assert.equal(attempts,1);
+      if(providerFailure)return {success:false,errorCode:providerFailure};
       if(invalid)return {success:true,data:{reviews:[{indexId:'WRONG',assessment:'USABLE',keywords:[],riskNote:''}]}};
       const refs=JSON.parse(prompt.slice(prompt.lastIndexOf('Source chunks (JSON):\n')+'Source chunks (JSON):\n'.length));
       return {success:true,data:{reviews:refs.map(x=>({indexId:x.indexId,assessment:uncertain?'UNCERTAIN':'USABLE',keywords:['Nursing','fake hallucination'],riskNote:uncertain?'The extracted treatment table lacks clear unit and intervention pairing.':''}))}};
@@ -123,10 +126,29 @@ function runGeminiMaterialReviewChecks() {
   const config=Object.fromEntries(['gemini-3.8-flash','gemini-3.6-flash','gemini-3-flash','gemini-2.5-flash','gemini-3.5-flash-lite','gemini-3.1-flash-lite'].map((m,i)=>['GEMINI_MODEL_'+(i+1),m]));
   config.GEMINI_MAX_ATTEMPTS='6';
   const modelFor=(values)=>context.cneAiMaterialReviewModel_({getProperty:k=>values[k]||''});
-  assert.equal(modelFor(config),'gemini-3.8-flash','A complete config uses the shared first Gemini model');
+  assert.equal(modelFor(config),'gemini-3.5-flash-lite','Indexing starts with the lighter model');
   assert.equal(modelFor({CNE_AI_INDEX_MODEL:'gemini-3.1-flash-lite'}),'gemini-3.1-flash-lite','Standalone model remains supported');
   const incomplete={...config,GEMINI_MODEL_6:'gemini-3-flash',CNE_AI_INDEX_MODEL:'gemini-3.5-flash-lite'};
   assert.equal(modelFor(incomplete),'gemini-3.5-flash-lite','An invalid rotation must fall back to the configured indexing model');
+  function resetMaterial(){material.rows[1][3]='SUCCESS';material.rows[1][4]=original;index.rows.slice(1).forEach(r=>r[9]='SUCCESS');uncertain=false;assert(context.cneAiBeginMaterialReview_('CNE-ABC','FILE_ABC',{employeeId:'EMP1'},{chunksCount:2}).success);}
+  assert.equal(savedProps.size,0,'Terminal job cursor removed');
+  currentConfig=config;resetMaterial();attemptsSeen.length=0;providerFailure='AI_MODEL_NOT_FOUND';
+  for(let i=0;i<5;i++){
+    const res=context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC'},{employeeId:'EMP1'});
+    assert(res.success&&!res.data.done);assert.equal(res.data.reviewedCount,0);assert(index.rows.slice(1).every(r=>r[9]==='SUCCESS'));
+    const job=JSON.parse(savedProps.get('cne_mat_job_CNE-ABC'));assert.equal(job.next,i+1);assert.equal(job.busyUntil,0);
+  }
+  providerFailure='';const resumed=context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC',expectedFileId:'FILE_ABC'},{employeeId:'EMP1'});
+  assert(resumed.success&&resumed.data.done);assert.equal(savedProps.size,0);
+  assert.deepEqual(attemptsSeen.map(a=>a.model),['gemini-3.5-flash-lite','gemini-3.1-flash-lite','gemini-2.5-flash','gemini-3-flash','gemini-3.6-flash','gemini-3.8-flash']);
+  assert.deepEqual(attemptsSeen.map(a=>a.attempt),[1,2,3,4,5,6]);
+  resetMaterial();providerFailure='AI_REQUEST_REJECTED';assert(!context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC'},{employeeId:'EMP1'}).success);assert.equal(savedProps.size,0);
+  resetMaterial();providerFailure='AI_NETWORK_ERROR';const wait=context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC'},{employeeId:'EMP1'});assert(wait.success&&!wait.data.done&&wait.data.retryDelayMs>0);
+  const before=count;const cooldown=context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC'},{employeeId:'EMP1'});assert(cooldown.success&&count===before);
+  let lease=JSON.parse(savedProps.get('cne_mat_job_CNE-ABC'));lease.busyUntil=Date.now()+360000;savedProps.set('cne_mat_job_CNE-ABC',JSON.stringify(lease));
+  const busy=context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC'},{employeeId:'EMP2'});assert.equal(busy.errorCode,'AI_INDEX_BUSY');assert.equal(count,before);
+  assert.equal(context.handleGeminiMaterialTextBatch({cneId:'CNE-ABC',expectedFileId:'OLD'},{employeeId:'EMP1'}).errorCode,'RESOURCE_SUPERSEDED');
+  console.log('Persistent material cursor: six separate executions, fast-first order, cooldown, duplicate lease, source binding, terminal cleanup passed');
   console.log('Gemini material review: source-policy, flagged reasons, no original bytes, and model configuration smoke checks passed');
 }
 
@@ -181,6 +203,12 @@ function runGeminiModelRotationChecks() {
   const noConfig404=exercise('MATERIAL_REVIEW',{},404);
   assert(!noConfig404.result.success&&noConfig404.calls.length===1,'Do not retry an unconfigured model on 404');
   assert(noConfig404.result.errorCode==='AI_MODEL_NOT_FOUND','Return specific model-not-found diagnostics');
+  const singleCalls=[],singleAudit=[];
+  const single={JSON,Date,Math,console,PropertiesService:{getScriptProperties:()=>({getProperty:k=>props[k]||''})},
+    UrlFetchApp:{fetch:(url,options)=>{singleCalls.push({url,options});throw Error('Request timed out: SECRET');}},Utilities:{sleep:()=>{}},logAuditAction:(...args)=>singleAudit.push(args)};
+  vm.createContext(single);vm.runInContext(fragment,single);
+  const timeout=single.cneAiGeminiStructured_('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=SECRET','same policy',{type:'OBJECT'},1,{stage:'MATERIAL_REVIEW',cneId:'CNE',employeeId:'EMP',deadlineMs:Date.now()+105000,materialAttempt:2,materialTotal:6});
+  assert.equal(timeout.errorCode,'AI_REQUEST_TIMEOUT');assert.equal(singleCalls.length,1);assert(singleCalls[0].options.timeoutSeconds<=30);assert(singleAudit.every(e=>!JSON.stringify(e).includes('SECRET')));
   console.log('Gemini model rotation: all five stages, indexing 404 fallback, invalid-model diagnostics, HTTP 400 stop, audit privacy passed');
 }
 
@@ -15455,7 +15483,11 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(mobile.includes('h-[100dvh]')&&mobile.includes('overscroll-contain'));
       assert(!mobile.includes('max-h-[36dvh]'),'Never create a competing 36dvh progress scrollbar');
       assert(stages.includes('Review extracted text for NCLEX V2.1 CNE Post-Test evidence'));
-      assert(stages.includes('aria-valuenow')&&stages.includes('aria-expanded'));
+      assert(stages.includes('aria-valuenow')&&stages.includes('<ProcessingSteps')&&stages.includes("stage==='idle'||stage==='done'"));
+      const shared=readFileSync(join(ROOT_DIR,'src/components/cne/ProcessingSteps.tsx'),'utf8');
+      assert.equal((shared.match(/animate-spin/g)||[]).length,1);
+      assert(questions.includes('<ProcessingSteps')&&!questions.includes('generationStage?.subtitle'));
+      assert(shared.includes('detail.currentModel')&&shared.includes('detail.questionStates'));
       assert(flags.includes('decodeURIComponent')&&flags.includes('source chunk(s) need clarification'));
       assert(questions.includes('<MaterialReviewFlags message={materialFlagMessage}/>'));
       assert(questions.includes('alt="Selected source image preview"'),'Source captions may contain the answer');
@@ -17639,7 +17671,7 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   });
   check('Backend progress reports blueprint retries and actual MCQ generation stage',()=>{
     assert(gas.includes('retrying attempt '));
-    assert(gas.includes("stage==='BLUEPRINT'?4"));
+    assert(gas.includes("stage==='BLUEPRINT'||stage==='MCQ_GENERATION'?4:5"));
     assert(gas.includes('Generating five clinical MCQs from the verified blueprint'));
   });
 }

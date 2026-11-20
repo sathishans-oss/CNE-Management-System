@@ -1,3 +1,8 @@
+interface MaterialReviewBatch {
+  done:boolean; status:'PENDING'|'SUCCESS'|'NEEDS_REVIEW'; reviewedCount:number; totalChunks:number;
+  flaggedCount?:number; fileId?:string; indexedAt?:string; retryDelayMs?:number; progress?:ProcessingProgress|null;
+}
+import type { ProcessingProgress } from '../components/cne/ProcessingSteps';
 import { getIndiaTodayIsoDate } from '../utils';
 import { readMemoryCached, invalidateMemoryCache, clearMemoryCache, peekMemoryResponse, getMemoryCacheStats } from './memoryCache';
 import {
@@ -671,7 +676,7 @@ export class ApiService {
           action === 'uploadNursingReferenceResource' ||
           action === 'indexNursingReferenceResource'
         ) ? 120000 : action === 'runGeminiMaterialReviewBatch'
-          ? 120000 : action === 'reindexLearningResource'
+          ? 150000 : action === 'reindexLearningResource'
           ? 180000 : action === 'generateCNEQuestions'
           ? (params?.phase === 'PLAN' ? 150000 : 305000) : 45000;
         timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -1539,34 +1544,59 @@ export class ApiService {
     return this.executeAction('getCNEAiMaterialImage',{cneId,imageFileId});
   }
 
-  static async reindexLearningResource(cneId: string, uploaderResponsibilityAccepted: boolean): Promise<ApiResponse<{chunksCount?: number; indexingStatus?: 'SUCCESS'|'PENDING'; reviewedCount?:number; totalChunks?:number; warningCount?: number; excludedCount?: number; fidelityWarnings?: string[]}>> {
+  static async reindexLearningResource(cneId: string, uploaderResponsibilityAccepted: boolean): Promise<ApiResponse<{chunksCount?: number; indexingStatus?: 'SUCCESS'|'PENDING'; reviewedCount?:number; totalChunks?:number; warningCount?: number; excludedCount?: number; fidelityWarnings?: string[]; fileId?:string; indexedAt?:string}>> {
     return this.executeAction('reindexLearningResource', { cneId, requireGeminiReview:true,
       uploaderDeclaration: uploaderResponsibilityAccepted ? 'I_ACCEPT_RESPONSIBILITY' : undefined });
   }
 
-  static async runGeminiMaterialReviewBatch(cneId:string): Promise<ApiResponse<{done:boolean;status:'PENDING'|'SUCCESS'|'NEEDS_REVIEW';reviewedCount:number;totalChunks:number;flaggedCount?:number}>> {
-    return this.executeAction('runGeminiMaterialReviewBatch',{cneId});
+  static async runGeminiMaterialReviewBatch(cneId:string, expectedFileId?:string,expectedIndexedAt?:string): Promise<ApiResponse<MaterialReviewBatch>> {
+    return this.executeAction('runGeminiMaterialReviewBatch',{cneId,expectedFileId,expectedIndexedAt});
   }
 
-  /** Review every extracted teaching-text chunk in resumable Gemini batches. */
-  static async completeCNEMaterialTextReview(cneId:string,onProgress?:(done:number,total:number)=>void): Promise<ApiResponse<{done:boolean;status:'PENDING'|'SUCCESS'|'NEEDS_REVIEW';reviewedCount:number;totalChunks:number;flaggedCount?:number}>> {
-    // Each request is a separate Apps Script execution and can be resumed.
-    for(let n=0;n<250;n++){
-      const result=await this.runGeminiMaterialReviewBatch(cneId);
-      if(!result.success)return result;
-      const info=result.data;
-      if(!info)return {success:false,errorCode:'AI_INDEX_INVALID_RESPONSE',message:'Material review returned no progress information.'};
-      onProgress?.(info.reviewedCount,info.totalChunks);
-      if(info.done){
-        if(info.status!=='SUCCESS')return {success:false,errorCode:'GEMINI_CLINICAL_CONTENT_UNCERTAIN',message:result.message||'Gemini found uncertain material. Please upload a clearer file.',data:info};
-        return result;
+  /** Each request is an independent, bounded execution. Only the server advances
+   * the persistent model cursor. Never retry an uncertain transport outcome blindly. */
+  static async completeCNEMaterialTextReview(cneId:string,onProgress?:(done:number,total:number)=>void,onDetail?:(progress:ProcessingProgress)=>void,source?:{fileId?:string;indexedAt?:string}): Promise<ApiResponse<MaterialReviewBatch>> {
+    let active=true, expectedFileId=source?.fileId, expectedIndexedAt=source?.indexedAt, polling=false, latest=0, reviewed=0;
+    const report=(done:number,total:number)=>{reviewed=Math.max(reviewed,done);onProgress?.(reviewed,total);};
+    const started=Date.now();
+    const poll=async()=>{
+      if(!active||polling||!onDetail)return;
+      polling=true;
+      try {
+        const res=await this.getCNEAiGenerationProgress(cneId,'MATERIAL_INDEXING');
+        const p=res.data;
+        if(active&&res.success&&p&&Number(p.updatedAt||0)>=started&&Number(p.updatedAt||0)>=latest&&(!expectedFileId||p.fileId===expectedFileId)&&(!expectedIndexedAt||p.indexedAt===expectedIndexedAt)){
+          latest=Number(p.updatedAt||0);onDetail(p);
+          if(typeof p.reviewedCount==='number'&&typeof p.totalChunks==='number')report(p.reviewedCount,p.totalChunks);
+        }
+      }catch(e){/* Progress reads are advisory. */}finally{polling=false;}
+    };
+    const timer=setInterval(()=>{void poll();},4500);
+    try {
+      for(let n=0;n<250;n++){
+        const result=await this.runGeminiMaterialReviewBatch(cneId,expectedFileId,expectedIndexedAt);
+        if(!result.success)return result;
+        const info=result.data;
+        if(!info)return {success:false,errorCode:'AI_INDEX_INVALID_RESPONSE',message:'Material review returned no progress information.'};
+        expectedFileId=info.fileId||expectedFileId;expectedIndexedAt=info.indexedAt||expectedIndexedAt;
+        report(info.reviewedCount,info.totalChunks);
+        if(info.progress&&Number(info.progress.updatedAt||0)>=latest&&info.progress.fileId===expectedFileId&&info.progress.indexedAt===expectedIndexedAt){latest=Number(info.progress.updatedAt||0);onDetail?.(info.progress);}
+        if(info.done){
+          if(info.status!=='SUCCESS')return {success:false,errorCode:'GEMINI_CLINICAL_CONTENT_UNCERTAIN',message:result.message||'Gemini found uncertain material. Please upload a clearer file.',data:info};
+          return result;
+        }
+        // Long provider cooldowns remain persisted server-side; user can resume
+        // later instead of keeping a modal running indefinitely.
+        const wait=Math.max(0,Number(info.retryDelayMs)||0);
+        if(wait>60000)return {success:false,errorCode:'AI_RATE_LIMITED',message:'Gemini requested a longer cooldown. Reviewed chunks and the next model are saved. Resume later.',data:info};
+        if(wait)await new Promise<void>(resolve=>setTimeout(resolve,wait+100));
       }
-    }
-    return {success:false,errorCode:'AI_INDEX_BATCH_LIMIT',message:'Material review requires more batches than expected. The saved progress is preserved.'};
+      return {success:false,errorCode:'AI_INDEX_BATCH_LIMIT',message:'Material review requires more batches than expected. The saved progress is preserved.'};
+    } finally{active=false;clearInterval(timer);}
   }
 
-  static async getCNEAiGenerationProgress(cneId: string): Promise<ApiResponse<{stage: number; message: string; updatedAt?: number}>> {
-    return this.executeAction('getCNEAiGenerationProgress', { cneId });
+  static async getCNEAiGenerationProgress(cneId: string,operation:'AI_QUESTION_GENERATION'|'MATERIAL_INDEXING'='AI_QUESTION_GENERATION'): Promise<ApiResponse<ProcessingProgress>> {
+    return this.executeAction('getCNEAiGenerationProgress', { cneId,operation });
   }
 
   /**

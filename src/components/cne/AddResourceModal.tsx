@@ -6,6 +6,7 @@ import { useToast } from '../Toast';
 import { formatCneDateTimeDisplay } from '../../utils';
 import { MaterialIndexWarnings } from './MaterialIndexWarnings';
 import { MaterialIndexStages, MaterialIndexStage } from './MaterialIndexStages';
+import type { ProcessingProgress } from './ProcessingSteps';
 
 interface AddResourceModalProps {
   isOpen: boolean;
@@ -31,6 +32,8 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
   const [uploadStage, setUploadStage] = useState<'idle'|'upload'|'index'|'done'|'failed'>('idle');
   const [materialStage,setMaterialStage]=useState<MaterialIndexStage>('idle');
   const [reviewProgress,setReviewProgress]=useState({done:0,total:0});
+  const [reviewDetail,setReviewDetail]=useState<ProcessingProgress|null>(null);
+  const [indexStartedAt,setIndexStartedAt]=useState(0);
   const [stageError, setStageError] = useState('');
   const [indexSummary,setIndexSummary] = useState<{safe:number;excluded:number;warnings:string[];imageCount:number;imageNotes:string[]}|null>(null);
   const [loadError, setLoadError] = useState('');
@@ -42,7 +45,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
   useEffect(() => {
     if (!isOpen) return;
     const request = ++requestRef.current;
-    setSelectedCneId(''); setFile(null); setMaterialStage('idle');setReviewProgress({done:0,total:0}); setResponsibilityAccepted(false); setLoadError('');setIndexSummary(null);
+    setSelectedCneId(''); setFile(null); setMaterialStage('idle');setReviewProgress({done:0,total:0});setReviewDetail(null);setIndexStartedAt(0); setResponsibilityAccepted(false); setLoadError('');setIndexSummary(null);
     setLoadingClasses(true);
     void ApiService.getCNERecords().then(response => {
       if (request !== requestRef.current) return;
@@ -70,7 +73,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
     if (!responsibilityAccepted) { error('Confirm your responsibility for the accuracy of the uploaded clinical content.'); return; }
     const selected = classes.find(record => record.cneId === selectedCneId);
     if (!selected) { error('The selected CNE is no longer available. Refresh the page.'); return; }
-    submitRef.current = true; setSubmitting(true);setUploadStage('upload');setMaterialStage('upload');setStageError('');
+    submitRef.current = true; setSubmitting(true);setIndexStartedAt(Date.now());setReviewDetail(null);setReviewProgress({done:0,total:0});setUploadStage('upload');setMaterialStage('upload');setStageError('');
     try {
       const base64Data = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -86,9 +89,9 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
       if (!result.success) throw new Error(result.message || 'Could not upload CNE material.');
       setUploadStage('index');setMaterialStage('extract');
       const indexed=await ApiService.reindexLearningResource(selectedCneId, responsibilityAccepted);
-      if(!indexed.success){setUploadStage('failed');setStageError(indexed.message||'Document indexing failed.');warning('Learning material saved, but indexing failed: '+(indexed.message||'Retry from the CNE Material page.'));onSuccess();return;}
+      if(!indexed.success){setMaterialStage('failed');setUploadStage('failed');setStageError(indexed.message||'Document indexing failed.');warning('Learning material saved, but indexing failed: '+(indexed.message||'Retry from the CNE Material page.'));onSuccess();return;}
       setMaterialStage('ai');
-      const review=await ApiService.completeCNEMaterialTextReview(selectedCneId,(done,total)=>setReviewProgress({done,total}));
+      const review=await ApiService.completeCNEMaterialTextReview(selectedCneId,(done,total)=>setReviewProgress({done,total}),setReviewDetail,indexed.data);
       if(!review.success){setUploadStage('failed');setMaterialStage('failed');setStageError(review.message||'Gemini review was interrupted. You can resume from the CNE material page.');warning('The file is saved but Gemini review is incomplete: '+(review.message||''));onSuccess();return;}
       setMaterialStage('verify');
       const safeCount = Number(indexed.data?.chunksCount ?? (indexed as any).chunksCount ?? 0);
@@ -148,7 +151,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
             </label>
             <p className="rounded-lg bg-slate-50 p-3 text-[11px] text-slate-600">No manual indexing text is required. The application extracts teaching text from the uploaded file, then Gemini reviews every eligible chunk before the index is marked ready.</p>
           {uploadStage!=='idle' && <div className="space-y-2">
-            <MaterialIndexStages stage={materialStage} reviewedCount={reviewProgress.done} totalChunks={reviewProgress.total} error={stageError}/>
+            <MaterialIndexStages stage={materialStage} reviewedCount={reviewProgress.done} totalChunks={reviewProgress.total} error={stageError} running={submitting} startedAt={indexStartedAt} detail={reviewDetail}/>
             {indexSummary && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
               <p className="font-bold">Indexed: {indexSummary.safe} source chunks; {indexSummary.excluded} ambiguous chunks excluded; {indexSummary.imageCount} images stored.</p>
               {indexSummary.warnings.length > 0 && <MaterialIndexWarnings warningText={indexSummary.warnings.join('; ')} warningCount={indexSummary.warnings.length} excludedCount={indexSummary.excluded}/>} 
@@ -160,7 +163,7 @@ export const AddResourceModal: React.FC<AddResourceModalProps> = ({ isOpen, onCl
           <div className="shrink-0 flex justify-end gap-2 border-t bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
             <button type="button" onClick={onClose} disabled={submitting} className="rounded-lg border px-4 py-2 text-xs font-bold">{uploadStage==='done'?'Done':'Cancel'}</button>
             <button type="submit" disabled={uploadStage==='done' || submitting || loadingClasses || !file || !selectedCneId || !responsibilityAccepted} className="inline-flex items-center gap-2 rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
-              {submitting?<Loader2 className="h-4 w-4 animate-spin"/>:<Upload className="h-4 w-4"/>} {submitting?'Uploading & indexing…':'Upload CNE Material'}
+              <Upload className="h-4 w-4"/> Upload CNE Material
             </button>
           </div>
         </form>

@@ -19,6 +19,7 @@ import { useToast } from '../Toast';
 import { formatCneDateTimeDisplay } from '../../utils';
 import { MaterialIndexWarnings } from './MaterialIndexWarnings';
 import { MaterialIndexStages, MaterialIndexStage } from './MaterialIndexStages';
+import type { ProcessingProgress } from './ProcessingSteps';
 import { MaterialReviewFlags } from './MaterialReviewFlags';
 
 interface CNEReferenceModalProps {
@@ -48,6 +49,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   const [uploadStepError, setUploadStepError] = useState('');
   const [materialStage,setMaterialStage]=useState<MaterialIndexStage>('idle');
   const [reviewProgress,setReviewProgress]=useState({done:0,total:0});
+  const [reviewDetail,setReviewDetail]=useState<ProcessingProgress|null>(null);
+  const [indexStartedAt,setIndexStartedAt]=useState(0);
   const savingRef = useRef(false);
 
   // Learning material content
@@ -85,7 +88,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     setIndexingInfo(null);
     setShowDeleteConfirm(false);
     setLoadError(null);
-    setUploadStep('idle');setMaterialStage('idle');setReviewProgress({done:0,total:0});
+    setUploadStep('idle');setMaterialStage('idle');setReviewProgress({done:0,total:0});setReviewDetail(null);setIndexStartedAt(0);
     setUploadStepError('');
     loadAllReferenceData();
     return () => {
@@ -255,7 +258,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     }
 
     savingRef.current = true;
-    setIsSaving(true);
+    setIsSaving(true);setIndexStartedAt(Date.now());setReviewDetail(null);setReviewProgress({done:0,total:0});
     setUploadStepError('');
     setUploadStep(selectedFile ? 'uploading' : 'idle');setMaterialStage(selectedFile?'upload':'idle');
 
@@ -274,7 +277,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         });
 
         if (!uploadRes.success) {
-          setUploadStep('failed');
+          setMaterialStage('failed');setUploadStep('failed');
           setUploadStepError(uploadRes.message || 'Learning material upload failed.');
           error(uploadRes.message || 'Failed to upload learning resource file to Drive.');
           return false;
@@ -302,7 +305,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         const excluded = Number(indexRes.data?.excludedCount ?? (indexRes as any).excludedCount ?? 0);
         setMaterialStage('ai');
         setIndexingInfo({status:'PENDING',message:'Gemini is reviewing the extracted source text.',chunksCount:chunkCount});
-        const reviewed=await ApiService.completeCNEMaterialTextReview(cneId,(done,total)=>setReviewProgress({done,total}));
+        const reviewed=await ApiService.completeCNEMaterialTextReview(cneId,(done,total)=>setReviewProgress({done,total}),setReviewDetail,indexRes.data);
         if(!reviewed.success){
           setUploadStep('failed');setMaterialStage('failed');
           const detail=reviewed.message||'Gemini text review was interrupted; resume from Material Indexing Status.';
@@ -351,6 +354,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
       if (onUpdated) onUpdated();
       return true;
     } catch (e: any) {
+      if(selectedFile){setMaterialStage('failed');setUploadStep('failed');setUploadStepError(e?.message||'Material processing failed.');}
       error(e?.message || 'Error occurred while saving learning resource.');
       return false;
     } finally {
@@ -473,12 +477,12 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
               {(uploadStep !== 'idle' || indexingInfo) && <MaterialIndexStages
                 stage={uploadStep !== 'idle' ? materialStage :
                   indexingInfo?.status==='SUCCESS' && /GEMINI_REVIEW=COMPLETE/.test(indexingInfo.message||'') ? 'done' :
-                  indexingInfo?.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'') ? 'ai' :
+                  indexingInfo?.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'') ? (indexingInfo.errorCode?'failed':'ai') :
                   indexingInfo?.status==='SUCCESS' ? 'extract' : 'failed'}
                 reviewedCount={uploadStep !== 'idle' ? reviewProgress.done : Number((/REVIEWED=(\d+)/.exec(indexingInfo?.message||'')||[])[1]||0)}
                 totalChunks={uploadStep !== 'idle' ? (reviewProgress.total||indexingInfo?.chunksCount||0) : Number((/TOTAL=(\d+)/.exec(indexingInfo?.message||'')||[])[1]||indexingInfo?.chunksCount||0)}
-                error={uploadStep !== 'idle' ? uploadStepError : ''}
-                uploadAlreadyDone={!!existingResource?.hasFile}/>}
+                error={uploadStep !== 'idle' ? uploadStepError : indexingInfo?.errorCode?'Source review interrupted ('+indexingInfo.errorCode+'). Resume from Material Indexing Status.':''}
+                uploadAlreadyDone={!!existingResource?.hasFile} running={isSaving} detail={reviewDetail} startedAt={indexStartedAt}/>}
               {/* Upload Learning Resource File Section */}
               <div className="min-w-0 bg-white p-3 sm:p-5 rounded-xl border border-slate-200 shadow-2xs space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
@@ -584,14 +588,16 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-600">
                       <div>Indexed chunks: <strong className="text-slate-800">{typeof indexingInfo.chunksCount === 'number' ? indexingInfo.chunksCount : '—'}</strong></div>
+                      {indexingInfo.status==='SUCCESS'&&(materialStage==='done'||/GEMINI_REVIEW=COMPLETE/.test(indexingInfo.message||''))&&<p className="text-[11px] text-slate-600">Source review complete. AI drafts still require educator review.</p>}
                       {indexingInfo.errorCode && <div>Error code: <strong className="text-rose-700">{indexingInfo.errorCode}</strong></div>}
                     </div>
                     {canModify && (['FAILED','PENDING','UNKNOWN','NEEDS_REVIEW'].includes(indexingInfo.status) || needsQualityReindex || hasFidelityWarnings) && !isSaving && !loading && <button type="button" onClick={async () => {
                       const resume=indexingInfo?.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'');
                       if(!resume&&!responsibilityAccepted){warning('Confirm uploader responsibility using the checkbox before re-extracting.');return;}
-                      setIsSaving(true);setUploadStep('indexing');setUploadStepError('');setMaterialStage(resume?'ai':'extract');
+                      if(savingRef.current)return;savingRef.current=true;setIsSaving(true);setIndexStartedAt(Date.now());setReviewDetail(null);setReviewProgress({done:Number((/REVIEWED=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0),total:Number(indexingInfo.chunksCount||0)});setUploadStep('indexing');setUploadStepError('');setMaterialStage(resume?'ai':'extract');
                       try {
                         let count=Number(indexingInfo?.chunksCount||0);
+                        let source:{fileId?:string;indexedAt?:string}|undefined={fileId:existingResource?.driveFileId};
                         if(!resume){
                           const res=await ApiService.reindexLearningResource(cneId, responsibilityAccepted);
                           if(!res.success){
@@ -599,11 +605,11 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                             setIndexingInfo({status:'FAILED',message:res.message,errorCode:res.errorCode});
                             warning(res.message||'Indexing failed.');return;
                           }
-                          count=Number(res.data?.chunksCount ?? (res as any).chunksCount ?? 0);
+                          count=Number(res.data?.chunksCount ?? (res as any).chunksCount ?? 0);source=res.data;
                         }
                         setMaterialStage('ai');
                         setIndexingInfo({status:'PENDING',message:'Gemini is reviewing extracted text chunks.',chunksCount:count});
-                        const reviewed=await ApiService.completeCNEMaterialTextReview(cneId,(done,total)=>setReviewProgress({done,total}));
+                        const reviewed=await ApiService.completeCNEMaterialTextReview(cneId,(done,total)=>setReviewProgress({done,total}),setReviewDetail,source);
                         if(!reviewed.success){
                           setUploadStep('failed');setMaterialStage('failed');setUploadStepError(reviewed.message||'Gemini review interrupted.');
                           const fresh=await ApiService.getLearningResource(cneId);
@@ -627,7 +633,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                         if(onUpdated)onUpdated();
                         await loadAllReferenceData();
                       }catch(err:any){setUploadStep('failed');setMaterialStage('failed');setUploadStepError(err?.message||'Indexing error.');error(err?.message||'Indexing error.');}
-                      finally{setIsSaving(false);}
+                      finally{savingRef.current=false;setIsSaving(false);}
                     }} className="text-teal-700 font-semibold underline text-xs">{indexingInfo.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'')?'Resume Gemini Review':'Re-extract Current File'}</button>}
                     {needsQualityReindex && (
                       <div className="text-[11px] text-amber-800 leading-relaxed bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2" role="status">
@@ -794,17 +800,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     disabled={isSaving || loading}
                     className="flex min-h-11 items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold text-xs cursor-pointer transition-colors disabled:opacity-50"
                   >
-                    {isSaving ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Saving...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Save className="w-3.5 h-3.5 text-slate-600" />
+                    <Save className="w-3.5 h-3.5 text-slate-600" />
                         <span>Save</span>
-                      </>
-                    )}
                   </button>
 
                   {/* Button 2: Save & Next (moves to Questions only after save) */}
@@ -814,17 +811,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     disabled={isSaving || loading}
                     className="flex min-h-11 items-center justify-center gap-1.5 px-3 sm:px-5 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors disabled:opacity-50"
                   >
-                    {isSaving ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Saving &amp; Moving...</span>
-                      </>
-                    ) : (
-                      <>
-                        <span>Save &amp; Next</span>
+                    <span>Save &amp; Next</span>
                         <ArrowRight className="w-3.5 h-3.5" />
-                      </>
-                    )}
                   </button>
                 </div>
               )}
