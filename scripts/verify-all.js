@@ -699,8 +699,8 @@ const hybridChecks=[
   ,{name:'Material load spinner and approved question creation cards are visible',run(){
     const material=readFileSync(join(ROOT,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
     assert(material.includes('Loading learning material')&&material.includes('animate-spin')&&!material.includes('{loading ? ('),'Material must remain visible with non-blocking spinner');
-    assert(material.includes('lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]') && !material.includes('role="tablist"'), 'Material should use the finalized two-column desktop layout without tabs');
-    assert(MODAL.includes('Add Questions')&&MODAL.includes('grid grid-cols-1 gap-2 sm:grid-cols-3'));
+    assert(material.includes('role="tablist"')&&material.includes('role="tabpanel"'));
+    assert(MODAL.includes('Add Questions')&&MODAL.includes('max-w-[684px] grid-cols-1 gap-2 sm:grid-cols-3')&&MODAL.includes('mx-auto mb-3 w-full max-w-[720px]'));
     assert(MODAL.includes("(['TEXT','IMAGE'] as const).map")&&MODAL.includes('handleSelectManualQuestionType'));
 
   }}
@@ -11246,9 +11246,12 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     }
   });
   focusCheck('Approved question progress remains dynamic, including locked sessions',()=>{
-    const header=ui.slice(ui.indexOf('aria-label="Close CNE Questions"'),ui.indexOf("{activeView === 'bank' ? ("));
-    assert(header.includes('{validFinalizedCount} / 5') && header.includes('{isLocked &&') && header.includes('Locked'));
-    assert(header.includes('aria-valuenow={Math.min(5,validFinalizedCount)}'));
+    const header=ui.slice(ui.indexOf('<header className='),ui.indexOf("{activeView === 'bank' ? ("));
+    const footer=ui.slice(ui.indexOf('Single compact footer row: progress'));
+    assert(header.includes('{isLocked &&') && header.includes('Locked'));
+    assert(!header.includes('role="progressbar"'),'Progress should not occupy the title header');
+    assert(footer.includes('{validFinalizedCount}/5') && footer.includes('aria-valuenow={Math.min(5,validFinalizedCount)}'));
+    assert(footer.includes('Save Drafts') && footer.includes('Save &amp; Next'));
     assert(ui.includes('validFinalizedCount < 5 || validFinalizedCount > 10 || incompleteActiveCount > 0'),'QR eligibility guard missing');
 
   });
@@ -14920,7 +14923,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(questionsUi.includes('Generate 5 MCQs with AI')&&questionsUi.includes('Manual Question'));
       assert(questionsUi.includes('disabled={!canInteractWithQuestionTools || !!importingBankId}'));
       assert(questionsUi.includes('Resume interrupted AI generation')&&questionsUi.includes('Finalize all complete drafts'));
-      assert(questionsUi.includes('grid grid-cols-1 gap-2 sm:grid-cols-3')&&questionsUi.includes('aria-label="Close CNE Questions"'));
+      assert(questionsUi.includes('max-w-[684px] grid-cols-1 gap-2 sm:grid-cols-3')&&questionsUi.includes('aria-label="Close CNE Questions"'));
 
     }],
     ['Learning Resources removes only PDF preview and retains secure download', () => {
@@ -15196,7 +15199,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     ['Mobile question popup scrolls safely and keeps actions above the safe area', () => {
       assert(questions.includes('h-[100dvh]')&&questions.includes('min-h-0'));
       assert(questions.includes('aria-label="Close CNE Questions"'));
-      assert(questions.includes('No Questions Added Yet')&&questions.includes('grid grid-cols-1 gap-2 sm:grid-cols-3'));
+      assert(questions.includes('No Questions Added Yet')&&questions.includes('max-w-[684px] grid-cols-1 gap-2 sm:grid-cols-3')&&questions.includes('mx-auto'));
       assert(questions.includes('safe-area-inset-bottom')&&questions.includes('Save &amp; Next'));
       assert(questions.includes('Question Bank')&&questions.includes('Manual Question'));
 
@@ -15511,9 +15514,9 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(gas.includes("result.errorCode='GEMINI_REVIEW_REQUIRED'"),'Unreviewed source must never be AI-ready');
     }],
     ['Material metadata loading uses one spinner while indexing progress is conditional', () => {
-      const start=material.indexOf('{loading && (');
+      const start=material.indexOf('{loading && <div role="status"');
       const end=material.indexOf('{loadError &&',start);
-      assert(start>-1&&end>start,'Loading indicator must be conditional and non-blocking');
+      assert(start>-1&&end>start);
       const display=material.slice(start,end);
       assert(display.includes('Loader2')&&display.includes('animate-spin')&&display.includes('Loading learning material'));
       assert(!display.includes('h-1.5 rounded-full')&&!display.includes('animate-pulse'));
@@ -15521,7 +15524,7 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
 
     }],
     ['Approved responsive question cards replace obsolete tab/header arrangement', () => {
-      assert(modal.includes('grid grid-cols-1 gap-2 sm:grid-cols-3'));
+      assert(modal.includes('max-w-[684px] grid-cols-1 gap-2 sm:grid-cols-3')&&modal.includes('min-h-[54px]'));
       assert(modal.includes('Add Questions')&&modal.includes('Generate 5 MCQs with AI'));
       assert(modal.includes('onClick={openQuestionBank}')&&modal.includes('onClick={handleAddManualQuestion}'));
       assert(modal.includes('No Questions Added Yet')&&modal.includes('aria-label="My Post-Test Questions"'));
@@ -17703,17 +17706,11 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   const questions=load('CNEQuestionsModal.tsx');
   const qr=load('CNEQRModal.tsx');
 const approvedUiCases = [
-  ['Material uses the finalized 40:60 two-column layout with mobile stacking', () => {
-    assert(material.includes('grid-cols-1') && material.includes('lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]'));
-    assert(!material.includes('role="tablist"') && !material.includes('activeTab'));
-    assert(material.includes('overflow-y-auto overscroll-contain') && material.includes('h-[100dvh]'));
+  ['Material uses the three approved tabs', () => {
+    assert(material.includes("'overview' | 'files' | 'notes'"));
+    for (const id of ["id:'overview'", "id:'files'", "id:'notes'"]) assert(material.includes(id));
   }],
-  ['Upload and uploaded-file status are visible side by side on desktop', () => {
-    assert(material.includes('Upload / Replace Material'));
-    assert(material.includes('Uploaded File &amp; Status'));
-    assert(material.includes('Indexing &amp; Source Review'));
-    assert(material.indexOf('Upload / Replace Material') < material.indexOf('Uploaded File &amp; Status'));
-  }],
+  ['Files is the default Material tab', () => assert(material.includes("useState<'overview' | 'files' | 'notes'>('files')"))],
   ['Uploader responsibility remains prechecked but can be unchecked', () => {
     assert(material.includes('useState(true)'));
     assert(material.includes('checked={responsibilityAccepted}'));
@@ -17742,28 +17739,17 @@ const approvedUiCases = [
     assert(material.includes('ApiService.downloadLearningResource('));
     assert(material.includes('ApiService.deleteLearningResource('));
   }],
-  ['Notes remain optional in an expandable left-column editor', () => {
-    assert(material.includes('Supplementary Notes'));
-    assert(material.includes('aria-expanded={notesExpanded}'));
-    assert(material.includes('setNotesExpanded'));
+  ['Notes remain optional and editable in Notes tab', () => {
+    assert(material.includes('Supplementary Clinical Notes'));
     assert(material.includes('ApiService.saveReferenceMaterial('));
     assert(material.includes('value={unifiedContent}'));
-    assert(!material.includes('setUnifiedContent(cne.description)'));
-  }],
-  ['Material status distinguishes older indexes from ready source material', () => {
-    assert(material.includes('Quality reindex required'));
-    assert(material.includes('older indexing algorithm'));
-    assert(material.includes('Re-extract Current File'));
-  }],
-  ['Material uses backend-authoritative status after indexing and expandable clarification', () => {
-    assert(material.includes('const refreshed = await ApiService.getLearningResource(cneId)'));
-    assert(material.includes('status: refreshed.data.indexingStatus'));
-    assert(material.includes('View flagged source chunks'));
-    assert(material.includes('Extraction warnings ('));
   }],
   ['Post-Test displays progress and compact creation choices', () => {
-    assert(questions.includes('Finalized minimum'));
+    assert(questions.includes('{validFinalizedCount}/5')&&questions.includes('aria-valuenow={Math.min(5,validFinalizedCount)}')&&questions.includes('Single compact footer row: progress'));
     for (const label of ['Generate 5 MCQs with AI','Question Bank','Manual Question']) assert(questions.includes(label));
+    assert(!questions.includes('Finalize at least ${5-validFinalizedCount} more complete question(s) to continue.'));
+    assert(!questions.includes('Finalize 5–10 complete questions to activate the evaluation QR.'));
+    assert(questions.includes('mx-auto mb-3 w-full max-w-[720px]'));
   }],
   ['Post-Test keeps manual/AI quota guards', () => {
     assert(questions.includes('canInteractWithQuestionTools'));

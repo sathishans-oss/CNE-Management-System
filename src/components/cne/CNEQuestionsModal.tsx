@@ -925,24 +925,18 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   return (
     <div className="fixed inset-0 z-[60] overflow-hidden bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-stretch sm:items-center justify-center p-0 sm:p-5">
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="cne-questions-dialog-title" tabIndex={-1} className="bg-white rounded-none sm:rounded-2xl w-full sm:w-[92vw] md:w-[86vw] lg:w-[82vw] max-w-[1050px] h-[100dvh] sm:h-auto sm:max-h-[88dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
-        {/* Compact approved Question Workspace header: progress only, no crowded tabs. */}
-        <header className="z-10 shrink-0 border-b border-slate-200 bg-white px-3 pb-2.5 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-4 sm:py-3">
-          <div className="flex min-w-0 items-start justify-between gap-3">
-            <div className="flex min-w-0 flex-1 items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-100 text-purple-700"><Sparkles className="h-5 w-5" /></div>
-              <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-wide text-purple-800">Post-Test Questions</p>
+        {/* Compact title-only header. Finalization progress sits beside footer actions. */}
+        <header className="z-10 shrink-0 border-b border-slate-200 bg-white px-3 pb-2.5 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-4 sm:py-2.5">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-purple-100 text-purple-700"><Sparkles className="h-4.5 w-4.5" /></div>
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-purple-800">Post-Test Questions</p>
                 <h3 id="cne-questions-dialog-title" className="break-words text-sm font-bold leading-snug text-slate-950 sm:text-base">{cne.topic}</h3>
               </div>
+              {isLocked && <CNEQuestionHeaderStatusTag tone="locked"><Lock className="h-3 w-3"/> Locked</CNEQuestionHeaderStatusTag>}
             </div>
             <button type="button" onClick={onClose} aria-label="Close CNE Questions" disabled={isSaving || isGenerating || !!importingBankId} className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-40"><X className="h-5 w-5" /></button>
-          </div>
-          <div className="mt-2 rounded-lg border border-purple-100 bg-purple-50/70 px-3 py-2 sm:px-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2"><span className="text-base font-extrabold tabular-nums text-purple-800">{validFinalizedCount} / 5</span><span className="text-[11px] font-semibold text-purple-700">Finalized minimum</span></div>
-              <div className="flex flex-wrap items-center gap-1.5"><span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">{activeQuestions.length-validFinalizedCount} Drafts</span><span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-800">{validFinalizedCount} Finalized</span>{isLocked && <CNEQuestionHeaderStatusTag tone="locked"><Lock className="h-3 w-3"/> Locked</CNEQuestionHeaderStatusTag>}</div>
-            </div>
-            <div role="progressbar" aria-label="Minimum finalized post-test questions" aria-valuenow={Math.min(5,validFinalizedCount)} aria-valuemin={0} aria-valuemax={5} className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-purple-100"><div className="h-full rounded-full bg-purple-700 transition-all" style={{width:`${Math.min(100,validFinalizedCount*20)}%`}}/></div>
-            <p className="mt-1 text-[10px] text-purple-800">Finalize 5–10 complete questions to activate the evaluation QR.</p>
           </div>
         </header>
 
@@ -1036,21 +1030,21 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         {/* Question List Content - 2-Column Wide Grid on Desktop */}
         <div role="region" id="cne-my-questions-panel" aria-label="My Post-Test Questions"
           className="min-w-0 min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-slate-50/40 p-3 text-xs flex flex-col sm:p-4">
-          {!isGenerating && !loading && !questionLoadError && <section aria-label="Add post-test questions" className="mb-3 space-y-1.5">
-            <h4 className="text-sm font-bold text-slate-900">Add Questions</h4>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 w-full max-w-[900px]">
+          {!isGenerating && !loading && !questionLoadError && <section aria-label="Add post-test questions" className="mx-auto mb-3 w-full max-w-[720px] space-y-1.5">
+            <h4 className="text-center text-xs font-bold text-slate-900 sm:text-sm">Add Questions</h4>
+            <div className="mx-auto grid w-full max-w-[684px] grid-cols-1 gap-2 sm:grid-cols-3">
               <button type="button" onClick={() => void requestAiGeneration()} disabled={!canInteractWithQuestionTools || isAiGenerationUsed || isAiGenerationUnavailable || pendingGenerationJob}
-                className="flex min-h-[64px] items-center gap-2.5 rounded-lg border border-purple-200 bg-purple-700 p-2.5 text-left text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-[70px]">
-                {isAiGenerationUsed?<Lock className="h-5 w-5 shrink-0"/>:<Sparkles className="h-5 w-5 shrink-0"/>}
-                <span className="min-w-0"><strong className="block text-xs sm:text-sm">{isAiGenerationUsed?'AI Already Used':checkingMaterial?'Checking Material…':'Generate 5 MCQs with AI'}</strong><span className="mt-0.5 block text-[11px] leading-snug text-purple-100">{isAiGenerationUsed?'One-time generation completed':'Create drafts from indexed learning material'}</span></span>
+                className="flex min-h-[54px] items-center gap-2 rounded-lg border border-purple-200 bg-purple-700 px-2.5 py-2 text-left text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-[58px]">
+                {isAiGenerationUsed?<Lock className="h-4 w-4 shrink-0"/>:<Sparkles className="h-4 w-4 shrink-0"/>}
+                <span className="min-w-0"><strong className="block text-xs font-semibold">{isAiGenerationUsed?'AI Already Used':checkingMaterial?'Checking Material…':'Generate 5 MCQs with AI'}</strong><span className="mt-0.5 block text-[10px] leading-snug text-purple-100">{isAiGenerationUsed?'One-time generation completed':'Create drafts from indexed learning material'}</span></span>
               </button>
               <button type="button" onClick={openQuestionBank} disabled={!canInteractWithQuestionTools || !!importingBankId}
-                className="flex min-h-[64px] items-center gap-2.5 rounded-lg border border-purple-200 bg-white p-2.5 text-left text-purple-800 shadow-sm hover:bg-purple-50 disabled:opacity-50 sm:min-h-[70px]">
-                <BookOpen className="h-5 w-5 shrink-0"/><span className="min-w-0"><strong className="block text-xs sm:text-sm">Question Bank</strong><span className="mt-0.5 block text-[11px] leading-snug text-slate-600">Search and import as drafts</span></span>
+                className="flex min-h-[54px] items-center gap-2 rounded-lg border border-purple-200 bg-white px-2.5 py-2 text-left text-purple-800 shadow-sm hover:bg-purple-50 disabled:opacity-50 sm:min-h-[58px]">
+                <BookOpen className="h-4 w-4 shrink-0"/><span className="min-w-0"><strong className="block text-xs font-semibold">Question Bank</strong><span className="mt-0.5 block text-[10px] leading-snug text-slate-600">Search and import as drafts</span></span>
               </button>
               <button type="button" onClick={handleAddManualQuestion} disabled={!canInteractWithQuestionTools || !!importingBankId}
-                className="flex min-h-[64px] items-center gap-2.5 rounded-lg border border-purple-200 bg-white p-2.5 text-left text-purple-800 shadow-sm hover:bg-purple-50 disabled:opacity-50 sm:min-h-[70px]">
-                <Edit3 className="h-5 w-5 shrink-0"/><span className="min-w-0"><strong className="block text-xs sm:text-sm">Manual Question</strong><span className="mt-0.5 block text-[11px] leading-snug text-slate-600">Write a question and rationale</span></span>
+                className="flex min-h-[54px] items-center gap-2 rounded-lg border border-purple-200 bg-white px-2.5 py-2 text-left text-purple-800 shadow-sm hover:bg-purple-50 disabled:opacity-50 sm:min-h-[58px]">
+                <Edit3 className="h-5 w-5 shrink-0"/><span className="min-w-0"><strong className="block text-xs font-semibold">Manual Question</strong><span className="mt-0.5 block text-[10px] leading-snug text-slate-600">Write a question and rationale</span></span>
               </button>
             </div>
             {pendingGenerationJob && !isAiGenerationUsed && <button type="button" onClick={()=>{setFailureDialog(null);void handleGenerateAi(true);}} disabled={!canModify || isSaving} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">Resume interrupted AI generation{partialAiCount?` (${partialAiCount}/5 drafted)`:''}</button>}
@@ -1077,7 +1071,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <button type="button" onClick={() => { void loadQuestions(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white text-xs font-bold">Retry Loading</button>
             </div>
           ) : activeQuestions.length === 0 && replacedQuestions.length === 0 ? (
-            <div className="w-full max-w-[750px] rounded-xl border border-dashed border-purple-200 bg-white px-4 py-6 text-center space-y-2 sm:py-8">
+            <div className="mx-auto w-full max-w-[560px] rounded-xl border border-dashed border-purple-200 bg-white px-4 py-5 text-center space-y-1.5">
               <HelpCircle className="mx-auto h-8 w-8 text-slate-300 sm:h-10 sm:w-10" />
               <h4 className="text-sm font-bold text-slate-800">No Questions Added Yet</h4>
               <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
@@ -1085,13 +1079,13 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               </p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="mx-auto w-full max-w-[840px] space-y-3">
               <div className="rounded-lg border border-purple-100 bg-white p-2.5 shadow-sm sm:p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="flex items-center gap-2 text-sm font-bold text-slate-900"><FileCheck2 className="h-4 w-4 text-purple-700"/> My Questions ({activeQuestions.length})</h4>
                   <span className="text-[11px] text-slate-500">{validFinalizedCount} finalized · {activeQuestions.length-validFinalizedCount} drafts</span>
                 </div>
-                <div className="mt-2 grid max-w-[880px] gap-2 sm:grid-cols-[minmax(0,1fr)_150px]">
+                <div className="mt-2 grid max-w-[720px] gap-2 sm:grid-cols-[minmax(0,1fr)_150px]">
                   <label className="relative"><Search aria-hidden="true" className="absolute left-3 top-2.5 h-4 w-4 text-slate-400"/><span className="sr-only">Search my questions</span><input type="search" value={questionSearch} onChange={e=>setQuestionSearch(e.target.value)} placeholder="Search questions…" className="min-h-10 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 text-xs focus:border-purple-500 focus:outline-none"/></label>
                   <label><span className="sr-only">Filter question status</span><select value={questionFilter} onChange={e=>setQuestionFilter(e.target.value as typeof questionFilter)} className="min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-xs"><option value="all">All Statuses</option><option value="draft">Drafts</option><option value="finalized">Finalized</option></select></label>
                 </div>
@@ -1099,7 +1093,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               </div>
               {activeQuestions.filter(q=>(questionFilter==='all'||(questionFilter==='finalized'?Boolean(q.isFinalized):!q.isFinalized))&&(!questionSearch.trim()||String(q.question||'').toLowerCase().includes(questionSearch.trim().toLowerCase()))).length===0 && <div role="status" className="rounded-lg border border-slate-200 bg-white p-4 text-center text-xs text-slate-600">No questions match the current search or status filter.</div>}
               {/* Active Questions Container (1 Question per row across all screen sizes) */}
-              <div className="grid w-full max-w-[960px] grid-cols-1 gap-2.5 items-start">
+              <div className="grid w-full grid-cols-1 gap-2.5 items-start">
                 {questions.map((q, idx) => {
                   if (q.status === 'INACTIVE' || q.status === 'REPLACED') return null;
                   if (questionFilter==='finalized' && !q.isFinalized || questionFilter==='draft' && q.isFinalized) return null;
@@ -1472,35 +1466,33 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         )}
 
 
-        {/* Save/finalization belong only to My Questions, never the Question Bank view. */}
-        {activeView === 'questions' && <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4 sm:py-2.5">
-          {(validFinalizedCount<5 || incompleteActiveCount>0) && <p className="mb-2 text-[11px] text-purple-800">{incompleteActiveCount>0?`Complete all ${incompleteActiveCount} incomplete active question(s) before saving.`:`Finalize at least ${5-validFinalizedCount} more complete question(s) to continue.`}</p>}
-          <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
-            {canModify && <button type="button" onClick={() => void performSaveQuestions(false)} disabled={isSaving||isGenerating||incompleteActiveCount>0||activeQuestions.length===0}
-              className="min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-2.5 text-xs font-bold text-slate-800 disabled:opacity-40 sm:px-4">Save Drafts</button>}
-            {canModify && (
-              <button
-                type="button"
-                onClick={() => void performSaveQuestions(true)}
+        {/* Single compact footer row: progress + Save actions. Keep the five-question rule in the existing Save & Next disabled state. */}
+        {activeView === 'questions' && <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.65rem,env(safe-area-inset-bottom))] sm:px-4 sm:py-2.5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-2.5 py-1.5" title="Minimum five finalized questions required to activate the evaluation QR">
+                <span className="text-sm font-extrabold tabular-nums text-purple-800">{validFinalizedCount}/5</span>
+                <span className="text-[11px] font-semibold text-purple-800">Finalized</span>
+                <div role="progressbar" aria-label="Minimum finalized post-test questions" aria-valuenow={Math.min(5,validFinalizedCount)} aria-valuemin={0} aria-valuemax={5} className="h-1.5 w-12 overflow-hidden rounded-full bg-purple-200">
+                  <div className="h-full rounded-full bg-purple-700 transition-all" style={{width:`${Math.min(100,validFinalizedCount*20)}%`}} />
+                </div>
+              </div>
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-900">{activeQuestions.length - validFinalizedCount} Drafts</span>
+            </div>
+            <div className="flex shrink-0 items-center justify-end gap-2">
+              {canModify && <button type="button" onClick={() => void performSaveQuestions(false)} disabled={isSaving || isGenerating || incompleteActiveCount > 0 || activeQuestions.length === 0}
+                className="min-w-[96px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 disabled:opacity-40 sm:px-4">Save Drafts</button>}
+              {canModify && <button type="button" onClick={() => void performSaveQuestions(true)}
                 disabled={isSaving || isGenerating || validFinalizedCount < 5 || validFinalizedCount > 10 || incompleteActiveCount > 0}
-                className="flex min-w-0 items-center justify-center gap-1.5 rounded-xl bg-purple-700 px-2 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-purple-800 disabled:cursor-not-allowed disabled:opacity-50 sm:px-5"
-                title="Save the valid question set and open QR"
-              >
-                {isSaving ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Saving &amp; Moving...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Save &amp; Next</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </>
-                )}
-              </button>
-            )}
+                className="flex min-w-[112px] items-center justify-center gap-1.5 rounded-lg bg-purple-700 px-3 py-2 text-xs font-bold text-white shadow-xs transition-colors hover:bg-purple-800 disabled:cursor-not-allowed disabled:opacity-50 sm:px-4"
+                title="Save at least 5 valid finalized questions and open QR">
+                {isSaving ? <><Loader2 className="h-3.5 w-3.5 animate-spin"/><span>Saving...</span></> : <><span>Save &amp; Next</span><ArrowRight className="h-3.5 w-3.5"/></>}
+              </button>}
+            </div>
           </div>
+          {incompleteActiveCount > 0 && <p role="status" className="mt-1.5 text-[10px] text-amber-800">Complete {incompleteActiveCount} incomplete active question(s) before saving.</p>}
         </div>}
+
       </div>
     </div>
   );
