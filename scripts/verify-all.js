@@ -699,8 +699,14 @@ const hybridChecks=[
   ,{name:'Material load spinner and approved question creation cards are visible',run(){
     const material=readFileSync(join(ROOT,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
     assert(material.includes('Loading learning material')&&material.includes('animate-spin')&&!material.includes('{loading ? ('),'Material must remain visible with non-blocking spinner');
-    assert(material.includes('role="tablist"')&&material.includes('role="tabpanel"'));
-    assert(MODAL.includes('Add Questions')&&MODAL.includes('max-w-[684px] grid-cols-1 gap-2 sm:grid-cols-3')&&MODAL.includes('mx-auto mb-3 w-full max-w-[720px]'));
+    // The approved desktop layout has no tabs: upload and status are visible simultaneously.
+    assert(material.includes('lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]') &&
+      material.includes('aria-labelledby="cne-material-upload-title"') &&
+      material.includes('aria-labelledby="cne-material-status-title"'),
+      'Material must render both panels in the approved 40/60 desktop grid');
+    assert(!material.includes('role="tablist"') && !material.includes('role="tabpanel"'),
+      'Material must not regress to the removed tab layout');
+    assert(MODAL.includes('aria-label="Add post-test questions"')&&MODAL.includes('max-w-[684px] grid-cols-1 gap-2 sm:grid-cols-3')&&MODAL.includes('mx-auto mb-3 w-full max-w-[720px]')); 
     assert(MODAL.includes("(['TEXT','IMAGE'] as const).map")&&MODAL.includes('handleSelectManualQuestionType'));
 
   }}
@@ -11270,7 +11276,9 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     const handler=ui.substring(ui.indexOf('const handleAddManualQuestion'),ui.indexOf('const handleReplaceQuestion'));
     assert(handler.includes('canInteractWithQuestionTools')&&handler.includes('materialCheckRef.current')&&handler.includes('generatingRef.current'));
     assert(ui.includes('const canInteractWithQuestionTools = canModify && isPageReady && !checkingMaterial && !materialCheckRef.current && !isGenerating && !generatingRef.current && !isSaving'));
-    assert(ui.includes('onClick={handleAddManualQuestion} disabled={!canInteractWithQuestionTools || !!importingBankId}'));
+    assert(ui.includes('onClick={() => setShowManualTypePicker(open => !open)} disabled={!canInteractWithQuestionTools || !!importingBankId}'), 'Manual picker must be blocked while material checking, AI generation, import or saving is active');
+    assert(ui.includes('showManualTypePicker && canInteractWithQuestionTools'), 'Question type picker must also be guarded');
+    assert(ui.includes("onClick={() => handleAddManualQuestion('TEXT')}") && ui.includes("onClick={() => handleAddManualQuestion('IMAGE')}"), 'TEXT/IMAGE creation actions must be present');
 
   });
   focusCheck('Loading failure, contextual popup and uncertain-outcome recovery exist', () => {
@@ -13342,7 +13350,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
 
 // Full-width two-tab Question Bank / My Questions UI checks. Keep in the single runner.
 if (selected.some(item => item.id === 'performance') && passed === selected.length) {
-  const modal = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEQuestionsModal.tsx'), 'utf8');
+  const modal = readFileSync(join(ROOT_DIR, 'src/components/cne/CNEQuestionsModal.tsx'), 'utf8').replace(/\r\n?/g, '\n');
   const section = (begin, end) => {
     const a = modal.indexOf(begin);
     const b = modal.indexOf(end, a + begin.length);
@@ -13364,20 +13372,22 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
       assert(modal.includes("{activeView === 'bank' ? ("));
       assert(bankPanel.includes('overflow-y-auto') && bankPanel.includes('min-h-0') && bankPanel.includes('flex-1'));
       assert(!bankPanel.includes('max-h-72') && !modal.includes('bankOpen'));
-      assert(!bankPanel.includes('Replaced Questions History') && !bankPanel.includes('onClick={handleAddManualQuestion}'));
+      assert(!bankPanel.includes('Replaced Questions History') && !bankPanel.includes('setShowManualTypePicker'));
     }],
     ['My Questions contains AI actions, finalization and Save/Next, separate from Bank', () => {
       assert(modal.includes("{activeView === 'questions' && <div"));
       assert(mine.includes('Replaced Questions History'));
-      assert(mine.includes('Generate 5 MCQs with AI')&&mine.includes('onClick={handleAddManualQuestion}'));
+      assert(mine.includes('Generate 5 MCQs with AI')&&mine.includes('onClick={() => setShowManualTypePicker(open => !open)}'));
       assert(modal.includes('onClick={() => void performSaveQuestions(true)}'));
-      assert(!bankPanel.includes('onClick={handleAddManualQuestion}')&&!bankPanel.includes('Save &amp; Next'));
+      assert(!bankPanel.includes('setShowManualTypePicker')&&!bankPanel.includes('Save &amp; Next'));
 
     }],
     ['Manual Question creation card retains loading, generation and save restrictions', () => {
-      assert(mine.includes('onClick={handleAddManualQuestion}')&&mine.includes('Manual Question'));
+      assert(mine.includes('onClick={() => setShowManualTypePicker(open => !open)}')&&mine.includes('Manual Question'));
       assert(modal.includes('disabled={!canInteractWithQuestionTools || !!importingBankId}'));
-      assert(!bankPanel.includes('onClick={handleAddManualQuestion}'));
+      assert(mine.includes('showManualTypePicker && canInteractWithQuestionTools'));
+      assert(mine.includes("onClick={() => handleAddManualQuestion('TEXT')}") && mine.includes("onClick={() => handleAddManualQuestion('IMAGE')}"));
+      assert(!bankPanel.includes('setShowManualTypePicker'));
       assert(modal.includes('const canInteractWithQuestionTools = canModify && isPageReady && !checkingMaterial && !materialCheckRef.current && !isGenerating && !generatingRef.current && !isSaving'));
 
     }],
@@ -14919,7 +14929,7 @@ if (selected.some(item => item.id === 'performance') && passed === selected.leng
     }],
     ['Approved compact question workspace preserves creation actions and permissions', () => {
       assert(!questionsUi.includes('AI Question Synthesizer'));
-      assert(questionsUi.includes('onClick={openQuestionBank}')&&questionsUi.includes('onClick={handleAddManualQuestion}'));
+      assert(questionsUi.includes('onClick={openQuestionBank}')&&questionsUi.includes('onClick={() => setShowManualTypePicker(open => !open)}'));
       assert(questionsUi.includes('Generate 5 MCQs with AI')&&questionsUi.includes('Manual Question'));
       assert(questionsUi.includes('disabled={!canInteractWithQuestionTools || !!importingBankId}'));
       assert(questionsUi.includes('Resume interrupted AI generation')&&questionsUi.includes('Finalize all complete drafts'));
@@ -15514,9 +15524,11 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(gas.includes("result.errorCode='GEMINI_REVIEW_REQUIRED'"),'Unreviewed source must never be AI-ready');
     }],
     ['Material metadata loading uses one spinner while indexing progress is conditional', () => {
-      const start=material.indexOf('{loading && <div role="status"');
-      const end=material.indexOf('{loadError &&',start);
-      assert(start>-1&&end>start);
+      // Whitespace and JSX parentheses may change with formatting; require a real, accessible loader.
+      const loadingMatch = /\{loading\s*&&\s*\(\s*<div\s+role="status"/.exec(material);
+      const start = loadingMatch?.index ?? -1;
+      const end = material.indexOf('{loadError &&', start);
+      assert(start>-1 && end>start, 'Material loading spinner or error boundary is missing');
       const display=material.slice(start,end);
       assert(display.includes('Loader2')&&display.includes('animate-spin')&&display.includes('Loading learning material'));
       assert(!display.includes('h-1.5 rounded-full')&&!display.includes('animate-pulse'));
@@ -15525,8 +15537,8 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
     }],
     ['Approved responsive question cards replace obsolete tab/header arrangement', () => {
       assert(modal.includes('max-w-[684px] grid-cols-1 gap-2 sm:grid-cols-3')&&modal.includes('min-h-[54px]'));
-      assert(modal.includes('Add Questions')&&modal.includes('Generate 5 MCQs with AI'));
-      assert(modal.includes('onClick={openQuestionBank}')&&modal.includes('onClick={handleAddManualQuestion}'));
+      assert(modal.includes('aria-label="Add post-test questions"')&&modal.includes('Generate 5 MCQs with AI')); 
+      assert(modal.includes('onClick={openQuestionBank}')&&modal.includes('onClick={() => setShowManualTypePicker(open => !open)}')); 
       assert(modal.includes('No Questions Added Yet')&&modal.includes('aria-label="My Post-Test Questions"'));
 
     }],
@@ -17706,11 +17718,26 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   const questions=load('CNEQuestionsModal.tsx');
   const qr=load('CNEQRModal.tsx');
 const approvedUiCases = [
-  ['Material uses the three approved tabs', () => {
-    assert(material.includes("'overview' | 'files' | 'notes'"));
-    for (const id of ["id:'overview'", "id:'files'", "id:'notes'"]) assert(material.includes(id));
+  ['Material uses the approved two-column desktop and stacked mobile workspace', () => {
+    assert(material.includes('grid-cols-1 items-start') &&
+      material.includes('lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]'),
+      'Expected a mobile stack and 40/60 desktop columns');
+    assert(material.includes('overflow-y-auto overscroll-contain'),
+      'Material must retain a single scrollable body');
+    assert(!material.includes('role="tablist"') && !material.includes('role="tabpanel"'),
+      'Obsolete Material tabs returned');
   }],
-  ['Files is the default Material tab', () => assert(material.includes("useState<'overview' | 'files' | 'notes'>('files')"))],
+  ['Upload and uploaded-file status are concurrently available without a tab switch', () => {
+    assert(material.includes('cne-material-upload-title') &&
+      material.includes('cne-material-status-title'),
+      'Both Material column sections should be present');
+    assert(material.includes('Choose or drop a learning material file') &&
+      material.includes('Uploaded File &amp; Status'),
+      'Upload or status panel is missing');
+    assert(material.includes('Source indexing summary') &&
+      material.includes('Chunks indexed') && material.includes('Need clarification'),
+      'Compact side-by-side status counters are missing');
+  }],
   ['Uploader responsibility remains prechecked but can be unchecked', () => {
     assert(material.includes('useState(true)'));
     assert(material.includes('checked={responsibilityAccepted}'));
@@ -17739,10 +17766,14 @@ const approvedUiCases = [
     assert(material.includes('ApiService.downloadLearningResource('));
     assert(material.includes('ApiService.deleteLearningResource('));
   }],
-  ['Notes remain optional and editable in Notes tab', () => {
-    assert(material.includes('Supplementary Clinical Notes'));
-    assert(material.includes('ApiService.saveReferenceMaterial('));
-    assert(material.includes('value={unifiedContent}'));
+  ['Optional supplementary notes stay in an expandable editor within the upload column', () => {
+    assert(material.includes('Supplementary Notes') && material.includes('(Optional)'));
+    assert(material.includes('aria-expanded={notesExpanded}') &&
+      material.includes('aria-controls="cne-material-notes-panel"'));
+    assert(material.includes('setNotesExpanded(v => !v)') &&
+      material.includes('value={unifiedContent}'));
+    assert(material.includes('ApiService.saveReferenceMaterial(') &&
+      material.includes('Save Notes'));
   }],
   ['Post-Test displays progress and compact creation choices', () => {
     assert(questions.includes('{validFinalizedCount}/5')&&questions.includes('aria-valuenow={Math.min(5,validFinalizedCount)}')&&questions.includes('Single compact footer row: progress'));
@@ -17760,11 +17791,13 @@ const approvedUiCases = [
     assert(questions.includes('searchCNEReferenceQuestions('));
     assert(questions.includes('importCNEReferenceQuestion('));
   }],
-  ['Post-Test uses expandable cards and filters', () => {
+  ['Post-Test uses expandable cards without removed My Questions search and status filters', () => {
     assert(questions.includes('expandedQuestionIds'));
     assert(questions.includes('aria-expanded={isEditing'));
-    assert(questions.includes('questionSearch'));
-    assert(questions.includes('questionFilter'));
+    assert(!/\bquestionSearch\b/.test(questions), 'My Questions search must stay removed');
+    assert(!/\bquestionFilter\b/.test(questions), 'My Questions status filter must stay removed');
+    assert(questions.includes('searchCNEReferenceQuestions('), 'Question Bank clinical search must be retained');
+    assert(questions.includes('showManualTypePicker && canInteractWithQuestionTools'));
   }],
   ['Post-Test saving and quota are unchanged', () => {
     assert(questions.includes('performSaveQuestions('));

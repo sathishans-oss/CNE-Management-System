@@ -17,7 +17,6 @@ import {
   ChevronUp,
   ArrowRight,
   ImageUp,
-  Search,
   Eye,
   FileCheck2
 } from 'lucide-react';
@@ -58,7 +57,8 @@ const isQuestionComplete = (q: CNEQuestion) => {
     String(options.D || '').trim() &&
     ['A', 'B', 'C', 'D'].includes(String(q.correctOption || '').trim().toUpperCase()) &&
     String(q.explanation || '').trim().length >= 5 &&
-    String(q.authoritativeSource || '').trim().length >= 3 &&
+    // Educator-authored manual questions can be saved without a citation; AI/bank questions retain source provenance.
+    (String(q.id || '').startsWith('q_manual_') || String(q.authoritativeSource || '').trim().length >= 3) &&
     (q.questionType === 'TEXT' || (q.questionType === 'IMAGE' && Boolean(q.imageFileId)))
   );
 };
@@ -101,8 +101,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [showHistory, setShowHistory] = useState(false);
   // Two exclusive full-width views; local question edits remain mounted in state across tabs.
   const [activeView, setActiveView] = useState<'questions' | 'bank'>('questions');
-  const [questionSearch, setQuestionSearch] = useState('');
-  const [questionFilter, setQuestionFilter] = useState<'all' | 'draft' | 'finalized'>('all');
+  const [showManualTypePicker, setShowManualTypePicker] = useState(false);
   const [expandedQuestionIds, setExpandedQuestionIds] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     if (editingIndex === null || activeView !== 'questions') return;
@@ -200,6 +199,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setFailureDialog(null);
     setIsLocked(false);
     setEditingIndex(null);
+    setShowManualTypePicker(false);
     setShowHistory(false);
     setGenerationProgress(null);
     setGenerationStep(0);
@@ -705,7 +705,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     setEditingIndex(idx + 1);
   };
 
-  const handleAddManualQuestion = () => {
+  const handleAddManualQuestion = (questionType: 'TEXT' | 'IMAGE') => {
     if (!canInteractWithQuestionTools || materialCheckRef.current || generatingRef.current) return;
     const newQ: CNEQuestion = {
       id: `q_manual_${Date.now()}_${versionSequenceRef.current++}`,
@@ -714,12 +714,11 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       correctOption: 'A',
       explanation: '',
       authoritativeSource: '',
-      questionType: undefined,imageFileId:'',
+      questionType, imageFileId:'',
       status: 'ACTIVE',
       isFinalized: false
     };
-    setQuestionSearch('');
-    setQuestionFilter('all');
+    setShowManualTypePicker(false);
     setQuestions((prev) => [...prev, newQ]);
     setEditingIndex(questions.length);
   };
@@ -729,14 +728,15 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     const targetQ = questions[idx];
     if (!targetQ || !isActiveQuestion(targetQ)) return;
 
-    const replacementId = String(targetQ.id).startsWith('q_bank_') ? `q_manual_${Date.now()}_${versionSequenceRef.current++}` : nextVersionId(targetQ.id);
+    // Replacements are educator-authored manual questions, not new AI/Bank attributions.
+    const replacementId = `q_manual_${Date.now()}_${versionSequenceRef.current++}`;
     const replacementQ: CNEQuestion = {
       id: replacementId,
       question: '',
       options: { A: '', B: '', C: '', D: '' },
       correctOption: 'A',
       explanation: '',
-      authoritativeSource: targetQ.authoritativeSource || '',
+      authoritativeSource: '',
       questionType:undefined,imageFileId:'',
       status: 'ACTIVE',
       isFinalized: false
@@ -849,7 +849,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
     if (!target || !isActiveQuestion(target)) return;
     if(!target.isFinalized && questions.filter(q=>isActiveQuestion(q)&&q.isFinalized).length>=10){error('A Post-Test can contain at most 10 finalized questions.');return;}
     if (!target.isFinalized && !isQuestionComplete(target)) {
-      error('Complete the question, all four options, rationale, and authoritative source before marking it Finalized.');
+      error('Complete the question, all four options, and clinical rationale before marking it Finalized.');
       return;
     }
     setQuestions((prev) => {
@@ -1031,7 +1031,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         <div role="region" id="cne-my-questions-panel" aria-label="My Post-Test Questions"
           className="min-w-0 min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-slate-50/40 p-3 text-xs flex flex-col sm:p-4">
           {!isGenerating && !loading && !questionLoadError && <section aria-label="Add post-test questions" className="mx-auto mb-3 w-full max-w-[720px] space-y-1.5">
-            <h4 className="text-center text-xs font-bold text-slate-900 sm:text-sm">Add Questions</h4>
             <div className="mx-auto grid w-full max-w-[684px] grid-cols-1 gap-2 sm:grid-cols-3">
               <button type="button" onClick={() => void requestAiGeneration()} disabled={!canInteractWithQuestionTools || isAiGenerationUsed || isAiGenerationUnavailable || pendingGenerationJob}
                 className="flex min-h-[54px] items-center gap-2 rounded-lg border border-purple-200 bg-purple-700 px-2.5 py-2 text-left text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-[58px]">
@@ -1042,11 +1041,21 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                 className="flex min-h-[54px] items-center gap-2 rounded-lg border border-purple-200 bg-white px-2.5 py-2 text-left text-purple-800 shadow-sm hover:bg-purple-50 disabled:opacity-50 sm:min-h-[58px]">
                 <BookOpen className="h-4 w-4 shrink-0"/><span className="min-w-0"><strong className="block text-xs font-semibold">Question Bank</strong><span className="mt-0.5 block text-[10px] leading-snug text-slate-600">Search and import as drafts</span></span>
               </button>
-              <button type="button" onClick={handleAddManualQuestion} disabled={!canInteractWithQuestionTools || !!importingBankId}
+              <button type="button" onClick={() => setShowManualTypePicker(open => !open)} disabled={!canInteractWithQuestionTools || !!importingBankId}
                 className="flex min-h-[54px] items-center gap-2 rounded-lg border border-purple-200 bg-white px-2.5 py-2 text-left text-purple-800 shadow-sm hover:bg-purple-50 disabled:opacity-50 sm:min-h-[58px]">
                 <Edit3 className="h-5 w-5 shrink-0"/><span className="min-w-0"><strong className="block text-xs font-semibold">Manual Question</strong><span className="mt-0.5 block text-[10px] leading-snug text-slate-600">Write a question and rationale</span></span>
               </button>
             </div>
+            {showManualTypePicker && canInteractWithQuestionTools && (
+              <div role="group" aria-label="Choose manual question type" className="mx-auto flex w-fit max-w-full flex-wrap items-center justify-center gap-1.5 rounded-lg border border-purple-200 bg-purple-50/70 px-2.5 py-1.5 shadow-sm">
+                <span className="whitespace-nowrap text-[11px] font-semibold text-purple-900">Question type:</span>
+                <button type="button" onClick={() => handleAddManualQuestion('TEXT')}
+                  className="inline-flex min-h-8 min-w-[58px] items-center justify-center rounded-md border border-purple-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-purple-800 hover:bg-purple-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-purple-600">TEXT</button>
+                <button type="button" onClick={() => handleAddManualQuestion('IMAGE')}
+                  className="inline-flex min-h-8 min-w-[70px] items-center justify-center gap-1 rounded-md border border-purple-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-purple-800 hover:bg-purple-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-purple-600"><ImageUp className="h-3.5 w-3.5"/>IMAGE</button>
+                <button type="button" onClick={() => setShowManualTypePicker(false)} aria-label="Cancel manual question" className="inline-flex h-8 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-purple-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-purple-600"><X className="h-3.5 w-3.5"/></button>
+              </div>
+            )}
             {pendingGenerationJob && !isAiGenerationUsed && <button type="button" onClick={()=>{setFailureDialog(null);void handleGenerateAi(true);}} disabled={!canModify || isSaving} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">Resume interrupted AI generation{partialAiCount?` (${partialAiCount}/5 drafted)`:''}</button>}
           </section>}
           {/* Prominent Single-Stage Processing Status in Main Content Area */}
@@ -1070,7 +1079,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <p className="text-xs text-slate-600">{questionLoadError}</p>
               <button type="button" onClick={() => { void loadQuestions(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white text-xs font-bold">Retry Loading</button>
             </div>
-          ) : activeQuestions.length === 0 && replacedQuestions.length === 0 ? (
+          ) : showManualTypePicker && activeQuestions.length === 0 && replacedQuestions.length === 0 ? null : activeQuestions.length === 0 && replacedQuestions.length === 0 ? (
             <div className="mx-auto w-full max-w-[560px] rounded-xl border border-dashed border-purple-200 bg-white px-4 py-5 text-center space-y-1.5">
               <HelpCircle className="mx-auto h-8 w-8 text-slate-300 sm:h-10 sm:w-10" />
               <h4 className="text-sm font-bold text-slate-800">No Questions Added Yet</h4>
@@ -1085,19 +1094,12 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                   <h4 className="flex items-center gap-2 text-sm font-bold text-slate-900"><FileCheck2 className="h-4 w-4 text-purple-700"/> My Questions ({activeQuestions.length})</h4>
                   <span className="text-[11px] text-slate-500">{validFinalizedCount} finalized · {activeQuestions.length-validFinalizedCount} drafts</span>
                 </div>
-                <div className="mt-2 grid max-w-[720px] gap-2 sm:grid-cols-[minmax(0,1fr)_150px]">
-                  <label className="relative"><Search aria-hidden="true" className="absolute left-3 top-2.5 h-4 w-4 text-slate-400"/><span className="sr-only">Search my questions</span><input type="search" value={questionSearch} onChange={e=>setQuestionSearch(e.target.value)} placeholder="Search questions…" className="min-h-10 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 text-xs focus:border-purple-500 focus:outline-none"/></label>
-                  <label><span className="sr-only">Filter question status</span><select value={questionFilter} onChange={e=>setQuestionFilter(e.target.value as typeof questionFilter)} className="min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-xs"><option value="all">All Statuses</option><option value="draft">Drafts</option><option value="finalized">Finalized</option></select></label>
-                </div>
                 {canModify && completeActiveCount>validFinalizedCount && !activeQuestions.some(q=>String(q.id||'').startsWith('q_ai_')&&!q.isFinalized) && <button type="button" onClick={handleFinalizeAll} disabled={isGenerating || isSaving} className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 disabled:opacity-40"><CheckCheck className="h-4 w-4"/> Finalize all complete drafts</button>}
               </div>
-              {activeQuestions.filter(q=>(questionFilter==='all'||(questionFilter==='finalized'?Boolean(q.isFinalized):!q.isFinalized))&&(!questionSearch.trim()||String(q.question||'').toLowerCase().includes(questionSearch.trim().toLowerCase()))).length===0 && <div role="status" className="rounded-lg border border-slate-200 bg-white p-4 text-center text-xs text-slate-600">No questions match the current search or status filter.</div>}
               {/* Active Questions Container (1 Question per row across all screen sizes) */}
               <div className="grid w-full grid-cols-1 gap-2.5 items-start">
                 {questions.map((q, idx) => {
                   if (q.status === 'INACTIVE' || q.status === 'REPLACED') return null;
-                  if (questionFilter==='finalized' && !q.isFinalized || questionFilter==='draft' && q.isFinalized) return null;
-                  if (questionSearch.trim() && !String(q.question||'').toLowerCase().includes(questionSearch.trim().toLowerCase())) return null;
                   const isEditing = editingIndex === idx;
                   const activeOrdinal = questions.slice(0, idx + 1).filter(isActiveQuestion).length;
 
@@ -1218,6 +1220,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                           )}
                           {/* Question Text & Options */}
                       {isEditing && canModify ? (
+                        q.questionType === 'TEXT' || q.questionType === 'IMAGE' ? (
                         <div className="max-w-[880px] space-y-2 mt-2">
                           <div>
                             <label className="block text-[11px] font-bold text-slate-600 mb-1">
@@ -1266,19 +1269,6 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
                           <div>
                             <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                               Authoritative Clinical Source:
-                            </label>
-                            <input
-                              type="text"
-                              value={q.authoritativeSource || ''}
-                              onChange={(e) => handleUpdateQuestion(idx, { authoritativeSource: e.target.value })}
-                              placeholder="e.g. Learning Materials / Library"
-                              className="w-full p-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[11px] font-bold text-slate-600 mb-1">
                               Clinical Explanation / Rationale:
                             </label>
                             <input
@@ -1300,6 +1290,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                             </button>
                           </div>
                         </div>
+                        ) : <p role="status" className="rounded-lg border border-purple-200 bg-purple-50 p-3 text-xs text-purple-900">Select TEXT or IMAGE above to open the question editor.</p>
                       ) : (
                         <div>
                           <p className="font-semibold text-slate-900 leading-relaxed mb-2.5">{q.question}</p>
