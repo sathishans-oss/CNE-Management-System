@@ -16,7 +16,10 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowRight,
-  ImageUp
+  ImageUp,
+  Search,
+  Eye,
+  FileCheck2
 } from 'lucide-react';
 import { CNERecord, CNEQuestion, CNEAiQuotaInfo, CNEReferenceBankItem, CNEClinicalBankSearchInfo } from '../../types';
 import { ApiService } from '../../services/api';
@@ -98,6 +101,16 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   const [showHistory, setShowHistory] = useState(false);
   // Two exclusive full-width views; local question edits remain mounted in state across tabs.
   const [activeView, setActiveView] = useState<'questions' | 'bank'>('questions');
+  const [questionSearch, setQuestionSearch] = useState('');
+  const [questionFilter, setQuestionFilter] = useState<'all' | 'draft' | 'finalized'>('all');
+  const [expandedQuestionIds, setExpandedQuestionIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (editingIndex === null || activeView !== 'questions') return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(`cne-posttest-question-${editingIndex}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editingIndex, activeView, questions.length]);
   const [bankMatches, setBankMatches] = useState<CNEReferenceBankItem[]>([]);
   const [bankLoading, setBankLoading] = useState(false);
   const [bankSearched, setBankSearched] = useState(false);
@@ -705,6 +718,8 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
       status: 'ACTIVE',
       isFinalized: false
     };
+    setQuestionSearch('');
+    setQuestionFilter('all');
     setQuestions((prev) => [...prev, newQ]);
     setEditingIndex(questions.length);
   };
@@ -910,96 +925,31 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
   return (
     <div className="fixed inset-0 z-[60] overflow-hidden bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-stretch sm:items-center justify-center p-0 sm:p-5">
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="cne-questions-dialog-title" tabIndex={-1} className="bg-white rounded-none sm:rounded-2xl w-full sm:w-[94vw] max-w-[1440px] h-[100dvh] sm:h-auto sm:max-h-[92dvh] min-h-0 flex flex-col shadow-2xl border border-slate-200 relative overflow-hidden">
-        {/* Compact mobile header; desktop controls wrap without horizontal overflow. */}
-        <header className="z-10 max-h-[35dvh] sm:max-h-[46dvh] shrink-0 overflow-y-auto border-b border-slate-200 bg-slate-50/90 px-3 py-2.5 sm:max-h-none sm:overflow-visible sm:px-6 sm:py-3">
+        {/* Compact approved Question Workspace header: progress only, no crowded tabs. */}
+        <header className="z-10 shrink-0 border-b border-slate-200 bg-white px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6 sm:py-4">
           <div className="flex min-w-0 items-start justify-between gap-3">
-            <div className="flex min-w-0 flex-1 items-center gap-2.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-purple-100 text-purple-700 sm:h-9 sm:w-9 sm:rounded-xl">
-                <Sparkles className="h-4 w-4 sm:h-5 sm:w-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <span className="block text-[10px] font-bold uppercase tracking-wide text-purple-800">Post-Test Questions</span>
-                <h3 id="cne-questions-dialog-title" className="mt-0.5 break-words text-sm font-bold leading-snug text-slate-900 sm:text-base">{cne.topic}</h3>
-                <p className="mt-0.5 hidden text-[11px] leading-snug text-slate-600 sm:block">
-                  Review, edit and finalize AI, Question Bank and manual Drafts.
-                </p>
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-100 text-purple-700"><Sparkles className="h-5 w-5" /></div>
+              <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-widest text-purple-800">Post-Test Questions</p>
+                <h3 id="cne-questions-dialog-title" className="break-words text-sm font-bold leading-snug text-slate-950 sm:text-lg">{cne.topic}</h3>
               </div>
             </div>
-            <button type="button" onClick={onClose}
-              aria-label="Close CNE Questions" disabled={isSaving || isGenerating || !!importingBankId}
-              className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-200/70 hover:text-slate-800 disabled:opacity-40">
-              <X className="h-5 w-5" />
-            </button>
+            <button type="button" onClick={onClose} aria-label="Close CNE Questions" disabled={isSaving || isGenerating || !!importingBankId} className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-40"><X className="h-5 w-5" /></button>
           </div>
-          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-            <CNEQuestionHeaderStatusTag tone={validFinalizedCount >= 5 ? 'ready' : 'pending'}>
-              {validFinalizedCount} / 5 finalized minimum
-            </CNEQuestionHeaderStatusTag>
-            {isLocked && <CNEQuestionHeaderStatusTag tone="locked">
-              <Lock className="h-3 w-3" /> Locked (Submissions Received)
-            </CNEQuestionHeaderStatusTag>}
-          </div>
-          {/* Wide screens: view tabs on the left, creation actions on the right.
-              Phones retain the two-column stacked controls that already work. */}
-          <div className="mt-2 flex min-w-0 flex-col gap-1.5 sm:gap-2 lg:flex-row lg:items-center lg:justify-between">
-            <div role="tablist" aria-label="Post-Test question views" className="grid min-w-0 grid-cols-2 gap-1.5 sm:gap-2 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
-            <button type="button" role="tab" id="cne-my-questions-tab" aria-controls="cne-my-questions-panel"
-              aria-selected={activeView === 'questions'}
-              onClick={() => setActiveView('questions')}
-              onKeyDown={(event) => { if (event.key === 'ArrowRight') { event.preventDefault(); openQuestionBank(); } }}
-              disabled={isGenerating || isSaving || !!importingBankId}
-              className={`min-w-0 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors disabled:opacity-50 sm:px-4 sm:py-2.5 sm:text-xs ${activeView === 'questions' ? 'border-purple-600 bg-purple-50 text-purple-800' : 'border-slate-200 bg-white text-slate-700 hover:bg-purple-50'}`}>
-              My Questions ({activeQuestions.length})
-            </button>
-            <button type="button" role="tab" id="cne-question-bank-tab" aria-controls="cne-question-bank-panel"
-              aria-selected={activeView === 'bank'}
-              onClick={openQuestionBank}
-              onKeyDown={(event) => { if (event.key === 'ArrowLeft') { event.preventDefault(); setActiveView('questions'); } }}
-              disabled={!canModify || !isPageReady || isGenerating || isSaving || !!importingBankId}
-              className={`flex min-w-0 items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors disabled:opacity-50 sm:px-4 sm:py-2.5 sm:text-xs ${activeView === 'bank' ? 'border-indigo-700 bg-indigo-50 text-indigo-900' : 'border-slate-200 bg-white text-slate-700 hover:bg-indigo-50'}`}>
-              <BookOpen className="h-3.5 w-3.5 shrink-0" /> Question Bank {bankSearched ? `(${bankMatches.length})` : ''}
-            </button>
-          </div>
-            {canModify && activeView === 'questions' && (
-            <div className="grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end lg:ml-auto lg:shrink-0 lg:flex-nowrap">
-              <button type="button" onClick={() => { void requestAiGeneration(); }}
-                disabled={!isPageReady || isGenerating || checkingMaterial || materialCheckRef.current || generatingRef.current || isSaving || !canModify || isAiGenerationUsed || isAiGenerationUnavailable || !!pendingGenerationJob}
-                title={!isPageReady ? 'Please wait while questions load' : isAiGenerationUsed ? 'AI generation already used for this CNE' : isAiGenerationUnavailable ? 'AI generation unavailable for this CNE' : 'Generate MCQs only from indexed CNE material'}
-                className={`flex min-w-0 items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold shadow-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:px-4 sm:py-2.5 sm:text-xs ${isAiGenerationUsed ? 'border border-slate-300 bg-slate-200 text-slate-600' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
-                {checkingMaterial && !isGenerating ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : isAiGenerationUsed ? <Lock className="h-3.5 w-3.5 shrink-0" /> : <Sparkles className="h-3.5 w-3.5 shrink-0" />}
-                <span className="min-w-0">{checkingMaterial ? 'Checking material…' : isGenerating ? 'Generating MCQs…' : isAiGenerationUsed ? 'AI Used' : 'AI Generate MCQs'}</span>
-              </button>
-              <button type="button" onClick={handleAddManualQuestion}
-                disabled={!canInteractWithQuestionTools || !!importingBankId}
-                title="Add a manual Draft; this does not consume AI quota"
-                className="min-w-0 rounded-lg border border-purple-300 bg-white px-2 py-2 text-[11px] font-bold text-purple-800 transition-colors hover:bg-purple-50 disabled:opacity-50 sm:px-4 sm:py-2.5 sm:text-xs">
-                + Manual Question
-              </button>
+          <div className="mt-3 rounded-xl border border-purple-100 bg-purple-50/70 px-3 py-3 sm:px-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2"><span className="text-lg font-extrabold tabular-nums text-purple-800">{validFinalizedCount} / 5</span><span className="text-[11px] font-semibold text-purple-700">Finalized minimum</span></div>
+              <div className="flex flex-wrap items-center gap-1.5"><span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">{activeQuestions.length-validFinalizedCount} Drafts</span><span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-800">{validFinalizedCount} Finalized</span>{isLocked && <CNEQuestionHeaderStatusTag tone="locked"><Lock className="h-3 w-3"/> Locked</CNEQuestionHeaderStatusTag>}</div>
             </div>
-          )}
+            <div role="progressbar" aria-label="Minimum finalized post-test questions" aria-valuenow={Math.min(5,validFinalizedCount)} aria-valuemin={0} aria-valuemax={5} className="mt-2 h-1.5 overflow-hidden rounded-full bg-purple-100"><div className="h-full rounded-full bg-purple-700 transition-all" style={{width:`${Math.min(100,validFinalizedCount*20)}%`}}/></div>
+            <p className="mt-1.5 text-[10px] text-purple-800">Finalize 5–10 complete questions to activate the evaluation QR.</p>
           </div>
-          {canModify && activeView === 'questions' && (pendingGenerationJob || (activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && !activeQuestions.some((q) => String(q.id || '').startsWith('q_ai_') && !q.isFinalized))) && (
-            <div className="mt-2 grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
-              {pendingGenerationJob && !isAiGenerationUsed && (
-                <button type="button" onClick={() => { setFailureDialog(null); void handleGenerateAi(true); }}
-                  disabled={!isPageReady || !canModify || isGenerating || generatingRef.current || isSaving}
-                  className="col-span-2 flex min-w-0 items-center justify-center gap-1 rounded-lg bg-indigo-700 px-2 py-2 text-[11px] font-bold text-white disabled:opacity-50 sm:px-3">
-                  <ArrowRight className="h-3.5 w-3.5" /> Resume AI Generation
-                </button>
-              )}
-              {activeQuestions.length > 0 && validFinalizedCount < completeActiveCount && !activeQuestions.some((q) => String(q.id || '').startsWith('q_ai_') && !q.isFinalized) && (
-                <button type="button" onClick={handleFinalizeAll} disabled={isGenerating || isSaving || !canModify}
-                  className="col-span-2 flex min-w-0 items-center justify-center gap-1 rounded-lg border border-emerald-300 bg-white px-2 py-2 text-[11px] font-bold text-emerald-800 transition-colors hover:bg-emerald-50 disabled:opacity-50 sm:px-3">
-                  <CheckCheck className="h-3.5 w-3.5" /> Finalize All ({completeActiveCount - validFinalizedCount} Drafts)
-                </button>
-              )}
-            </div>
-          )}
         </header>
 
         {activeView === 'bank' ? (
-          <div role="tabpanel" id="cne-question-bank-panel" aria-labelledby="cne-question-bank-tab"
+          <div role="region" id="cne-question-bank-panel" aria-label="Question Bank search and import"
             className="min-w-0 min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto bg-indigo-50/40 p-3 text-xs sm:p-6">
+            <button type="button" onClick={()=>setActiveView('questions')} className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-800 hover:bg-indigo-50"><ArrowRight className="h-3.5 w-3.5 rotate-180"/> Back to My Questions ({activeQuestions.length})</button>
             <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
               <div>
                 <h4 className="text-sm font-bold text-indigo-950">Institutional Question Bank</h4>
@@ -1084,8 +1034,27 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
         )}
 
         {/* Question List Content - 2-Column Wide Grid on Desktop */}
-        <div role="tabpanel" id="cne-my-questions-panel" aria-labelledby="cne-my-questions-tab"
+        <div role="region" id="cne-my-questions-panel" aria-label="My Post-Test Questions"
           className="min-w-0 min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-slate-50/40 p-3 text-xs flex flex-col sm:p-6">
+          {!isGenerating && !loading && !questionLoadError && <section aria-label="Add post-test questions" className="mb-4 space-y-2">
+            <h4 className="text-sm font-bold text-slate-900">Add Questions</h4>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <button type="button" onClick={() => void requestAiGeneration()} disabled={!canInteractWithQuestionTools || isAiGenerationUsed || isAiGenerationUnavailable || pendingGenerationJob}
+                className="flex min-h-[74px] items-center gap-3 rounded-xl border border-purple-200 bg-purple-700 p-3 text-left text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-[92px]">
+                {isAiGenerationUsed?<Lock className="h-6 w-6 shrink-0"/>:<Sparkles className="h-6 w-6 shrink-0"/>}
+                <span className="min-w-0"><strong className="block text-xs sm:text-sm">{isAiGenerationUsed?'AI Already Used':checkingMaterial?'Checking Material…':'Generate 5 MCQs with AI'}</strong><span className="mt-1 block text-[11px] leading-relaxed text-purple-100">{isAiGenerationUsed?'One-time generation completed':'Create drafts from indexed learning material'}</span></span>
+              </button>
+              <button type="button" onClick={openQuestionBank} disabled={!canInteractWithQuestionTools || !!importingBankId}
+                className="flex min-h-[74px] items-center gap-3 rounded-xl border border-purple-200 bg-white p-3 text-left text-purple-800 shadow-sm hover:bg-purple-50 disabled:opacity-50 sm:min-h-[92px]">
+                <BookOpen className="h-6 w-6 shrink-0"/><span className="min-w-0"><strong className="block text-xs sm:text-sm">Question Bank</strong><span className="mt-1 block text-[11px] leading-relaxed text-slate-600">Search and import as drafts</span></span>
+              </button>
+              <button type="button" onClick={handleAddManualQuestion} disabled={!canInteractWithQuestionTools || !!importingBankId}
+                className="flex min-h-[74px] items-center gap-3 rounded-xl border border-purple-200 bg-white p-3 text-left text-purple-800 shadow-sm hover:bg-purple-50 disabled:opacity-50 sm:min-h-[92px]">
+                <Edit3 className="h-6 w-6 shrink-0"/><span className="min-w-0"><strong className="block text-xs sm:text-sm">Manual Question</strong><span className="mt-1 block text-[11px] leading-relaxed text-slate-600">Write a question and rationale</span></span>
+              </button>
+            </div>
+            {pendingGenerationJob && !isAiGenerationUsed && <button type="button" onClick={()=>{setFailureDialog(null);void handleGenerateAi(true);}} disabled={!canModify || isSaving} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">Resume interrupted AI generation{partialAiCount?` (${partialAiCount}/5 drafted)`:''}</button>}
+          </section>}
           {/* Prominent Single-Stage Processing Status in Main Content Area */}
           {isGenerating ? (
             <div role="status" aria-live="polite" className="mx-auto my-auto max-w-lg w-full rounded-2xl border border-purple-200 bg-purple-50 p-5 space-y-4">
@@ -1108,25 +1077,40 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
               <button type="button" onClick={() => { void loadQuestions(); }} className="px-3 py-2 rounded-lg bg-purple-700 text-white text-xs font-bold">Retry Loading</button>
             </div>
           ) : activeQuestions.length === 0 && replacedQuestions.length === 0 ? (
-            <div className="my-3 w-full max-w-xl self-center rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center space-y-2 sm:my-auto sm:p-8">
+            <div className="w-full rounded-xl border border-dashed border-purple-200 bg-white px-4 py-8 text-center space-y-2 sm:py-12">
               <HelpCircle className="mx-auto h-8 w-8 text-slate-300 sm:h-10 sm:w-10" />
-              <h4 className="text-sm font-bold text-slate-800">No Questions Created Yet</h4>
+              <h4 className="text-sm font-bold text-slate-800">No Questions Added Yet</h4>
               <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-                Import from Question Bank, create manually, or generate AI questions from this CNE’s indexed learning material.
+                Choose AI Generate, Question Bank, or Manual Question above to build this post-test.
               </p>
             </div>
           ) : (
             <div className="space-y-6">
+              <div className="rounded-xl border border-purple-100 bg-white p-3 shadow-sm sm:p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="flex items-center gap-2 text-sm font-bold text-slate-900"><FileCheck2 className="h-4 w-4 text-purple-700"/> My Questions ({activeQuestions.length})</h4>
+                  <span className="text-[11px] text-slate-500">{validFinalizedCount} finalized · {activeQuestions.length-validFinalizedCount} drafts</span>
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_150px]">
+                  <label className="relative"><Search aria-hidden="true" className="absolute left-3 top-2.5 h-4 w-4 text-slate-400"/><span className="sr-only">Search my questions</span><input type="search" value={questionSearch} onChange={e=>setQuestionSearch(e.target.value)} placeholder="Search questions…" className="min-h-10 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 text-xs focus:border-purple-500 focus:outline-none"/></label>
+                  <label><span className="sr-only">Filter question status</span><select value={questionFilter} onChange={e=>setQuestionFilter(e.target.value as typeof questionFilter)} className="min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-xs"><option value="all">All Statuses</option><option value="draft">Drafts</option><option value="finalized">Finalized</option></select></label>
+                </div>
+                {canModify && completeActiveCount>validFinalizedCount && !activeQuestions.some(q=>String(q.id||'').startsWith('q_ai_')&&!q.isFinalized) && <button type="button" onClick={handleFinalizeAll} disabled={isGenerating || isSaving} className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 disabled:opacity-40"><CheckCheck className="h-4 w-4"/> Finalize all complete drafts</button>}
+              </div>
+              {activeQuestions.filter(q=>(questionFilter==='all'||(questionFilter==='finalized'?Boolean(q.isFinalized):!q.isFinalized))&&(!questionSearch.trim()||String(q.question||'').toLowerCase().includes(questionSearch.trim().toLowerCase()))).length===0 && <div role="status" className="rounded-lg border border-slate-200 bg-white p-4 text-center text-xs text-slate-600">No questions match the current search or status filter.</div>}
               {/* Active Questions Container (1 Question per row across all screen sizes) */}
               <div className="grid grid-cols-1 gap-4 items-start">
                 {questions.map((q, idx) => {
                   if (q.status === 'INACTIVE' || q.status === 'REPLACED') return null;
+                  if (questionFilter==='finalized' && !q.isFinalized || questionFilter==='draft' && q.isFinalized) return null;
+                  if (questionSearch.trim() && !String(q.question||'').toLowerCase().includes(questionSearch.trim().toLowerCase())) return null;
                   const isEditing = editingIndex === idx;
                   const activeOrdinal = questions.slice(0, idx + 1).filter(isActiveQuestion).length;
 
                   return (
                     <div
                       key={q.id || idx}
+                      id={`cne-posttest-question-${idx}`}
                       className={`p-4 rounded-xl border transition-all ${
                         q.isFinalized
                           ? 'border-purple-200 bg-white shadow-xs'
@@ -1134,7 +1118,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3 mb-2">
-                        <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                           <span className="w-5 h-5 rounded-full bg-purple-100 text-purple-800 font-bold flex items-center justify-center text-[11px] shrink-0">
                             {activeOrdinal}
                           </span>
@@ -1149,6 +1133,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                             </span>
                           )}
 
+                          <span className="min-w-0 flex-1 basis-full break-words text-xs font-semibold text-slate-900 sm:basis-auto sm:text-sm">{q.question || 'Untitled question — complete draft'}</span>
                           {String(q.id || '').startsWith('q_bank_') && (
                             <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
                               <BookOpen className="w-2.5 h-2.5" /> Imported from Question Bank
@@ -1162,8 +1147,12 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                           )}
                         </div>
 
+                        <div className="flex shrink-0 flex-wrap items-center gap-1">
+                          <button type="button" aria-expanded={isEditing || expandedQuestionIds.has(String(q.id || idx))} aria-label={isEditing || expandedQuestionIds.has(String(q.id || idx))?'Hide question details':'View question details'}
+                            onClick={()=>setExpandedQuestionIds(prev=>{const next=new Set(prev);const key=String(q.id||idx);next.has(key)?next.delete(key):next.add(key);return next;})}
+                            className="rounded-lg border border-slate-200 bg-white p-2 text-slate-600 hover:text-purple-700"><Eye className="h-4 w-4"/></button>
                         {canModify && (
-                          <div className="flex items-center gap-1">
+                          <div className="flex flex-wrap items-center gap-1">
                             <button
                               type="button"
                               onClick={() => handleToggleFinalized(idx)}
@@ -1204,8 +1193,10 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                             </button>
                           </div>
                         )}
+                        </div>
                       </div>
 
+                      {(isEditing || expandedQuestionIds.has(String(q.id || idx))) && <div className="mt-3 border-t border-slate-100 pt-3">
                           {/* Compact one-row manual type selector + upload */}
                           {isEditing && canModify && String(q.id || '').startsWith('q_manual_') && (
                             <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50/50 px-2.5 py-2">
@@ -1354,6 +1345,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
                           )}
                         </div>
                       )}
+                      </div>}
                     </div>
                   );
                 })}
@@ -1482,6 +1474,7 @@ export const CNEQuestionsModal: React.FC<CNEQuestionsModalProps> = ({
 
         {/* Save/finalization belong only to My Questions, never the Question Bank view. */}
         {activeView === 'questions' && <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:py-3">
+          {(validFinalizedCount<5 || incompleteActiveCount>0) && <p className="mb-2 text-[11px] text-purple-800">{incompleteActiveCount>0?`Complete all ${incompleteActiveCount} incomplete active question(s) before saving.`:`Finalize at least ${5-validFinalizedCount} more complete question(s) to continue.`}</p>}
           <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
             {canModify && <button type="button" onClick={() => void performSaveQuestions(false)} disabled={isSaving||isGenerating||incompleteActiveCount>0||activeQuestions.length===0}
               className="min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-2.5 text-xs font-bold text-slate-800 disabled:opacity-40 sm:px-4">Save Drafts</button>}

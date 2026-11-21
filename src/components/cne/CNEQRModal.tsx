@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { QrCode, X, Copy, Check, Loader2, AlertCircle, PlayCircle, Lock } from 'lucide-react';
+import {
+  QrCode, X, Copy, Check, Loader2, AlertCircle, PlayCircle, Lock,
+  Download, Maximize2, ArrowRight, BookOpen, CalendarDays, MapPin, RefreshCw, Link2
+} from 'lucide-react';
 import QRCode from 'qrcode';
 import { CNERecord } from '../../types';
 import { ApiService } from '../../services/api';
@@ -14,12 +17,16 @@ interface CNEQRModalProps {
   onOpenPostTest?: (token: string) => void;
 }
 
-const getCneStatus = (cne: CNERecord) => String(cne.status || '').trim().toLowerCase();
 const isCneClosed = (cne: CNERecord) => {
-  const status = getCneStatus(cne);
-  return status === 'completed' || status === 'canceled' || status === 'cancelled';
+  const status = String(cne.status || '').trim().toLowerCase();
+  return ['completed', 'finalized', 'finalised', 'canceled', 'cancelled'].includes(status);
 };
 
+/**
+ * Presentation-ready post-test QR. Uses the EXISTING authorized getQRToken
+ * endpoints, never requests a second token if one already exists, and never
+ * exposes a closed CNE's active participant link.
+ */
 export const CNEQRModal: React.FC<CNEQRModalProps> = ({
   cne,
   isAuthorized = true,
@@ -34,33 +41,31 @@ export const CNEQRModal: React.FC<CNEQRModalProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [hasQR, setHasQR] = useState(false);
   const [qrToken, setQrToken] = useState('');
-  const [qrDataUrl, setQrDataUrl] = useState<string>('');
-  const [copied, setCopied] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState('');
   const [postTestUrl, setPostTestUrl] = useState('');
-  const [finalizedCount, setFinalizedCount] = useState<number>(0);
+  const [finalizedCount, setFinalizedCount] = useState(0);
   const [statusMessage, setStatusMessage] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [presentationOpen, setPresentationOpen] = useState(false);
+  const [retryNumber, setRetryNumber] = useState(0);
 
   const requestRef = useRef(0);
   const generationAttemptRef = useRef('');
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const { success, error } = useToast();
 
   const renderQr = async (token: string, requestId: number) => {
     const url = `${window.location.origin}/?postTest=${encodeURIComponent(token)}`;
-    const dataUrl = await QRCode.toDataURL(url, {
-      width: 280,
-      margin: 2,
-      color: {
-        dark: '#1e1b4b',
-        light: '#ffffff'
-      }
+    // Generate a high-resolution PNG once, then reuse for inline, presentation and download.
+    const png = await QRCode.toDataURL(url, {
+      width: 1024,
+      margin: 3,
+      color: { dark: '#25105e', light: '#ffffff' }
     });
-
     if (requestId !== requestRef.current) return;
     setQrToken(token);
+    setQrDataUrl(png);
     setPostTestUrl(url);
-    setQrDataUrl(dataUrl);
     setHasQR(true);
   };
 
@@ -75,71 +80,60 @@ export const CNEQRModal: React.FC<CNEQRModalProps> = ({
     setPostTestUrl('');
     setFinalizedCount(0);
     setStatusMessage('');
+    setPresentationOpen(false);
+    setCopied(false);
 
     if (!cneId) {
       setLoading(false);
-      setStatusMessage('CNE ID is unavailable. QR code cannot be loaded.');
-      return () => {
-        requestRef.current += 1;
-      };
+      setStatusMessage('CNE ID is missing. The evaluation QR cannot be loaded.');
+      return () => { requestRef.current += 1; };
     }
 
-    const loadQrState = async () => {
+    const loadQr = async () => {
       try {
-        // Step 1: Check only. This never creates a second token.
-        const checkRes = await ApiService.getQRToken(cneId, { checkOnly: true });
+        // Query first: this avoids generating extra tokens when a QR already exists.
+        const checked = await ApiService.getQRToken(cneId, { checkOnly: true });
         if (requestId !== requestRef.current) return;
-
-        if (!checkRes.success || !checkRes.data) {
-          setStatusMessage(checkRes.message || 'Unable to check QR status for this CNE.');
+        if (!checked.success || !checked.data) {
+          setStatusMessage(checked.message || 'QR status is unavailable.');
           return;
         }
 
-        const currentFinalizedCount = Number(checkRes.data.finalizedCount || 0);
-        setFinalizedCount(currentFinalizedCount);
+        const count = Number(checked.data.finalizedCount || 0);
+        setFinalizedCount(count);
 
-        if (checkRes.data.hasQR && checkRes.data.qrToken) {
-          await renderQr(checkRes.data.qrToken, requestId);
-          return;
-        }
-
+        // A QR may already exist for a closed session; we do NOT display its link.
         if (closed) {
-          setStatusMessage('QR generation is disabled because this CNE is closed.');
+          setStatusMessage('Post-Test access is closed for this CNE.');
           return;
         }
-
+        if (checked.data.hasQR && checked.data.qrToken) {
+          await renderQr(checked.data.qrToken, requestId);
+          return;
+        }
         if (!isAuthorized) {
-          setStatusMessage('QR generation is restricted to authorized CNE operators.');
+          setStatusMessage('Only authorized CNE operators can activate the evaluation QR.');
+          return;
+        }
+        if (count < 5) {
+          setStatusMessage(`Finalize at least five valid questions. Current count: ${count}/5.`);
           return;
         }
 
-        if (currentFinalizedCount < 5) {
-          setStatusMessage(`At least 5 valid finalized questions are required. Currently finalized: ${currentFinalizedCount}/5.`);
-          return;
-        }
-
-        // Step 2: Auto-create exactly once after the 5-question gate is satisfied.
         if (generationAttemptRef.current === cneId) return;
         generationAttemptRef.current = cneId;
         setIsGenerating(true);
-
-        const createRes = await ApiService.getQRToken(cneId, { checkOnly: false });
+        const created = await ApiService.getQRToken(cneId, { checkOnly: false });
         if (requestId !== requestRef.current) return;
-
-        if (!createRes.success || !createRes.data?.qrToken) {
-          setStatusMessage(createRes.message || 'Unable to generate QR code for this CNE.');
+        if (!created.success || !created.data?.qrToken) {
+          setStatusMessage(created.message || 'QR creation did not complete.');
           return;
         }
-
-        setFinalizedCount(Number(createRes.data.finalizedCount || currentFinalizedCount));
-        await renderQr(createRes.data.qrToken, requestId);
-        if (requestId === requestRef.current) {
-          success('Evaluation QR code generated and activated.');
-        }
+        setFinalizedCount(Number(created.data.finalizedCount || count));
+        await renderQr(created.data.qrToken, requestId);
+        if (requestId === requestRef.current) success('Evaluation QR code is ready.');
       } catch (e: any) {
-        if (requestId !== requestRef.current) return;
-        console.warn('Error loading/generating QR token:', e);
-        setStatusMessage(e?.message || 'Unable to load QR code for this CNE.');
+        if (requestId === requestRef.current) setStatusMessage(e?.message || 'QR status could not be checked.');
       } finally {
         if (requestId === requestRef.current) {
           setLoading(false);
@@ -147,210 +141,121 @@ export const CNEQRModal: React.FC<CNEQRModalProps> = ({
         }
       }
     };
-
-    loadQrState();
-
-    return () => {
-      requestRef.current += 1;
-    };
-  }, [cneId, closed, isAuthorized, success]);
+    void loadQr();
+    return () => { requestRef.current += 1; };
+  }, [cneId, closed, isAuthorized, retryNumber, success]);
 
   useEffect(() => {
-    return () => {
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-    };
+    return () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current); };
   }, []);
+
+  useEffect(() => {
+    if (!presentationOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPresentationOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [presentationOpen]);
 
   const handleCopy = async () => {
     if (!postTestUrl || closed) return;
     try {
       await navigator.clipboard.writeText(postTestUrl);
       setCopied(true);
-      success('Post-test link copied to clipboard.');
+      success('Participant Post-Test link copied.');
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
       copyTimerRef.current = setTimeout(() => setCopied(false), 2500);
     } catch (e: any) {
-      error(e?.message || 'Unable to copy the post-test link.');
+      error(e?.message || 'Unable to copy link.');
+    }
+  };
+
+  const handleDownload = () => {
+    if (!hasQR || !qrDataUrl || closed) return;
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = qrDataUrl;
+      anchor.download = `CNE_PostTest_QR_${cneId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0,60)}.png`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    } catch (e: any) {
+      error(e?.message || 'Unable to download QR image.');
     }
   };
 
   const handleOpenPostTest = () => {
-    if (!canManageQr || !hasQR || !qrToken || !onOpenPostTest) return;
-    onOpenPostTest(qrToken);
+    if (canManageQr && hasQR && qrToken && onOpenPostTest) onOpenPostTest(qrToken);
   };
 
-  const readyForQr = finalizedCount >= 5;
+  const showQR = hasQR && Boolean(qrDataUrl) && !closed;
+  const notReady = finalizedCount < 5;
+  const canRetry = !loading && !showQR && canManageQr && !notReady;
 
   return (
-    <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-white rounded-2xl w-[90vw] max-w-[1050px] max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-        {/* Modal Header */}
-        <div className="px-6 py-3 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/70">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center">
-              <QrCode className="w-4 h-4" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">Evaluation QR Code</h3>
-              <p className="text-[10px] text-slate-500">Generated once after 5 valid finalized questions are available</p>
-            </div>
+    <div className="fixed inset-0 z-[60] flex items-stretch justify-center bg-slate-900/60 p-0 sm:items-center sm:p-5">
+      <div role="dialog" aria-modal="true" aria-labelledby="cne-qr-title" className="flex h-[100dvh] min-h-0 w-full max-w-[1080px] flex-col overflow-hidden rounded-none border border-slate-200 bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:rounded-2xl">
+        <header className="flex shrink-0 items-center justify-between gap-3 bg-gradient-to-r from-violet-900 to-purple-800 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] text-white sm:px-6 sm:py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15"><QrCode className="h-5 w-5" /></div>
+            <div className="min-w-0"><h2 id="cne-qr-title" className="text-sm font-bold sm:text-lg">Evaluation QR Code</h2><p className="text-[11px] text-purple-100">Participant Post-Test Access</p></div>
           </div>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 cursor-pointer transition-colors shrink-0"
-            title="Close"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-2 text-white/80 hover:bg-white/10" aria-label="Close QR modal"><X className="h-5 w-5"/></button>
+        </header>
 
-        {loading ? (
-          <div className="py-24 flex flex-col items-center justify-center gap-2 text-slate-500">
-            <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
-            <span className="text-xs">{isGenerating ? 'Generating evaluation QR code...' : 'Checking QR status for CNE session...'}</span>
-          </div>
-        ) : (
-          <div className="p-6 overflow-y-auto flex-1 grid grid-cols-1 md:grid-cols-12 gap-6 bg-slate-50/40 items-center">
-            {/* Left Column: QR Code Display or Status */}
-            <div className="md:col-span-5 flex flex-col items-center justify-center p-5 bg-white rounded-2xl border border-slate-200 shadow-xs text-center min-h-[280px]">
-              {hasQR && qrDataUrl && !closed ? (
-                <>
-                  <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 shadow-inner">
-                    <img
-                      src={qrDataUrl}
-                      alt={`Post-Test QR for ${cne.topic || cneId}`}
-                      className="w-52 h-52 mx-auto rounded-xl shadow-xs"
-                    />
-                  </div>
-                  <p className="text-[11px] text-slate-500 mt-3 font-medium">
-                    Scan with any mobile camera or scanner
-                  </p>
-                </>
-              ) : (
-                <div className="flex flex-col items-center justify-center p-6 text-center space-y-3">
-                  <div className={`w-20 h-20 rounded-2xl border flex items-center justify-center ${closed ? 'bg-slate-100 border-slate-200 text-slate-500' : 'bg-indigo-50 border-indigo-100 text-indigo-500'}`}>
-                    {closed ? <Lock className="w-9 h-9 stroke-[1.5]" /> : <QrCode className="w-10 h-10 stroke-[1.5]" />}
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-slate-800 text-sm">
-                      {closed ? 'QR / Post-Test Disabled' : readyForQr && isAuthorized ? 'QR Generation Unavailable' : 'QR Code Not Yet Available'}
-                    </h4>
-                    <p className="text-xs text-slate-500 mt-1 max-w-xs leading-relaxed">
-                      {statusMessage || (readyForQr ? 'QR code will be generated automatically when this workflow is opened by an authorized user.' : 'Finalize at least 5 valid questions before creating the QR code.')}
-                    </p>
-                  </div>
-                </div>
-              )}
+        <main className="min-h-0 flex-1 overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5">
+          {loading ? <div role="status" className="flex min-h-72 flex-col items-center justify-center gap-3 text-xs text-slate-600"><Loader2 className="h-8 w-8 animate-spin text-purple-700"/>{isGenerating ? 'Generating evaluation QR code…' : 'Checking current QR and finalized questions…'}</div> : <div className="mx-auto max-w-4xl space-y-4">
+            <div className="grid grid-cols-1 gap-4 rounded-2xl border border-purple-100 bg-purple-50/60 p-4 sm:grid-cols-[1fr_auto] sm:items-center sm:p-5">
+              <div className="min-w-0"><div className="flex items-start gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-100 text-purple-700"><BookOpen className="h-5 w-5"/></div><div className="min-w-0"><h3 className="break-words text-base font-bold text-slate-900 sm:text-lg">{cne.topic || 'CNE Session'}</h3><div className="mt-1.5 space-y-1 text-xs text-slate-600"><p className="flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0 text-purple-700"/>{cne.area || 'Area not specified'}</p><p className="flex items-center gap-1.5"><CalendarDays className="h-3.5 w-3.5 shrink-0 text-purple-700"/>{formatCneDateTimeDisplay(cne.date, cne.toDate)}</p></div></div></div></div>
+              <div className={`flex items-center gap-1.5 self-start rounded-full border px-3 py-1.5 text-xs font-bold sm:self-center ${closed?'border-slate-300 bg-slate-100 text-slate-700':showQR?'border-emerald-200 bg-emerald-100 text-emerald-800':'border-amber-200 bg-amber-50 text-amber-900'}`}>
+                {showQR?<Check className="h-4 w-4"/>:closed?<Lock className="h-4 w-4"/>:<AlertCircle className="h-4 w-4"/>}
+                {closed?'Post-Test Closed':showQR?`${finalizedCount} Finalized · QR Active`:`${finalizedCount}/5 Finalized · QR Pending`}
+              </div>
             </div>
 
-            {/* Right Column: Information, Status, and Link */}
-            <div className="md:col-span-7 space-y-4">
-              {closed ? (
-                <div className="p-3.5 bg-slate-100 rounded-xl border border-slate-200 text-xs text-slate-700 flex items-start gap-2.5">
-                  <Lock className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="block mb-0.5">Session Closed</strong>
-                    <span>QR and post-test access are disabled after CNE finalization/completion or cancellation.</span>
-                  </div>
+            {showQR ? <>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(230px,0.9fr)] sm:items-center">
+                <div className="order-2 space-y-3 sm:order-1">
+                  <p className="text-sm font-bold text-slate-900">Participant Post-Test Link</p>
+                  <div className="flex min-w-0 items-center gap-2 rounded-xl border border-purple-200 bg-purple-50 p-2"><Link2 className="h-4 w-4 shrink-0 text-purple-700"/><input aria-label="Participant Post-Test link" readOnly value={postTestUrl} className="min-w-0 flex-1 truncate bg-transparent text-[11px] text-purple-950 outline-none"/><button type="button" onClick={() => void handleCopy()} className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-lg bg-purple-700 px-3 text-[11px] font-bold text-white">{copied?<Check className="h-3.5 w-3.5"/>:<Copy className="h-3.5 w-3.5"/>}{copied?'Copied':'Copy Link'}</button></div>
+                  <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setPresentationOpen(true)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-purple-700 px-3 text-xs font-bold text-white"><Maximize2 className="h-4 w-4"/>Full Screen</button><button type="button" onClick={handleDownload} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-purple-200 bg-white px-3 text-xs font-bold text-purple-800"><Download className="h-4 w-4"/>Download QR</button></div>
+                  <p className="text-xs leading-relaxed text-slate-600">Present the QR on a large screen so participants can scan with their phones. The same authorized token is reused.</p>
                 </div>
-              ) : finalizedCount < 5 ? (
-                <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 flex items-start gap-2.5">
-                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="block mb-0.5">Question Bank Pending</strong>
-                    <span>At least 5 valid finalized questions are required before QR code activation. Currently finalized: {finalizedCount}/5.</span>
-                  </div>
-                </div>
-              ) : hasQR ? (
-                <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-900 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
-                  <span><strong>{finalizedCount} questions</strong> are active. This QR token is already generated and is being reused.</span>
-                </div>
-              ) : (
-                <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-200 text-xs text-indigo-900 flex items-center gap-2">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Preparing the evaluation QR code...</span>
-                </div>
-              )}
-
-              {/* Meta details */}
-              <div className="p-3.5 bg-white rounded-xl border border-slate-200 space-y-2 text-xs">
-                <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2">
-                  <span className="text-slate-500 shrink-0">Topic:</span>
-                  <span className="font-bold text-slate-800 text-right break-words">{cne.topic || '—'}</span>
-                </div>
-                <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2">
-                  <span className="text-slate-500 shrink-0">Area/Ward:</span>
-                  <span className="font-semibold text-slate-700 text-right break-words">{cne.area || '—'}</span>
-                </div>
-                <div className="flex items-start justify-between gap-4">
-                  <span className="text-slate-500 shrink-0">Date &amp; Time:</span>
-                  <span className="font-semibold text-slate-700 text-right break-words">{formatCneDateTimeDisplay(cne.date, cne.toDate)}</span>
+                <div className="order-1 flex flex-col items-center justify-center gap-2 rounded-2xl border border-purple-100 bg-purple-50/60 p-4 sm:order-2">
+                  <img src={qrDataUrl} alt={`Participant post-test QR for ${cne.topic || 'CNE'}`} className="aspect-square w-full max-w-[310px] rounded-xl border-8 border-white bg-white object-contain shadow-sm"/>
+                  <p className="text-[11px] font-semibold text-purple-800">Scan to open the Post-Test</p>
                 </div>
               </div>
+            </> : <div role="status" className={`rounded-2xl border p-5 text-center ${closed?'border-slate-200 bg-slate-50':'border-amber-200 bg-amber-50'}`}>
+              {closed?<Lock className="mx-auto h-10 w-10 text-slate-500"/>:<QrCode className="mx-auto h-10 w-10 text-amber-700"/>}
+              <h3 className="mt-3 text-sm font-bold text-slate-900">{closed?'Post-Test Access Closed':notReady?'QR Not Ready':'QR Code Unavailable'}</h3>
+              <p className="mx-auto mt-2 max-w-lg text-xs leading-relaxed text-slate-700">{statusMessage || (notReady?'Finalize at least five valid Post-Test questions first.':'Check QR status or retry.')}</p>
+              {!closed && notReady && <div role="progressbar" aria-label="Finalized questions" aria-valuenow={Math.min(5, finalizedCount)} aria-valuemin={0} aria-valuemax={5} className="mx-auto mt-4 h-2 max-w-xs overflow-hidden rounded-full bg-amber-100"><div className="h-full rounded-full bg-purple-700" style={{width:`${Math.min(100,finalizedCount*20)}%`}}/></div>}
+              {canRetry && <button type="button" onClick={() => setRetryNumber(n=>n+1)} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-purple-700 px-4 py-2 text-xs font-bold text-white"><RefreshCw className="h-4 w-4"/>Retry QR Status</button>}
+            </div>}
 
-              {/* Direct Link - only while session is open */}
-              {hasQR && postTestUrl && !closed && (
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
-                    Direct Participant Evaluation URL
-                  </label>
-                  <div className="flex items-center gap-2 p-1.5 bg-white rounded-xl border border-slate-300 shadow-xs">
-                    <input
-                      type="text"
-                      readOnly
-                      value={postTestUrl}
-                      className="flex-1 bg-transparent text-xs text-slate-700 px-2 truncate outline-none font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleCopy}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold cursor-pointer transition-colors shrink-0"
-                    >
-                      {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                      <span>{copied ? 'Copied' : 'Copy Link'}</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+            <details className="rounded-xl border border-purple-100 bg-purple-50/60 px-4 py-3 text-xs">
+              <summary className="cursor-pointer font-bold text-purple-900">CNE Session Details</summary>
+              <dl className="mt-3 grid gap-2 text-slate-700 sm:grid-cols-2"><div><dt className="text-slate-500">Topic</dt><dd className="font-semibold">{cne.topic || '—'}</dd></div><div><dt className="text-slate-500">Area/Ward</dt><dd className="font-semibold">{cne.area || '—'}</dd></div><div><dt className="text-slate-500">Date and time</dt><dd className="font-semibold">{formatCneDateTimeDisplay(cne.date, cne.toDate)}</dd></div><div><dt className="text-slate-500">Finalized Post-Test questions</dt><dd className="font-semibold">{finalizedCount}</dd></div></dl>
+            </details>
+          </div>}
+        </main>
 
-        {/* No separate Save button: QR creation is automatic after the 5-question gate. */}
-        <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50/70 flex items-center justify-between gap-3 shrink-0">
-          <div className="text-xs text-slate-500">
-            {!isAuthorized
-              ? 'View-only mode.'
-              : closed
-              ? 'QR and post-test are locked for this closed CNE.'
-              : hasQR
-              ? 'QR code is active and will not be regenerated.'
-              : finalizedCount < 5
-              ? `${finalizedCount}/5 valid finalized questions available.`
-              : 'QR generation is automatic.'}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs cursor-pointer transition-colors"
-            >
-              Close
-            </button>
-            {hasQR && canManageQr && onOpenPostTest && (
-              <button
-                type="button"
-                onClick={handleOpenPostTest}
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-700 hover:bg-indigo-800 text-white rounded-xl font-bold text-xs cursor-pointer transition-colors shadow-xs"
-              >
-                <PlayCircle className="w-3.5 h-3.5" />
-                <span>Open Post-Test</span>
-              </button>
-            )}
-          </div>
-        </div>
+        <footer className="grid shrink-0 grid-cols-2 gap-2 border-t border-slate-200 bg-white px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
+          <button type="button" onClick={onClose} className="min-h-11 rounded-xl border border-slate-300 bg-white px-3 text-xs font-bold text-slate-700">Close</button>
+          <button type="button" onClick={handleOpenPostTest} disabled={!showQR || !canManageQr || !onOpenPostTest} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-purple-700 px-3 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"><PlayCircle className="h-4 w-4"/>Open Post-Test <ArrowRight className="h-4 w-4"/></button>
+        </footer>
       </div>
+
+      {presentationOpen && showQR && <div role="dialog" aria-modal="true" aria-label="Post-Test QR presentation" className="fixed inset-0 z-[80] flex flex-col items-center justify-center overflow-y-auto bg-white p-4 text-center sm:p-8">
+        <button type="button" onClick={() => setPresentationOpen(false)} aria-label="Exit full-screen QR presentation" className="absolute right-4 top-[max(1rem,env(safe-area-inset-top))] rounded-xl border border-slate-200 bg-white p-2 text-slate-600 shadow-sm"><X className="h-6 w-6"/></button>
+        <h2 className="mt-8 max-w-3xl text-lg font-extrabold text-purple-950 sm:text-3xl">{cne.topic}</h2>
+        <p className="mt-1 text-sm font-semibold text-purple-800">Scan to open the CNE Post-Test</p>
+        <img src={qrDataUrl} alt="Full-screen participant Post-Test QR code" className="my-4 aspect-square w-full max-w-[min(72vh,680px)] rounded-2xl border-[12px] border-white bg-white object-contain shadow-xl"/>
+        <p className="max-w-3xl break-all text-xs text-slate-500 sm:text-sm">{postTestUrl}</p>
+        <button type="button" onClick={() => setPresentationOpen(false)} className="mt-4 min-h-11 rounded-lg bg-purple-700 px-6 text-sm font-bold text-white">Exit Presentation</button>
+      </div>}
     </div>
   );
 };

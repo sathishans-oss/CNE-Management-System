@@ -11,7 +11,13 @@ import {
   ArrowRight,
   AlertCircle,
   Trash2,
-  Lock
+  Lock,
+  ChevronDown,
+  Eye,
+  RefreshCw,
+  ShieldCheck,
+  Files,
+  PencilLine
 } from 'lucide-react';
 import { CNERecord, CNELearningResourceMetadata } from '../../types';
 import { ApiService } from '../../services/api';
@@ -20,7 +26,7 @@ import { formatCneDateTimeDisplay } from '../../utils';
 import { MaterialIndexWarnings } from './MaterialIndexWarnings';
 import { MaterialIndexStages, MaterialIndexStage } from './MaterialIndexStages';
 import type { ProcessingProgress } from './ProcessingSteps';
-import { MaterialReviewFlags } from './MaterialReviewFlags';
+import { MaterialReviewFlags, parseMaterialReviewFlags } from './MaterialReviewFlags';
 
 interface CNEReferenceModalProps {
   cne: CNERecord;
@@ -69,7 +75,10 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
 
   // Newly Selected File for Upload
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [responsibilityAccepted, setResponsibilityAccepted] = useState(false);
+  const [responsibilityAccepted, setResponsibilityAccepted] = useState(true);
+  const [activeTab, setActiveTab] = useState<'overview' | 'files' | 'notes'>('files');
+  const [declarationExpanded, setDeclarationExpanded] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -84,7 +93,8 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     setUpdatedAt(undefined);
     setExistingResource(null);
     setSelectedFile(null);
-    setResponsibilityAccepted(false);
+    setActiveTab('files');
+    setResponsibilityAccepted(true);
     setIndexingInfo(null);
     setShowDeleteConfirm(false);
     setLoadError(null);
@@ -172,7 +182,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
   };
 
   const handleFileSelect = (file: File) => {
-    if (!canModify) {
+    if (!canModify || isSaving) {
       warning('Learning materials are locked after CNE completion/finalization or cancellation.');
       return;
     }
@@ -193,7 +203,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     }
 
     setSelectedFile(file);
-    setResponsibilityAccepted(false);
+    // Keep a deliberate opt-out until the user changes the checkbox again.
   };
 
   const handleDrag = (e: React.DragEvent) => {
@@ -345,7 +355,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
           referenceText: unifiedContent.trim()
         });
 
-        if (!textRes.success && !selectedFile) {
+        if (!textRes.success) {
           error(textRes.message || 'Failed to save reference material notes.');
           return false;
         }
@@ -425,173 +435,163 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
     ? 'bg-amber-100 text-amber-800 border-amber-200'
     : 'bg-slate-100 text-slate-700 border-slate-200';
 
+
+  const openCurrentFile = async () => {
+    if (!existingResource?.hasFile || isDownloading) return;
+    // Open a blank preview tab synchronously, before the async download, to
+    // avoid pop-up blockers on mobile browsers. Office files download normally.
+    const isPdf = String(existingResource.fileName || '').toLowerCase().endsWith('.pdf');
+    const preview = isPdf ? window.open('', '_blank') : null;
+    setIsDownloading(true);
+    try {
+      const result = await ApiService.downloadLearningResource(cneId);
+      if (!result.success || !result.data?.fileBase64) {
+        preview?.close();
+        error(result.message || 'Unable to retrieve the learning-material file.');
+        return;
+      }
+      const mime = result.data.mimeType || (isPdf ? 'application/pdf' : 'application/octet-stream');
+      const raw = atob(result.data.fileBase64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mime });
+      const objectUrl = URL.createObjectURL(blob);
+      if (isPdf && preview) {
+        preview.location.href = objectUrl;
+      } else {
+        const anchor = document.createElement('a');
+        anchor.href = objectUrl;
+        anchor.download = result.data.fileName || existingResource.fileName || 'CNE_learning_material';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch (e: any) {
+      preview?.close();
+      error(e?.message || 'Could not download the selected material.');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const flagsCount = parseMaterialReviewFlags(indexingInfo?.message || '').length;
+  const extractionWarningsCount = Number((/FIDELITY_WARNINGS=(\d+)/.exec(indexingInfo?.message || '') || [])[1] || 0);
+  const needsClarification = Boolean(existingResource?.hasFile && (indexingInfo?.status === 'NEEDS_REVIEW' || flagsCount > 0 || extractionWarningsCount > 0));
+  const uploadInProgress = isSaving && uploadStep !== 'idle' && uploadStep !== 'done';
+  const statusRequiresAction = Boolean(existingResource?.hasFile && (indexingInfo?.status === 'FAILED' || indexingInfo?.status === 'PENDING' || indexingInfo?.status === 'UNKNOWN' || needsQualityReindex || needsClarification));
+  const statusColor = needsClarification ? 'border-amber-200 bg-amber-50 text-amber-900'
+    : indexingInfo?.status === 'SUCCESS' ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+    : indexingInfo?.status === 'FAILED' ? 'border-rose-200 bg-rose-50 text-rose-800'
+    : 'border-slate-200 bg-slate-50 text-slate-700';
+  const statusText = needsClarification ? 'Needs clarification'
+    : indexingInfo?.status === 'SUCCESS' ? 'Indexed · educator review required'
+    : indexingInfo?.status === 'FAILED' ? 'Processing interrupted'
+    : indexingInfo?.status === 'PENDING' ? 'Indexing pending'
+    : indexingInfo?.status === 'UNKNOWN' ? 'Status unavailable'
+    : 'Not uploaded';
   return (
-    <div id="cne-material-modal" className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-none sm:backdrop-blur-xs flex items-stretch sm:items-center justify-center p-0 sm:p-5">
-      <div className="bg-white rounded-none sm:rounded-2xl w-full sm:w-[94vw] max-w-[1280px] h-[100dvh] sm:h-auto sm:max-h-[90dvh] shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
-        {/* Modal Header */}
-        <div className="px-4 sm:px-6 py-3 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/80 pt-[max(0.75rem,env(safe-area-inset-top))]">
-          <div className="flex items-center gap-3 min-w-0 pr-4">
-            <div className="w-9 h-9 rounded-xl bg-teal-100 text-teal-800 flex items-center justify-center shrink-0">
-              <BookOpen className="w-5 h-5" />
+    <div id="cne-material-modal" className="fixed inset-0 z-[60] flex items-stretch justify-center bg-slate-900/60 p-0 sm:items-center sm:p-5">
+      <div role="dialog" aria-modal="true" aria-labelledby="cne-material-title" className="flex h-[100dvh] min-h-0 w-full max-w-[1180px] flex-col overflow-hidden rounded-none border border-slate-200 bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:rounded-2xl">
+        <header className="shrink-0 border-b border-slate-200 bg-white px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6 sm:py-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-teal-100 text-teal-800"><BookOpen className="h-5 w-5" /></div>
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-teal-700">Learning Material</p>
+                <h2 id="cne-material-title" className="break-words text-sm font-bold leading-snug text-slate-950 sm:text-lg">{cne.topic}</h2>
+              </div>
             </div>
-            <h3 className="text-sm sm:text-base font-bold text-slate-900 leading-snug line-clamp-1 truncate">
-              {cne.topic}
-            </h3>
+            <button type="button" aria-label="Close learning material" onClick={onClose} disabled={isSaving || isDeleting} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50"><X className="h-5 w-5" /></button>
           </div>
-          <button
-            onClick={onClose}
-            disabled={isSaving}
-            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/60 disabled:opacity-40 cursor-pointer transition-colors shrink-0"
-            title="Close modal"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+          <nav role="tablist" aria-label="Learning material sections" className="mt-3 grid grid-cols-3 gap-1.5 sm:gap-2">
+            {([
+              {id:'overview' as const,label:'Overview',Icon:Info},
+              {id:'files' as const,label:'Files',Icon:Files},
+              {id:'notes' as const,label:'Notes',Icon:PencilLine}
+            ]).map(({id,label,Icon}) => <button key={id} type="button" role="tab" aria-selected={activeTab === id} aria-controls={activeTab===id ? `cne-material-${id}-panel` : undefined}
+              onClick={() => setActiveTab(id)} disabled={isSaving}
+              className={`flex min-h-11 items-center justify-center gap-1.5 rounded-xl border px-2 text-xs font-bold transition-colors sm:text-sm ${activeTab===id?'border-teal-700 bg-teal-700 text-white shadow-sm':'border-slate-200 bg-slate-50 text-slate-700 hover:border-teal-300 hover:bg-teal-50'} disabled:opacity-50`}>
+              <Icon className="h-4 w-4" /> {label}
+            </button>)}
+          </nav>
+        </header>
 
-        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-          {loading && <div role="status" aria-live="polite" className="flex items-center gap-2.5 border-b border-teal-100 bg-teal-50 px-4 py-2.5 sm:px-6">
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal-700" aria-hidden="true" />
-            <div className="min-w-0">
-              <p className="text-xs font-semibold text-teal-900">Checking existing CNE material…</p>
-              <p className="text-[11px] text-teal-800">Retrieving uploaded material and indexing status</p>
+        {loading && <div role="status" className="flex items-center gap-2 border-b border-teal-100 bg-teal-50 px-4 py-2 text-xs text-teal-900 sm:px-6"><Loader2 className="h-4 w-4 animate-spin" /> Loading learning material…</div>}
+        {loadError && <div role="alert" className="border-b border-rose-200 bg-rose-50 px-4 py-2 text-xs text-rose-800 sm:px-6">{loadError} <button type="button" className="ml-2 font-bold underline" onClick={() => void loadAllReferenceData()}>Retry</button></div>}
+        {isClosed && <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-100 px-4 py-2 text-xs text-slate-700 sm:px-6"><Lock className="h-4 w-4" /> CNE is closed; material remains view-only.</div>}
+
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-50/40 p-4 sm:p-6">
+          {activeTab === 'overview' && <section id="cne-material-overview-panel" role="tabpanel" aria-label="Overview" className="mx-auto max-w-4xl space-y-4">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-bold text-slate-900">Material Overview</h3><span className={`rounded-full border px-3 py-1 text-[11px] font-bold ${statusColor}`}>{statusText}</span></div>
+              <p className="mt-2 text-xs leading-relaxed text-slate-600">Upload a PDF, Word or PowerPoint file (maximum 5 MB). Text extraction and automated source review prepare evidence for five CNE Post-Test questions; educator review remains required.</p>
+              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                <div className="rounded-xl bg-slate-50 p-3"><p className="text-[11px] text-slate-500">Attached file</p><p className="mt-1 text-sm font-bold text-slate-900">{existingResource?.hasFile?'1 file':'No file'}</p></div>
+                <div className="rounded-xl bg-slate-50 p-3"><p className="text-[11px] text-slate-500">Indexed chunks</p><p className="mt-1 text-sm font-bold text-slate-900">{indexingInfo?.chunksCount ?? 0}</p></div>
+                <div className="col-span-2 rounded-xl bg-slate-50 p-3 sm:col-span-1"><p className="text-[11px] text-slate-500">Clarifications</p><p className="mt-1 text-sm font-bold text-slate-900">{flagsCount} flagged chunk(s)</p></div>
+              </div>
+              <button type="button" onClick={() => setActiveTab('files')} className="mt-4 inline-flex items-center gap-2 rounded-lg bg-teal-700 px-4 py-2.5 text-xs font-bold text-white hover:bg-teal-800">{existingResource?.hasFile?'Manage uploaded file':'Upload learning material'} <ArrowRight className="h-4 w-4"/></button>
             </div>
-          </div>}
-          {loadError && <div role="alert" className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-b border-rose-200">{loadError} <button type="button" onClick={() => void loadAllReferenceData()} className="ml-2 underline font-bold">Retry</button></div>}
-            {isClosed && (
-              <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 text-xs text-slate-700 shrink-0">
-                <Lock className="w-4 h-4 text-slate-600 shrink-0" />
-                <span>Learning material is locked because this CNE is completed/finalized or canceled. Existing material remains viewable.</span>
+            {existingResource?.hasFile && statusRequiresAction && <div role="status" className={`rounded-xl border p-4 text-xs ${statusColor}`}><div className="flex items-start gap-2"><AlertCircle className="h-4 w-4 shrink-0"/><p>{needsClarification ? `${flagsCount} source chunk(s) need clarification; ${extractionWarningsCount} extraction warning(s). Review the Files tab for details.` : 'Source processing is unfinished. Open Files to resume or retry without uploading again.'}</p></div></div>}
+            <div className="rounded-xl border border-teal-100 bg-teal-50/70 p-4 text-xs leading-relaxed text-teal-950"><Info className="mr-2 inline h-4 w-4"/>Automated source checks are not clinical approval. Review all clinical statements, permissions and patient-data exclusions before proceeding.</div>
+          </section>}
+
+          {activeTab === 'files' && <section id="cne-material-files-panel" role="tabpanel" aria-label="Files" className="mx-auto max-w-5xl space-y-4">
+            {canModify && <div className="rounded-xl border border-teal-100 bg-teal-50/60 px-3 py-2.5">
+              <div className="flex items-center gap-2"><input id="cne-uploader-responsibility" type="checkbox" checked={responsibilityAccepted} onChange={e=>setResponsibilityAccepted(e.target.checked)} className="h-4 w-4 shrink-0 accent-teal-700" />
+                <label htmlFor="cne-uploader-responsibility" className="min-w-0 flex-1 cursor-pointer truncate text-xs font-semibold text-teal-950">Uploader responsibility · clinical accuracy and permissions confirmed</label>
+                <button type="button" aria-expanded={declarationExpanded} aria-controls="cne-uploader-declaration-details" onClick={()=>setDeclarationExpanded(v=>!v)} className="shrink-0 rounded-md p-1 text-teal-800" aria-label={declarationExpanded?'Hide full declaration':'Read full declaration'}><ChevronDown className={`h-4 w-4 transition-transform ${declarationExpanded?'rotate-180':''}`}/></button>
               </div>
-            )}
+              {declarationExpanded && <p id="cne-uploader-declaration-details" className="mt-2 border-t border-teal-100 pt-2 text-xs leading-relaxed text-teal-950">I accept responsibility for the clinical accuracy, drug and treatment details, tables, references and permissions in this material. This confirmation is required when uploading or reindexing. I confirm Gemini may review eligible extracted teaching text under institutional policy, and that no identifiable patient information is present. AI review is not clinical approval.</p>}
+              {!responsibilityAccepted && <p role="alert" className="mt-2 text-xs font-medium text-amber-800">Check this box to upload or reindex material.</p>}
+            </div>}
 
-            {/* Scrollable Form Body */}
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6 flex flex-col gap-4 bg-slate-50/40">
-              <div className="rounded-lg border border-teal-100 bg-teal-50/60 px-3 py-2.5 text-xs leading-relaxed text-teal-950">
-                <div className="flex items-start gap-2"><Info className="mt-0.5 h-4 w-4 shrink-0 text-teal-700"/>
-                  <p><strong>5 source-grounded CNE Post-Test questions.</strong> Upload a PDF, Word or PowerPoint (up to 5 MB). The index prepares evidence for NCLEX V2.1-style A–D single-best-answer questions; educator review is still required.</p>
-                </div>
-                <details className="mt-1.5 pl-6"><summary className="cursor-pointer text-[11px] font-semibold text-teal-800">How source indexing works</summary>
-                  <p className="mt-1 text-[11px]">Only approved extracted text, not the original document, is sent to Gemini. Ambiguous text is held, and the current file must pass all evidence-readiness checks before AI question generation.</p>
-                </details>
-              </div>
-              {(uploadStep !== 'idle' || indexingInfo) && <MaterialIndexStages
-                stage={uploadStep !== 'idle' ? materialStage :
-                  indexingInfo?.status==='SUCCESS' && /GEMINI_REVIEW=COMPLETE/.test(indexingInfo.message||'') ? 'done' :
-                  indexingInfo?.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'') ? (indexingInfo.errorCode?'failed':'ai') :
-                  indexingInfo?.status==='SUCCESS' ? 'extract' : 'failed'}
-                reviewedCount={uploadStep !== 'idle' ? reviewProgress.done : Number((/REVIEWED=(\d+)/.exec(indexingInfo?.message||'')||[])[1]||0)}
-                totalChunks={uploadStep !== 'idle' ? (reviewProgress.total||indexingInfo?.chunksCount||0) : Number((/TOTAL=(\d+)/.exec(indexingInfo?.message||'')||[])[1]||indexingInfo?.chunksCount||0)}
-                error={uploadStep !== 'idle' ? uploadStepError : indexingInfo?.errorCode?'Source review interrupted ('+indexingInfo.errorCode+'). Resume from Material Indexing Status.':''}
-                uploadAlreadyDone={!!existingResource?.hasFile} running={isSaving} detail={reviewDetail} startedAt={indexStartedAt}/>}
-              {/* Upload Learning Resource File Section */}
-              <div className="min-w-0 bg-white p-3 sm:p-5 rounded-xl border border-slate-200 shadow-2xs space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                    <Upload className="w-4 h-4 text-teal-600" />
-                    Learning resource file
-                  </label>
-                  <span className="text-[11px] text-slate-500">PDF, DOC, DOCX, PPT, PPTX · maximum 5 MB</span>
-                </div>
-
-                {/* Existing Stored Resource Card */}
-                {existingResource && existingResource.hasFile && (
-                  <div className="p-3.5 bg-teal-50/50 border border-teal-200 rounded-xl flex flex-col gap-2.5 text-xs">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                      <div className="flex items-start sm:items-center gap-2.5 min-w-0 w-full">
-                        <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-700 flex items-center justify-center shrink-0 font-bold text-[10px]">
-                          {(existingResource.fileType || 'FILE').toUpperCase().slice(0, 4)}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="font-bold text-slate-800 break-words [overflow-wrap:anywhere]" title={existingResource.fileName}>
-                            {existingResource.fileName}
-                          </div>
-                          <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1 mt-0.5">
-                            <span>Size: <strong>{formatFileSize(existingResource.fileSize)}</strong></span>
-                            {existingResource.updatedAt && (
-                              <>
-                                <span>&bull;</span>
-                                <span>Updated: <strong>{formatCneDateTimeDisplay(existingResource.updatedAt)}</strong></span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-end sm:justify-start gap-2 shrink-0">
-                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-800 bg-teal-100 px-2 py-0.5 rounded-full">
-                          <CheckCircle2 className="w-3 h-3" />
-                          Attached
-                        </span>
-                        {canModify && (
-                          <button
-                            type="button"
-                            onClick={() => setShowDeleteConfirm(true)}
-                            disabled={isDeleting || isSaving}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-rose-700 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg cursor-pointer transition-colors disabled:opacity-50"
-                            title="Delete this uploaded file"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Delete</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Delete Confirmation Box */}
-                    {showDeleteConfirm && (
-                      <div className="mt-1 p-3 bg-rose-50 border border-rose-200 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
-                        <div className="flex items-center gap-2 text-rose-800 text-xs font-medium">
-                          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                          <span>Are you sure you want to delete this resource file? This will remove the file from Google Drive.</span>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
-                          <button
-                            type="button"
-                            onClick={() => setShowDeleteConfirm(false)}
-                            disabled={isDeleting}
-                            className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold cursor-pointer transition-colors"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleDeleteResource}
-                            disabled={isDeleting}
-                            className="inline-flex items-center gap-1 px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
-                          >
-                            {isDeleting ? (
-                              <>
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                <span>Deleting...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Trash2 className="w-3 h-3" />
-                                <span>Confirm Delete</span>
-                              </>
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    )}
+            <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-5">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900"><FileText className="h-4 w-4 text-teal-700"/> Uploaded Material</h3>
+              {existingResource?.hasFile ? <div className="mt-3 rounded-xl border border-teal-200 bg-teal-50/40 p-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-3"><div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-teal-100 text-xs font-black text-teal-800">FILE</div>
+                    <div className="min-w-0"><p className="break-all text-xs font-bold text-slate-900 sm:text-sm">{existingResource.fileName}</p><p className="mt-1 text-[11px] text-slate-600">{formatFileSize(existingResource.fileSize)} {existingResource.updatedAt && <>· {formatCneDateTimeDisplay(existingResource.updatedAt)}</>}</p></div>
                   </div>
-                )}
+                  <div className="flex flex-wrap items-center gap-2"><span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${statusColor}`}>{statusText}</span>
+                    <button type="button" onClick={() => void openCurrentFile()} disabled={isDownloading} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"><Eye className="h-3.5 w-3.5"/>{isDownloading?'Opening…':'View / Download'}</button>
+                    {canModify && <button type="button" onClick={() => setShowDeleteConfirm(true)} disabled={isDeleting || isSaving} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50"><Trash2 className="h-3.5 w-3.5"/>Delete</button>}
+                  </div>
+                </div>
+                {showDeleteConfirm && <div role="alertdialog" aria-label="Confirm learning-material deletion" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900"><p className="font-semibold">Delete the current file from Drive? This can affect AI-generated Post-Test evidence.</p>
+                  <div className="mt-2 flex justify-end gap-2"><button type="button" onClick={() => setShowDeleteConfirm(false)} disabled={isDeleting} className="rounded-lg border border-slate-200 bg-white px-3 py-2">Cancel</button><button type="button" onClick={() => void handleDeleteResource()} disabled={isDeleting} className="rounded-lg bg-rose-700 px-3 py-2 font-semibold text-white">{isDeleting?'Deleting…':'Confirm Delete'}</button></div>
+                </div>}
+              </div> : <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-xs text-slate-500">No learning material attached yet.</div>}
+            </div>
 
-                {existingResource?.hasFile && indexingInfo && (
-                  <div className="p-3.5 bg-white border border-slate-200 rounded-xl text-xs space-y-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="font-bold text-slate-700">Material Indexing Status</div>
-                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-bold ${indexingBadgeClass}`}>
-                        {indexingInfo.status === 'SUCCESS' ? <CheckCircle2 className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
-                        {indexingLabel}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-600">
-                      <div>Indexed chunks: <strong className="text-slate-800">{typeof indexingInfo.chunksCount === 'number' ? indexingInfo.chunksCount : '—'}</strong></div>
-                      {indexingInfo.status==='SUCCESS'&&(materialStage==='done'||/GEMINI_REVIEW=COMPLETE/.test(indexingInfo.message||''))&&<p className="text-[11px] text-slate-600">Source review complete. AI drafts still require educator review.</p>}
-                      {indexingInfo.errorCode && <div>Error code: <strong className="text-rose-700">{indexingInfo.errorCode}</strong></div>}
-                    </div>
-                    {canModify && (['FAILED','PENDING','UNKNOWN','NEEDS_REVIEW'].includes(indexingInfo.status) || needsQualityReindex || hasFidelityWarnings) && !isSaving && !loading && <button type="button" onClick={async () => {
+            <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-5">
+              <h3 className="text-sm font-bold text-slate-900">{existingResource?.hasFile?'Replace Learning Material':'Upload Learning Material'}</h3>
+              <p className="mt-1 text-[11px] text-slate-500">PDF, DOC, DOCX, PPT, PPTX · Maximum 5 MB</p>
+              <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.ppt,.pptx" disabled={!canModify || isSaving} className="sr-only" onChange={e => {if(e.target.files?.[0]) handleFileSelect(e.target.files[0]);e.currentTarget.value='';}} />
+              <div role="button" tabIndex={canModify && !isSaving ? 0 : -1} aria-disabled={!canModify || isSaving}
+                onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}
+                onClick={() => {if(canModify && !isSaving)fileInputRef.current?.click();}}
+                onKeyDown={e => {if((e.key==='Enter'||e.key===' ')&&canModify&&!isSaving){e.preventDefault();fileInputRef.current?.click();}}}
+                className={`mt-3 flex min-h-28 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed px-4 py-4 text-center ${dragActive?'border-teal-500 bg-teal-50':'border-slate-300 bg-slate-50/60 hover:border-teal-400'} ${!canModify||isSaving?'pointer-events-none opacity-50':''}`}>
+                <Upload className="h-6 w-6 text-teal-700"/><p className="break-all text-xs font-bold text-slate-900">{selectedFile ? selectedFile.name : 'Choose a file or drag it here'}</p><p className="text-[11px] text-slate-500">{selectedFile ? formatFileSize(selectedFile.size) : 'Use the file picker to upload or replace material'}</p>
+              </div>
+              {selectedFile && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-teal-50 p-3 text-xs"><span className="font-medium text-teal-900">Ready to upload{existingResource?.hasFile?' · will replace current file':''}</span><div className="flex gap-2"><button type="button" onClick={() => setSelectedFile(null)} className="font-semibold text-slate-600 underline">Remove selection</button><button type="button" onClick={() => void performSave()} disabled={!responsibilityAccepted || isSaving || loading} className="rounded-lg bg-teal-700 px-4 py-2 font-bold text-white disabled:opacity-40">Upload &amp; Index</button></div></div>}
+            </div>
+
+
+
+            {uploadInProgress && <MaterialIndexStages stage={materialStage} reviewedCount={reviewProgress.done} totalChunks={reviewProgress.total || indexingInfo?.chunksCount || 0} error={uploadStepError} uploadAlreadyDone={!!existingResource?.hasFile} running={isSaving} detail={reviewDetail} startedAt={indexStartedAt} />}
+            {uploadStep === 'done' && !isSaving && <div role="status" className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900"><CheckCircle2 className="h-4 w-4"/> File processing completed. Review the source results below.</div>}
+
+            {existingResource?.hasFile && indexingInfo && !uploadInProgress && <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="flex items-center gap-2 text-sm font-bold text-slate-900"><ShieldCheck className="h-4 w-4 text-teal-700"/> Source Review Result</h3><span className={`rounded-full border px-3 py-1 text-[11px] font-bold ${statusColor}`}>{statusText}</span></div>
+              <p className="mt-2 text-xs text-slate-600">{indexingInfo.chunksCount ?? 0} indexed chunks{flagsCount>0?` · ${flagsCount} source chunk(s) need clarification`:''}{extractionWarningsCount>0?` · ${extractionWarningsCount} extraction warning(s)`:''}</p>
+              {needsClarification && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><AlertCircle className="mr-1 inline h-4 w-4"/> Review unclear sections in the original source. Automated comments are not verified clinical corrections.</div>}
+              {indexingInfo.status === 'PENDING' && <p className="mt-2 text-xs text-amber-800">Review is unfinished; resume processing without uploading again.</p>}
+              {indexingInfo.status === 'FAILED' && <p role="alert" className="mt-2 text-xs text-rose-800">{uploadStepError || indexingInfo.message || 'Processing was interrupted; retry indexing.'}</p>}
+              {needsQualityReindex && <p className="mt-2 rounded-lg bg-amber-50 p-3 text-xs text-amber-900">This source uses an older indexing algorithm. Re-extract it to prepare the current evidence index.</p>}
+              {canModify && statusRequiresAction && !isSaving && !loading && <div className="mt-3">{canModify && (['FAILED','PENDING','UNKNOWN','NEEDS_REVIEW'].includes(indexingInfo.status) || needsQualityReindex || hasFidelityWarnings || needsClarification) && !isSaving && !loading && <button type="button" onClick={async () => {
                       const resume=indexingInfo?.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'');
                       if(!resume&&!responsibilityAccepted){warning('Confirm uploader responsibility using the checkbox before re-extracting.');return;}
                       if(savingRef.current)return;savingRef.current=true;setIsSaving(true);setIndexStartedAt(Date.now());setReviewDetail(null);setReviewProgress({done:Number((/REVIEWED=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0),total:Number(indexingInfo.chunksCount||0)});setUploadStep('indexing');setUploadStepError('');setMaterialStage(resume?'ai':'extract');
@@ -634,190 +634,29 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                         await loadAllReferenceData();
                       }catch(err:any){setUploadStep('failed');setMaterialStage('failed');setUploadStepError(err?.message||'Indexing error.');error(err?.message||'Indexing error.');}
                       finally{savingRef.current=false;setIsSaving(false);}
-                    }} className="text-teal-700 font-semibold underline text-xs">{indexingInfo.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'')?'Resume Gemini Review':'Re-extract Current File'}</button>}
-                    {needsQualityReindex && (
-                      <div className="text-[11px] text-amber-800 leading-relaxed bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2" role="status">
-                        This material was indexed with an older clinical-text algorithm. Use Retry Indexing to build a section-aware V3 index before Gemini generates questions. The original file will not be replaced.
-                      </div>
-                    )}
-                    {indexingInfo.status === 'NEEDS_REVIEW' && <p className="text-xs font-medium text-amber-800">This material needs a clearer extract or educator clarification. Review the flagged sections, replace the file if needed, then re-extract with uploader responsibility confirmation.</p>}
-                    {hasFidelityWarnings && (
-                      <details className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-                        <summary className="cursor-pointer text-[11px] font-semibold text-amber-900">View per-chunk indexing warnings ({Number((/FIDELITY_WARNINGS=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)})</summary>
-                        <div className="mt-2">
-                          <MaterialIndexWarnings warningText={indexingInfo.message||''}
-                            warningCount={Number((/FIDELITY_WARNINGS=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)}
-                            excludedCount={Number((/EXCLUDED_CHUNKS=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)}/>
-                          <p className="mt-2 text-[11px] text-amber-800">Flagged passages are excluded from AI evidence. Upload a clearer editable source if needed; no administrator review is required.</p>
-                        </div>
-                      </details>
-                    )}
-                    <MaterialReviewFlags message={indexingInfo.message}/>
-                    {indexingInfo.message && indexingInfo.status !== 'SUCCESS' && !hasFidelityWarnings && (
-                      <p className="rounded-lg bg-slate-50 p-2.5 text-[11px] leading-relaxed text-slate-600">
-                        {indexingInfo.errorCode === 'AI_TEMPORARILY_UNAVAILABLE' ? 'Gemini was temporarily unavailable. Your file and completed reviews remain saved. Use Resume Gemini Review.' :
-                          indexingInfo.status === 'NEEDS_REVIEW' ? 'Some extracted sections need clarification before this source can be used for the five-question AI Post-Test. See the flagged chunks above.' :
-                          indexingInfo.status === 'PENDING' ? 'Review is unfinished. You can resume without uploading the document again.' : 'Check the source file and retry indexing.'}
-                      </p>
-                    )}
-                    <details className="text-[11px] text-slate-600"><summary className="cursor-pointer font-semibold text-slate-700">Technical indexing details</summary>
-                      {indexingInfo.errorCode && <p className="mt-1 break-words">Error: {indexingInfo.errorCode}</p>}
-                      <p className="mt-1 break-words">{(indexingInfo.message||'').replace(/\s\|\sGEMINI_FLAGS=[^|]*/g,'').slice(0,1500)}</p>
-                    </details>
-                  </div>
-                )}
+                    }} className="text-teal-700 font-semibold underline text-xs">{indexingInfo.status==='PENDING' && /GEMINI_REVIEW=(?:PENDING|IN_PROGRESS)/.test(indexingInfo.message||'')?'Resume Gemini Review':'Re-extract Current File'}</button>}</div>}
+              {flagsCount>0 && <details className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3"><summary className="cursor-pointer text-xs font-bold text-amber-900">View flagged source chunks ({flagsCount})</summary><div className="mt-3"><MaterialReviewFlags message={indexingInfo.message}/></div></details>}
+              {hasFidelityWarnings && <details className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3"><summary className="cursor-pointer text-xs font-semibold text-amber-900">Extraction warnings ({extractionWarningsCount})</summary><MaterialIndexWarnings warningText={indexingInfo.message || ''} warningCount={extractionWarningsCount} excludedCount={Number((/EXCLUDED_CHUNKS=(\d+)/.exec(indexingInfo.message||'')||[])[1]||0)}/></details>}
+              <details className="mt-3 text-xs text-slate-600"><summary className="cursor-pointer font-semibold">Technical details</summary>{indexingInfo.errorCode && <p className="mt-1 text-rose-700">Error: {indexingInfo.errorCode}</p>}<p className="mt-1 break-words">{(indexingInfo.message || '').replace(/\s\|\sGEMINI_FLAGS=[^|]*/g,'').slice(0,1500)}</p></details>
+            </div>}
+          </section>}
 
-                {/* Dropzone / File Picker */}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf,.doc,.docx,.ppt,.pptx"
-                  disabled={!canModify}
-                  onChange={(e) => {
-                    if (e.target.files && e.target.files[0]) {
-                      handleFileSelect(e.target.files[0]);
-                    }
-                  }}
-                  className="hidden"
-                />
-
-                <div
-                  onDragEnter={handleDrag}
-                  onDragLeave={handleDrag}
-                  onDragOver={handleDrag}
-                  onDrop={handleDrop}
-                  onClick={() => { if (canModify) fileInputRef.current?.click(); }}
-                  className={`border-2 border-dashed rounded-xl p-5 text-center transition-colors flex flex-col items-center justify-center gap-1.5 ${
-                    !canModify
-                      ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed opacity-70'
-                      : dragActive
-                      ? 'border-teal-500 bg-teal-50/50 cursor-pointer'
-                      : 'border-slate-300 hover:border-teal-400 bg-slate-50/60 cursor-pointer'
-                  }`}
-                >
-                  <Upload className="w-6 h-6 text-teal-600 mb-0.5" />
-                  <p className="text-xs font-semibold text-slate-800">
-                    {!canModify ? (
-                      <span>File changes are locked for this closed CNE.</span>
-                    ) : selectedFile ? (
-                      <span className="text-teal-700 font-bold">
-                        Selected: {selectedFile.name} ({formatFileSize(selectedFile.size)})
-                      </span>
-                    ) : (
-                      <span>
-                        Drag and drop your learning material here, or <span className="text-teal-600 underline">browse</span>
-                      </span>
-                    )}
-                  </p>
-                  <p className="text-[11px] text-slate-400">
-                    PDF, DOC, DOCX, PPT, PPTX &bull; Maximum 5 MB
-                  </p>
-                </div>
-
-                {selectedFile && (
-                  <div className="flex items-center justify-between px-3 py-1.5 bg-slate-100 rounded-lg text-xs text-slate-600">
-                    <span>Ready for upload on Save</span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedFile(null)}
-                      disabled={!canModify}
-                      className="text-rose-600 hover:text-rose-700 font-bold cursor-pointer"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {canModify && (selectedFile || existingResource?.hasFile) && (
-                <label className="flex items-start gap-2 rounded-lg border border-teal-200 bg-teal-50 p-3 text-xs leading-relaxed text-teal-900">
-                  <input type="checkbox" className="mt-0.5 shrink-0" checked={responsibilityAccepted} onChange={e => setResponsibilityAccepted(e.target.checked)} />
-                  <span><strong>Uploader responsibility:</strong> I accept responsibility for the clinical accuracy, drug and treatment details, tables, references and permissions in this material. This confirmation is required when uploading or reindexing. I confirm Gemini may review eligible extracted teaching text under institutional policy, and that no identifiable patient information is present. AI review is not clinical approval.</span>
-                </label>
-              )}
-
-              {/* Text Notes / Guidelines Section */}
-              <details className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-2">
-                <summary className="cursor-pointer text-xs font-semibold text-slate-700">Supplementary clinical notes (optional; not used for material indexing)</summary>
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                    <FileText className="w-4 h-4 text-teal-600" />
-                    Educational Notes / Clinical Guidelines (Optional / Supplementary)
-                  </label>
-                  <div className="text-[11px] text-slate-500 flex items-center gap-3">
-                    <span>Words: <strong>{wordCount}</strong></span>
-                    <span>Characters: <strong>{charCount}</strong></span>
-                  </div>
-                </div>
-
-                <textarea
-                  value={unifiedContent}
-                  onChange={(e) => setUnifiedContent(e.target.value)}
-                  disabled={!canModify || isSaving}
-                  placeholder={`Optional supplementary notes, key takeaways, or clinical references:
-• Learning Objectives & Core Competencies
-• Procedural Steps & Nursing Escalations
-• References and Hospital Guidelines`}
-                  className="w-full min-h-[140px] p-3.5 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-800 leading-relaxed focus:bg-white focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all disabled:opacity-60 resize-y"
-                />
-
-                {updatedAt && (
-                  <div className="px-3 py-1.5 bg-slate-50 rounded-lg text-[11px] text-slate-500">
-                    Last updated: <strong className="text-slate-700">{formatCneDateTimeDisplay(updatedAt)}</strong>
-                  </div>
-                )}
-              </details>
+          {activeTab === 'notes' && <section id="cne-material-notes-panel" role="tabpanel" aria-label="Notes" className="mx-auto max-w-4xl space-y-4">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900"><PencilLine className="h-4 w-4 text-teal-700"/> Supplementary Clinical Notes <span className="text-xs font-normal text-slate-500">(Optional)</span></h3>
+              <p className="mt-2 text-xs leading-relaxed text-slate-500">Record learning objectives, nursing guidelines, key takeaways or clinical references. These notes are not used to index the uploaded learning material.</p>
+              <textarea value={unifiedContent} onChange={e=>setUnifiedContent(e.target.value)} disabled={!canModify || isSaving} rows={9} placeholder="Add supplementary educational notes or clinical guidelines…" className="mt-4 w-full resize-y rounded-xl border border-slate-300 bg-slate-50 px-3 py-3 text-sm leading-relaxed text-slate-800 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100 disabled:opacity-60"/>
+              <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500"><span>{updatedAt?`Last saved: ${formatCneDateTimeDisplay(updatedAt)}`:'Optional · not indexed'}</span><span>{wordCount} words · {charCount} characters</span></div>
+              {canModify && <button type="button" onClick={handleSaveOnly} disabled={isSaving || loading} className="mt-3 inline-flex min-h-10 items-center gap-2 rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"><Save className="h-4 w-4"/> Save Notes</button>}
             </div>
+          </section>}
+        </main>
 
-            {/* Modal Footer with Save and Save & Next */}
-            <div className="px-4 sm:px-6 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 shrink-0">
-              <div className="hidden sm:block min-w-0 max-w-[55%] truncate text-xs text-slate-500">
-                {isClosed ? (
-                  <span className="inline-flex items-center gap-1.5 text-slate-600 font-medium">
-                    <Lock className="w-3.5 h-3.5" /> Material modifications are locked
-                  </span>
-                ) : selectedFile ? (
-                  <span className="text-teal-700 font-medium">
-                    1 new file ready to be saved
-                  </span>
-                ) : existingResource?.hasFile ? (
-                  <span className="text-slate-600">
-                    Current file: <strong>{existingResource.fileName}</strong>
-                  </span>
-                ) : (
-                  <span className="text-slate-400">
-                    Attach a document or notes to proceed
-                  </span>
-                )}
-              </div>
-
-              {canModify && (
-                <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2.5">
-                  {/* Button 1: Save (stays on Material) */}
-                  <button
-                    type="button"
-                    onClick={handleSaveOnly}
-                    disabled={isSaving || loading}
-                    className="flex min-h-11 items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold text-xs cursor-pointer transition-colors disabled:opacity-50"
-                  >
-                    <Save className="w-3.5 h-3.5 text-slate-600" />
-                        <span>Save</span>
-                  </button>
-
-                  {/* Button 2: Save & Next (moves to Questions only after save) */}
-                  <button
-                    type="button"
-                    onClick={handleSaveAndNext}
-                    disabled={isSaving || loading}
-                    className="flex min-h-11 items-center justify-center gap-1.5 px-3 sm:px-5 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors disabled:opacity-50"
-                  >
-                    <span>Save &amp; Next</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
+        <footer className="flex shrink-0 items-center gap-2 border-t border-slate-200 bg-white px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
+          <button type="button" onClick={onClose} disabled={isSaving || isDeleting} className="min-h-11 rounded-xl border border-slate-300 bg-white px-4 text-xs font-bold text-slate-700 disabled:opacity-50">Close</button>
+          {canModify && <button type="button" onClick={handleSaveOnly} disabled={isSaving || loading || !!selectedFile} title={selectedFile?'Upload & Index the selected file first':'Save existing material and notes'} className="ml-auto min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 disabled:opacity-50 sm:px-5"><Save className="mr-1 inline h-4 w-4"/> Save</button>}
+          {canModify && <button type="button" onClick={handleSaveAndNext} disabled={isSaving || loading || !!selectedFile} title={selectedFile?'Upload & Index the selected file before moving to Post-Test Questions':'Save notes and proceed to Post-Test Questions'} className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-teal-700 px-3 text-xs font-bold text-white disabled:opacity-40 sm:px-5">Next: Post-Test Questions <ArrowRight className="h-4 w-4 shrink-0"/></button>}
+        </footer>
       </div>
     </div>
   );
