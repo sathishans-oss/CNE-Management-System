@@ -699,7 +699,7 @@ const hybridChecks=[
   ,{name:'Material load spinner and approved question creation cards are visible',run(){
     const material=readFileSync(join(ROOT,'src/components/cne/CNEReferenceModal.tsx'),'utf8');
     assert(material.includes('Loading learning material')&&material.includes('animate-spin')&&!material.includes('{loading ? ('),'Material must remain visible with non-blocking spinner');
-    assert(material.includes('role="tablist"')&&material.includes('role="tabpanel"'));
+    assert(material.includes('lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]') && !material.includes('role="tablist"'), 'Material should use the finalized two-column desktop layout without tabs');
     assert(MODAL.includes('Add Questions')&&MODAL.includes('grid grid-cols-1 gap-2 sm:grid-cols-3'));
     assert(MODAL.includes("(['TEXT','IMAGE'] as const).map")&&MODAL.includes('handleSelectManualQuestionType'));
 
@@ -15511,9 +15511,9 @@ if (selected.some(item => item.id === 'workflows') && passed === selected.length
       assert(gas.includes("result.errorCode='GEMINI_REVIEW_REQUIRED'"),'Unreviewed source must never be AI-ready');
     }],
     ['Material metadata loading uses one spinner while indexing progress is conditional', () => {
-      const start=material.indexOf('{loading && <div role="status"');
+      const start=material.indexOf('{loading && (');
       const end=material.indexOf('{loadError &&',start);
-      assert(start>-1&&end>start);
+      assert(start>-1&&end>start,'Loading indicator must be conditional and non-blocking');
       const display=material.slice(start,end);
       assert(display.includes('Loader2')&&display.includes('animate-spin')&&display.includes('Loading learning material'));
       assert(!display.includes('h-1.5 rounded-full')&&!display.includes('animate-pulse'));
@@ -17703,11 +17703,17 @@ if (selected.some(item=>item.id==='performance') && passed===selected.length) {
   const questions=load('CNEQuestionsModal.tsx');
   const qr=load('CNEQRModal.tsx');
 const approvedUiCases = [
-  ['Material uses the three approved tabs', () => {
-    assert(material.includes("'overview' | 'files' | 'notes'"));
-    for (const id of ["id:'overview'", "id:'files'", "id:'notes'"]) assert(material.includes(id));
+  ['Material uses the finalized 40:60 two-column layout with mobile stacking', () => {
+    assert(material.includes('grid-cols-1') && material.includes('lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]'));
+    assert(!material.includes('role="tablist"') && !material.includes('activeTab'));
+    assert(material.includes('overflow-y-auto overscroll-contain') && material.includes('h-[100dvh]'));
   }],
-  ['Files is the default Material tab', () => assert(material.includes("useState<'overview' | 'files' | 'notes'>('files')"))],
+  ['Upload and uploaded-file status are visible side by side on desktop', () => {
+    assert(material.includes('Upload / Replace Material'));
+    assert(material.includes('Uploaded File &amp; Status'));
+    assert(material.includes('Indexing &amp; Source Review'));
+    assert(material.indexOf('Upload / Replace Material') < material.indexOf('Uploaded File &amp; Status'));
+  }],
   ['Uploader responsibility remains prechecked but can be unchecked', () => {
     assert(material.includes('useState(true)'));
     assert(material.includes('checked={responsibilityAccepted}'));
@@ -17736,10 +17742,24 @@ const approvedUiCases = [
     assert(material.includes('ApiService.downloadLearningResource('));
     assert(material.includes('ApiService.deleteLearningResource('));
   }],
-  ['Notes remain optional and editable in Notes tab', () => {
-    assert(material.includes('Supplementary Clinical Notes'));
+  ['Notes remain optional in an expandable left-column editor', () => {
+    assert(material.includes('Supplementary Notes'));
+    assert(material.includes('aria-expanded={notesExpanded}'));
+    assert(material.includes('setNotesExpanded'));
     assert(material.includes('ApiService.saveReferenceMaterial('));
     assert(material.includes('value={unifiedContent}'));
+    assert(!material.includes('setUnifiedContent(cne.description)'));
+  }],
+  ['Material status distinguishes older indexes from ready source material', () => {
+    assert(material.includes('Quality reindex required'));
+    assert(material.includes('older indexing algorithm'));
+    assert(material.includes('Re-extract Current File'));
+  }],
+  ['Material uses backend-authoritative status after indexing and expandable clarification', () => {
+    assert(material.includes('const refreshed = await ApiService.getLearningResource(cneId)'));
+    assert(material.includes('status: refreshed.data.indexingStatus'));
+    assert(material.includes('View flagged source chunks'));
+    assert(material.includes('Extraction warnings ('));
   }],
   ['Post-Test displays progress and compact creation choices', () => {
     assert(questions.includes('Finalized minimum'));
