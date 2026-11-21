@@ -527,16 +527,16 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         role="dialog"
         aria-modal="true"
         aria-labelledby="cne-material-title"
-        className="flex h-[100dvh] min-h-0 w-full max-w-[1280px] flex-col overflow-hidden rounded-none border border-slate-200 bg-white shadow-2xl sm:h-auto sm:max-h-[94dvh] sm:rounded-2xl"
+        className="flex h-[100dvh] min-h-0 w-full max-w-[1140px] flex-col overflow-hidden rounded-none border border-slate-200 bg-white shadow-2xl sm:h-auto sm:max-h-[94dvh] sm:rounded-2xl"
       >
-        <header className="shrink-0 border-b border-teal-100 bg-gradient-to-r from-white via-teal-50 to-teal-100 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6 sm:py-4">
+        <header className="shrink-0 border-b border-teal-100 bg-gradient-to-r from-white via-teal-50 to-teal-100 px-3 pb-2 pt-[max(0.65rem,env(safe-area-inset-top))] sm:px-5 sm:py-3">
           <div className="flex min-w-0 items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-teal-100 text-teal-800 sm:h-10 sm:w-10">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-100 text-teal-800">
                 <BookOpen className="h-5 w-5" />
               </span>
               <div className="min-w-0">
-                <h2 id="cne-material-title" className="text-base font-semibold leading-tight tracking-tight text-slate-900 sm:text-lg">Learning Material</h2>
+                <h2 id="cne-material-title" className="text-base font-semibold leading-tight tracking-tight text-slate-900 sm:text-[17px]">Learning Material</h2>
                 <p className="mt-0.5 break-words text-xs font-medium text-slate-600 sm:text-[13px]">{cne.topic}</p>
               </div>
             </div>
@@ -569,11 +569,11 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
         )}
 
         {/* One scroll container. On mobile, cards stack; on desktop, 40 / 60 split. */}
-        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-50/50 px-3 py-4 sm:px-5 sm:py-5 lg:px-6">
-          <div className="grid min-w-0 grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:gap-5">
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-50/50 px-3 py-3 sm:px-4 sm:py-3 lg:px-5">
+          <div className="grid min-w-0 grid-cols-1 items-start gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:gap-3">
             {/* LEFT: upload + consent + optional notes */}
-            <section aria-labelledby="cne-material-upload-title" className="min-w-0 space-y-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
-              <h3 id="cne-material-upload-title" className="flex items-center gap-2 rounded-xl bg-teal-50 px-3 py-2.5 text-sm font-semibold text-slate-900">
+            <section aria-labelledby="cne-material-upload-title" className="min-w-0 space-y-2 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm sm:p-3">
+              <h3 id="cne-material-upload-title" className="flex items-center gap-2 rounded-lg bg-teal-50 px-2.5 py-2 text-[13px] font-semibold text-slate-900">
                 <CloudUpload className="h-4 w-4 shrink-0 text-teal-700" />
                 {existingResource?.hasFile ? 'Upload / Replace Material' : 'Upload Learning Material'}
               </h3>
@@ -605,9 +605,9 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     fileInputRef.current?.click();
                   }
                 }}
-                className={`flex min-h-44 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-5 text-center transition-colors ${dragActive ? 'border-teal-500 bg-teal-50' : 'border-teal-300 bg-teal-50/40 hover:border-teal-500 hover:bg-teal-50'} ${!canModify || isSaving || loading ? 'pointer-events-none opacity-50' : ''}`}
+                className={`flex min-h-[128px] cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed px-3 py-3 text-center transition-colors ${dragActive ? 'border-teal-500 bg-teal-50' : 'border-teal-300 bg-teal-50/40 hover:border-teal-500 hover:bg-teal-50'} ${!canModify || isSaving || loading ? 'pointer-events-none opacity-50' : ''}`}
               >
-                <Upload className="h-8 w-8 text-teal-700" />
+                <Upload className="h-6 w-6 text-teal-700" />
                 <p className="break-all text-[13px] font-semibold leading-snug text-slate-900">
                   {selectedFile ? selectedFile.name : 'Drag & drop a file here'}
                 </p>
@@ -615,17 +615,17 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                   {selectedFile ? formatFileSize(selectedFile.size) : 'or choose a file from your device'}
                 </p>
                 <p className="text-xs text-slate-500">PDF, DOC, DOCX, PPT, PPTX · Maximum 5 MB</p>
-                <span className="mt-1 rounded-lg bg-teal-700 px-5 py-2.5 text-[13px] font-semibold text-white shadow-sm">
+                <span className="mt-1 rounded-lg bg-teal-700 px-4 py-1.5 text-xs font-semibold text-white shadow-sm">
                   Choose File
                 </span>
               </div>
               {selectedFile && (
-                <div className="rounded-xl border border-teal-200 bg-teal-50 p-3 text-[13px]">
+                <div className="rounded-lg border border-teal-200 bg-teal-50 p-2.5 text-[13px]">
                   <p className="break-all font-semibold text-teal-950">
                     {existingResource?.hasFile ? 'Selected replacement file: ' : 'Selected file: '}{selectedFile.name}
                   </p>
                   {existingResource?.hasFile && <p className="mt-1 text-xs text-amber-900">The current material will be replaced only after you confirm Upload &amp; Index.</p>}
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
                     <button type="button" onClick={() => setSelectedFile(null)} disabled={isSaving} className="text-[13px] font-semibold text-slate-600 underline">Cancel selection</button>
                     <button
                       type="button"
@@ -640,7 +640,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
               )}
 
               {canModify && (
-                <div className="rounded-xl border border-teal-100 bg-teal-50/70 px-3 py-3">
+                <div className="rounded-lg border border-teal-100 bg-teal-50/70 px-2.5 py-2">
                   <div className="flex min-w-0 items-center gap-2">
                     <input
                       id="cne-uploader-responsibility"
@@ -683,13 +683,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                 <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-[13px] text-rose-800">{uploadStepError}</div>
               )}
 
-              <div className="rounded-xl border border-slate-200 bg-white">
+              <div className="rounded-lg border border-slate-200 bg-white">
                 <button
                   type="button"
                   aria-expanded={notesExpanded}
                   aria-controls="cne-material-notes-panel"
                   onClick={() => setNotesExpanded(v => !v)}
-                  className="flex w-full items-center justify-between gap-3 rounded-xl px-3 py-3 text-left hover:bg-slate-50"
+                  className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left hover:bg-slate-50"
                 >
                   <span className="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-slate-900">
                     <PencilLine className="h-4 w-4 shrink-0 text-teal-700" /> Supplementary Notes <span className="text-xs font-normal text-slate-500">(Optional)</span>
@@ -697,13 +697,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                   <ChevronDown className={`h-5 w-5 shrink-0 text-slate-600 transition-transform ${notesExpanded ? 'rotate-180' : ''}`} />
                 </button>
                 {notesExpanded && (
-                  <div id="cne-material-notes-panel" className="space-y-3 border-t border-slate-200 px-3 pb-4 pt-3">
+                  <div id="cne-material-notes-panel" className="space-y-2 border-t border-slate-200 px-3 pb-3 pt-2">
                     <p className="text-[13px] leading-relaxed text-slate-600">Additional learning objectives, teaching points or clinical references. Notes are not used in material indexing.</p>
                     <textarea
                       value={unifiedContent}
                       onChange={e => setUnifiedContent(e.target.value)}
                       disabled={!canModify || isSaving || loading}
-                      rows={5}
+                      rows={4}
                       placeholder="Add supplementary educational notes or clinical guidelines…"
                       className="w-full resize-y rounded-xl border border-slate-300 bg-slate-50 px-3 py-3 text-[13px] leading-relaxed text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100 disabled:opacity-50"
                     />
@@ -728,14 +728,14 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
             </section>
 
             {/* RIGHT: current file, indexing result and educator clarification */}
-            <section aria-labelledby="cne-material-status-title" className="min-w-0 space-y-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
-              <h3 id="cne-material-status-title" className="flex items-center gap-2 rounded-xl bg-teal-50 px-3 py-2.5 text-sm font-semibold text-slate-900">
+            <section aria-labelledby="cne-material-status-title" className="min-w-0 space-y-2 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm sm:p-3">
+              <h3 id="cne-material-status-title" className="flex items-center gap-2 rounded-lg bg-teal-50 px-2.5 py-2 text-[13px] font-semibold text-slate-900">
                 <FileText className="h-4 w-4 shrink-0 text-teal-700" /> Uploaded File &amp; Status
               </h3>
               {existingResource?.hasFile ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 sm:p-4">
-                  <div className="flex min-w-0 flex-wrap items-start gap-3">
-                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-xs font-semibold text-teal-800">{String(existingResource.fileName || '').split('.').pop()?.toUpperCase() || 'FILE'}</div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 sm:p-3">
+                  <div className="flex min-w-0 flex-wrap items-start gap-2">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-[11px] font-semibold text-teal-800">{String(existingResource.fileName || '').split('.').pop()?.toUpperCase() || 'FILE'}</div>
                     <div className="min-w-0 flex-1">
                       <p className="break-all text-[13px] font-semibold leading-snug text-slate-900">{existingResource.fileName}</p>
                       <p className="mt-1 text-xs text-slate-600 sm:text-[13px]">
@@ -743,14 +743,14 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                         {existingResource.updatedAt && <> · {formatCneDateTimeDisplay(existingResource.updatedAt)}</>}
                       </p>
                     </div>
-                    <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${statusColor}`}>{statusText}</span>
+                    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusColor}`}>{statusText}</span>
                   </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2 sm:pl-[3.75rem]">
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 sm:pl-[2.75rem]">
                     <button
                       type="button"
                       onClick={() => void openCurrentFile()}
                       disabled={isDownloading}
-                      className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-[13px] font-semibold text-slate-700 disabled:opacity-40"
+                      className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
                     >
                       <Eye className="h-4 w-4" /> {isDownloading ? 'Opening…' : 'View / Download'}
                     </button>
@@ -759,7 +759,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
                         disabled={isSaving || loading}
-                        className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-teal-200 bg-white px-3 py-2 text-[13px] font-semibold text-teal-800 disabled:opacity-40"
+                        className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-teal-800 disabled:opacity-40"
                       >
                         <RefreshCw className="h-4 w-4" /> Replace
                       </button>
@@ -769,7 +769,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                         type="button"
                         onClick={() => setShowDeleteConfirm(true)}
                         disabled={isDeleting || isSaving}
-                        className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] font-semibold text-rose-700 disabled:opacity-40"
+                        className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-40"
                       >
                         <Trash2 className="h-4 w-4" /> Delete
                       </button>
@@ -786,7 +786,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                   )}
                 </div>
               ) : (
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-center">
+                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 text-center">
                   <FileText className="mx-auto mb-2 h-9 w-9 text-slate-400" />
                   <p className="text-[13px] font-semibold text-slate-700">No learning material uploaded</p>
                   <p className="mt-1 text-[13px] text-slate-500">Choose a file on the left to begin indexing.</p>
@@ -794,28 +794,29 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
               )}
 
               {existingResource?.hasFile && indexingInfo && !uploadInProgress && (
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-3 sm:p-4">
+                <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-2.5 sm:p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                       <Layers3 className="h-4 w-4 text-teal-700" /> Indexing &amp; Source Review
                     </h4>
-                    <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${statusColor}`}>{statusText}</span>
+                    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusColor}`}>{statusText}</span>
                   </div>
-                  <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-slate-200">
-                    <div className="bg-teal-50 px-3 py-3 sm:px-4">
-                      <p className="text-xl font-bold text-teal-900">{indexingInfo.chunksCount ?? 0}</p>
-                      <p className="mt-1 text-[13px] text-teal-950">Chunks indexed</p>
+                  {/* Two content-sized counters sharing one row; text may wrap on narrow phones. */}
+                  <div className="grid w-fit max-w-full grid-cols-2 items-stretch gap-2" aria-label="Source indexing summary">
+                    <div className="flex min-w-0 items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5">
+                      <span className="text-base font-bold leading-none tabular-nums text-teal-900">{indexingInfo.chunksCount ?? 0}</span>
+                      <span className="text-[10px] font-medium leading-tight text-teal-950 sm:text-[11px]">Chunks indexed</span>
                     </div>
-                    <div className="border-l border-slate-200 bg-amber-50 px-3 py-3 sm:px-4">
-                      <p className="text-xl font-bold text-amber-800">{flagsCount}</p>
-                      <p className="mt-1 text-[13px] text-amber-950">Need clarification</p>
+                    <div className="flex min-w-0 items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5">
+                      <span className="text-base font-bold leading-none tabular-nums text-amber-800">{flagsCount}</span>
+                      <span className="text-[10px] font-medium leading-tight text-amber-950 sm:text-[11px]">Need clarification</span>
                     </div>
                   </div>
                   {extractionWarningsCount > 0 && (
                     <p className="text-[13px] text-amber-900">{extractionWarningsCount} separate text-extraction warning(s) were recorded.</p>
                   )}
                   {needsClarification && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[13px] text-amber-950">
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[13px] text-amber-950">
                       <div className="flex items-start gap-2">
                         <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
                         <div>
@@ -848,13 +849,13 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                     </button>
                   )}
                   {flagsCount > 0 && (
-                    <details className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                    <details className="rounded-lg border border-amber-200 bg-amber-50 p-2">
                       <summary className="cursor-pointer text-[13px] font-semibold text-amber-950">View flagged source chunks ({flagsCount})</summary>
                       <div className="mt-3"><MaterialReviewFlags message={indexingInfo.message} /></div>
                     </details>
                   )}
                   {hasFidelityWarnings && (
-                    <details className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                    <details className="rounded-lg border border-amber-200 bg-amber-50 p-2">
                       <summary className="cursor-pointer text-[13px] font-semibold text-amber-950">Extraction warnings ({extractionWarningsCount})</summary>
                       <MaterialIndexWarnings
                         warningText={indexingInfo.message || ''}
@@ -863,7 +864,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
                       />
                     </details>
                   )}
-                  <details className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-[13px] text-slate-700">
+                  <details className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-[13px] text-slate-700">
                     <summary className="cursor-pointer font-semibold">Technical details</summary>
                     {indexingInfo.errorCode && <p className="mt-2 break-words font-semibold text-rose-700">Error: {indexingInfo.errorCode}</p>}
                     <p className="mt-2 break-words leading-relaxed">{(indexingInfo.message || '').replace(/\s\|\sGEMINI_FLAGS=[^|]*/g, '').slice(0, 1500)}</p>
@@ -877,7 +878,7 @@ export const CNEReferenceModal: React.FC<CNEReferenceModalProps> = ({
           </div>
         </main>
 
-        <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-200 bg-white px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
+        <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-200 bg-white px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-5">
           <button type="button" onClick={onClose} disabled={isSaving || isDeleting} className="min-h-11 rounded-xl border border-slate-300 bg-white px-4 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40">Close</button>
           {canModify && (
             <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
